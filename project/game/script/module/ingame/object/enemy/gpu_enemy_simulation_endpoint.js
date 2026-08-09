@@ -8,8 +8,48 @@ import {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
 import {
-    GPU_CIRCLE_APPLIED_EVENT_FLAG
+    GPU_CIRCLE_APPLIED_EVENT_FLAG,
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    createEnemyCapabilityMask
+} from '../../contract/enemy_capability_contract.js';
+import {
+    PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_POLICY_ID,
+    PROJECTILE_TARGET_POLICY_ID
+} from '../../contract/projectile_target_policy_contract.js';
+import {
+    BASIC_RHOM_BEHAVIOR_PROFILE_ID,
+    BASIC_RHOM_CAPABILITY_IDS,
+    BASIC_RHOM_COMBAT_PROFILE_ID,
+    BASIC_RHOM_ENEMY_DEFINITION_ID,
+    BASIC_RHOM_PHYSICS_PROFILE_ID
+} from 'data/object/enemy/basic_rhom_enemy_data.js';
+import {
+    BASIC_RHOM_ATTACK_DATA
+} from 'data/object/enemy/basic_rhom_attack_data.js';
+import {
+    HOSTILE_RHOM_PROJECTILE_DATA
+} from 'data/object/projectile/hostile_rhom_projectile_data.js';
+import {
+    GPU_CORE_PROXY_DEFINITION_ID,
+    GPU_CORE_PROXY_WORLD_KIND_ID
+} from '../core/gpu_core_proxy_spawn_adapter.js';
+import {
+    materializeGpuPlainDataSnapshot
+} from '../gpu_spawn_intent.js';
+import {
+    GPU_PROJECTILE_SPAWN_MODE,
+    GPU_PROJECTILE_WORLD_KIND_ID
+} from '../projectile/gpu_projectile_spawn_adapter.js';
+import {
+    GPU_TOWER_DEFINITION_ID,
+    GPU_TOWER_WORLD_KIND_ID
+} from '../tower/gpu_tower_spawn_adapter.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
 const DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY = 2048;
@@ -18,6 +58,13 @@ let nextGpuSimulationSessionGeneration = 1;
 const CORE_IMPACT_CLEANUP_OPTIONS = Object.freeze({
     disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
 });
+const BASIC_RHOM_CAPABILITY_MASK = createEnemyCapabilityMask(
+    BASIC_RHOM_CAPABILITY_IDS,
+    'BASIC_RHOM_CAPABILITY_IDS'
+);
+const HOSTILE_RHOM_CORE_DAMAGE_FIXED_POINT = encodeGpuCircleBodyFixedPoint(
+    HOSTILE_RHOM_PROJECTILE_DATA.coreDamage
+);
 
 function allocateSessionGeneration() {
     if (!Number.isSafeInteger(nextGpuSimulationSessionGeneration)) {
@@ -113,6 +160,24 @@ function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
             }),
         drainCompletedSpawnProgramBatches: (out) => (
             backend.drainCompletedSpawnProgramBatches?.(out) ?? out
+        ),
+        drainCompletedBodyControlProgramBatches: (out) => (
+            backend.drainCompletedBodyControlProgramBatches?.(out) ?? out
+        ),
+        cancelPendingFixedProgramsForTerminal: (request) => (
+            backend.cancelPendingFixedProgramsForTerminal?.(request)
+                ?? Object.freeze({
+                    abiVersion: request?.abiVersion ?? 0,
+                    finalFixedTick: request?.finalFixedTick ?? 0,
+                    accepted: false,
+                    state: 'failed',
+                    reason: 'fixed-primitives-unsupported',
+                    destinationCount: 0,
+                    priorityControlCount: 0
+                })
+        ),
+        getTerminalFixedProgramCancelStatus: () => (
+            backend.getTerminalFixedProgramCancelStatus?.() ?? null
         ),
         getEventProtocolState: () => backend.getEventProtocolState?.()
             ?? Object.freeze({
@@ -359,6 +424,36 @@ export class GpuEnemySimulationEndpoint {
         );
     }
 
+    /** Core-first inclusive GPU target selection command를 예약합니다. */
+    requestPriorityTargetControl(command, targetFixedTick, commandId) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) {
+            return rejected;
+        }
+        let snapshot;
+        try {
+            snapshot = materializeGpuPlainDataSnapshot(
+                command,
+                'priorityTargetControl'
+            );
+        } catch {
+            return Object.freeze({
+                accepted: false,
+                reason: 'priority-target-control-contract'
+            });
+        }
+        const contractFailure = this.#validatePriorityTargetControl(snapshot);
+        if (contractFailure) {
+            return contractFailure;
+        }
+        return this.fixedCommandOwner.requestPriorityTargetControl(
+            snapshot,
+            targetFixedTick,
+            commandId
+        );
+    }
+
     /** CPU pose를 거치지 않는 tick-start source-relative spawn을 예약합니다. */
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
         this.#assertUsable();
@@ -368,6 +463,36 @@ export class GpuEnemySimulationEndpoint {
         }
         return this.fixedCommandOwner.requestSourceRelativeSpawn(
             intent,
+            targetFixedTick,
+            commandId
+        );
+    }
+
+    /** Same-tick priority control의 exact selected target projectile을 예약합니다. */
+    requestSelectedTargetSpawn(intent, targetFixedTick, commandId) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) {
+            return rejected;
+        }
+        let snapshot;
+        try {
+            snapshot = materializeGpuPlainDataSnapshot(
+                intent,
+                'selectedTargetSpawn'
+            );
+        } catch {
+            return Object.freeze({
+                accepted: false,
+                reason: 'selected-target-spawn-contract'
+            });
+        }
+        const contractFailure = this.#validateSelectedTargetSpawn(snapshot);
+        if (contractFailure) {
+            return contractFailure;
+        }
+        return this.fixedCommandOwner.requestSelectedTargetSpawn(
+            snapshot,
             targetFixedTick,
             commandId
         );
@@ -405,7 +530,7 @@ export class GpuEnemySimulationEndpoint {
      * 회수합니다. committed GPU-death와 전용 port의 Core-impact cleanup만 마지막
      * lifecycle commit까지 보존됩니다.
      */
-    closeGameplayIngress(reason = 'run-defeated') {
+    closeGameplayIngress(reason = 'run-defeated', finalFixedTick = null) {
         this.#assertUsable();
         if (this.gameplayIngressOpen) {
             this.gameplayIngressOpen = false;
@@ -416,7 +541,8 @@ export class GpuEnemySimulationEndpoint {
                 this.gameplayIngressCloseReason
             );
             const fixedCommands = this.fixedCommandOwner.closeIngress(
-                this.gameplayIngressCloseReason
+                this.gameplayIngressCloseReason,
+                finalFixedTick
             );
             this.gameplayIngressCloseCleanup = Object.freeze({
                 lifecycle,
@@ -425,7 +551,17 @@ export class GpuEnemySimulationEndpoint {
         }
         return Object.freeze({
             closed: !this.gameplayIngressOpen,
-            reason: this.gameplayIngressCloseReason
+            reason: this.gameplayIngressCloseReason,
+            cleanup: this.gameplayIngressCloseCleanup
+        });
+    }
+
+    /** Terminal fixed-program cancel/마지막 submit의 양쪽 owner/backend 증거입니다. */
+    getTerminalFixedProgramCancelStatus() {
+        return Object.freeze({
+            owner: this.fixedCommandOwner.getStatus().terminalCancelResult,
+            backend: this.fixedPrimitiveBackendPort
+                .getTerminalFixedProgramCancelStatus()
         });
     }
 
@@ -474,11 +610,6 @@ export class GpuEnemySimulationEndpoint {
     commitAtFixedBoundary(fixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
-        if (!this.gameplayIngressOpen) {
-            // close 이후 raw fixed-owner reference로 들어온 command도 terminal final
-            // commit plan에는 절대 섞이지 않게 경계 직전에 한 번 더 회수합니다.
-            this.fixedCommandOwner.cancelAll();
-        }
         if (this.completedEventRecoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
@@ -779,10 +910,15 @@ export class GpuEnemySimulationEndpoint {
             reservedCount: registry.reservedCount,
             pendingCommandCount: lifecycle.pendingCount
                 + fixedCommands.pendingCommandCount
-                + fixedCommands.pendingDestinationCount,
+                + fixedCommands.pendingDestinationCount
+                + (fixedCommands.pendingPriorityTargetControlCount ?? 0),
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
+            pendingPriorityTargetControlCount:
+                fixedCommands.pendingPriorityTargetControlCount ?? 0,
+            priorityTargetControlCompletedThroughTick:
+                fixedCommands.priorityTargetControlCompletedThroughTick ?? 0,
             gameplayIngressOpen: this.gameplayIngressOpen,
             gameplayIngressCloseReason: this.gameplayIngressCloseReason,
             gameplayIngressCloseCleanup: this.gameplayIngressCloseCleanup,
@@ -1268,7 +1404,10 @@ export class GpuEnemySimulationEndpoint {
         if (type !== 'death'
             && eventType !== 'damage-applied'
             && eventType !== 'interaction-enter'
-            && eventType !== 'interaction-continuous') {
+            && eventType !== 'interaction-continuous'
+            && eventType !== 'enemy-charge-windup-started'
+            && eventType !== 'enemy-charge-contact-recoil-started'
+            && eventType !== 'core-damage-request') {
             throw new RangeError(`지원하지 않는 applied event type입니다: ${String(eventType)}`);
         }
         const valueFixedPoint = Number(
@@ -1286,21 +1425,32 @@ export class GpuEnemySimulationEndpoint {
         }
         const allowsZeroDamage = eventType === 'damage-applied'
             && maximumDamageWindow;
+        const isChargeBehaviorEvent = eventType === 'enemy-charge-windup-started'
+            || eventType === 'enemy-charge-contact-recoil-started';
+        const isCoreDamageRequest = eventType === 'core-damage-request';
         if (!Number.isSafeInteger(valueFixedPoint)
             || (eventType === 'damage-applied' && (
                 valueFixedPoint < 0
                 || (valueFixedPoint === 0 && !allowsZeroDamage)
             ))
-            || (eventType !== 'damage-applied' && (
+            || (eventType !== 'damage-applied' && !isCoreDamageRequest && (
                 valueFixedPoint !== 0 || maximumDamageWindow
-            ))) {
+            ))
+            || (isCoreDamageRequest && (
+                valueFixedPoint <= 0 || maximumDamageWindow
+            ))
+            || ((isChargeBehaviorEvent || isCoreDamageRequest) && flags !== 0)) {
             throw new RangeError(
                 `event value/type contract가 잘못되었습니다: type=${eventType}, value=${valueFixedPoint}`
             );
         }
-        if (eventType === 'damage-applied'
+        const requiresExactOther = eventType === 'damage-applied'
+            || eventType === 'core-damage-request'
+            || eventType === 'enemy-charge-windup-started'
+            || eventType === 'enemy-charge-contact-recoil-started';
+        if (requiresExactOther
             && (otherEntityId <= 0 || otherIncarnation <= 0)) {
-            throw new RangeError('damage-applied event에는 exact other identity가 필요합니다.');
+            throw new RangeError(`${eventType} event에는 exact other identity가 필요합니다.`);
         }
         const key = [
             this.sessionGeneration,
@@ -1414,6 +1564,274 @@ export class GpuEnemySimulationEndpoint {
             );
             this.completedEventKeyHead = 0;
         }
+    }
+
+    #validatePriorityTargetControl(command) {
+        if (!command || typeof command !== 'object') {
+            return this.#fixedTargetRejection(
+                'priority-target-control-contract'
+            );
+        }
+        const source = this.#readExactRuntimeCandidate(
+            command.sourceHandle,
+            'enemy',
+            BASIC_RHOM_ENEMY_DEFINITION_ID,
+            'priority-source'
+        );
+        if (source.failure) {
+            return source.failure;
+        }
+        const metadata = source.view.metadata;
+        if (!metadata
+            || metadata.enemyDefinitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+            || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+            || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
+            || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
+            || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
+            || metadata.behaviorProfileId !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
+            return this.#fixedTargetRejection('priority-source-metadata-invalid');
+        }
+        const core = this.#readExactRuntimeCandidate(
+            command.coreTargetHandle,
+            GPU_CORE_PROXY_WORLD_KIND_ID,
+            GPU_CORE_PROXY_DEFINITION_ID,
+            'priority-core'
+        );
+        if (core.failure) {
+            return core.failure;
+        }
+        if (command.towerTargetHandle !== undefined
+            && command.towerTargetHandle !== null) {
+            const tower = this.#readExactRuntimeCandidate(
+                command.towerTargetHandle,
+                GPU_TOWER_WORLD_KIND_ID,
+                GPU_TOWER_DEFINITION_ID,
+                'priority-tower'
+            );
+            if (tower.failure) {
+                return tower.failure;
+            }
+        }
+        if (command.attackDefinitionId !== BASIC_RHOM_ATTACK_DATA.id
+            || command.projectileDefinitionId
+                !== HOSTILE_RHOM_PROJECTILE_DATA.id
+            || command.producerId !== BASIC_RHOM_ATTACK_DATA.producerId
+            || command.sourceAbilityId !== BASIC_RHOM_ATTACK_DATA.sourceAbilityId
+            || command.targetSelectionPolicyId
+                !== PROJECTILE_SELECTED_TARGET_POLICY_ID
+                    .CORE_FIRST_IN_RANGE_THEN_TOWER
+            || command.distancePolicyId
+                !== PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+                    .TICK_START_CENTER_INCLUSIVE
+            || command.stopWhileTargetInRange !== true
+            || Math.fround(Number(command.attackRangeTiles))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.attackRangeTiles)
+            || !Number.isSafeInteger(Number(command.selectionSequence))
+            || Number(command.selectionSequence) < 0) {
+            return this.#fixedTargetRejection(
+                'priority-target-control-evidence-invalid'
+            );
+        }
+        return null;
+    }
+
+    #validateSelectedTargetSpawn(intent) {
+        if (!intent || typeof intent !== 'object'
+            || intent.mode
+                !== GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET) {
+            return this.#fixedTargetRejection('selected-target-spawn-contract');
+        }
+        const source = this.#readExactRuntimeCandidate(
+            intent.sourceHandle,
+            'enemy',
+            BASIC_RHOM_ENEMY_DEFINITION_ID,
+            'selected-source'
+        );
+        if (source.failure) {
+            return source.failure;
+        }
+        const metadata = source.view.metadata;
+        if (!metadata
+            || metadata.enemyDefinitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+            || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+            || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
+            || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
+            || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
+            || metadata.behaviorProfileId !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
+            return this.#fixedTargetRejection('selected-source-metadata-invalid');
+        }
+        const core = this.#readExactRuntimeCandidate(
+            intent.coreTargetHandle,
+            GPU_CORE_PROXY_WORLD_KIND_ID,
+            GPU_CORE_PROXY_DEFINITION_ID,
+            'selected-core'
+        );
+        if (core.failure) {
+            return core.failure;
+        }
+        if (intent.towerTargetHandle !== undefined
+            && intent.towerTargetHandle !== null) {
+            const tower = this.#readExactRuntimeCandidate(
+                intent.towerTargetHandle,
+                GPU_TOWER_WORLD_KIND_ID,
+                GPU_TOWER_DEFINITION_ID,
+                'selected-tower'
+            );
+            if (tower.failure) {
+                return tower.failure;
+            }
+        }
+        const destination = intent.destinationSpawn;
+        const sourceHandle = intent.sourceHandle;
+        const coreHandle = intent.coreTargetHandle;
+        const towerHandle = intent.towerTargetHandle ?? null;
+        const positionOffset = intent.positionOffset;
+        const targetOffset = intent.targetOffset;
+        const behavior = destination?.enemyBehaviorState;
+        const expectedHandlerFlags = GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+            .KILL_IF_OTHER_TERRAIN
+            | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+            | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+            | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST;
+        const expectedInteractionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+        if (!destination
+            || destination.kindId !== GPU_PROJECTILE_WORLD_KIND_ID
+            || destination.definitionId !== HOSTILE_RHOM_PROJECTILE_DATA.id
+            || destination.sourceEntityId !== sourceHandle.entityId
+            || destination.sourceIncarnation !== sourceHandle.incarnation
+            || destination.ownerEntityId !== sourceHandle.entityId
+            || destination.ownerIncarnation !== sourceHandle.incarnation
+            || destination.coreTargetEntityId !== coreHandle.entityId
+            || destination.coreTargetIncarnation !== coreHandle.incarnation
+            || (towerHandle === null
+                ? destination.towerTargetEntityId !== undefined
+                    || destination.towerTargetIncarnation !== undefined
+                : destination.towerTargetEntityId !== towerHandle.entityId
+                    || destination.towerTargetIncarnation
+                        !== towerHandle.incarnation)
+            || destination.targetPolicyId
+                !== PROJECTILE_TARGET_POLICY_ID
+                    .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN
+            || destination.towerTargetPolicyId
+                !== HOSTILE_RHOM_PROJECTILE_DATA.towerTargetPolicyId
+            || destination.coreTargetPolicyId
+                !== HOSTILE_RHOM_PROJECTILE_DATA.coreTargetPolicyId
+            || destination.coreDamageRequestPolicyId
+                !== HOSTILE_RHOM_PROJECTILE_DATA.coreDamageRequestPolicyId
+            || destination.requiresExactSelectedTarget !== true
+            || destination.coreDamage !== HOSTILE_RHOM_PROJECTILE_DATA.coreDamage
+            || destination.targetSelectionPolicyId
+                !== PROJECTILE_SELECTED_TARGET_POLICY_ID
+                    .CORE_FIRST_IN_RANGE_THEN_TOWER
+            || destination.distancePolicyId
+                !== PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+                    .TICK_START_CENTER_INCLUSIVE
+            || destination.producerId !== BASIC_RHOM_ATTACK_DATA.producerId
+            || destination.sourceAbilityId
+                !== BASIC_RHOM_ATTACK_DATA.sourceAbilityId
+            || destination.coreDamageFixedPoint
+                !== HOSTILE_RHOM_CORE_DAMAGE_FIXED_POINT
+            || destination.health !== HOSTILE_RHOM_PROJECTILE_DATA.penetration
+            || destination.radius
+                !== HOSTILE_RHOM_PROJECTILE_DATA.collisionRadius
+            || destination.inverseMass
+                !== HOSTILE_RHOM_PROJECTILE_DATA.inverseMass
+            || destination.lifetime
+                !== HOSTILE_RHOM_PROJECTILE_DATA.lifetimeSeconds
+            || destination.interactionMask !== expectedInteractionMask
+            || destination.position?.x !== 0
+            || destination.position?.y !== 0
+            || destination.velocity?.x !== 0
+            || destination.velocity?.y !== 0
+            || destination.contactHandler?.damageSelf
+                !== HOSTILE_RHOM_PROJECTILE_DATA.damageSelf
+            || destination.contactHandler?.damageOther
+                !== HOSTILE_RHOM_PROJECTILE_DATA.damage
+            || destination.contactHandler?.flags !== expectedHandlerFlags
+            || behavior?.programId
+                !== GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE
+            || behavior.coreDamageFixedPoint
+                !== HOSTILE_RHOM_CORE_DAMAGE_FIXED_POINT
+            || intent.targetSelectionPolicyId
+                !== destination.targetSelectionPolicyId
+            || intent.distancePolicyId !== destination.distancePolicyId
+            || intent.stopWhileTargetInRange !== true
+            || Math.fround(Number(intent.attackRangeTiles))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.attackRangeTiles)
+            || Math.fround(Number(destination.attackRangeTiles))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.attackRangeTiles)
+            || Math.fround(Number(intent.launchSpeed))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.launchSpeed)
+            || Math.fround(Number(positionOffset?.x))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.positionOffset.x)
+            || Math.fround(Number(positionOffset?.y))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.positionOffset.y)
+            || Math.fround(Number(targetOffset?.x))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.targetOffset.x)
+            || Math.fround(Number(targetOffset?.y))
+                !== Math.fround(BASIC_RHOM_ATTACK_DATA.targetOffset.y)) {
+            return this.#fixedTargetRejection(
+                'selected-target-spawn-evidence-invalid'
+            );
+        }
+        return null;
+    }
+
+    #readExactRuntimeCandidate(handle, kindId, definitionId, reasonPrefix) {
+        const entityId = Number(handle?.entityId);
+        const incarnation = Number(handle?.incarnation);
+        if (!Number.isSafeInteger(entityId) || entityId <= 0
+            || !Number.isSafeInteger(incarnation) || incarnation <= 0) {
+            return {
+                failure: this.#fixedTargetRejection(
+                    `${reasonPrefix}-handle-invalid`
+                )
+            };
+        }
+        const exactHandle = { entityId, incarnation };
+        let registryHas;
+        let backendHas;
+        try {
+            registryHas = this.registry.has(exactHandle);
+            backendHas = this.backend.hasBody(exactHandle);
+        } catch {
+            return {
+                failure: this.#fixedTargetRejection(
+                    `${reasonPrefix}-handle-invalid`
+                )
+            };
+        }
+        if (registryHas !== backendHas) {
+            return {
+                failure: this.#fixedTargetRejection(
+                    `${reasonPrefix}-registry-backend-desync`
+                )
+            };
+        }
+        if (!registryHas) {
+            return {
+                failure: this.#fixedTargetRejection(`${reasonPrefix}-stale`)
+            };
+        }
+        const view = this.registry.copyEntityView(exactHandle, {});
+        if (!view
+            || view.entityId !== entityId
+            || view.incarnation !== incarnation
+            || view.kindId !== kindId
+            || view.definitionId !== definitionId) {
+            return {
+                failure: this.#fixedTargetRejection(
+                    `${reasonPrefix}-kind-definition-invalid`
+                )
+            };
+        }
+        return { failure: null, view };
+    }
+
+    #fixedTargetRejection(reason) {
+        return Object.freeze({ accepted: false, reason });
     }
 
     #assertUsable() {

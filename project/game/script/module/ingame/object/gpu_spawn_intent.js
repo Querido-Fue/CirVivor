@@ -1,7 +1,14 @@
 import {
     normalizeGpuCircleBodyContactHandler,
-    normalizeGpuCircleBodyMetadata
+    normalizeGpuCircleBodyMetadata,
+    encodeGpuCircleBodyFixedPoint
 } from '../physics/gpu/gpu_circle_body_abi.js';
+import {
+    PROJECTILE_CORE_DAMAGE_REQUEST_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_POLICY_ID,
+    PROJECTILE_TARGET_POLICY_ID
+} from '../contract/projectile_target_policy_contract.js';
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -223,6 +230,161 @@ function validateOptionalExactIdentityPair(snapshot, prefix) {
     );
 }
 
+function copySelectedTargetProjectileMetadata(intent, activationEvidence = null) {
+    if (intent.targetSelectionPolicyId === undefined
+        && activationEvidence === null) {
+        return {};
+    }
+    if (!activationEvidence || typeof activationEvidence !== 'object') {
+        throw new TypeError('selected-target projectile activation evidence가 필요합니다.');
+    }
+    const selectedTargetKind = requireNonEmptyString(
+        activationEvidence.selectedTargetKind,
+        'activationEvidence.selectedTargetKind'
+    );
+    if (selectedTargetKind !== 'core' && selectedTargetKind !== 'tower') {
+        throw new RangeError('selectedTargetKind는 core 또는 tower여야 합니다.');
+    }
+    const selectedTargetEntityId = requireExactIdentityComponent(
+        activationEvidence.selectedTargetEntityId
+            ?? activationEvidence.selectedTargetHandle?.entityId,
+        'activationEvidence.selectedTargetEntityId'
+    );
+    const selectedTargetIncarnation = requireExactIdentityComponent(
+        activationEvidence.selectedTargetIncarnation
+            ?? activationEvidence.selectedTargetHandle?.incarnation,
+        'activationEvidence.selectedTargetIncarnation'
+    );
+    const coreTargetEntityId = requireExactIdentityComponent(
+        intent.coreTargetEntityId,
+        'spawnIntent.coreTargetEntityId'
+    );
+    const coreTargetIncarnation = requireExactIdentityComponent(
+        intent.coreTargetIncarnation,
+        'spawnIntent.coreTargetIncarnation'
+    );
+    const hasTowerEntity = intent.towerTargetEntityId !== undefined
+        && intent.towerTargetEntityId !== null;
+    const hasTowerIncarnation = intent.towerTargetIncarnation !== undefined
+        && intent.towerTargetIncarnation !== null;
+    if (hasTowerEntity !== hasTowerIncarnation) {
+        throw new TypeError('selected-target Tower exact identity는 pair여야 합니다.');
+    }
+    const towerTargetEntityId = hasTowerEntity
+        ? requireExactIdentityComponent(
+            intent.towerTargetEntityId,
+            'spawnIntent.towerTargetEntityId'
+        )
+        : null;
+    const towerTargetIncarnation = hasTowerEntity
+        ? requireExactIdentityComponent(
+            intent.towerTargetIncarnation,
+            'spawnIntent.towerTargetIncarnation'
+        )
+        : null;
+    const selectedMatchesAuthored = selectedTargetKind === 'core'
+        ? selectedTargetEntityId === coreTargetEntityId
+            && selectedTargetIncarnation === coreTargetIncarnation
+        : towerTargetEntityId !== null
+            && selectedTargetEntityId === towerTargetEntityId
+            && selectedTargetIncarnation === towerTargetIncarnation;
+    if (!selectedMatchesAuthored) {
+        throw new RangeError('GPU selected outcome이 authored exact candidate와 다릅니다.');
+    }
+    const coreDamage = requirePositiveFinite(
+        intent.coreDamage,
+        'spawnIntent.coreDamage'
+    );
+    const coreDamageFixedPoint = requireExactIdentityComponent(
+        intent.coreDamageFixedPoint,
+        'spawnIntent.coreDamageFixedPoint'
+    );
+    if (intent.requiresExactSelectedTarget !== true) {
+        throw new RangeError('selected-target projectile에는 exact target policy가 필요합니다.');
+    }
+    const targetSelectionPolicyId = requireNonEmptyString(
+        intent.targetSelectionPolicyId,
+        'spawnIntent.targetSelectionPolicyId'
+    );
+    const distancePolicyId = requireNonEmptyString(
+        intent.distancePolicyId,
+        'spawnIntent.distancePolicyId'
+    );
+    const towerTargetPolicyId = requireNonEmptyString(
+        intent.towerTargetPolicyId,
+        'spawnIntent.towerTargetPolicyId'
+    );
+    const coreTargetPolicyId = requireNonEmptyString(
+        intent.coreTargetPolicyId,
+        'spawnIntent.coreTargetPolicyId'
+    );
+    const coreDamageRequestPolicyId = requireNonEmptyString(
+        intent.coreDamageRequestPolicyId,
+        'spawnIntent.coreDamageRequestPolicyId'
+    );
+    const selectedTargetPolicyId = requireNonEmptyString(
+        activationEvidence.selectedTargetPolicyId,
+        'activationEvidence.selectedTargetPolicyId'
+    );
+    if (intent.targetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID
+                .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN
+        || targetSelectionPolicyId
+            !== PROJECTILE_SELECTED_TARGET_POLICY_ID
+                .CORE_FIRST_IN_RANGE_THEN_TOWER
+        || distancePolicyId
+            !== PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+                .TICK_START_CENTER_INCLUSIVE
+        || towerTargetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+        || coreTargetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN
+        || coreDamageRequestPolicyId
+            !== PROJECTILE_CORE_DAMAGE_REQUEST_POLICY_ID.TYPED_CPU_CORE_DAMAGE
+        || coreDamageFixedPoint !== encodeGpuCircleBodyFixedPoint(coreDamage)
+        || selectedTargetPolicyId !== (selectedTargetKind === 'core'
+            ? coreTargetPolicyId
+            : towerTargetPolicyId)) {
+        throw new RangeError('selected-target projectile resolved policy evidence가 올바르지 않습니다.');
+    }
+    return {
+        targetSelectionPolicyId,
+        distancePolicyId,
+        attackRangeTiles: requirePositiveFinite(
+            intent.attackRangeTiles,
+            'spawnIntent.attackRangeTiles'
+        ),
+        towerTargetPolicyId,
+        coreTargetPolicyId,
+        coreDamageRequestPolicyId,
+        coreDamage,
+        coreDamageFixedPoint,
+        requiresExactSelectedTarget: true,
+        coreTargetEntityId,
+        coreTargetIncarnation,
+        ...(towerTargetEntityId === null ? {} : {
+            towerTargetEntityId,
+            towerTargetIncarnation
+        }),
+        selectedTargetKind,
+        selectedTargetEntityId,
+        selectedTargetIncarnation,
+        selectedTargetPolicyId,
+        selectionSourceTick: requireExactIdentityComponent(
+            activationEvidence.selectionSourceTick,
+            'activationEvidence.selectionSourceTick'
+        ),
+        selectionSequence: requireNonNegativeSafeInteger(
+            activationEvidence.selectionSequence,
+            'activationEvidence.selectionSequence'
+        ),
+        attackFingerprint: requireExactIdentityComponent(
+            activationEvidence.attackFingerprint,
+            'activationEvidence.attackFingerprint'
+        )
+    };
+}
+
 /** 모든 GPU body producer가 공유하는 canonical immutable spawn ingress입니다. */
 export function normalizeGpuSpawnIntent(source, options = {}) {
     if (!source || typeof source !== 'object') {
@@ -304,7 +466,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
 }
 
 /** Registry가 GPU body identity와 함께 보존할 CPU domain metadata를 만듭니다. */
-export function createGpuRegistryMetadata(intent) {
+export function createGpuRegistryMetadata(intent, activationEvidence = null) {
     const common = {
         definitionId: intent.definitionId,
         teamId: intent.teamId,
@@ -339,6 +501,7 @@ export function createGpuRegistryMetadata(intent) {
     }
     return {
         ...common,
-        spawnSequence: intent.spawnSequence
+        spawnSequence: intent.spawnSequence,
+        ...copySelectedTargetProjectileMetadata(intent, activationEvidence)
     };
 }

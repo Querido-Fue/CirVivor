@@ -9,6 +9,7 @@ const {
     BASIC_GEN_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
     INGAME_ENEMY_DEFINITIONS,
@@ -80,10 +81,44 @@ const EXPECTED_ARCHETYPES = Object.freeze([
         definition: BASIC_GEN_ENEMY_DATA,
         shapeType: 'gen',
         shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+    }),
+    Object.freeze({
+        definition: BASIC_RHOM_ENEMY_DATA,
+        shapeType: 'rhom',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
     })
 ]);
 const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([
-    ...EXPECTED_ARCHETYPES,
+    Object.freeze({
+        definition: BASIC_CIRCLE_ENEMY_DATA,
+        shapeType: 'circle',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+    }),
+    Object.freeze({
+        definition: BASIC_TRIANGLE_ENEMY_DATA,
+        shapeType: 'triangle',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.TRIANGLE
+    }),
+    Object.freeze({
+        definition: BASIC_ARROW_ENEMY_DATA,
+        shapeType: 'arrow',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW
+    }),
+    Object.freeze({
+        definition: BASIC_RHOM_ENEMY_DATA,
+        shapeType: 'rhom',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
+    }),
+    Object.freeze({
+        definition: BASIC_CIRCLE_ENEMY_DATA,
+        shapeType: 'circle',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+    }),
+    Object.freeze({
+        definition: BASIC_TRIANGLE_ENEMY_DATA,
+        shapeType: 'triangle',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.TRIANGLE
+    }),
     Object.freeze({
         definition: ARCHER_ENEMY_DATA,
         shapeType: 'arrow',
@@ -122,7 +157,7 @@ const toWgslVec2 = ({ x, y }) => (
     `vec2f(${toWgslFloat(x)}, ${toWgslFloat(y)})`
 );
 
-test('main GPU enemy catalog과 단일 wave phase는 65% radius·shape cycle·lane 순서를 고정한다', () => {
+test('main GPU enemy catalog과 단일 wave timeline은 65% radius·shape cycle·lane 순서를 고정한다', () => {
     assert.equal(
         MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
         (LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES / 2) * 1.3
@@ -152,20 +187,23 @@ test('main GPU enemy catalog과 단일 wave phase는 65% radius·shape cycle·la
     }
 
     assert.equal(Object.isFrozen(CORRIDOR_EIGHT_WAVE_01_DATA), true);
-    assert.equal(Object.isFrozen(CORRIDOR_EIGHT_WAVE_01_DATA.phases), true);
-    assert.equal(CORRIDOR_EIGHT_WAVE_01_DATA.phases.length, 1);
-    const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
-    const group = phase.spawnGroups[0];
-    assert.equal(Object.isFrozen(phase), true);
-    assert.equal(Object.isFrozen(phase.spawnGroups), true);
+    assert.equal(Object.isFrozen(CORRIDOR_EIGHT_WAVE_01_DATA.timeline), true);
+    assert.equal(CORRIDOR_EIGHT_WAVE_01_DATA.timeline.length, 1);
+    const timelineEntry = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0];
+    const group = timelineEntry.spawnGroups[0];
+    assert.equal(Object.isFrozen(timelineEntry), true);
+    assert.equal(Object.isFrozen(timelineEntry.spawnGroups), true);
     assert.equal(Object.isFrozen(group), true);
     assert.equal(Object.isFrozen(group.enemyDefinitionIds), true);
     assert.equal(Object.isFrozen(group.laneOffsetsTiles), true);
-    assert.equal(phase.startTick, 1);
-    assert.equal(phase.durationTicks, 156);
+    assert.equal(timelineEntry.durationSeconds * 60, 156);
     assert.equal(group.count, 32);
     assert.equal(group.intervalTicks, 5);
-    assert.equal(group.enemyDefinitionId, BASIC_SQUARE_ENEMY_DATA.id);
+    assert.equal(group.enemyDefinitionId, BASIC_CIRCLE_ENEMY_DATA.id);
+    assert.deepEqual({ ...group.routeBinding }, {
+        gateId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].gateId,
+        pathId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].pathId
+    });
     assert.deepEqual(
         Array.from(group.enemyDefinitionIds),
         EXPECTED_PRODUCTION_WAVE_ARCHETYPES.map(
@@ -173,7 +211,10 @@ test('main GPU enemy catalog과 단일 wave phase는 65% radius·shape cycle·la
         )
     );
     assert.deepEqual(Array.from(group.laneOffsetsTiles), EXPECTED_LANE_OFFSETS);
-    const sameLaneTravel = BASIC_SQUARE_ENEMY_DATA.moveSpeedTilesPerSecond
+    const minimumCycleSpeed = Math.min(...EXPECTED_PRODUCTION_WAVE_ARCHETYPES.map(
+        ({ definition }) => definition.moveSpeedTilesPerSecond
+    ));
+    const sameLaneTravel = minimumCycleSpeed
         * ((group.intervalTicks * group.laneOffsetsTiles.length) / 60);
     assert.ok(
         sameLaneTravel > MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES * 2,
@@ -184,6 +225,7 @@ test('main GPU enemy catalog과 단일 wave phase는 65% radius·shape cycle·la
 test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 공유한다', () => {
     assert.equal(ENEMY_SVG_DRAW_SIZE_RATIO, 0.90);
     assert.equal(ENEMY_ASPECT_RATIO.arrow, 0.96);
+    assert.equal(ENEMY_ASPECT_RATIO.rhom, 0.81);
     assert.equal(ENEMY_HEIGHT_SCALE.arrow, 0.9);
     assert.equal(ENEMY_ASPECT_RATIO.gen, 1.05);
     assert.equal(Object.isFrozen(ENEMY_SHAPE_GEOMETRY), true);
@@ -222,6 +264,9 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.ok(Math.abs(normalized.penta.points[0].x) < 1e-15);
     assertClose(normalized.penta.points[0].y, -0.7273098320775917);
     assertClose(normalized.hexa.points[0].y, -0.7121575439093085);
+    assert.equal(normalized.rhom.points.length, 4);
+    assertClose(normalized.rhom.points[0].y, -0.7576144084141581);
+    assertClose(normalized.rhom.points[1].x, 0.41729401615451833);
     assertClose(normalized.gen.outerBox.halfSize.x, 0.47729707730091964);
     assertClose(normalized.gen.outerBox.halfSize.y, 0.45456864504849487);
     assertClose(normalized.gen.innerBox.halfSize.x, 0.35001785668734103);
@@ -301,16 +346,20 @@ test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달�
     }), /첫 두 waypoint/);
 });
 
-test('WaveDirector는 단일 phase를 tick 1 + 5n에서 shape/lane 순서대로 컴파일한다', () => {
+test('WaveDirector는 단일 timeline을 tick 1 + 5n에서 shape/lane 순서대로 컴파일한다', () => {
     const director = new WaveDirector();
     const scheduled = [];
     const tileMap = createTileMap(CORRIDOR_EIGHT_MAP_DATA.id);
     assert.equal(director.init(tileMap), true);
 
     const commandOwner = {
-        requestSpawn(intent, targetFixedTick, commandId) {
-            scheduled.push({ intent, targetFixedTick, commandId });
-            return { accepted: true };
+        requestSpawnBatch(requests) {
+            scheduled.push(...requests);
+            return {
+                accepted: true,
+                requestedCount: requests.length,
+                queuedCount: requests.length
+            };
         }
     };
     const route = tileMap.getSpawnRoutes()[0];
@@ -344,24 +393,31 @@ test('WaveDirector는 단일 phase를 tick 1 + 5n에서 shape/lane 순서대로 
             entry.intent.velocity.y,
             ((next.y - routeEntry.y) / directionLength) * entry.intent.flowSpeed
         );
-        assert.equal(entry.commandId, `corridor_eight_wave_01:0:0:${index}`);
+        assert.equal(
+            entry.commandId,
+            `authored-wave-spawn:corridor_eight_wave_01:main-authored-duration:main-deterministic-cycle:spawn-${index}`
+        );
     }
     assert.equal(director.getStatus().allSpawnsQueued, true);
     director.destroy();
 });
 
-test('WaveDirector는 legacy circle의 singular enemyDefinitionId wave schema를 그대로 지원한다', () => {
+test('WaveDirector는 circle singular enemyDefinitionId timeline schema를 지원한다', () => {
     const director = new WaveDirector({
         waveDefinition: {
             waveId: 'legacy_singular_wave',
             mapId: CORRIDOR_EIGHT_MAP_DATA.id,
-            phases: [{
-                startTick: 1,
-                durationTicks: 4,
+            timeline: [{
+                timelineEntryId: 'legacy-singular-duration',
+                type: 'SPAWN_FOR_DURATION',
+                durationSeconds: 4 / 60,
                 spawnGroups: [{
+                    groupId: 'legacy-singular-group',
                     enemyDefinitionId: BASIC_CIRCLE_ENEMY_DATA.id,
-                    gateId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].gateId,
-                    pathChoicePolicy: 'fixed-route',
+                    routeBinding: {
+                        gateId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].gateId,
+                        pathId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].pathId
+                    },
                     count: 2,
                     intervalTicks: 3,
                     policyId: 'corebound',
@@ -374,9 +430,13 @@ test('WaveDirector는 legacy circle의 singular enemyDefinitionId wave schema를
     const scheduled = [];
     assert.equal(director.init(tileMap), true);
     const commandOwner = {
-        requestSpawn(intent, targetFixedTick, commandId) {
-            scheduled.push({ intent, targetFixedTick, commandId });
-            return { accepted: true };
+        requestSpawnBatch(requests) {
+            scheduled.push(...requests);
+            return {
+                accepted: true,
+                requestedCount: requests.length,
+                queuedCount: requests.length
+            };
         }
     };
     for (let tick = 1; tick <= 4; tick++) {
@@ -392,7 +452,10 @@ test('WaveDirector는 legacy circle의 singular enemyDefinitionId wave schema를
     );
     assert.deepEqual(
         scheduled.map(({ commandId }) => commandId),
-        ['legacy_singular_wave:0:0:0', 'legacy_singular_wave:0:0:1']
+        [
+            'authored-wave-spawn:legacy_singular_wave:legacy-singular-duration:legacy-singular-group:spawn-0',
+            'authored-wave-spawn:legacy_singular_wave:legacy-singular-duration:legacy-singular-group:spawn-1'
+        ]
     );
     director.destroy();
 });
@@ -420,6 +483,14 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     for (const point of normalized.arrow.points) {
         assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(point)));
     }
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes('const RHOM_POINTS = array<vec2f, 6>('));
+    for (const point of normalized.rhom.points) {
+        assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(point)));
+    }
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /shape_code == RENDER_SHAPE_RHOM[\s\S]*polygon_distance\(point, RHOM_POINTS, 4u\)/
+    );
     assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(
         normalized.penta.points[0]
     )));

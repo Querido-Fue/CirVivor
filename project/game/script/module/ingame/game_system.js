@@ -261,15 +261,13 @@ export class GameSystem {
         const proposedFixedTick = this.fixedTick + 1;
         // Terminal run은 input semantics를 새 gameplay request로 materialize하지 않습니다.
         // GameObjectSystem은 마지막 cleanup submit 또는 sealed no-op만 수행합니다.
+        // 이미 defeat가 확정된 호출은 성공 no-op이어도 session fixed tick을 전진시키지
+        // 않아 finalization boundary의 authoritative snapshot을 보존합니다.
         if (this.runOutcome.isDefeated()) {
-            const advanced = this.objectSystem.fixedUpdate(
+            return this.objectSystem.fixedUpdate(
                 this.dependencies.timePort.getFixedDelta(),
                 proposedFixedTick
             );
-            if (advanced) {
-                this.fixedTick = proposedFixedTick;
-            }
-            return advanced;
         }
         const moveAction = this.inputActionMapper.mapMoveAction(
             this.dependencies.inputActionSource

@@ -1,7 +1,8 @@
 import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
-    GPU_CIRCLE_BODY_RENDER_SHAPE
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
@@ -38,13 +39,15 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
     arrow: GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW,
     penta: GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA,
     hexa: GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA,
-    gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+    gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN,
+    rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
     ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
     ENEMY_CAPABILITY_ID.CORE_IMPACT
 ]);
+const ZERO_INITIAL_WORLD_OFFSET_TILES = Object.freeze({ x: 0, y: 0 });
 
 function assertNavigationCapabilityDefinition(definition) {
     requireNonEmptyString(
@@ -76,6 +79,19 @@ function assertCoreImpactCapabilityDefinition(definition) {
         definition.behaviorProfileId,
         'enemy Core impact behaviorProfileId'
     );
+}
+
+function assertChargeCapabilityDefinition(definition) {
+    const behaviorProfileId = requireNonEmptyString(
+        definition.behaviorProfileId,
+        'enemy charge behaviorProfileId'
+    );
+    const behaviorProfile = ENEMY_PROFILE_CATALOG.behaviorById[behaviorProfileId];
+    if (!behaviorProfile?.charge) {
+        throw new RangeError(
+            'enemy-charge capability에는 실제 charge behavior profile이 필요합니다.'
+        );
+    }
 }
 
 /** 실제 EnemyCoreImpactDirector method family를 가리키는 class-free roster seam입니다. */
@@ -114,6 +130,11 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             implementationId: 'enemy-core-impact-director',
             assertDefinition: assertCoreImpactCapabilityDefinition,
             rosterPort: GPU_ENEMY_CORE_IMPACT_ROSTER_PORT
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.CHARGE,
+            implementationId: 'gpu-exact-tower-charge',
+            assertDefinition: assertChargeCapabilityDefinition
         })
     ])
 );
@@ -287,10 +308,30 @@ function normalizeColor(source) {
     return Object.freeze(color);
 }
 
+function normalizeInitialWorldOffsetTiles(source) {
+    if (source === undefined || source === null) {
+        return ZERO_INITIAL_WORLD_OFFSET_TILES;
+    }
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError('initialWorldOffsetTiles는 {x,y} 객체여야 합니다.');
+    }
+    for (const key of Object.keys(source)) {
+        if (key !== 'x' && key !== 'y') {
+            throw new RangeError(
+                `initialWorldOffsetTiles에 알 수 없는 필드가 있습니다: ${key}`
+            );
+        }
+    }
+    return Object.freeze({
+        x: requireFinite(source.x, 'initialWorldOffsetTiles.x'),
+        y: requireFinite(source.y, 'initialWorldOffsetTiles.y')
+    });
+}
+
 /**
  * 선언 적 1개를 현재 map route의 첫 GPU flow stage에 맞는 spawn intent로 바꿉니다.
  * identity는 WorldRegistry만 발급하므로 이 adapter는 entityId/incarnation을 만들지 않습니다.
- * @param {{definition:object,route:object,spawnSequence:number,laneOffsetTiles?:number,waveId?:string|null,policyId?:string|null,resolvedStats?:object,collisionRadiusTilesOverride?:number}} options
+ * @param {{definition:object,route:object,spawnSequence:number,laneOffsetTiles?:number,initialWorldOffsetTiles?:{x:number,y:number}|null,waveId?:string|null,policyId?:string|null,resolvedStats?:object,collisionRadiusTilesOverride?:number}} options
  * @returns {object} 불변 spawn intent입니다.
  */
 export function createGpuEnemySpawnIntent(options) {
@@ -323,6 +364,9 @@ export function createGpuEnemySpawnIntent(options) {
     const directionUnitX = directionX / directionLength;
     const directionUnitY = directionY / directionLength;
     const laneOffsetTiles = requireFinite(options.laneOffsetTiles ?? 0, 'laneOffsetTiles');
+    const initialWorldOffsetTiles = normalizeInitialWorldOffsetTiles(
+        options.initialWorldOffsetTiles
+    );
     const normalX = -directionUnitY;
     const normalY = directionUnitX;
     const canonicalDefinition = isCanonicalEnemyDefinition(definition);
@@ -341,6 +385,11 @@ export function createGpuEnemySpawnIntent(options) {
     const hasCoreImpact = hasEnemyCapability(
         capabilityMask,
         ENEMY_CAPABILITY_ID.CORE_IMPACT,
+        'enemy capabilityMask'
+    );
+    const hasCharge = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.CHARGE,
         'enemy capabilityMask'
     );
     if (canonicalDefinition
@@ -385,6 +434,12 @@ export function createGpuEnemySpawnIntent(options) {
         ),
         'collisionRadiusTiles'
     );
+    const chargeProfile = hasCharge
+        ? ENEMY_PROFILE_CATALOG.behaviorById[definition.behaviorProfileId]?.charge
+        : null;
+    if (hasCharge && !chargeProfile) {
+        throw new RangeError('enemy-charge spawn에는 charge behavior profile이 필요합니다.');
+    }
 
     return Object.freeze({
         kindId: GPU_ENEMY_WORLD_KIND_ID,
@@ -400,8 +455,14 @@ export function createGpuEnemySpawnIntent(options) {
         policyId,
         capabilityMask,
         position: Object.freeze({
-            x: entryX + (normalX * laneOffsetTiles),
-            y: entryY + (normalY * laneOffsetTiles)
+            x: requireFinite(
+                entryX + (normalX * laneOffsetTiles) + initialWorldOffsetTiles.x,
+                'enemy spawn position.x'
+            ),
+            y: requireFinite(
+                entryY + (normalY * laneOffsetTiles) + initialWorldOffsetTiles.y,
+                'enemy spawn position.y'
+            )
         }),
         velocity: Object.freeze({
             x: directionUnitX * flowSpeed,
@@ -435,6 +496,12 @@ export function createGpuEnemySpawnIntent(options) {
         lifetime: -1,
         alive: true,
         flowSpeed,
+        ...(chargeProfile ? {
+            enemyBehaviorState: Object.freeze({
+                programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
+                ...chargeProfile
+            })
+        } : {}),
         ...(resolvedStats.physicsProfileId === null ? {} : {
             physicsProfileId: resolvedStats.physicsProfileId,
             combatProfileId: resolvedStats.combatProfileId,

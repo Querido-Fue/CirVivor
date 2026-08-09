@@ -18,20 +18,15 @@ import {
     normalizeEnemyModifierSet,
     resolveEnemySpawnStats
 } from '../object/enemy/resolved_enemy_spawn_stats.js';
+import {
+    compileAuthoredWaveTimeline
+} from './authored_wave_timeline_contract.js';
 
 function requireNonEmptyString(value, label) {
     if (typeof value !== 'string' || value.length === 0) {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
     }
     return value;
-}
-
-function requirePositiveSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number <= 0) {
-        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
-    }
-    return number;
 }
 
 function requireNonNegativeSafeInteger(value, label) {
@@ -42,45 +37,12 @@ function requireNonNegativeSafeInteger(value, label) {
     return number;
 }
 
-function requireFiniteOffsets(source, label) {
-    if (!Array.isArray(source) || source.length === 0) {
-        throw new TypeError(`${label}은 하나 이상의 lane offset 배열이어야 합니다.`);
-    }
-    return Object.freeze(source.map((value, index) => {
-        const number = Number(value);
-        if (!Number.isFinite(number)) {
-            throw new TypeError(`${label}[${index}]는 유한 숫자여야 합니다.`);
-        }
-        return number;
-    }));
-}
-
-function requireFinite(value, label) {
+function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
-    if (!Number.isFinite(number)) {
-        throw new TypeError(`${label}은 유한 숫자여야 합니다.`);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
     }
     return number;
-}
-
-function snapshotRoute(source, label) {
-    if (!source || typeof source !== 'object') {
-        throw new TypeError(`${label} route가 필요합니다.`);
-    }
-    const gateId = requireNonEmptyString(source.gateId, `${label}.gateId`);
-    const pathId = requireNonEmptyString(source.pathId, `${label}.pathId`);
-    if (!Array.isArray(source.waypoints) || source.waypoints.length < 2) {
-        throw new TypeError(`${label}.waypoints에는 두 개 이상의 waypoint가 필요합니다.`);
-    }
-    const waypoints = Object.freeze(source.waypoints.map((point, index) => Object.freeze({
-        x: requireFinite(point?.x, `${label}.waypoints[${index}].x`),
-        y: requireFinite(point?.y, `${label}.waypoints[${index}].y`)
-    })));
-    return Object.freeze({
-        gateId,
-        pathId,
-        waypoints
-    });
 }
 
 function snapshotEnemyDefinition(source, label) {
@@ -98,41 +60,6 @@ function snapshotEnemyDefinition(source, label) {
     }, ENEMY_PROFILE_CATALOG, label);
     assertGpuEnemyDefinitionCapabilities(definition);
     return definition;
-}
-
-function resolveEnemyDefinitionCycle(group, definitions, label) {
-    const fallbackId = requireNonEmptyString(
-        group?.enemyDefinitionId,
-        `${label}.enemyDefinitionId`
-    );
-    const fallbackDefinition = definitions[fallbackId];
-    if (!fallbackDefinition) {
-        throw new RangeError(`등록되지 않은 enemy definition입니다: ${fallbackId}`);
-    }
-    const source = group?.enemyDefinitionIds;
-    const definitionIds = source === undefined
-        ? null
-        : source;
-    if (definitionIds === null) {
-        return Object.freeze([snapshotEnemyDefinition(
-            fallbackDefinition,
-            `${label}.enemyDefinitionId`
-        )]);
-    }
-    if (!Array.isArray(definitionIds) || definitionIds.length === 0) {
-        throw new TypeError(`${label}.enemyDefinitionIds는 하나 이상의 ID 배열이어야 합니다.`);
-    }
-    return Object.freeze(definitionIds.map((value, index) => {
-        const definitionId = requireNonEmptyString(
-            value,
-            `${label}.enemyDefinitionIds[${index}]`
-        );
-        const definition = definitions[definitionId];
-        if (!definition) {
-            throw new RangeError(`등록되지 않은 enemy definition입니다: ${definitionId}`);
-        }
-        return snapshotEnemyDefinition(definition, `${label}.enemyDefinitionIds[${index}]`);
-    }));
 }
 
 /**
@@ -156,6 +83,7 @@ export class WaveDirector {
         this.knownEnemyDefinitionIds = Object.freeze(
             Object.keys(this.enemyDefinitions)
         );
+        this.initializedWaveId = null;
         this.initialized = false;
         this.destroyed = false;
     }
@@ -176,18 +104,6 @@ export class WaveDirector {
                 `현재 map과 WaveDefinition mapId가 다릅니다: ${tileMap.mapId}/${waveMapId}`
             );
         }
-        if (!Array.isArray(definition?.phases) || definition.phases.length === 0) {
-            throw new TypeError('WaveDefinition에는 하나 이상의 phase가 필요합니다.');
-        }
-        const routeByGateId = new Map();
-        for (const route of tileMap.getSpawnRoutes()) {
-            const gateId = requireNonEmptyString(route?.gateId, 'route.gateId');
-            if (routeByGateId.has(gateId)) {
-                throw new RangeError(`중복 Gate route입니다: ${gateId}`);
-            }
-            routeByGateId.set(gateId, snapshotRoute(route, `route.${gateId}`));
-        }
-
         const mapEnemyModifiers = normalizeEnemyModifierSet(
             typeof tileMap.getEnemyModifiers === 'function'
                 ? tileMap.getEnemyModifiers()
@@ -205,94 +121,28 @@ export class WaveDirector {
             }
         );
 
-        const schedule = [];
-        let spawnSequence = 0;
-        for (let phaseIndex = 0; phaseIndex < definition.phases.length; phaseIndex++) {
-            const phase = definition.phases[phaseIndex];
-            const startTick = requirePositiveSafeInteger(
-                phase?.startTick,
-                `phases[${phaseIndex}].startTick`
-            );
-            const durationTicks = requirePositiveSafeInteger(
-                phase?.durationTicks,
-                `phases[${phaseIndex}].durationTicks`
-            );
-            if (!Array.isArray(phase?.spawnGroups) || phase.spawnGroups.length === 0) {
-                throw new TypeError(`phases[${phaseIndex}]에는 spawnGroup이 필요합니다.`);
-            }
-            for (let groupIndex = 0; groupIndex < phase.spawnGroups.length; groupIndex++) {
-                const group = phase.spawnGroups[groupIndex];
-                const groupLabel = `phases[${phaseIndex}].spawnGroups[${groupIndex}]`;
-                const enemyDefinitionCycle = resolveEnemyDefinitionCycle(
-                    group,
-                    this.enemyDefinitions,
-                    groupLabel
-                );
-                const gateId = requireNonEmptyString(
-                    group?.gateId,
-                    `spawnGroups[${groupIndex}].gateId`
-                );
-                const route = routeByGateId.get(gateId);
-                if (!route) {
-                    throw new RangeError(`현재 map에 없는 enemy Gate입니다: ${gateId}`);
-                }
-                if (group.pathChoicePolicy !== 'fixed-route') {
-                    throw new RangeError(`지원하지 않는 pathChoicePolicy입니다: ${group.pathChoicePolicy}`);
-                }
-                const policyId = requireNonEmptyString(
-                    group.policyId,
-                    `spawnGroups[${groupIndex}].policyId`
-                );
-                const count = requirePositiveSafeInteger(
-                    group.count,
-                    `spawnGroups[${groupIndex}].count`
-                );
-                const intervalTicks = requirePositiveSafeInteger(
-                    group.intervalTicks,
-                    `spawnGroups[${groupIndex}].intervalTicks`
-                );
-                const laneOffsets = requireFiniteOffsets(
-                    group.laneOffsetsTiles,
-                    `spawnGroups[${groupIndex}].laneOffsetsTiles`
-                );
-                const lastSpawnTick = startTick + ((count - 1) * intervalTicks);
-                if (lastSpawnTick >= startTick + durationTicks) {
+        const schedule = compileAuthoredWaveTimeline({
+            waveId,
+            timeline: definition.timeline,
+            fixedTickOffset: this.fixedTickOffset,
+            tileMap,
+            resolveEnemyDefinition: (definitionId, label) => {
+                const source = this.enemyDefinitions[definitionId];
+                if (!source) {
                     throw new RangeError(
-                        `spawnGroup schedule이 phase duration을 벗어납니다: ${phaseIndex}/${groupIndex}`
+                        `등록되지 않은 enemy definition입니다: ${definitionId}`
                     );
                 }
-                for (let spawnIndex = 0; spawnIndex < count; spawnIndex++) {
-                    const localFixedTick = startTick + (spawnIndex * intervalTicks);
-                    const targetFixedTick = this.fixedTickOffset + localFixedTick;
-                    if (!Number.isSafeInteger(targetFixedTick)) {
-                        throw new RangeError('wave targetFixedTick이 안전한 정수 범위를 벗어났습니다.');
-                    }
-                    const commandId = `${waveId}:${phaseIndex}:${groupIndex}:${spawnIndex}`;
-                    const enemyDefinition = enemyDefinitionCycle[
-                        spawnIndex % enemyDefinitionCycle.length
-                    ];
-                    schedule.push(Object.freeze({
-                        commandId,
-                        targetFixedTick,
-                        definition: enemyDefinition,
-                        route,
-                        spawnSequence,
-                        laneOffsetTiles: laneOffsets[spawnIndex % laneOffsets.length],
-                        waveId,
-                        policyId,
-                        mapEnemyModifiers,
-                        waveEnemyModifiers
-                    }));
-                    spawnSequence++;
-                }
+                return snapshotEnemyDefinition(source, label);
             }
-        }
-        schedule.sort((left, right) => (
-            left.targetFixedTick - right.targetFixedTick
-            || left.spawnSequence - right.spawnSequence
-        ));
-        this.schedule = Object.freeze(schedule);
+        });
+        this.schedule = Object.freeze(schedule.map((entry) => Object.freeze({
+            ...entry,
+            mapEnemyModifiers,
+            waveEnemyModifiers
+        })));
         this.nextScheduleIndex = 0;
+        this.initializedWaveId = waveId;
         this.initialized = true;
         return true;
     }
@@ -306,19 +156,29 @@ export class WaveDirector {
             return 0;
         }
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
-        if (!commandOwner || typeof commandOwner.requestSpawn !== 'function') {
-            throw new TypeError('WaveDirector에는 enemy spawn command sink가 필요합니다.');
+        if (!commandOwner || typeof commandOwner.requestSpawnBatch !== 'function') {
+            throw new TypeError(
+                'WaveDirector에는 atomic enemy requestSpawnBatch() sink가 필요합니다.'
+            );
         }
         const next = this.schedule[this.nextScheduleIndex];
         if (next && next.targetFixedTick < tick) {
             throw new RangeError(`WaveDirector fixed tick이 schedule을 건너뛰었습니다: ${tick}`);
         }
-        let queued = 0;
-        while (this.nextScheduleIndex < this.schedule.length) {
-            const entry = this.schedule[this.nextScheduleIndex];
+        const entries = [];
+        let scheduleIndex = this.nextScheduleIndex;
+        while (scheduleIndex < this.schedule.length) {
+            const entry = this.schedule[scheduleIndex];
             if (entry.targetFixedTick !== tick) {
                 break;
             }
+            entries.push(entry);
+            scheduleIndex++;
+        }
+        if (entries.length === 0) {
+            return 0;
+        }
+        const requests = Object.freeze(entries.map((entry) => {
             // Profile base와 immutable map/wave input을 이 queue boundary에서 정확히 한 번
             // resolve한 뒤 intent를 만듭니다. init은 resolved numeric stat을 저장하지 않습니다.
             const resolvedStats = resolveEnemySpawnStats({
@@ -332,27 +192,32 @@ export class WaveDirector {
                 route: entry.route,
                 spawnSequence: entry.spawnSequence,
                 laneOffsetTiles: entry.laneOffsetTiles,
+                initialWorldOffsetTiles: entry.initialWorldOffsetTiles,
                 waveId: entry.waveId,
                 policyId: entry.policyId,
                 resolvedStats
             });
-            const result = commandOwner.requestSpawn(
+            return Object.freeze({
                 intent,
-                tick,
-                entry.commandId
+                targetFixedTick: tick,
+                commandId: entry.commandId
+            });
+        }));
+        const result = commandOwner.requestSpawnBatch(requests);
+        if (result?.accepted !== true
+            || result.requestedCount !== requests.length
+            || result.queuedCount !== requests.length) {
+            throw new Error(
+                `WaveDirector atomic spawn batch queue 실패: tick=${tick}, count=${requests.length}`
             );
-            if (!result?.accepted) {
-                throw new Error(`WaveDirector spawn command queue 실패: ${entry.commandId}`);
-            }
-            this.nextScheduleIndex++;
-            queued++;
         }
-        return queued;
+        this.nextScheduleIndex += entries.length;
+        return entries.length;
     }
 
     getStatus() {
         return Object.freeze({
-            waveId: this.waveDefinition?.waveId ?? null,
+            waveId: this.initializedWaveId,
             initialized: this.initialized,
             totalSpawnCount: this.schedule.length,
             queuedSpawnCount: this.nextScheduleIndex,

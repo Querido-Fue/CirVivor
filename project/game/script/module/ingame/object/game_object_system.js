@@ -46,6 +46,9 @@ import {
     TowerCoreCameraFollowTarget
 } from './tower_core_camera_follow_target.js';
 import { RunOutcome } from '../state/run_outcome.js';
+import {
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+} from '../physics/gpu/gpu_fixed_primitive_abi.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
@@ -471,6 +474,10 @@ export class GameObjectSystem {
     }
 
     synchronizeEnemyPresentation() {
+        if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
+            || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
+            return;
+        }
         this.enemySimulationEndpoint.synchronizePresentation();
     }
 
@@ -485,8 +492,6 @@ export class GameObjectSystem {
         // 전혀 다시 시도하지 않는 성공 no-op입니다.
         if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
             || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
-            this.lastCompletedEnemyFixedTick = proposedFixedTick;
-            this.pendingEnemyFixedTick = 0;
             return true;
         }
         if (this.pendingEnemyFixedTick !== 0
@@ -615,7 +620,11 @@ export class GameObjectSystem {
                     targetFixedTick: proposedFixedTick,
                     targetHandle: this.#isPrimaryTowerAlive()
                         ? this.towerHandle
-                        : null
+                        : null,
+                    towerTargetHandle: this.#isPrimaryTowerAlive()
+                        ? this.towerHandle
+                        : null,
+                    coreTargetHandle: this.coreProxyHandle
                 }) ?? null;
                 if (hostileStage?.recoveryRequired === true) {
                     return this.#pauseForGpuRecovery();
@@ -630,10 +639,17 @@ export class GameObjectSystem {
                         lifecycleResult,
                         proposedFixedTick
                     );
+                    const terminalCancel = this.enemySimulationEndpoint
+                        .getTerminalFixedProgramCancelStatus?.() ?? null;
                     return this.#sealTerminalFailure(
-                        'terminal-lifecycle-commit',
+                        terminalCancel?.owner
+                            && terminalCancel.owner.accepted !== true
+                            ? 'terminal-fixed-program-cancel'
+                            : 'terminal-lifecycle-commit',
                         proposedFixedTick,
-                        lifecycleResult
+                        terminalCancel?.owner?.accepted === false
+                            ? terminalCancel.owner
+                            : lifecycleResult
                     );
                 }
                 this.enemySimulationRecoveryRequired
@@ -724,8 +740,7 @@ export class GameObjectSystem {
         this.lastCompletedEnemyFixedTick = proposedFixedTick;
         this.pendingEnemyFixedTick = 0;
         if (terminalFinalization) {
-            this.#sealTerminalSuccess(proposedFixedTick);
-            return true;
+            return this.#sealTerminalSuccess(proposedFixedTick);
         }
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
             this.tower.fixedUpdate(delta);
@@ -735,6 +750,13 @@ export class GameObjectSystem {
     }
 
     update(alpha, frameDelta = 0, fixedDelta = 0) {
+        // Terminal draw/status는 마지막 committed snapshot을 계속 사용합니다. 여기서
+        // presentation clock이나 observed Tower pose를 다시 갱신하면 reference clock이
+        // 전진하거나 camera follow snapshot이 stale 처리될 수 있습니다.
+        if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
+            || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
+            return;
+        }
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
             this.tower?.updateRenderPosition(alpha);
         }
@@ -991,18 +1013,50 @@ export class GameObjectSystem {
         }
         this.terminalState = GPU_WORLD_TERMINAL_STATE.FINAL_COMMIT_PENDING;
         this.terminalFinalizationTick = fixedTick;
-        this.enemySimulationEndpoint.closeGameplayIngress?.('run-defeated');
+        this.enemySimulationEndpoint.closeGameplayIngress?.(
+            'run-defeated',
+            fixedTick
+        );
         // runFailedFact는 RunOutcome의 immutable single fact이며 상태 snapshot에서 보존됩니다.
         void runFailedFact;
     }
 
     #sealTerminalSuccess(fixedTick) {
+        const terminalCancel = this.enemySimulationEndpoint
+            .getTerminalFixedProgramCancelStatus?.() ?? null;
+        const ownerEvidence = terminalCancel?.owner;
+        const backendEvidence = terminalCancel?.backend;
+        const cancellationSubmitted = ownerEvidence?.accepted === true
+            && ownerEvidence.abiVersion
+                === GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+            && ownerEvidence.finalFixedTick === fixedTick
+            && ownerEvidence.state === 'armed'
+            && backendEvidence?.accepted === true
+            && backendEvidence.abiVersion
+                === GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+            && backendEvidence.finalFixedTick === fixedTick
+            && backendEvidence.state === 'submitted'
+            && backendEvidence.submittedSourceTick === fixedTick
+            && backendEvidence.destinationCount
+                === ownerEvidence.destinationCount
+            && backendEvidence.priorityControlCount
+                === ownerEvidence.priorityControlCount
+            && backendEvidence.pendingBodyCount === 0
+            && backendEvidence.pendingSpawnProgramReadbacks === 0;
+        if (!cancellationSubmitted) {
+            return this.#sealTerminalFailure(
+                'terminal-fixed-program-cancel',
+                fixedTick,
+                backendEvidence ?? ownerEvidence ?? terminalCancel
+            );
+        }
         this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
         this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED;
         this.terminalFinalizationTick = fixedTick;
         this.terminalDiagnostic = null;
         this.enemySimulationRecoveryRequired = false;
-        this.enemySimulationPaused = false;
+        this.enemySimulationPaused = true;
+        return true;
     }
 
     #sealTerminalFailure(stage, fixedTick, detail = null) {
@@ -1082,7 +1136,8 @@ export class GameObjectSystem {
         const director = this.hostileAttackDirectorFactory({
             endpoint,
             registry: endpoint.getRegistry(),
-            backend: endpoint.getBackend()
+            backend: endpoint.getBackend(),
+            priorityTargetControlPort: endpoint
         });
         if (!director
             || typeof director.observeCompletedEvents !== 'function'

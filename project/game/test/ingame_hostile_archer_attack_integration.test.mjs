@@ -45,19 +45,20 @@ const {
     encodeGpuCircleBodyFixedPoint
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
-const NORMAL_GROUP = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0].spawnGroups[0];
+const NORMAL_GROUP = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0].spawnGroups[0];
 const CUSTOM_ARCHER_WAVE = Object.freeze({
     waveId: 'turn4_custom_archer_wave',
     mapId: CORRIDOR_EIGHT_WAVE_01_DATA.mapId,
-    phases: Object.freeze([
+    timeline: Object.freeze([
         Object.freeze({
-            startTick: 1,
-            durationTicks: 2,
+            timelineEntryId: 'turn4-custom-archer-duration',
+            type: 'SPAWN_FOR_DURATION',
+            durationSeconds: 2 / 60,
             spawnGroups: Object.freeze([
                 Object.freeze({
+                    groupId: 'turn4-custom-archer-group',
                     enemyDefinitionId: ARCHER_ENEMY_DATA.id,
-                    gateId: NORMAL_GROUP.gateId,
-                    pathChoicePolicy: 'fixed-route',
+                    routeBinding: NORMAL_GROUP.routeBinding,
                     count: 1,
                     intervalTicks: 1,
                     policyId: 'corebound',

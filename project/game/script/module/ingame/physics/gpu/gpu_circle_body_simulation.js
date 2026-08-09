@@ -8,6 +8,7 @@ import {
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     assertGpuCircleBodyAbiVersion,
     createGpuCircleBodyAbiStorage,
     decodeGpuCircleBodyFixedPoint,
@@ -20,14 +21,23 @@ import {
 } from './gpu_circle_body_abi.js';
 import {
     GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_SELECTION_POLICY,
+    GPU_BODY_CONTROL_STATE_FLAGS,
     GPU_FIXED_PRIMITIVE_ABI,
     GPU_FIXED_PRIMITIVE_IDENTITY,
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
     GPU_FIXED_PROGRAM_STATUS,
     GPU_SPAWN_PROGRAM_ABI_VERSION,
     GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_RESULT,
     createGpuBodyControlProgramStorage,
     createGpuSpawnProgramStorage,
+    readGpuBodyControlProgramHeader,
+    readGpuBodyControlProgramRecord,
     readGpuSpawnProgramHeader,
     readGpuSpawnProgramRecord,
     writeGpuBodyControlProgramHeader,
@@ -100,9 +110,11 @@ const CONTACT_STATE_ABI_STATUS_OFFSET = 24;
 const CONTACT_STATE_EVENT_ENCODING_VERSION_OFFSET = 28;
 const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_EVENT_COUNT_OFFSET = 32;
 const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OFFSET = 36;
-const EVENT_READBACK_CONTROL_HEADER_OFFSET = 64;
+const CONTACT_STATE_CORE_DAMAGE_REQUEST_EVENT_COUNT_OFFSET = 40;
+const CONTACT_STATE_CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OFFSET = 44;
 const CONTACT_STATE_ABI_STATUS_OK = 1;
 const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK = 0;
+const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK = 0;
 const APPLIED_EVENT_POLICY_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY;
 const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
@@ -114,17 +126,25 @@ const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
 const COMPUTE_ENTRY_POINTS = Object.freeze([
     'validate_source_relative_spawns',
     'resolve_source_relative_spawns',
+    'validate_selected_target_spawns',
+    'resolve_selected_target_spawns',
     'clear_body_control_states',
     'validate_body_control_commands',
     'apply_body_control_commands',
     'apply_controlled_motion',
+    'advance_enemy_charge',
     'prepare_bodies',
     'clear_grid',
     'build_grid',
     'clear_contact_state',
+    'emit_enemy_charge_telegraphs',
     'generate_body_contacts',
     'generate_world_contacts',
     'handle_contacts',
+    'preflight_core_damage_requests',
+    'finalize_core_damage_request_preflight',
+    'resolve_core_damage_requests',
+    'resolve_enemy_charge_contacts',
     'preflight_maximum_damage_window',
     'finalize_maximum_damage_window_preflight',
     'resolve_maximum_damage_window',
@@ -136,6 +156,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'rebuild_velocities',
     'finalize_velocities',
     'finalize_controlled_motion',
+    'apply_enemy_charge_recoil',
     'pack_tracked_pose'
 ]);
 const COMPUTE_PIPELINE_PROFILE = Object.freeze({
@@ -144,24 +165,37 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     WORLD_CONTACTS: 'world-contacts',
     CONTACT_HANDLING: 'contact-handling',
     MAXIMUM_DAMAGE_WINDOW: 'maximum-damage-window',
+    CORE_DAMAGE_REQUEST: 'core-damage-request',
     FIXED_CONTROL: 'fixed-control',
     SOURCE_RESOLVE: 'source-resolve',
+    ENEMY_BEHAVIOR: 'enemy-behavior',
     TRACKED_POSE: 'tracked-pose'
 });
 const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     validate_source_relative_spawns: COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE,
     resolve_source_relative_spawns: COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE,
+    validate_selected_target_spawns: COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE,
+    resolve_selected_target_spawns: COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE,
     clear_body_control_states: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
     validate_body_control_commands: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
     apply_body_control_commands: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
     apply_controlled_motion: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
+    advance_enemy_charge: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     prepare_bodies: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     build_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_contact_state: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    emit_enemy_charge_telegraphs: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     generate_body_contacts: COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS,
     generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
     handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    preflight_core_damage_requests:
+        COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
+    finalize_core_damage_request_preflight:
+        COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
+    resolve_core_damage_requests:
+        COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
+    resolve_enemy_charge_contacts: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     preflight_maximum_damage_window: COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
     finalize_maximum_damage_window_preflight:
         COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
@@ -174,9 +208,16 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     rebuild_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     finalize_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     finalize_controlled_motion: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
+    apply_enemy_charge_recoil: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     pack_tracked_pose: COMPUTE_PIPELINE_PROFILE.TRACKED_POSE
 });
 const REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE = 9;
+
+function eventReadbackControlProgramOffset(eventCapacity, deathEventCapacity) {
+    return EVENT_READBACK_HEADER_BYTE_SIZE
+        + (eventCapacity * APPLIED_EVENT_BYTE_SIZE)
+        + (deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
+}
 
 function requirePositiveInteger(value, label) {
     const number = Number(value);
@@ -264,6 +305,12 @@ function appliedEventTypeName(type) {
             return 'interaction-enter';
         case GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_CONTINUOUS:
             return 'interaction-continuous';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED:
+            return 'enemy-charge-windup-started';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_CONTACT_RECOIL_STARTED:
+            return 'enemy-charge-contact-recoil-started';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.CORE_DAMAGE_REQUEST:
+            return 'core-damage-request';
         default:
             throw new RangeError(`알 수 없는 GPU applied event type입니다: ${type}`);
     }
@@ -278,6 +325,16 @@ function appliedEventReason(type, flags) {
     }
     if ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0) {
         return 'target-died';
+    }
+    if (type === GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED) {
+        return 'enemy-charge-windup';
+    }
+    if (type
+        === GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_CONTACT_RECOIL_STARTED) {
+        return 'enemy-charge-contact-recoil';
+    }
+    if (type === GPU_CIRCLE_APPLIED_EVENT_TYPE.CORE_DAMAGE_REQUEST) {
+        return 'core-damage-request';
     }
     return type === GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
         ? 'damage'
@@ -309,6 +366,12 @@ function decodeAppliedEvent(view, offset, sequence) {
     const { type: eventTypeCode, flags } = unpackGpuCircleAppliedEventMeta(eventMeta);
     const eventType = appliedEventTypeName(eventTypeCode);
     const isDamage = eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED;
+    const isChargeBehavior = eventTypeCode
+            === GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED
+        || eventTypeCode
+            === GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_CONTACT_RECOIL_STARTED;
+    const isCoreDamageRequest = eventTypeCode
+        === GPU_CIRCLE_APPLIED_EVENT_TYPE.CORE_DAMAGE_REQUEST;
     const maximumDamageWindow = (
         flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
     ) !== 0;
@@ -320,18 +383,23 @@ function decodeAppliedEvent(view, offset, sequence) {
             ? GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY
             : policyFlags;
     const unknownFlags = (flags & ~APPLIED_EVENT_KNOWN_FLAGS) >>> 0;
-    if (unknownFlags !== 0
-        || (policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
+    const contactFlagsInvalid = !isChargeBehavior && !isCoreDamageRequest && (
+        (policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
             && policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY)
         || policyFlags !== expectedPolicyFlags
         || (!isDamage
             && ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0
-                || maximumDamageWindow))) {
+                || maximumDamageWindow))
+    );
+    if (unknownFlags !== 0
+        || contactFlagsInvalid
+        || ((isChargeBehavior || isCoreDamageRequest) && flags !== 0)) {
         throw new RangeError(
             `GPU applied event type/flags contract가 잘못되었습니다: type=${eventTypeCode}, flags=${flags}`
         );
     }
-    if ((!isDamage && valueFixedPoint !== 0)
+    if ((!isDamage && !isCoreDamageRequest && valueFixedPoint !== 0)
+        || (isCoreDamageRequest && valueFixedPoint <= 0)
         || (isDamage && (valueFixedPoint < 0
             || (valueFixedPoint === 0 && !maximumDamageWindow)))) {
         throw new RangeError(
@@ -638,7 +706,11 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
         ['simulationBuffer', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
         ['temporaryBuffer', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
         ['contactHandlerBuffer', GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE],
-        ['combatStateBuffer', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE]
+        ['combatStateBuffer', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE],
+        [
+            'enemyBehaviorStateBuffer',
+            GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+        ]
     ]) {
         new Uint8Array(targetStorage[bufferName], targetIndex * stride, stride).set(
             new Uint8Array(sourceStorage[bufferName], sourceIndex * stride, stride)
@@ -656,6 +728,7 @@ function clearBodyControlStateSlot(buffer, index) {
     const abi = GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE;
     const view = new DataView(buffer);
     const offset = index * abi.STRIDE;
+    new Uint8Array(buffer, offset, abi.STRIDE).fill(0);
     view.setFloat32(offset + abi.MOVE_INTENT_X, 0, LITTLE_ENDIAN);
     view.setFloat32(offset + abi.MOVE_INTENT_Y, 0, LITTLE_ENDIAN);
     view.setUint32(
@@ -668,6 +741,17 @@ function clearBodyControlStateSlot(buffer, index) {
         GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
         LITTLE_ENDIAN
     );
+    for (const field of [
+        abi.SELECTED_TARGET_SLOT,
+        abi.SELECTED_TARGET_ENTITY_ID,
+        abi.SELECTED_TARGET_INCARNATION
+    ]) {
+        view.setUint32(
+            offset + field,
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+    }
 }
 
 function createInvalidTrackedPoseSnapshot(reason = 'unconfigured') {
@@ -874,6 +958,8 @@ export class GpuCircleBodySimulation {
         this.pendingHandleToSlot = new Map();
         this.freeSlots = [];
         this.stagedFixedPrograms = null;
+        this.fixedProgramIngressOpen = true;
+        this.terminalFixedProgramCancelStatus = null;
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
@@ -908,6 +994,7 @@ export class GpuCircleBodySimulation {
         this.eventReadbackCursor = 0;
         this.pendingEventReadbacks = 0;
         this.eventBatchQueue = [];
+        this.bodyControlProgramBatchQueue = [];
         this.eventCompletedThroughTick = 0;
         this.idleReleasePending = false;
         this.eventBackpressureCount = 0;
@@ -921,6 +1008,7 @@ export class GpuCircleBodySimulation {
         this.lastAppliedEventOverflowCount = 0;
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
+        this.lastBodyControlOutcomeCount = 0;
         this.spawnProgramReadbackSlots = [];
         this.spawnProgramReadbackLease = 0;
         this.spawnProgramReadbackCursor = 0;
@@ -932,6 +1020,8 @@ export class GpuCircleBodySimulation {
         this.lastSpawnProgramInvalidCount = 0;
         this.lastSpawnProgramSourceInvalidCount = 0;
         this.lastSpawnProgramTargetInvalidCount = 0;
+        this.lastSpawnProgramNoTargetCount = 0;
+        this.lastSpawnProgramCoreInvalidCount = 0;
         this.spawnProgramOverflowCount = 0;
         this.trackedPoseConfigBytes = new ArrayBuffer(TRACKED_POSE_CONFIG_BYTE_SIZE);
         this.trackedPoseHandle = null;
@@ -1085,6 +1175,7 @@ export class GpuCircleBodySimulation {
             || this.pendingSpawnProgramReadbacks > 0
             || this.pendingTrackedPoseReadbacks > 0
             || this.eventBatchQueue.length > 0
+            || this.bodyControlProgramBatchQueue.length > 0
             || this.spawnProgramBatchQueue.length > 0
             || this.requiresAuthoritativeRebuild;
         this.hostStorage = nextStorage;
@@ -1427,6 +1518,16 @@ export class GpuCircleBodySimulation {
             reason,
             requiresRecovery: true
         });
+        if (!this.fixedProgramIngressOpen) {
+            return freezeFixedProgramStageResult({
+                controlRejected: controls.length,
+                spawnRejected: sourceRelativeSpawns.length,
+                controlReason: 'fixed-program-ingress-closed',
+                spawnReason: 'fixed-program-ingress-closed',
+                reason: 'fixed-program-ingress-closed',
+                requiresRecovery: false
+            });
+        }
         if (this.stagedFixedPrograms) {
             return hardReject('fixed-program-already-staged');
         }
@@ -1444,28 +1545,104 @@ export class GpuCircleBodySimulation {
         const normalizedControls = new Array(controls.length);
         for (let index = 0; index < controls.length; index++) {
             const source = controls[index];
-            const handle = normalizeEntityHandle(source, `controls[${index}]`);
+            const modeFlags = source.modeFlags
+                ?? GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT;
+            const isPriority = modeFlags
+                === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE;
+            if (!isPriority
+                && modeFlags !== GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT) {
+                return hardReject('control-mode');
+            }
+            const handle = normalizeEntityHandle(
+                isPriority ? source.sourceHandle : source,
+                `controls[${index}]`
+            );
             const key = entityHandleKey(handle);
             const slot = this.handleToSlot.get(key);
             if (slot === undefined
                 || this.slotActive[slot] !== 1
-                || !this.canControlBody(handle)
+                || (!isPriority && !this.canControlBody(handle))
                 || controlKeys.has(key)) {
                 return hardReject(
                     slot === undefined ? 'stale-handle' : 'control-contract'
                 );
             }
             controlKeys.add(key);
-            const normalized = {
+            let normalized = {
                 destinationSlot: slot,
                 entityId: handle.entityId,
                 incarnation: handle.incarnation,
+                modeFlags,
                 moveIntentX: source.moveIntentX,
-                moveIntentY: source.moveIntentY,
-                flags: 0
+                moveIntentY: source.moveIntentY
             };
+            if (isPriority) {
+                const coreTargetHandle = normalizeEntityHandle(
+                    source.coreTargetHandle,
+                    `controls[${index}].coreTargetHandle`
+                );
+                const coreTargetSlot = this.handleToSlot.get(
+                    entityHandleKey(coreTargetHandle)
+                );
+                if (coreTargetSlot === undefined
+                    || this.slotActive[coreTargetSlot] !== 1) {
+                    return hardReject('core-target-invalid');
+                }
+                const towerTargetHandle = normalizeEntityHandle(
+                    source.towerTargetHandle,
+                    `controls[${index}].towerTargetHandle`,
+                    false
+                );
+                const authoredTowerSlot = towerTargetHandle
+                    ? this.handleToSlot.get(entityHandleKey(towerTargetHandle))
+                    : undefined;
+                const towerTargetSlot = authoredTowerSlot !== undefined
+                    && this.slotActive[authoredTowerSlot] === 1
+                    ? authoredTowerSlot
+                    : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                const towerIsPresent = towerTargetSlot
+                    !== GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                normalized = {
+                    ...normalized,
+                    moveIntentX: 0,
+                    moveIntentY: 0,
+                    sourceTick: targetFixedTick,
+                    selectionSequence: source.selectionSequence,
+                    coreTargetSlot,
+                    coreTargetEntityId: coreTargetHandle.entityId,
+                    coreTargetIncarnation: coreTargetHandle.incarnation,
+                    towerTargetSlot,
+                    towerTargetEntityId: towerIsPresent
+                        ? towerTargetHandle.entityId
+                        : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                    towerTargetIncarnation: towerIsPresent
+                        ? towerTargetHandle.incarnation
+                        : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                    attackRange: source.attackRangeTiles,
+                    attackFingerprint: source.attackFingerprint,
+                    selectionPolicy:
+                        GPU_BODY_CONTROL_SELECTION_POLICY
+                            .CORE_FIRST_IN_RANGE_THEN_TOWER
+                };
+            }
             writeGpuBodyControlProgramRecord(controlProgram, index, normalized);
-            normalizedControls[index] = Object.freeze({ ...normalized });
+            normalizedControls[index] = Object.freeze({
+                ...normalized,
+                handle,
+                ...(isPriority ? {
+                    sourceHandle: handle,
+                    attackRangeTiles: source.attackRangeTiles,
+                    coreTargetHandle: Object.freeze({
+                        entityId: normalized.coreTargetEntityId,
+                        incarnation: normalized.coreTargetIncarnation
+                    }),
+                    towerTargetHandle:
+                        normalized.towerTargetSlot
+                            === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                            ? null
+                            : towerTargetHandle
+                } : {})
+            });
         }
         writeGpuBodyControlProgramHeader(controlProgram, controls.length);
 
@@ -1527,6 +1704,9 @@ export class GpuCircleBodySimulation {
                     === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
                 const isTargetEntity = modeFlags
                     === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+                const isSelectedTarget = modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE
+                        .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
                 let targetHandle = null;
                 let targetSlot = GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
                 if (isTargetEntity) {
@@ -1537,6 +1717,42 @@ export class GpuCircleBodySimulation {
                     targetSlot = this.handleToSlot.get(entityHandleKey(targetHandle));
                     if (targetSlot === undefined || this.slotActive[targetSlot] !== 1) {
                         return hardReject('stale-target');
+                    }
+                }
+                let coreTargetHandle = null;
+                let towerTargetHandle = null;
+                let coreTargetSlot = GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                let towerTargetSlot = GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                if (isSelectedTarget) {
+                    if (source.requestFlags
+                        !== GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                            .REQUIRE_EXACT_SELECTED_TARGET) {
+                        return hardReject('selected-target-request-flags');
+                    }
+                    coreTargetHandle = normalizeEntityHandle(
+                        source.coreTargetHandle,
+                        `sourceRelativeSpawns[${index}].coreTargetHandle`
+                    );
+                    coreTargetSlot = this.handleToSlot.get(
+                        entityHandleKey(coreTargetHandle)
+                    );
+                    if (coreTargetSlot === undefined
+                        || this.slotActive[coreTargetSlot] !== 1) {
+                        return hardReject('core-target-invalid');
+                    }
+                    towerTargetHandle = normalizeEntityHandle(
+                        source.towerTargetHandle,
+                        `sourceRelativeSpawns[${index}].towerTargetHandle`,
+                        false
+                    );
+                    if (towerTargetHandle) {
+                        const authoredTowerSlot = this.handleToSlot.get(
+                            entityHandleKey(towerTargetHandle)
+                        );
+                        if (authoredTowerSlot !== undefined
+                            && this.slotActive[authoredTowerSlot] === 1) {
+                            towerTargetSlot = authoredTowerSlot;
+                        }
                     }
                 }
                 if (destinationKeys.has(destinationKey)
@@ -1565,7 +1781,7 @@ export class GpuCircleBodySimulation {
                     LITTLE_ENDIAN
                 );
                 let modePayload;
-                if (isTargetEntity) {
+                if (isTargetEntity || isSelectedTarget) {
                     modePayload = {
                         launchSpeed: source.launchSpeed
                     };
@@ -1595,10 +1811,17 @@ export class GpuCircleBodySimulation {
                     modeFlags,
                     positionOffset: source.positionOffset,
                     targetOffset: isTargetEntity
+                        || isSelectedTarget
                         ? source.targetOffset
                         : Object.freeze({ x: 0, y: 0 }),
                     ...modePayload,
-                    sourceTick: targetFixedTick
+                    sourceTick: targetFixedTick,
+                    ...(isSelectedTarget ? {
+                        selectionSequence: source.selectionSequence,
+                        attackFingerprint: source.attackFingerprint,
+                        requestFlags:
+                            source.requestFlags
+                    } : {})
                 };
                 writeGpuSpawnProgramRecord(spawnProgram, index, programRecord);
                 normalizedSpawns[index] = Object.freeze({
@@ -1606,6 +1829,12 @@ export class GpuCircleBodySimulation {
                     destinationHandle,
                     sourceHandle,
                     ...(targetHandle ? { targetHandle } : {}),
+                    ...(isSelectedTarget ? {
+                        coreTargetHandle,
+                        towerTargetHandle,
+                        coreTargetSlot,
+                        towerTargetSlot
+                    } : {}),
                     finalFlags
                 });
             }
@@ -1686,6 +1915,225 @@ export class GpuCircleBodySimulation {
                 normalizedSpawns.map((spawn) => spawn.destinationHandle)
             )
         });
+    }
+
+    /**
+     * Terminal final submit 앞에서 unresolved destination programs를 exact-set으로
+     * tombstone하고 모든 fixed-program/readback lease를 퇴역시킵니다. queue.writeBuffer
+     * 호출은 이전 submit 뒤, caller의 마지막 fixed submit 앞에 FIFO로 배치됩니다.
+     */
+    cancelPendingFixedProgramsForTerminal(request = {}) {
+        const abiVersion = Number(request.abiVersion);
+        const finalFixedTick = requirePositiveInteger(
+            request.finalFixedTick,
+            'terminalCancel.finalFixedTick'
+        );
+        const destinationHandles = request.destinationHandles ?? [];
+        const priorityControls = request.priorityControls ?? [];
+        this.fixedProgramIngressOpen = false;
+
+        const failure = (reason) => {
+            const result = Object.freeze({
+                abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+                finalFixedTick,
+                accepted: false,
+                state: 'failed',
+                reason,
+                destinationCount: this.pendingHandleToSlot.size,
+                priorityControlCount: this.#collectPendingPriorityControls().size
+            });
+            this.terminalFixedProgramCancelStatus = result;
+            return result;
+        };
+        if (abiVersion !== GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+            || !Array.isArray(destinationHandles)
+            || !Array.isArray(priorityControls)) {
+            return failure('terminal-fixed-program-cancel-contract');
+        }
+        if (this.terminalFixedProgramCancelStatus) {
+            const prior = this.terminalFixedProgramCancelStatus;
+            return prior.finalFixedTick === finalFixedTick
+                && prior.abiVersion === abiVersion
+                ? prior
+                : failure('terminal-fixed-program-cancel-replay-mismatch');
+        }
+
+        const requestedDestinations = new Map();
+        try {
+            for (let index = 0; index < destinationHandles.length; index++) {
+                const handle = normalizeEntityHandle(
+                    destinationHandles[index],
+                    `terminalCancel.destinationHandles[${index}]`
+                );
+                const key = entityHandleKey(handle);
+                if (requestedDestinations.has(key)) {
+                    return failure('terminal-destination-duplicate');
+                }
+                requestedDestinations.set(key, handle);
+            }
+        } catch {
+            return failure('terminal-destination-contract');
+        }
+        if (requestedDestinations.size !== this.pendingHandleToSlot.size) {
+            return failure('terminal-destination-exact-set-mismatch');
+        }
+        const pendingSpawnPrograms = this.#collectPendingSpawnPrograms();
+        if (pendingSpawnPrograms.size !== this.pendingHandleToSlot.size) {
+            return failure('terminal-spawn-program-exact-set-mismatch');
+        }
+        for (const [key, slot] of this.pendingHandleToSlot) {
+            const requested = requestedDestinations.get(key);
+            const pendingHandle = this.pendingSlotHandles[slot];
+            const pendingProgram = pendingSpawnPrograms.get(key);
+            if (!requested
+                || !pendingProgram
+                || pendingProgram.destinationSlot !== slot
+                || this.slotActive[slot] !== 2
+                || !pendingHandle
+                || entityHandleKey(pendingHandle) !== key) {
+                return failure('terminal-destination-exact-set-mismatch');
+            }
+        }
+
+        const pendingPriorities = this.#collectPendingPriorityControls();
+        const requestedPriorities = new Map();
+        try {
+            for (let index = 0; index < priorityControls.length; index++) {
+                const sourceTick = requirePositiveInteger(
+                    priorityControls[index]?.sourceTick,
+                    `terminalCancel.priorityControls[${index}].sourceTick`
+                );
+                const sourceHandle = normalizeEntityHandle(
+                    priorityControls[index]?.sourceHandle,
+                    `terminalCancel.priorityControls[${index}].sourceHandle`
+                );
+                const key = `${sourceTick}:${entityHandleKey(sourceHandle)}`;
+                if (requestedPriorities.has(key)) {
+                    return failure('terminal-priority-control-duplicate');
+                }
+                requestedPriorities.set(key, Object.freeze({
+                    sourceTick,
+                    sourceHandle
+                }));
+            }
+        } catch {
+            return failure('terminal-priority-control-contract');
+        }
+        if (requestedPriorities.size !== pendingPriorities.size) {
+            return failure('terminal-priority-control-exact-set-mismatch');
+        }
+        for (const key of pendingPriorities.keys()) {
+            if (!requestedPriorities.has(key)) {
+                return failure('terminal-priority-control-exact-set-mismatch');
+            }
+        }
+        const pendingSourceTicks = [
+            ...pendingSpawnPrograms.values(),
+            ...pendingPriorities.values()
+        ].map((program) => Number(program.sourceTick));
+        if (pendingSourceTicks.some((sourceTick) => (
+            !Number.isSafeInteger(sourceTick)
+            || sourceTick <= 0
+            || sourceTick >= finalFixedTick
+        ))) {
+            return failure('terminal-final-fixed-tick-not-after-pending');
+        }
+        if (!this.#ensureReady() || !this.#hasCurrentGpuResources()) {
+            return failure('terminal-fixed-program-gpu-unavailable');
+        }
+
+        const destinationSlots = [...this.pendingHandleToSlot.values()]
+            .sort((left, right) => left - right);
+        const prioritySourceSlots = new Set();
+        for (const pending of pendingPriorities.values()) {
+            if (Number.isInteger(pending.destinationSlot)
+                && pending.destinationSlot >= 0
+                && this.slotActive[pending.destinationSlot] === 1) {
+                prioritySourceSlots.add(pending.destinationSlot);
+            }
+        }
+        try {
+            const renderStyleView = new DataView(this.hostRenderStyles);
+            for (const slot of destinationSlots) {
+                writeGpuCircleBodySpawn(this.hostStorage, slot, TOMBSTONE_BODY);
+                writeRenderStyle(renderStyleView, slot, TOMBSTONE_BODY);
+                clearBodyControlStateSlot(this.hostBodyControlStates, slot);
+            }
+            for (const slot of prioritySourceSlots) {
+                clearBodyControlStateSlot(this.hostBodyControlStates, slot);
+            }
+            if (destinationSlots.length > 0) {
+                this.#uploadSlotRanges(destinationSlots);
+            }
+            for (const slot of prioritySourceSlots) {
+                this.device.queue.writeBuffer(
+                    this.buffers.bodyControlStates,
+                    slot * BODY_CONTROL_STATE_STRIDE,
+                    this.hostBodyControlStates,
+                    slot * BODY_CONTROL_STATE_STRIDE,
+                    BODY_CONTROL_STATE_STRIDE
+                );
+            }
+            writeGpuBodyControlProgramHeader(this.hostBodyControlProgram, 0);
+            writeGpuSpawnProgramHeader(this.hostSpawnProgram, 0);
+            this.device.queue.writeBuffer(
+                this.buffers.bodyControlProgram,
+                0,
+                this.hostBodyControlProgram.buffer,
+                0,
+                GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+            );
+            this.device.queue.writeBuffer(
+                this.buffers.spawnProgram,
+                0,
+                this.hostSpawnProgram.buffer,
+                0,
+                GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+            );
+        } catch {
+            return failure('terminal-fixed-program-tombstone-upload');
+        }
+
+        for (const [key, slot] of this.pendingHandleToSlot) {
+            this.pendingSlotHandles[slot] = null;
+            this.slotActive[slot] = 0;
+            this.slotHandles[slot] = null;
+            this.freeSlots.push(slot);
+            void key;
+        }
+        this.pendingHandleToSlot.clear();
+        this.pendingBodyCount = 0;
+        while (this.bodyCount > 0 && this.slotActive[this.bodyCount - 1] === 0) {
+            this.bodyCount--;
+        }
+        if (this.freeSlots.length > 0) {
+            this.freeSlots = [...new Set(this.freeSlots)]
+                .filter((slot) => slot < this.bodyCount)
+                .sort((left, right) => left - right);
+        }
+        writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
+        this.#refreshHostBodyDerivedState();
+        this.#uploadBodyCountState();
+        this.stagedFixedPrograms = null;
+        this.#retireTerminalReadbacks();
+
+        const result = Object.freeze({
+            abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+            finalFixedTick,
+            accepted: true,
+            state: 'armed',
+            reason: null,
+            destinationCount: destinationHandles.length,
+            priorityControlCount: priorityControls.length,
+            pendingBodyCount: this.pendingBodyCount,
+            pendingSpawnProgramReadbacks: this.pendingSpawnProgramReadbacks
+        });
+        this.terminalFixedProgramCancelStatus = result;
+        return result;
+    }
+
+    getTerminalFixedProgramCancelStatus() {
+        return this.terminalFixedProgramCancelStatus;
     }
 
     /** 완료된 SpawnProgram batch를 순서대로 반환하고 pending slot을 확정/회수합니다. */
@@ -1773,6 +2221,12 @@ export class GpuCircleBodySimulation {
                     } else if (outcome.result
                         === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID) {
                         this.lastSpawnProgramTargetInvalidCount++;
+                    } else if (outcome.result
+                        === GPU_SPAWN_PROGRAM_RESULT.NO_TARGET) {
+                        this.lastSpawnProgramNoTargetCount++;
+                    } else if (outcome.result
+                        === GPU_SPAWN_PROGRAM_RESULT.CORE_TARGET_INVALID) {
+                        this.lastSpawnProgramCoreInvalidCount++;
                     }
                 }
                 outcomes.push(Object.freeze({ ...outcome }));
@@ -1823,6 +2277,27 @@ export class GpuCircleBodySimulation {
     hasPendingSpawnProgramThroughTick(sourceTick) {
         const tick = requireNonNegativeInteger(sourceTick, 'sourceTick');
         return this.spawnProgramBatchQueue.some((entry) => entry.sourceTick <= tick);
+    }
+
+    /** 완료된 priority BodyControl v2 결과 batch를 제출 순서대로 이동합니다. */
+    drainCompletedBodyControlProgramBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('BodyControlProgram 완료 batch 출력은 배열이어야 합니다.');
+        }
+        while (this.bodyControlProgramBatchQueue[0]?.completed === true) {
+            const entry = this.bodyControlProgramBatchQueue.shift();
+            out.push(Object.freeze({
+                sourceTick: entry.sourceTick,
+                submittedTick: entry.submittedTick,
+                sessionGeneration: entry.sessionGeneration,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                failure: entry.failure,
+                outcomes: entry.outcomes ?? Object.freeze([])
+            }));
+        }
+        this.#completeDeferredIdleRelease();
+        return out;
     }
 
     /** Session당 exact body 하나의 lossy observed-pose tracking을 설정합니다. */
@@ -1881,6 +2356,22 @@ export class GpuCircleBodySimulation {
         const requestedSourceTick = sourceTick === undefined
             ? null
             : requireNonNegativeInteger(sourceTick, 'sourceTick');
+        const terminalCancel = this.terminalFixedProgramCancelStatus;
+        const terminalFinalSubmit = terminalCancel?.state === 'armed';
+        if (terminalCancel?.state === 'submitted'
+            || terminalCancel?.state === 'failed') {
+            return false;
+        }
+        if (terminalFinalSubmit
+            && requestedSourceTick !== terminalCancel.finalFixedTick) {
+            this.terminalFixedProgramCancelStatus = Object.freeze({
+                ...terminalCancel,
+                accepted: false,
+                state: 'failed',
+                reason: 'terminal-final-fixed-tick-mismatch'
+            });
+            return false;
+        }
         const stagedPrograms = this.stagedFixedPrograms;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
@@ -1907,7 +2398,7 @@ export class GpuCircleBodySimulation {
                 : 'failed';
             return false;
         }
-        if (this.activeBodyCount === 0) {
+        if (this.activeBodyCount === 0 && !terminalFinalSubmit) {
             return false;
         }
         if (this.state === 'telemetry-backpressure') {
@@ -1923,9 +2414,20 @@ export class GpuCircleBodySimulation {
 
         const stagedSpawnCount = stagedPrograms?.sourceRelativeSpawns.length ?? 0;
         const stagedControlCount = stagedPrograms?.controls.length ?? 0;
-        const needsEventReadback = this.eventProducingBodyCount > 0
+        const stagedSelectedSpawnCount = stagedPrograms?.sourceRelativeSpawns.reduce(
+            (count, program) => count + Number(
+                program.modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE
+                        .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET
+            ),
+            0
+        ) ?? 0;
+        const stagedLegacySpawnCount = stagedSpawnCount - stagedSelectedSpawnCount;
+        const needsEventReadback = !terminalFinalSubmit && (
+            this.eventProducingBodyCount > 0
             || stagedSpawnCount > 0
-            || stagedControlCount > 0;
+            || stagedControlCount > 0
+        );
         if (this.state === 'event-backpressure') {
             if (needsEventReadback && !this.#hasFreeEventReadbackSlot()) {
                 return false;
@@ -1947,19 +2449,21 @@ export class GpuCircleBodySimulation {
             return false;
         }
 
-        const trackedPoseSlot = this.trackedPoseHandle
+        const trackedPoseSlot = !terminalFinalSubmit && this.trackedPoseHandle
             ? this.#claimTrackedPoseReadbackSlot()
             : null;
-        if (this.trackedPoseHandle && !trackedPoseSlot) {
+        if (!terminalFinalSubmit && this.trackedPoseHandle && !trackedPoseSlot) {
             this.trackedPoseDroppedSamples++;
         }
 
         const tick = this.submittedTickCount + 1;
         const resolvedSourceTick = requestedSourceTick ?? tick;
-        const shouldSampleOverflow = this.overflowSampleOverdue
+        const shouldSampleOverflow = !terminalFinalSubmit && (
+            this.overflowSampleOverdue
             || tick === 1
             || (tick - this.lastOverflowSampleSubmittedTick)
-                >= OVERFLOW_READBACK_INTERVAL_TICKS;
+                >= OVERFLOW_READBACK_INTERVAL_TICKS
+        );
         const overflowSlot = shouldSampleOverflow
             ? this.#claimOverflowReadbackSlot()
             : null;
@@ -2030,7 +2534,7 @@ export class GpuCircleBodySimulation {
             pass.setBindGroup(0, this.bindGroups.indirect);
             pass.dispatchWorkgroups(1);
 
-            if (stagedSpawnCount > 0) {
+            if (stagedLegacySpawnCount > 0) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE);
                 pass.setPipeline(
                     this.pipelines.compute.validate_source_relative_spawns
@@ -2045,7 +2549,6 @@ export class GpuCircleBodySimulation {
                     stagedSpawnCount / BODY_WORKGROUP_SIZE
                 ));
             }
-
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL);
             this.#dispatchBodies(pass, 'clear_body_control_states');
             if (stagedControlCount > 0) {
@@ -2058,7 +2561,25 @@ export class GpuCircleBodySimulation {
                     stagedControlCount / BODY_WORKGROUP_SIZE
                 ));
             }
+            if (stagedSelectedSpawnCount > 0) {
+                this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE);
+                pass.setPipeline(
+                    this.pipelines.compute.validate_selected_target_spawns
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    stagedSpawnCount / BODY_WORKGROUP_SIZE
+                ));
+                pass.setPipeline(
+                    this.pipelines.compute.resolve_selected_target_spawns
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    stagedSpawnCount / BODY_WORKGROUP_SIZE
+                ));
+            }
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL);
             this.#dispatchBodies(pass, 'apply_controlled_motion');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR);
+            this.#dispatchBodies(pass, 'advance_enemy_charge');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             this.#dispatchBodies(pass, 'prepare_bodies');
             pass.setPipeline(this.pipelines.compute.clear_grid);
@@ -2070,6 +2591,8 @@ export class GpuCircleBodySimulation {
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
             pass.setPipeline(this.pipelines.compute.clear_contact_state);
             pass.dispatchWorkgroups(1);
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR);
+            this.#dispatchBodies(pass, 'emit_enemy_charge_telegraphs');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS);
             this.#dispatchBodies(pass, 'generate_body_contacts');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS);
@@ -2077,12 +2600,28 @@ export class GpuCircleBodySimulation {
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
             pass.setPipeline(this.pipelines.compute.handle_contacts);
             pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR);
+            pass.setPipeline(this.pipelines.compute.resolve_enemy_charge_contacts);
+            pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST);
+            pass.setPipeline(this.pipelines.compute.preflight_core_damage_requests);
+            pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW);
             this.#dispatchBodies(pass, 'preflight_maximum_damage_window');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST);
+            pass.setPipeline(
+                this.pipelines.compute.finalize_core_damage_request_preflight
+            );
+            pass.dispatchWorkgroups(1);
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW);
             pass.setPipeline(
                 this.pipelines.compute.finalize_maximum_damage_window_preflight
             );
             pass.dispatchWorkgroups(1);
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST);
+            pass.setPipeline(this.pipelines.compute.resolve_core_damage_requests);
+            pass.dispatchWorkgroups(Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE));
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW);
             this.#dispatchBodies(pass, 'resolve_maximum_damage_window');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING);
             this.#dispatchBodies(pass, 'mark_dead');
@@ -2099,6 +2638,8 @@ export class GpuCircleBodySimulation {
             this.#dispatchBodies(pass, 'finalize_velocities');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL);
             this.#dispatchBodies(pass, 'finalize_controlled_motion');
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR);
+            this.#dispatchBodies(pass, 'apply_enemy_charge_recoil');
             if (trackedPoseSlot) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.TRACKED_POSE);
                 pass.setPipeline(this.pipelines.compute.pack_tracked_pose);
@@ -2140,12 +2681,17 @@ export class GpuCircleBodySimulation {
                     this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE
                 );
                 if (stagedControlCount > 0) {
+                    const controlProgramOffset
+                        = eventReadbackControlProgramOffset(
+                            this.eventCapacity,
+                            this.deathEventCapacity
+                        );
                     encoder.copyBufferToBuffer(
                         this.buffers.bodyControlProgram,
                         0,
                         eventSlot.buffer,
-                        EVENT_READBACK_CONTROL_HEADER_OFFSET,
-                        GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+                        controlProgramOffset,
+                        this.hostBodyControlProgram.buffer.byteLength
                     );
                 }
             }
@@ -2176,6 +2722,14 @@ export class GpuCircleBodySimulation {
                 stagedPrograms?.readbackSlot ?? null
             );
             this.failure = captureFailure('fixed-submit', error);
+            if (terminalFinalSubmit) {
+                this.terminalFixedProgramCancelStatus = Object.freeze({
+                    ...terminalCancel,
+                    accepted: false,
+                    state: 'failed',
+                    reason: 'terminal-final-fixed-submit-failed'
+                });
+            }
             this.requiresAuthoritativeRebuild = this.hasGpuAuthoritativeState
                 && this.activeBodyCount > 0;
             if (this.requiresAuthoritativeRebuild) {
@@ -2212,10 +2766,30 @@ export class GpuCircleBodySimulation {
                 deviceGeneration: generation,
                 authoritativeEpoch,
                 expectedControlCount: stagedControlCount,
+                expectedControls: stagedPrograms?.controls ?? Object.freeze([]),
                 completed: false,
                 events: null
             };
             this.eventBatchQueue.push(queueEntry);
+            const priorityControls = (stagedPrograms?.controls ?? []).filter(
+                (control) => control.modeFlags
+                    === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE
+            );
+            if (priorityControls.length > 0) {
+                const controlQueueEntry = {
+                    sourceTick: resolvedSourceTick,
+                    submittedTick: tick,
+                    sessionGeneration: this.sessionGeneration,
+                    deviceGeneration: generation,
+                    authoritativeEpoch,
+                    programs: Object.freeze(priorityControls),
+                    completed: false,
+                    outcomes: null,
+                    failure: null
+                };
+                queueEntry.controlQueueEntry = controlQueueEntry;
+                this.bodyControlProgramBatchQueue.push(controlQueueEntry);
+            }
             this.lastEventReadbackSourceTick = resolvedSourceTick;
             this.lastEventReadbackSubmittedTick = tick;
             this.#beginEventReadback(eventSlot, queueEntry, eventLease);
@@ -2255,6 +2829,17 @@ export class GpuCircleBodySimulation {
             });
         }
         this.stagedFixedPrograms = null;
+        if (terminalFinalSubmit) {
+            this.terminalFixedProgramCancelStatus = Object.freeze({
+                ...terminalCancel,
+                state: 'submitted',
+                submittedSourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                pendingBodyCount: this.pendingBodyCount,
+                pendingSpawnProgramReadbacks:
+                    this.pendingSpawnProgramReadbacks
+            });
+        }
         return true;
     }
 
@@ -2527,7 +3112,12 @@ export class GpuCircleBodySimulation {
             ['physicsBuffer', 'physics', GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE],
             ['simulationBuffer', 'simulation', GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE],
             ['temporaryBuffer', 'temporary', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
-            ['combatStateBuffer', 'combatStates', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE]
+            ['combatStateBuffer', 'combatStates', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE],
+            [
+                'enemyBehaviorStateBuffer',
+                'enemyBehaviorStates',
+                GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+            ]
         ].map(([hostKey, gpuKey, stride]) => ({
             hostKey,
             gpuKey,
@@ -2653,10 +3243,14 @@ export class GpuCircleBodySimulation {
                 lastDeathOverflowCount: this.lastDeathEventOverflowCount
             }),
             fixedPrimitives: Object.freeze({
+                ingressOpen: this.fixedProgramIngressOpen,
+                terminalCancellation: this.terminalFixedProgramCancelStatus,
                 control: Object.freeze({
                     abiVersion: GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
                     capacity: this.controlCommandCapacity,
                     stagedCount: this.stagedFixedPrograms?.controls.length ?? 0,
+                    queuedBatches: this.bodyControlProgramBatchQueue.length,
+                    completedOutcomeCount: this.lastBodyControlOutcomeCount,
                     storageBuffersPerStage: 5
                 }),
                 spawnProgram: Object.freeze({
@@ -2677,7 +3271,9 @@ export class GpuCircleBodySimulation {
                         this.lastSpawnProgramSourceInvalidCount,
                     completedTargetInvalid:
                         this.lastSpawnProgramTargetInvalidCount,
-                    storageBuffersPerStage: 5
+                    completedNoTarget: this.lastSpawnProgramNoTargetCount,
+                    completedCoreInvalid: this.lastSpawnProgramCoreInvalidCount,
+                    storageBuffersPerStage: 8
                 }),
                 trackedPose: Object.freeze({
                     configured: Boolean(this.trackedPoseHandle),
@@ -2690,6 +3286,19 @@ export class GpuCircleBodySimulation {
                     storageBuffersPerStage: 6,
                     latest: this.getLatestTrackedPose()
                 }),
+                enemyBehavior: Object.freeze({
+                    arrowChargeProgramId:
+                        GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
+                    selectedTargetProjectileProgramId:
+                        GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+                            .SELECTED_TARGET_PROJECTILE,
+                    stateStride:
+                        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+                    storageBuffersPerStage: 8
+                }),
+                coreDamageRequest: Object.freeze({
+                    storageBuffersPerStage: 9
+                }),
                 windowStorageBuffersPerStage: 7,
                 storageProfile: Object.freeze({
                     physics: 8,
@@ -2698,7 +3307,9 @@ export class GpuCircleBodySimulation {
                     contactHandling: 9,
                     maximumDamageWindow: 7,
                     fixedControl: 5,
-                    sourceResolve: 5,
+                    sourceResolve: 8,
+                    enemyBehavior: 8,
+                    coreDamageRequest: 9,
                     trackedPose: 6,
                     requiredMaximum: REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE
                 })
@@ -2773,6 +3384,91 @@ export class GpuCircleBodySimulation {
         this.canvasHasDrawnBodies = false;
         this.canvasNeedsInitialClear = false;
         this.state = 'destroyed';
+    }
+
+    #collectPendingPriorityControls() {
+        const result = new Map();
+        let duplicateSequence = 0;
+        const collect = (sourceTick, programs) => {
+            for (const program of programs ?? []) {
+                if (program.modeFlags
+                    !== GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE) {
+                    continue;
+                }
+                const handle = program.sourceHandle ?? program.handle;
+                const key = `${sourceTick}:${entityHandleKey(handle)}`;
+                if (result.has(key)) {
+                    result.set(`duplicate:${duplicateSequence++}:${key}`, program);
+                    continue;
+                }
+                result.set(key, program);
+            }
+        };
+        collect(
+            this.stagedFixedPrograms?.targetFixedTick,
+            this.stagedFixedPrograms?.controls
+        );
+        for (const batch of this.bodyControlProgramBatchQueue) {
+            collect(batch.sourceTick, batch.programs);
+        }
+        return result;
+    }
+
+    #collectPendingSpawnPrograms() {
+        const result = new Map();
+        let duplicateSequence = 0;
+        const collect = (sourceTick, programs) => {
+            for (const program of programs ?? []) {
+                const key = entityHandleKey(program.destinationHandle);
+                const entry = Object.freeze({ ...program, sourceTick });
+                if (result.has(key)) {
+                    result.set(`duplicate:${duplicateSequence++}:${key}`, entry);
+                    continue;
+                }
+                result.set(key, entry);
+            }
+        };
+        collect(
+            this.stagedFixedPrograms?.targetFixedTick,
+            this.stagedFixedPrograms?.sourceRelativeSpawns
+        );
+        for (const batch of this.spawnProgramBatchQueue) {
+            collect(batch.sourceTick, batch.programs);
+        }
+        return result;
+    }
+
+    #retireTerminalReadbacks() {
+        this.overflowReadbackLease++;
+        for (const slot of this.overflowReadbackSlots) {
+            slot.inFlight = false;
+        }
+        this.pendingOverflowReadbacks = 0;
+        this.overflowReadbackCursor = 0;
+
+        this.eventReadbackLease++;
+        for (const slot of this.eventReadbackSlots) {
+            slot.inFlight = false;
+        }
+        this.pendingEventReadbacks = 0;
+        this.eventReadbackCursor = 0;
+        this.eventBatchQueue.length = 0;
+        this.bodyControlProgramBatchQueue.length = 0;
+
+        this.spawnProgramReadbackLease++;
+        for (const slot of this.spawnProgramReadbackSlots) {
+            slot.inFlight = false;
+        }
+        this.pendingSpawnProgramReadbacks = 0;
+        this.spawnProgramReadbackCursor = 0;
+        this.spawnProgramBatchQueue.length = 0;
+
+        this.trackedPoseReadbackLease++;
+        for (const slot of this.trackedPoseReadbackSlots) {
+            slot.inFlight = false;
+        }
+        this.pendingTrackedPoseReadbacks = 0;
+        this.trackedPoseReadbackCursor = 0;
     }
 
     #validateBody(body, index) {
@@ -2896,6 +3592,11 @@ export class GpuCircleBodySimulation {
                     'combatStates',
                     'combatStateBuffer',
                     GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+                ],
+                [
+                    'enemyBehaviorStates',
+                    'enemyBehaviorStateBuffer',
+                    GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
                 ],
                 [
                     'bodyControlStates',
@@ -3112,21 +3813,53 @@ export class GpuCircleBodySimulation {
                     const expected = queueEntry.programs[index];
                     const isTargetEntity = expected.modeFlags
                         === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
-                    const expectedTargetSlot = isTargetEntity
+                    const isSelectedTarget = expected.modeFlags
+                        === GPU_SPAWN_PROGRAM_MODE
+                            .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+                    let expectedTargetSlot = isTargetEntity
                         ? expected.targetSlot
                         : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
-                    const expectedTargetEntityId = isTargetEntity
+                    let expectedTargetEntityId = isTargetEntity
                         ? expected.targetHandle.entityId
                         : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
-                    const expectedTargetIncarnation = isTargetEntity
+                    let expectedTargetIncarnation = isTargetEntity
                         ? expected.targetHandle.incarnation
                         : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    let selectedTargetKind = 'none';
+                    let selectedTargetHandle = null;
+                    if (isSelectedTarget
+                        && record.result === GPU_SPAWN_PROGRAM_RESULT.RESOLVED) {
+                        if (record.selectedTargetKind
+                            === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE) {
+                            selectedTargetKind = 'core';
+                            selectedTargetHandle = expected.coreTargetHandle;
+                        } else if (record.selectedTargetKind
+                            === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER) {
+                            selectedTargetKind = 'tower';
+                            selectedTargetHandle = expected.towerTargetHandle;
+                        }
+                        if (!selectedTargetHandle) {
+                            throw new RangeError(
+                                `selected SpawnProgram target kind가 authored candidate와 다릅니다: index=${index}`
+                            );
+                        }
+                        expectedTargetSlot = selectedTargetKind === 'core'
+                            ? expected.coreTargetSlot
+                            : expected.towerTargetSlot;
+                        expectedTargetEntityId = selectedTargetHandle.entityId;
+                        expectedTargetIncarnation = selectedTargetHandle.incarnation;
+                    }
                     const resultIsAccepted = record.result
                             === GPU_SPAWN_PROGRAM_RESULT.RESOLVED
                         || record.result === GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID
                         || (isTargetEntity
                             && record.result
-                                === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID);
+                                === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID)
+                        || (isSelectedTarget
+                            && (record.result === GPU_SPAWN_PROGRAM_RESULT.NO_TARGET
+                                || record.result
+                                    === GPU_SPAWN_PROGRAM_RESULT
+                                        .CORE_TARGET_INVALID));
                     if (record.destinationSlot !== expected.destinationSlot
                         || record.destinationEntityId
                             !== expected.destinationHandle.entityId
@@ -3141,6 +3874,21 @@ export class GpuCircleBodySimulation {
                         || record.targetIncarnation !== expectedTargetIncarnation
                         || record.modeFlags !== expected.modeFlags
                         || record.sourceTick !== queueEntry.sourceTick
+                        || (isSelectedTarget
+                            && (record.selectionSequence
+                                    !== expected.selectionSequence
+                                || record.attackFingerprint
+                                    !== expected.attackFingerprint
+                                || record.requestFlags
+                                    !== GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                                        .REQUIRE_EXACT_SELECTED_TARGET))
+                        || (!isSelectedTarget
+                            && record.selectedTargetKind
+                                !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE)
+                        || (isSelectedTarget
+                            && record.result !== GPU_SPAWN_PROGRAM_RESULT.RESOLVED
+                            && record.selectedTargetKind
+                                !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE)
                         || !resultIsAccepted) {
                         throw new RangeError(
                             `SpawnProgram result record mismatch: index=${index}, result=${record.result}`
@@ -3152,14 +3900,23 @@ export class GpuCircleBodySimulation {
                     } else if (record.result
                         === GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID) {
                         reason = 'target-invalid';
+                    } else if (record.result
+                        === GPU_SPAWN_PROGRAM_RESULT.NO_TARGET) {
+                        reason = 'no-target';
+                    } else if (record.result
+                        === GPU_SPAWN_PROGRAM_RESULT.CORE_TARGET_INVALID) {
+                        reason = 'core-invalid';
                     }
                     outcomes[index] = Object.freeze({
                         destinationSlot: record.destinationSlot,
                         destinationHandle: expected.destinationHandle,
                         sourceHandle: expected.sourceHandle,
-                        ...(isTargetEntity
-                            ? { targetHandle: expected.targetHandle }
+                        ...((isTargetEntity || isSelectedTarget)
+                            ? { targetHandle: isTargetEntity
+                                ? expected.targetHandle
+                                : selectedTargetHandle }
                             : {}),
+                        ...(isSelectedTarget ? { selectedTargetKind } : {}),
                         result: record.result,
                         reason
                     });
@@ -3402,6 +4159,7 @@ export class GpuCircleBodySimulation {
             || this.pendingSpawnProgramReadbacks !== 0
             || this.pendingTrackedPoseReadbacks !== 0
             || this.eventBatchQueue.length !== 0
+            || this.bodyControlProgramBatchQueue.length !== 0
             || this.spawnProgramBatchQueue.length !== 0
             || this.pendingBodyCount !== 0
             || (this.state !== 'ready'
@@ -3438,6 +4196,15 @@ export class GpuCircleBodySimulation {
                 if (leaseMatches) {
                     this.#releaseClaimedEventReadbackSlot(slot);
                     this.#removeEventQueueEntry(queueEntry);
+                    if (queueEntry.controlQueueEntry) {
+                        queueEntry.controlQueueEntry.failure = Object.freeze({
+                            stage: 'body-control-program-readback',
+                            name: 'BodyControlProgramGenerationMismatch',
+                            message: 'BodyControlProgram readback generation/epoch가 현재 session과 다릅니다.'
+                        });
+                        queueEntry.controlQueueEntry.outcomes = Object.freeze([]);
+                        queueEntry.controlQueueEntry.completed = true;
+                    }
                     this.#advanceEventCompletionWatermark();
                 } else {
                     slot.inFlight = false;
@@ -3453,9 +4220,13 @@ export class GpuCircleBodySimulation {
             let deathOverflow = 0;
             let maximumDamageWindowEventCount = 0;
             let maximumDamageWindowProtocolStatus = MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK;
+            let coreDamageRequestEventCount = 0;
+            let coreDamageRequestProtocolStatus = CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK;
+            let priorityTargetControlOutcomes = Object.freeze([]);
             let events;
             try {
-                const view = new DataView(slot.buffer.getMappedRange());
+                const mappedRange = slot.buffer.getMappedRange();
+                const view = new DataView(mappedRange);
                 const abiStatus = view.getUint32(
                     CONTACT_STATE_ABI_STATUS_OFFSET,
                     LITTLE_ENDIAN
@@ -3484,23 +4255,42 @@ export class GpuCircleBodySimulation {
                         `GPU Maximum Damage Window protocol failure: status=${maximumDamageWindowProtocolStatus}, preflightEvents=${maximumDamageWindowEventCount}`
                     );
                 }
+                coreDamageRequestEventCount = view.getUint32(
+                    CONTACT_STATE_CORE_DAMAGE_REQUEST_EVENT_COUNT_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                coreDamageRequestProtocolStatus = view.getUint32(
+                    CONTACT_STATE_CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                if (coreDamageRequestProtocolStatus
+                    !== CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK) {
+                    throw new RangeError(
+                        `GPU Core damage request protocol failure: status=${coreDamageRequestProtocolStatus}, preflightEvents=${coreDamageRequestEventCount}`
+                    );
+                }
                 if (queueEntry.expectedControlCount > 0) {
                     const controlHeader = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER;
+                    const controlProgramOffset
+                        = eventReadbackControlProgramOffset(
+                            this.eventCapacity,
+                            this.deathEventCapacity
+                        );
                     const controlAbiVersion = view.getUint32(
-                        EVENT_READBACK_CONTROL_HEADER_OFFSET
+                        controlProgramOffset
                             + controlHeader.ABI_VERSION,
                         LITTLE_ENDIAN
                     );
                     const controlCount = view.getUint32(
-                        EVENT_READBACK_CONTROL_HEADER_OFFSET + controlHeader.COUNT,
+                        controlProgramOffset + controlHeader.COUNT,
                         LITTLE_ENDIAN
                     );
                     const controlCapacity = view.getUint32(
-                        EVENT_READBACK_CONTROL_HEADER_OFFSET + controlHeader.CAPACITY,
+                        controlProgramOffset + controlHeader.CAPACITY,
                         LITTLE_ENDIAN
                     );
                     const controlStatus = view.getUint32(
-                        EVENT_READBACK_CONTROL_HEADER_OFFSET + controlHeader.STATUS,
+                        controlProgramOffset + controlHeader.STATUS,
                         LITTLE_ENDIAN
                     );
                     if (controlAbiVersion !== GPU_BODY_CONTROL_PROGRAM_ABI_VERSION
@@ -3511,6 +4301,147 @@ export class GpuCircleBodySimulation {
                             `GPU body control ABI status mismatch: version=${controlAbiVersion}, count=${controlCount}, capacity=${controlCapacity}, status=${controlStatus}`
                         );
                     }
+                    const controlProgramBytes = mappedRange.slice(
+                        controlProgramOffset,
+                        controlProgramOffset
+                            + this.hostBodyControlProgram.buffer.byteLength
+                    );
+                    const controlStorage = {
+                        capacity: this.controlCommandCapacity,
+                        buffer: controlProgramBytes
+                    };
+                    readGpuBodyControlProgramHeader(controlStorage);
+                    const outcomes = [];
+                    for (let index = 0; index < controlCount; index++) {
+                        const record = readGpuBodyControlProgramRecord(
+                            controlStorage,
+                            index
+                        );
+                        const expected = queueEntry.expectedControls[index];
+                        if (!expected
+                            || record.destinationSlot !== expected.destinationSlot
+                            || record.entityId !== expected.entityId
+                            || record.incarnation !== expected.incarnation
+                            || record.modeFlags !== expected.modeFlags) {
+                            throw new RangeError(
+                                `BodyControlProgram immutable result mismatch: index=${index}`
+                            );
+                        }
+                        if (record.modeFlags
+                            === GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT) {
+                            if (record.result
+                                    !== GPU_BODY_CONTROL_PROGRAM_RESULT.PENDING
+                                || record.selectedTargetKind
+                                    !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
+                                || record.selectedTargetSlot
+                                    !== GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                                || record.stateFlags !== 0) {
+                                throw new RangeError(
+                                    `move BodyControlProgram output contract mismatch: index=${index}`
+                                );
+                            }
+                            continue;
+                        }
+                        if (record.sourceTick !== queueEntry.sourceTick
+                            || record.selectionSequence
+                                !== expected.selectionSequence
+                            || record.attackFingerprint
+                                !== expected.attackFingerprint
+                            || record.attackRange
+                                !== Math.fround(expected.attackRange)
+                            || record.selectionPolicy
+                                !== GPU_BODY_CONTROL_SELECTION_POLICY
+                                    .CORE_FIRST_IN_RANGE_THEN_TOWER
+                            || record.coreTargetSlot !== expected.coreTargetSlot
+                            || record.coreTargetEntityId
+                                !== expected.coreTargetEntityId
+                            || record.coreTargetIncarnation
+                                !== expected.coreTargetIncarnation
+                            || record.towerTargetSlot !== expected.towerTargetSlot
+                            || record.towerTargetEntityId
+                                !== expected.towerTargetEntityId
+                            || record.towerTargetIncarnation
+                                !== expected.towerTargetIncarnation) {
+                            throw new RangeError(
+                                `priority BodyControlProgram input echo mismatch: index=${index}`
+                            );
+                        }
+                        let outcome = null;
+                        let selectedTargetKind
+                            = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE;
+                        let selectedTargetHandle = null;
+                        let expectedStateFlags = 0;
+                        if (record.result
+                            === GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET) {
+                            outcome = 'no-target';
+                            expectedStateFlags =
+                                GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW;
+                        } else if (record.result
+                            === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED) {
+                            outcome = 'core';
+                            selectedTargetKind
+                                = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE;
+                            selectedTargetHandle = expected.coreTargetHandle;
+                            expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                                | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED;
+                        } else if (record.result
+                            === GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED) {
+                            outcome = 'tower';
+                            selectedTargetKind
+                                = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
+                            selectedTargetHandle = expected.towerTargetHandle;
+                            expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                                | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
+                        } else if (record.result
+                            === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
+                            outcome = 'source-invalid';
+                        } else if (record.result
+                            === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
+                            outcome = 'core-invalid';
+                        } else {
+                            throw new RangeError(
+                                `priority BodyControlProgram result가 올바르지 않습니다: index=${index}, result=${record.result}`
+                            );
+                        }
+                        const expectedTargetSlot = selectedTargetKind
+                                === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE
+                            ? expected.coreTargetSlot
+                            : selectedTargetKind
+                                === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER
+                                ? expected.towerTargetSlot
+                                : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                        const expectedTargetEntityId = selectedTargetHandle?.entityId
+                            ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                        const expectedTargetIncarnation
+                            = selectedTargetHandle?.incarnation
+                            ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                        if (record.selectedTargetKind !== selectedTargetKind
+                            || record.selectedTargetSlot !== expectedTargetSlot
+                            || record.selectedTargetEntityId
+                                !== expectedTargetEntityId
+                            || record.selectedTargetIncarnation
+                                !== expectedTargetIncarnation
+                            || record.stateFlags !== expectedStateFlags) {
+                            throw new RangeError(
+                                `priority BodyControlProgram selected output mismatch: index=${index}`
+                            );
+                        }
+                        outcomes.push(Object.freeze({
+                            sourceHandle: expected.sourceHandle,
+                            coreTargetHandle: expected.coreTargetHandle,
+                            towerTargetHandle: expected.towerTargetHandle,
+                            sourceTick: record.sourceTick,
+                            selectionSequence: record.selectionSequence,
+                            attackFingerprint: record.attackFingerprint,
+                            attackRangeTiles: expected.attackRangeTiles,
+                            result: record.result,
+                            outcome,
+                            selectedTargetKind,
+                            stateFlags: record.stateFlags,
+                            selectedTargetHandle
+                        }));
+                    }
+                    priorityTargetControlOutcomes = Object.freeze(outcomes);
                 }
                 rawContactCount = view.getUint32(0, LITTLE_ENDIAN);
                 contactOverflow = view.getUint32(4, LITTLE_ENDIAN);
@@ -3576,7 +4507,9 @@ export class GpuCircleBodySimulation {
                         rawDeathCount,
                         deathOverflow,
                         maximumDamageWindowEventCount,
-                        maximumDamageWindowProtocolStatus
+                        maximumDamageWindowProtocolStatus,
+                        coreDamageRequestEventCount,
+                        coreDamageRequestProtocolStatus
                     }
                 );
                 return;
@@ -3584,6 +4517,13 @@ export class GpuCircleBodySimulation {
 
             queueEntry.events = events;
             queueEntry.completed = true;
+            if (queueEntry.controlQueueEntry) {
+                queueEntry.controlQueueEntry.outcomes
+                    = priorityTargetControlOutcomes;
+                queueEntry.controlQueueEntry.completed = true;
+                this.lastBodyControlOutcomeCount
+                    += priorityTargetControlOutcomes.length;
+            }
             this.#advanceEventCompletionWatermark();
             this.#recoverEventBackpressureIfPossible();
         }).catch((error) => {
@@ -3598,6 +4538,11 @@ export class GpuCircleBodySimulation {
             this.#removeEventQueueEntry(queueEntry);
             this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
             this.failure = captureFailure('event-readback', error);
+            if (queueEntry.controlQueueEntry) {
+                queueEntry.controlQueueEntry.failure = this.failure;
+                queueEntry.controlQueueEntry.outcomes = Object.freeze([]);
+                queueEntry.controlQueueEntry.completed = true;
+            }
             this.state = this.requiresAuthoritativeRebuild
                 ? 'requires-rebuild'
                 : 'failed';
@@ -3634,6 +4579,7 @@ export class GpuCircleBodySimulation {
         this.pendingEventReadbacks = 0;
         this.eventReadbackCursor = 0;
         this.eventBatchQueue.length = 0;
+        this.bodyControlProgramBatchQueue.length = 0;
     }
 
     #hasFreeOverflowReadbackSlot() {
@@ -3782,6 +4728,7 @@ export class GpuCircleBodySimulation {
 
     #resetContactEventTelemetry() {
         this.eventBatchQueue.length = 0;
+        this.bodyControlProgramBatchQueue.length = 0;
         this.eventCompletedThroughTick = 0;
         this.eventBackpressureCount = 0;
         this.lastEventReadbackSourceTick = 0;
@@ -3794,6 +4741,7 @@ export class GpuCircleBodySimulation {
         this.lastAppliedEventOverflowCount = 0;
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
+        this.lastBodyControlOutcomeCount = 0;
     }
 
     #validateDeviceLimits(device) {
@@ -3809,7 +4757,8 @@ export class GpuCircleBodySimulation {
         const gridBodyBytes = this.gridEntryCapacity * GPU_CIRCLE_BODY_ABI.GRID_BODY.STRIDE;
         const eventReadbackBytes = EVENT_READBACK_HEADER_BYTE_SIZE
             + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE)
-            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
+            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE)
+            + this.hostBodyControlProgram.buffer.byteLength;
         const spawnProgramBytes = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
             + (this.spawnProgramCapacity
                 * GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE);
@@ -3818,6 +4767,7 @@ export class GpuCircleBodySimulation {
             this.capacity * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
             this.contactCapacity * CONTACT_RECORD_BYTE_SIZE,
             this.eventCapacity * APPLIED_EVENT_BYTE_SIZE,
             this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE,
@@ -3899,6 +4849,12 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-circle-combat-states',
                 GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            enemyBehaviorStates: createBuffer(
+                device,
+                'cirvivor-gpu-circle-enemy-behavior-states',
+                GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
             bodyControlStates: createBuffer(
@@ -4041,7 +4997,8 @@ export class GpuCircleBodySimulation {
         const eventReadbackLease = ++this.eventReadbackLease;
         const eventReadbackByteSize = EVENT_READBACK_HEADER_BYTE_SIZE
             + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE)
-            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
+            + (this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE)
+            + this.hostBodyControlProgram.buffer.byteLength;
         this.eventReadbackSlots = Array.from(
             { length: EVENT_READBACK_SLOT_COUNT },
             (_, index) => ({
@@ -4128,6 +5085,27 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(10)
             ]
         });
+        const computeCoreDamageRequestBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-core-damage-request-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(4, 'read-only-storage'),
+                storageLayoutEntry(10),
+                storageLayoutEntry(11)
+            ]
+        });
+        const computeEnemyBehaviorBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-enemy-behavior-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(8, 'read-only-storage'),
+                storageLayoutEntry(11)
+            ]
+        });
         const computeWorldFullLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-world-full-layout',
             entries: [
@@ -4174,6 +5152,10 @@ export class GpuCircleBodySimulation {
             label: 'cirvivor-gpu-circle-compute-maximum-damage-window-events-layout',
             entries: [0, 1, 2].map((binding) => storageLayoutEntry(binding))
         });
+        const computeEnemyBehaviorEventsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-enemy-behavior-events-layout',
+            entries: [0, 1, 2].map((binding) => storageLayoutEntry(binding))
+        });
         const computeFixedControlLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-fixed-control-layout',
             entries: [
@@ -4191,7 +5173,10 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(1),
                 storageLayoutEntry(2),
                 storageLayoutEntry(3),
-                storageLayoutEntry(7)
+                storageLayoutEntry(5),
+                storageLayoutEntry(7),
+                storageLayoutEntry(10),
+                storageLayoutEntry(11)
             ]
         });
         const computeTrackedPoseLayout = device.createBindGroupLayout({
@@ -4215,7 +5200,7 @@ export class GpuCircleBodySimulation {
         });
         const renderBodiesLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-render-bodies-layout',
-            entries: [0, 1, 2, 3, 4].map((binding) => ({
+            entries: [0, 1, 2, 3, 4, 5].map((binding) => ({
                 binding,
                 visibility: stage.VERTEX,
                 buffer: { type: 'read-only-storage' }
@@ -4259,6 +5244,12 @@ export class GpuCircleBodySimulation {
                 computeParamsLayout,
                 computeMaximumDamageWindowEventsLayout
             ],
+            [COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST]: [
+                computeCoreDamageRequestBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeMaximumDamageWindowEventsLayout
+            ],
             [COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL]: [
                 computeFixedControlLayout,
                 computeEmptyLayout,
@@ -4266,6 +5257,12 @@ export class GpuCircleBodySimulation {
             ],
             [COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE]: [
                 computeSourceResolveLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
+                computeEnemyBehaviorBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeEnemyBehaviorEventsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                 computeTrackedPoseLayout
@@ -4389,6 +5386,29 @@ export class GpuCircleBodySimulation {
                 { binding: 10, resource: resource(this.buffers.combatStates) }
             ]
         });
+        const computeCoreDamageRequestBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-core-damage-request-bodies',
+            layout: computeCoreDamageRequestBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 4, resource: resource(this.buffers.contactHandlers) },
+                { binding: 10, resource: resource(this.buffers.combatStates) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
+            ]
+        });
+        const computeEnemyBehaviorBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
+            layout: computeEnemyBehaviorBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 8, resource: resource(this.buffers.trackedPoseConfig) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
+            ]
+        });
         const computeWorldFull = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-world-full',
             layout: computeWorldFullLayout,
@@ -4453,6 +5473,15 @@ export class GpuCircleBodySimulation {
                 { binding: 2, resource: resource(this.buffers.appliedEvents) }
             ]
         });
+        const computeEnemyBehaviorEvents = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-enemy-behavior-events',
+            layout: computeEnemyBehaviorEventsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.contactState) },
+                { binding: 1, resource: resource(this.buffers.contacts) },
+                { binding: 2, resource: resource(this.buffers.appliedEvents) }
+            ]
+        });
         const computeFixedControl = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-fixed-control',
             layout: computeFixedControlLayout,
@@ -4472,7 +5501,10 @@ export class GpuCircleBodySimulation {
                 { binding: 1, resource: resource(this.buffers.physics) },
                 { binding: 2, resource: resource(this.buffers.simulation) },
                 { binding: 3, resource: resource(this.buffers.temporary) },
-                { binding: 7, resource: resource(this.buffers.spawnProgram) }
+                { binding: 5, resource: resource(this.buffers.bodyControlStates) },
+                { binding: 7, resource: resource(this.buffers.spawnProgram) },
+                { binding: 10, resource: resource(this.buffers.combatStates) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
             ]
         });
         const computeTrackedPose = device.createBindGroup({
@@ -4518,6 +5550,12 @@ export class GpuCircleBodySimulation {
                     computeParams,
                     computeMaximumDamageWindowEvents
                 ],
+                [COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST]: [
+                    computeCoreDamageRequestBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeMaximumDamageWindowEvents
+                ],
                 [COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL]: [
                     computeFixedControl,
                     computeEmpty,
@@ -4525,6 +5563,12 @@ export class GpuCircleBodySimulation {
                 ],
                 [COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE]: [
                     computeSourceResolve
+                ],
+                [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
+                    computeEnemyBehaviorBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeEnemyBehaviorEvents
                 ],
                 [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                     computeTrackedPose
@@ -4547,7 +5591,8 @@ export class GpuCircleBodySimulation {
                     { binding: 1, resource: resource(this.buffers.physics) },
                     { binding: 2, resource: resource(this.buffers.temporary) },
                     { binding: 3, resource: resource(this.buffers.renderStyles) },
-                    { binding: 4, resource: resource(this.buffers.simulation) }
+                    { binding: 4, resource: resource(this.buffers.simulation) },
+                    { binding: 5, resource: resource(this.buffers.enemyBehaviorStates) }
                 ]
             }),
             renderParams: device.createBindGroup({
@@ -4619,6 +5664,13 @@ export class GpuCircleBodySimulation {
                 this.hostStorage.combatStateBuffer,
                 0,
                 bodyCount * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            );
+            queue.writeBuffer(
+                this.buffers.enemyBehaviorStates,
+                0,
+                this.hostStorage.enemyBehaviorStateBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
             );
             queue.writeBuffer(
                 this.buffers.renderStyles,

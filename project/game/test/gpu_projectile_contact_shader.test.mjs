@@ -85,9 +85,13 @@ function resolveMaximumDamageWindowBatchReference({
         const requestedDamage = windowActive
             ? Math.max(candidate.finalDamage - tower.peakFinalDamage, 0)
             : candidate.finalDamage;
-        if (!windowActive || candidate.finalDamage > tower.peakFinalDamage) {
+        if (!windowActive) {
             tower.peakFinalDamage = candidate.finalDamage;
             tower.expiresAtFixedTick = fixedTick + tower.duration;
+            tower.peakSourceEntityId = candidate.entityId;
+            tower.peakSourceIncarnation = candidate.incarnation;
+        } else if (candidate.finalDamage > tower.peakFinalDamage) {
+            tower.peakFinalDamage = candidate.finalDamage;
             tower.peakSourceEntityId = candidate.entityId;
             tower.peakSourceIncarnation = candidate.incarnation;
         }
@@ -143,6 +147,17 @@ for (const entryPoint of [
     'generate_body_contacts',
     'generate_world_contacts',
     'handle_contacts',
+    'validate_source_relative_spawns',
+    'resolve_source_relative_spawns',
+    'validate_selected_target_spawns',
+    'resolve_selected_target_spawns',
+    'clear_body_control_states',
+    'validate_body_control_commands',
+    'apply_body_control_commands',
+    'apply_controlled_motion',
+    'preflight_core_damage_requests',
+    'finalize_core_damage_request_preflight',
+    'resolve_core_damage_requests',
     'preflight_maximum_damage_window',
     'finalize_maximum_damage_window_preflight',
     'resolve_maximum_damage_window',
@@ -151,8 +166,8 @@ for (const entryPoint of [
     assert.match(compute, new RegExp(`fn\\s+${entryPoint}\\b`));
 }
 
-// ABI v5는 동일 stride의 gameplay word와 별도 combat-state side-plane을 함께 사용합니다.
-assert.match(compute, /const BODY_ABI_VERSION: u32 = 5u;/);
+// ABI v6는 gameplay/combat state와 분리된 EnemyBehaviorState side-plane을 사용합니다.
+assert.match(compute, /const BODY_ABI_VERSION: u32 = 6u;/);
 assert.match(compute, /struct BodyCounts \{[\s\S]*?abi_version: u32,/);
 assert.match(compute, /struct BodyPhysics \{[\s\S]*?physical_meta: u32,[\s\S]*?interaction_meta: u32,/);
 assert.match(compute, /struct BodySimulation \{[\s\S]*?lifetime: f32,[\s\S]*?health: atomic<i32>,[\s\S]*?gameplay_meta: u32,[\s\S]*?flags: atomic<u32>,[\s\S]*?incarnation: u32,/);
@@ -160,6 +175,7 @@ assert.match(render, /struct BodySimulation \{[\s\S]*?health: i32,[\s\S]*?gamepl
 assert.match(compute, /struct GridBody \{[\s\S]*?physical_meta: u32,[\s\S]*?flags: u32,[\s\S]*?interaction_meta: u32,/);
 assert.match(compute, /@group\(0\) @binding\(4\) var<storage, read> contact_handlers: ContactHandlerBuffer;/);
 assert.match(compute, /@group\(0\) @binding\(10\) var<storage, read_write> combat_states: CombatStateBuffer;/);
+assert.match(compute, /@group\(0\) @binding\(11\) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;/);
 assert.match(compute, /struct ContactHandler \{\s*damage_self: f32,\s*damage_other: f32,\s*damage_falloff: f32,\s*fire_timer: f32,\s*flags: u32,\s*chaining: i32,\s*damage_report_id: i32,\s*slow_timer: f32,/);
 assert.match(compute, /let damage_self = max\(i32\(handler\.damage_self \* 100\.0\), 0\);/);
 assert.match(compute, /fn resolve_contact_source_modified_damage\(/);
@@ -198,26 +214,44 @@ assert.deepEqual(storageBindings, [
     '0:4:contact_handlers', '0:5:body_control_states',
     '0:6:body_control_program', '0:7:spawn_program',
     '0:8:tracked_pose_config', '0:9:tracked_pose_output', '0:10:combat_states',
+    '0:11:enemy_behavior_states',
     '1:0:grid_counts', '1:1:grid_bodies', '1:2:sdf_values',
     '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
     '3:2:applied_events', '3:3:death_events'
 ]);
-assert.equal(storageBindings.length, 19);
+assert.equal(storageBindings.length, 20);
 assert.doesNotMatch(storageBindingBlock, /gameplay|team|damage_policy/i);
 
-// SpawnProgram v3는 80-byte record에서 exact target identity와 aim payload를 고정합니다.
-assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 3u;/);
+// BodyControl v2/SpawnProgram v4는 exact priority selection과 96-byte records를 고정합니다.
+assert.match(compute, /const BODY_CONTROL_PROGRAM_ABI_VERSION: u32 = 2u;/);
+assert.match(compute, /const SPAWN_PROGRAM_ABI_VERSION: u32 = 4u;/);
+assert.match(compute, /const BODY_CONTROL_PROGRAM_MODE_PRIORITY_TARGET_IN_RANGE: u32 = 2u;/);
+assert.match(compute, /const BODY_CONTROL_RESULT_CORE_SELECTED: u32 = 2u;/);
+assert.match(compute, /const BODY_CONTROL_RESULT_TOWER_SELECTED: u32 = 3u;/);
+assert.match(compute, /const BODY_CONTROL_RESULT_CORE_INVALID: u32 = 5u;/);
 assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = 1u;/);
 assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = 2u;/);
 assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY: u32 = 3u;/);
+assert.match(compute, /const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET: u32 = 4u;/);
 assert.match(compute, /const SPAWN_PROGRAM_RESULT_TARGET_INVALID: u32 = 4u;/);
+assert.match(compute, /const SPAWN_PROGRAM_RESULT_NO_TARGET: u32 = 5u;/);
+assert.match(compute, /const SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH: u32 = 6u;/);
+assert.match(compute, /const SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID: u32 = 7u;/);
 assert.match(
     compute,
-    /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*target_slot: u32,\s*target_entity_id: u32,\s*target_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*source_tick: u32,\s*position_offset: vec2f,\s*target_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*reserved_0: u32,\s*\}/
+    /struct BodyControlRecord \{[\s\S]*?destination_slot: u32,[\s\S]*?selection_sequence: u32,[\s\S]*?selected_target_kind: u32,[\s\S]*?attack_fingerprint: u32,[\s\S]*?selection_policy: u32,[\s\S]*?reserved_0: u32,\s*\}/
 );
 assert.match(
     compute,
-    /let supported_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_VELOCITY[\s\S]*?SOURCE_RELATIVE_AIM_POINT[\s\S]*?SOURCE_RELATIVE_TARGET_ENTITY;/
+    /struct BodyControlState \{[\s\S]*?move_intent: vec2f,[\s\S]*?source_tick: u32,[\s\S]*?selected_target_kind: u32,[\s\S]*?state_flags: u32,[\s\S]*?attack_range: f32,[\s\S]*?reserved_0: u32,\s*\}/
+);
+assert.match(
+    compute,
+    /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*target_slot: u32,\s*target_entity_id: u32,\s*target_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*source_tick: u32,\s*position_offset: vec2f,\s*target_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*reserved_0: u32,\s*selection_sequence: u32,\s*attack_fingerprint: u32,\s*selected_target_kind: u32,\s*request_flags: u32,\s*\}/
+);
+assert.match(
+    compute,
+    /let supported_mode = program\.mode_flags[\s\S]*?SOURCE_RELATIVE_VELOCITY[\s\S]*?SOURCE_RELATIVE_AIM_POINT[\s\S]*?SOURCE_RELATIVE_TARGET_ENTITY[\s\S]*?SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;/
 );
 assert.match(
     compute,
@@ -230,6 +264,51 @@ assert.match(
 assert.match(
     compute,
     /let body_capacity = arrayLength\(&simulations\.values\);[\s\S]*?program\.destination_slot >= counts\.body_count[\s\S]*?program\.source_slot >= body_capacity/
+);
+
+const legacyValidateStart = compute.indexOf('fn validate_source_relative_spawns(');
+const selectedValidateStart = compute.indexOf('fn validate_selected_target_spawns(');
+const legacyResolveStart = compute.indexOf('fn resolve_source_relative_spawns(');
+const selectedResolveStart = compute.indexOf('fn resolve_selected_target_spawns(');
+const selectedResolveEnd = compute.indexOf('fn tracked_tower_target_is_valid(', selectedResolveStart);
+assert.ok(
+    legacyValidateStart >= 0
+        && selectedValidateStart > legacyValidateStart
+        && legacyResolveStart > selectedValidateStart
+        && selectedResolveStart > legacyResolveStart
+        && selectedResolveEnd > selectedResolveStart
+);
+const legacyValidateBlock = compute.slice(legacyValidateStart, selectedValidateStart);
+const selectedValidateBlock = compute.slice(selectedValidateStart, legacyResolveStart);
+const legacyResolveOnlyBlock = compute.slice(legacyResolveStart, selectedResolveStart);
+const selectedResolveBlock = compute.slice(selectedResolveStart, selectedResolveEnd);
+assert.match(
+    legacyValidateBlock,
+    /if \(selected_target_mode\) \{\s*return;\s*\}[\s\S]*?FIXED_PROGRAM_STATUS_RECORD_INVALID/
+);
+assert.match(
+    selectedValidateBlock,
+    /!= SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET\) \{\s*return;\s*\}[\s\S]*?FIXED_PROGRAM_STATUS_RECORD_INVALID/
+);
+assert.match(
+    legacyResolveOnlyBlock,
+    /== SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET\) \{\s*return;\s*\}[\s\S]*?SPAWN_PROGRAM_RESULT_DESTINATION_INVALID/
+);
+assert.match(
+    selectedResolveBlock,
+    /!= SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET\) \{\s*return;\s*\}[\s\S]*?SPAWN_PROGRAM_RESULT_DESTINATION_INVALID/
+);
+assert.match(
+    selectedResolveBlock,
+    /control_state\.source_tick != program\.source_tick[\s\S]*?control_state\.selection_sequence != program\.selection_sequence[\s\S]*?control_state\.attack_fingerprint != program\.attack_fingerprint/
+);
+assert.match(
+    selectedResolveBlock,
+    /BODY_LAYER_TERRAIN \| selected_interaction_layer[\s\S]*?target_interaction_layer_mask = selected_interaction_layer/
+);
+assert.match(
+    selectedResolveBlock,
+    /target_physics\.position \+ program\.target_offset[\s\S]*?- destination_position/
 );
 
 // Aim cardinal는 authoritative tick-start source position에서 world aim을 빼고 정규화합니다.
@@ -320,7 +399,7 @@ assert.ok(
 
 // 새 contact/event bind group과 고정 stride 레코드를 정적으로 잠급니다.
 assert.match(compute, /struct CombatState \{[\s\S]*?target_interaction_layer_mask: u32,[\s\S]*?maximum_damage_window_duration_fixed_ticks: u32,[\s\S]*?peak_final_damage_fixed_point: atomic<i32>,[\s\S]*?expires_at_fixed_tick: atomic<u32>,[\s\S]*?peak_source_entity_id: atomic<u32>,[\s\S]*?peak_source_incarnation: atomic<u32>,/);
-assert.match(compute, /struct ContactState \{[\s\S]*?contact_count: atomic<u32>,[\s\S]*?death_overflow: atomic<u32>,[\s\S]*?abi_status: atomic<u32>,[\s\S]*?event_encoding_version: atomic<u32>,[\s\S]*?maximum_damage_window_event_count: atomic<u32>,[\s\S]*?maximum_damage_window_protocol_status: atomic<u32>,/);
+assert.match(compute, /struct ContactState \{[\s\S]*?contact_count: atomic<u32>,[\s\S]*?death_overflow: atomic<u32>,[\s\S]*?abi_status: atomic<u32>,[\s\S]*?event_encoding_version: atomic<u32>,[\s\S]*?maximum_damage_window_event_count: atomic<u32>,[\s\S]*?maximum_damage_window_protocol_status: atomic<u32>,[\s\S]*?core_damage_request_event_count: atomic<u32>,[\s\S]*?core_damage_request_protocol_status: atomic<u32>,/);
 assert.match(compute, /struct Contact \{\s*self_body_id: u32,\s*self_incarnation: u32,\s*other_body_id: i32,\s*other_incarnation: u32,\s*world_position: vec2f,\s*normal: vec2f,/);
 assert.match(compute, /struct AppliedEvent \{\s*subject_entity_id: u32,\s*subject_incarnation: u32,\s*other_entity_id: u32,\s*other_incarnation: u32,\s*value_fixed_point: i32,\s*event_meta: u32,\s*world_position: vec2f,/);
 assert.match(compute, /struct DeathEvent \{\s*entity_id: u32,\s*incarnation: u32,\s*body_id: u32,\s*reason_flags: u32,/);
@@ -440,7 +519,7 @@ const maximumDamageWindowFinder = compute.slice(
 );
 assert.match(
     maximumDamageWindowFinder,
-    /let policy_event_flag = maximum_damage_window_policy_from_marker\([\s\S]*?bitcast<u32>\(contact\.normal\.y\)/
+    /var policy_event_flag = maximum_damage_window_policy_from_marker\(marker\)/
 );
 assert.doesNotMatch(maximumDamageWindowFinder, /contact_handlers/);
 assert.match(compute, /const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC: u32 = 0x7fc00000u;/);
@@ -480,18 +559,92 @@ const maximumDamageWindowResolver = compute.slice(
 );
 assert.match(
     maximumDamageWindowPreflight,
+    /let window_is_active = params\.fixed_tick < expires_at_fixed_tick;[\s\S]*?if \(!window_is_active[\s\S]*?!maximum_damage_window_tick_is_representable\(duration\)\)/
+);
+assert.match(
+    maximumDamageWindowPreflight,
     /candidate\.found == 0u[\s\S]*?atomicLoad\(&simulations\.values\[body_id\]\.health\) > 0[\s\S]*?maximum_damage_window_event_count/
 );
 assert.match(
     maximumDamageWindowResolver,
     /let window_is_active = params\.fixed_tick < expires_at_fixed_tick;[\s\S]*?max\(candidate\.final_damage - current_peak, 0\)[\s\S]*?damage\.applied,[\s\S]*?APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW/
 );
+const activePeakBranchStart = maximumDamageWindowResolver.indexOf(
+    '} else if (candidate.final_damage > current_peak) {'
+);
+const activePeakBranchEnd = maximumDamageWindowResolver.indexOf(
+    'let damage = apply_target_damage',
+    activePeakBranchStart
+);
+const activePeakBranch = maximumDamageWindowResolver.slice(
+    activePeakBranchStart,
+    activePeakBranchEnd
+);
+assert.ok(activePeakBranchStart >= 0 && activePeakBranchEnd > activePeakBranchStart);
+assert.match(activePeakBranch, /peak_final_damage_fixed_point[\s\S]*?peak_source_entity_id[\s\S]*?peak_source_incarnation/);
+assert.doesNotMatch(activePeakBranch, /expires_at_fixed_tick|params\.fixed_tick \+ duration/);
 assert.doesNotMatch(
     maximumDamageWindowResolver,
     /existing_event_count|maximum_damage_window_event_count|atomicAdd\(\s*&contact_state\.event_overflow/
 );
 assert.doesNotMatch(maximumDamageWindowResolver, /if \(damage\.applied <= 0\)[\s\S]*?return;/);
 assert.doesNotMatch(compute, /\blet active\b/);
+
+// Typed Core request는 exact selected Core contact만 별도 preflight/resolve하며 Core HP를 GPU에서 바꾸지 않습니다.
+assert.match(compute, /const CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST: u32 = 32u;/);
+assert.match(compute, /const APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST: u32 = 6u;/);
+assert.match(compute, /const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = 2u;/);
+const handleContactsStart = compute.indexOf('fn handle_contacts(');
+const coreValidationStart = compute.indexOf(
+    'fn core_damage_request_candidate_is_valid(',
+    handleContactsStart
+);
+const handleContactsBlock = compute.slice(handleContactsStart, coreValidationStart);
+assert.match(
+    handleContactsBlock,
+    /CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST[\s\S]*?BODY_LAYER_CORE_PROXY[\s\S]*?mark_core_damage_request_candidate\(contact_index\);[\s\S]*?return;/
+);
+assert.match(compute, /const SELECTED_TARGET_TOWER_MARKER_MAGIC: u32 = 0x7fc00030u;/);
+assert.match(
+    handleContactsBlock,
+    /CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE[\s\S]*?mark_selected_target_tower_candidate\([\s\S]*?return;/
+);
+assert.match(
+    compute,
+    /fn selected_target_tower_candidate_is_valid\([\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?target_interaction_layer_mask[\s\S]*?GAMEPLAY_TEAM_HOSTILE[\s\S]*?maximum_damage_window_target_is_configured/
+);
+assert.match(
+    compute,
+    /fn selected_target_tower_candidate_is_valid\([\s\S]*?BODY_CONTROL_SELECTED_TARGET_TOWER[\s\S]*?target_slot[\s\S]*?target_entity_id[\s\S]*?target_incarnation/
+);
+const coreResolveStart = compute.indexOf('fn resolve_core_damage_requests(');
+const coreResolveEnd = compute.indexOf('fn emit_enemy_charge_telegraphs(', coreResolveStart);
+const coreResolveBlock = compute.slice(coreResolveStart, coreResolveEnd);
+assert.match(
+    compute,
+    /fn core_damage_request_candidate_is_valid\([\s\S]*?CONTACT_HANDLER_FLAG_CLOSEST_ONLY[\s\S]*?CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY[\s\S]*?BODY_LAYER_PROJECTILE[\s\S]*?BODY_LAYER_CORE_PROXY[\s\S]*?GAMEPLAY_TEAM_HOSTILE[\s\S]*?ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE[\s\S]*?target_slot[\s\S]*?target_entity_id[\s\S]*?target_incarnation/
+);
+assert.match(
+    compute,
+    /fn preflight_core_damage_requests\([\s\S]*?core_damage_request_candidate_is_valid[\s\S]*?core_damage_request_event_count/
+);
+assert.match(
+    compute,
+    /fn finalize_core_damage_request_preflight\([\s\S]*?request_count[\s\S]*?maximum_window_count[\s\S]*?params\.max_events[\s\S]*?event_overflow/
+);
+assert.match(
+    coreResolveBlock,
+    /core_damage_request_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?core_damage_fixed_point[\s\S]*?APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST/
+);
+assert.match(
+    coreResolveBlock,
+    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?mark_maximum_damage_window_candidate/
+);
+assert.doesNotMatch(coreResolveBlock, /apply_target_damage|\.health\s*=|atomicSub/);
+assert.match(
+    compute,
+    /fn finalize_maximum_damage_window_preflight\([\s\S]*?maximum_damage_window_event_count[\s\S]*?core_damage_request_event_count[\s\S]*?event_overflow/
+);
 
 // 두 Tower의 exact-fit은 모두 commit하고, 하나 모자라면 preflight finalize가
 // resolver 전에 전체를 fail-close하여 HP/window 어느 쪽도 mutate하지 않습니다.
@@ -543,6 +696,42 @@ assert.deepEqual(
         { health: 700, peakFinalDamage: 300, expiresAtFixedTick: 100 }
     ]
 );
+const activeLargerPeak = resolveMaximumDamageWindowBatchReference({
+    existingEventCount: 0,
+    maxEvents: 1,
+    fixedTick: 80,
+    towers: [{
+        id: 3,
+        health: 900,
+        peakFinalDamage: 100,
+        expiresAtFixedTick: 100,
+        peakSourceEntityId: 8,
+        peakSourceIncarnation: 2,
+        duration: 60,
+        candidate: { finalDamage: 300, entityId: 5, incarnation: 1 }
+    }]
+});
+assert.deepEqual(activeLargerPeak.towers[0], {
+    id: 3,
+    health: 700,
+    peakFinalDamage: 300,
+    expiresAtFixedTick: 100,
+    peakSourceEntityId: 5,
+    peakSourceIncarnation: 1,
+    duration: 60,
+    candidate: { finalDamage: 300, entityId: 5, incarnation: 1 }
+});
+const expiredStartsFreshWindow = resolveMaximumDamageWindowBatchReference({
+    existingEventCount: 0,
+    maxEvents: 1,
+    fixedTick: 100,
+    towers: [{
+        ...activeLargerPeak.towers[0],
+        candidate: { finalDamage: 400, entityId: 4, incarnation: 9 }
+    }]
+});
+assert.equal(expiredStartsFreshWindow.towers[0].expiresAtFixedTick, 160);
+assert.equal(expiredStartsFreshWindow.towers[0].peakFinalDamage, 400);
 const oneShort = resolveMaximumDamageWindowBatchReference({
     existingEventCount: 0,
     maxEvents: 1,
@@ -730,6 +919,7 @@ assert.equal((markDeadBlock.match(/append_death_event\(body_id, reason_flags\);/
 
 // mark_dead 직후 렌더링되는 tombstone은 simulation binding으로 즉시 숨깁니다.
 assert.match(render, /@group\(0\) @binding\(4\) var<storage, read> simulations: SimulationBuffer;/);
+assert.match(render, /@group\(0\) @binding\(5\) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;/);
 assert.match(render, /counts\.abi_version != BODY_ABI_VERSION/);
 assert.match(render, /if \(\(simulation_flags & 1u\) == 0u\)[\s\S]*?output\.color = vec4f\(0\.0\);[\s\S]*?return output;/);
 assert.match(indirect, /counts\.abi_version != BODY_ABI_VERSION[\s\S]*?draw_args\.instance_count = 0u/);

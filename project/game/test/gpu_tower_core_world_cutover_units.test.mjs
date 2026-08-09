@@ -390,11 +390,15 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     );
 });
 
-test('Core proxy는 invisible static/no-physical이며 Enemy와만 mutual enter interaction한다', () => {
+test('Core proxy는 invisible static/no-physical이며 Enemy와 hostile Projectile interaction을 reciprocal 허용한다', () => {
     const core = createGpuCoreProxySpawnIntent({
         position: { x: 27, y: 22 }
     });
     const enemy = createEnemyIntent();
+    const hostileCoreProjectile = createProjectileIntent(
+        GAMEPLAY_TEAM_ID.HOSTILE,
+        PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN
+    );
 
     assert.equal(core.kindId, GPU_CORE_PROXY_WORLD_KIND_ID);
     assert.equal(core.kindId, 'core-proxy');
@@ -413,6 +417,7 @@ test('Core proxy는 invisible static/no-physical이며 Enemy와만 mutual enter 
     assert.equal(
         core.interactionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
     );
     assert.equal(
         enemy.interactionMask & core.interactionLayer,
@@ -421,6 +426,11 @@ test('Core proxy는 invisible static/no-physical이며 Enemy와만 mutual enter 
     assert.equal(
         core.interactionMask & enemy.interactionLayer,
         enemy.interactionLayer
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(hostileCoreProjectile, core),
+        true,
+        'Core proxy의 reciprocal mask가 Projectile typed contact를 허용합니다.'
     );
     assert.equal(core.collisionMask & enemy.bodyLayer, 0);
     assert.equal(core.contactHandler.damageSelf, 0);

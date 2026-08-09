@@ -1,0 +1,174 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+import { loadGameModule } from './support/source_module_loader.mjs';
+
+const {
+    GPU_CIRCLE_APPLIED_EVENT_TYPE,
+    GPU_CIRCLE_BODY_ABI,
+    GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
+    createGpuCircleBodyAbiStorage,
+    readGpuCircleEnemyBehaviorState,
+    writeGpuCircleBodySpawn
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+
+const { GPU_COLLISION_COMPUTE_WGSL } = await loadGameModule(
+    'ingame/physics/gpu/gpu_collision_shaders.js'
+);
+
+const SIMULATION_SOURCE = await readFile(new URL(
+    '../script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
+    import.meta.url
+), 'utf8');
+
+const CHARGE_CONFIG = Object.freeze({
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
+    windupTicks: 30,
+    windupRangeTiles: 3,
+    chargeSpeedTilesPerSecond: 6,
+    chargeMaxTicks: 60,
+    recoilImpulseTilesPerSecond: 4,
+    recoilTicks: 12,
+    recoverTicks: 30,
+    telegraphStyleCode: 1,
+    telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
+    telegraphRadiusScale: 1.35
+});
+
+test('Body ABI v6 charge side-plane은 별도 80-byte record이고 reuse에서 zero-reset된다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 6);
+    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
+    assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE, 40);
+    const storage = createGpuCircleBodyAbiStorage(2);
+    assert.equal(storage.enemyBehaviorStateBuffer.byteLength, 160);
+
+    const spawn = {
+        position: { x: 1, y: 2 },
+        velocity: { x: 0, y: 0 },
+        radius: 0.25,
+        inverseMass: 1,
+        alive: true,
+        enemyBehaviorState: CHARGE_CONFIG
+    };
+    writeGpuCircleBodySpawn(storage, 1, spawn);
+    const state = readGpuCircleEnemyBehaviorState(storage, 1);
+    assert.equal(state.programId, GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE);
+    assert.equal(state.state, GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER);
+    assert.equal(state.stateEnteredFixedTick, 0);
+    assert.equal(state.stateExpiresAtFixedTick, 0);
+    assert.equal(state.targetSlot, 0);
+    assert.equal(state.targetEntityId, 0);
+    assert.equal(state.targetIncarnation, 0);
+    assert.equal(state.flags, 0);
+    assert.deepEqual({ ...state.chargeDirection }, { x: 0, y: 0 });
+    assert.equal(state.windupTicks, 30);
+    assert.equal(state.chargeMaxTicks, 60);
+    assert.equal(state.recoilTicks, 12);
+    assert.equal(state.recoverTicks, 30);
+
+    const stateOffset = GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE;
+    const stateView = new DataView(storage.enemyBehaviorStateBuffer);
+    stateView.setUint32(
+        stateOffset + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE,
+        GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
+        true
+    );
+    stateView.setUint32(
+        stateOffset + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.FLAGS,
+        GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID
+            | GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING,
+        true
+    );
+    stateView.setFloat32(
+        stateOffset + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_X,
+        1,
+        true
+    );
+    writeGpuCircleBodySpawn(storage, 1, spawn);
+    const replaced = readGpuCircleEnemyBehaviorState(storage, 1);
+    assert.equal(replaced.state, GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER);
+    assert.equal(replaced.flags, 0);
+    assert.deepEqual({ ...replaced.chargeDirection }, { x: 0, y: 0 });
+
+    writeGpuCircleBodySpawn(storage, 1, { ...spawn, enemyBehaviorState: undefined });
+    assert.deepEqual(
+        [...new Uint8Array(
+            storage.enemyBehaviorStateBuffer,
+            GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+            GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+        )],
+        new Array(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE).fill(0)
+    );
+});
+
+test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정한다', () => {
+    assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_STATE }, {
+        NONE: 0,
+        SEEK_TOWER: 1,
+        WINDUP: 2,
+        CHARGE: 3,
+        CONTACT_RECOIL: 4,
+        RECOVER: 5,
+        CORE_FALLBACK: 6
+    });
+    assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
+        TARGET_VALID: 1,
+        TELEGRAPH_PENDING: 2,
+        RECOIL_PENDING: 4
+    });
+    assert.equal(GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED, 4);
+    assert.equal(
+        GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_CONTACT_RECOIL_STARTED,
+        5
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_WINDUP[\s\S]*?params\.fixed_tick[\s\S]*?< enemy_behavior_states\.values\[body_id\]\.state_expires_at_fixed_tick/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_CHARGE[\s\S]*?params\.fixed_tick[\s\S]*?>= enemy_behavior_states\.values\[body_id\]\.state_expires_at_fixed_tick/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /ENEMY_BEHAVIOR_STATE_RECOVER[\s\S]*?ENEMY_BEHAVIOR_STATE_SEEK_TOWER[\s\S]*?return;/u
+    );
+});
+
+test('exact tracked Tower, non-homing snapshot, valid marker recoil와 single-submit pass order를 고정한다', () => {
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /tracked_pose_config\.source_slot[\s\S]*?tracked_pose_config\.entity_id[\s\S]*?tracked_pose_config\.incarnation[\s\S]*?body_id_is_alive/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /enemy_behavior_states\.values\[body_id\]\.charge_direction = direction/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /maximum_damage_window_policy_from_marker[\s\S]*?atomicExchange\([\s\S]*?ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /physics\.values\[body_id\]\.velocity[\s\S]*?= -enemy_behavior_states\.values\[body_id\]\.charge_direction[\s\S]*?recoil_impulse/u
+    );
+
+    const advance = SIMULATION_SOURCE.indexOf("'advance_enemy_charge'");
+    const handle = SIMULATION_SOURCE.indexOf("'handle_contacts'");
+    const recoilContact = SIMULATION_SOURCE.indexOf("'resolve_enemy_charge_contacts'");
+    const window = SIMULATION_SOURCE.indexOf("'resolve_maximum_damage_window'");
+    const rebuild = SIMULATION_SOURCE.indexOf("'rebuild_velocities'");
+    const recoil = SIMULATION_SOURCE.indexOf("'apply_enemy_charge_recoil'");
+    assert.ok(advance >= 0 && handle > advance);
+    assert.ok(recoilContact > handle && window > recoilContact);
+    assert.ok(rebuild > window && recoil > rebuild);
+    assert.match(SIMULATION_SOURCE, /enemyBehavior: 8/u);
+    assert.match(SIMULATION_SOURCE, /contactHandling: 9/u);
+    assert.match(SIMULATION_SOURCE, /device\.queue\.submit\(\[encoder\.finish\(\)\]\)/u);
+});
+
+console.log('GPU enemy Arrow charge contract: ok');

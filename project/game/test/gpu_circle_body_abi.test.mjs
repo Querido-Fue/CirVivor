@@ -21,6 +21,10 @@ const {
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
     GPU_CIRCLE_BODY_SIMULATION_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
+    GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI,
     appendGpuCircleBodySpawn,
     assertGpuCircleBodyAbiVersion,
     createGpuCircleBodyAbiStorage,
@@ -41,6 +45,7 @@ const {
     readGpuCircleBodyCombatState,
     readGpuCircleBodyCounts,
     readGpuCircleContactHandler,
+    readGpuCircleEnemyBehaviorState,
     readGpuCircleGridBody,
     resolveGpuCircleBodyMaximumDamageWindow,
     unpackGpuCircleAppliedEventMeta,
@@ -52,6 +57,7 @@ const {
     writeGpuCircleBodyCombatState,
     writeGpuCircleBodySpawn,
     writeGpuCircleContactHandler,
+    writeGpuCircleEnemyBehaviorState,
     writeGpuCircleGridBody
 } = abi;
 const {
@@ -116,7 +122,7 @@ function assertThrowsNamed(callback, expectedName) {
 }
 
 // std430/WGSL과 공유할 stride 및 모든 field offset을 고정합니다.
-assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 5);
+assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 6);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.ADDITION_COUNT, 4);
@@ -179,6 +185,62 @@ assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT, 8);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK, 12);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION, 20);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.PROGRAM_ID, 0);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE, 4);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_ENTERED_FIXED_TICK, 8);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_EXPIRES_AT_FIXED_TICK, 12);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_SLOT, 16);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_ENTITY_ID, 20);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_INCARNATION, 24);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.FLAGS, 28);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_X, 32);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_Y, 36);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_RANGE, 40);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_SPEED, 44);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_IMPULSE, 48);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_TICKS, 52);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_MAX_TICKS, 56);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_TICKS, 60);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOVER_TICKS, 64);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_STYLE_CODE, 68);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_COLOR_RGBA8, 72);
+assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_RADIUS_SCALE, 76);
+assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM }, {
+    NONE: 0,
+    ARROW_TOWER_CHARGE: 1,
+    SELECTED_TARGET_PROJECTILE: 2
+});
+assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
+    TARGET_VALID: 1,
+    TELEGRAPH_PENDING: 2,
+    RECOIL_PENDING: 4,
+    SELECTED_TARGET_VALID: 8,
+    SELECTED_TARGET_CORE: 16,
+    SELECTED_TARGET_TOWER: 32
+});
+assert.deepEqual({ ...GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI }, {
+    STRIDE: 80,
+    PROGRAM_ID: 0,
+    SELECTED_TARGET_KIND: 4,
+    SELECTION_SOURCE_TICK: 8,
+    SELECTION_SEQUENCE: 12,
+    TARGET_SLOT: 16,
+    TARGET_ENTITY_ID: 20,
+    TARGET_INCARNATION: 24,
+    FLAGS: 28,
+    ATTACK_FINGERPRINT: 32,
+    CORE_DAMAGE_FIXED_POINT: 40
+});
+assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_STATE }, {
+    NONE: 0,
+    SEEK_TOWER: 1,
+    WINDUP: 2,
+    CHARGE: 3,
+    CONTACT_RECOIL: 4,
+    RECOVER: 5,
+    CORE_FALLBACK: 6
+});
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE, 32);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_RED, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_GREEN, 4);
@@ -195,7 +257,8 @@ assert.deepEqual({ ...GPU_CIRCLE_BODY_RENDER_SHAPE }, {
     ARROW: 3,
     PENTA: 4,
     HEXA: 5,
-    GEN: 6
+    GEN: 6,
+    RHOM: 7
 });
 assert.equal(
     normalizeGpuCircleBodyRenderShapeCode(),
@@ -205,8 +268,12 @@ assert.equal(
     normalizeGpuCircleBodyRenderShapeCode(GPU_CIRCLE_BODY_RENDER_SHAPE.GEN),
     GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
 );
+assert.equal(
+    normalizeGpuCircleBodyRenderShapeCode(GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM),
+    GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
+);
 
-// V5 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
+// V6 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
 const interactionMeta = packGpuCircleInteractionMeta(0x42, 0xa5);
 const gameplayMeta = packGpuCircleGameplayMeta(
@@ -242,6 +309,15 @@ assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY, 2);
 assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.SLOW, 4);
 assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY, 8);
 assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS, 16);
+assert.equal(GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST, 32);
+assert.deepEqual({ ...GPU_CIRCLE_APPLIED_EVENT_TYPE }, {
+    DAMAGE_APPLIED: 1,
+    INTERACTION_ENTER: 2,
+    INTERACTION_CONTINUOUS: 3,
+    ENEMY_CHARGE_WINDUP_STARTED: 4,
+    ENEMY_CHARGE_CONTACT_RECOIL_STARTED: 5,
+    CORE_DAMAGE_REQUEST: 6
+});
 assert.equal(GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE, 100);
 assert.equal(GPU_CIRCLE_BODY_LIFETIME.IMMORTAL, -1);
 assert.equal(GPU_CIRCLE_BODY_FLOW.INVALID_FIELD_INDEX, 0xffffffff);
@@ -286,11 +362,16 @@ assert.equal(
     storage.combatStateBuffer.byteLength,
     GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * storage.capacity
 );
+assert.equal(
+    storage.enemyBehaviorStateBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * storage.capacity
+);
 new Uint8Array(storage.physicsBuffer).fill(0xff);
 new Uint8Array(storage.simulationBuffer).fill(0xff);
 new Uint8Array(storage.temporaryBuffer).fill(0xff);
 new Uint8Array(storage.contactHandlerBuffer).fill(0xff);
 new Uint8Array(storage.combatStateBuffer).fill(0xff);
+new Uint8Array(storage.enemyBehaviorStateBuffer).fill(0xff);
 writeGpuCircleBodyCounts(storage, {
     bodyCount: 1,
     additionCount: 2,
@@ -364,6 +445,80 @@ assert.deepEqual({ ...packedBody.combatState }, {
     peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
     peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
 });
+assert.deepEqual({
+    ...packedBody.enemyBehaviorState,
+    chargeDirection: { ...packedBody.enemyBehaviorState.chargeDirection },
+    telegraphColorRgba: [...packedBody.enemyBehaviorState.telegraphColorRgba]
+}, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.NONE,
+    state: GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.NONE,
+    stateEnteredFixedTick: 0,
+    stateExpiresAtFixedTick: 0,
+    targetSlot: 0,
+    targetEntityId: 0,
+    targetIncarnation: 0,
+    flags: 0,
+    chargeDirection: { x: 0, y: 0 },
+    windupRangeTiles: 0,
+    chargeSpeedTilesPerSecond: 0,
+    recoilImpulseTilesPerSecond: 0,
+    windupTicks: 0,
+    chargeMaxTicks: 0,
+    recoilTicks: 0,
+    recoverTicks: 0,
+    telegraphStyleCode: 0,
+    telegraphColorRgba8: 0,
+    telegraphColorRgba: [0, 0, 0, 0],
+    telegraphRadiusScale: 0
+});
+assert.deepEqual(
+    [...new Uint8Array(
+        storage.enemyBehaviorStateBuffer,
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+    )],
+    Array(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE).fill(0)
+);
+
+// Program 2는 exact selection output을 zero/sentinel로 시작하고 별도 Core damage만 보존합니다.
+const selectedProjectileStorage = createGpuCircleBodyAbiStorage(1);
+new Uint8Array(selectedProjectileStorage.enemyBehaviorStateBuffer).fill(0xff);
+writeGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE,
+    coreDamageFixedPoint: 731
+});
+assert.deepEqual(
+    readGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0),
+    {
+        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE,
+        selectedTargetKind: 0,
+        selectionSourceTick: 0,
+        selectionSequence: 0,
+        targetSlot: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        targetEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        targetIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        flags: 0,
+        attackFingerprint: 0,
+        coreDamageFixedPoint: 731
+    }
+);
+const selectedProjectileBytes = new Uint8Array(
+    selectedProjectileStorage.enemyBehaviorStateBuffer
+);
+for (let offset = 0; offset < selectedProjectileBytes.length; offset++) {
+    if ([0, 16, 20, 24, 40].some((start) => offset >= start && offset < start + 4)) {
+        continue;
+    }
+    assert.equal(selectedProjectileBytes[offset], 0, `program2 zero byte +${offset}`);
+}
+writeGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.NONE
+});
+assert.deepEqual(
+    [...new Uint8Array(selectedProjectileStorage.enemyBehaviorStateBuffer)],
+    Array(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE).fill(0),
+    'slot reuse/replacement는 program2 exact target/core damage를 포함해 full zero reset합니다.'
+);
 const physicsView = new DataView(storage.physicsBuffer);
 const simulationView = new DataView(storage.simulationBuffer);
 const temporaryView = new DataView(storage.temporaryBuffer);
@@ -757,7 +912,7 @@ assert.equal(suppressedSmaller.expiresAtFixedTick, 69);
 assert.equal(suppressedSmaller.damageAppliedEvent.valueFixedPoint, 0);
 assert.equal(suppressedSmaller.damageAppliedEvent.sourceEntityId, 7);
 assert.equal(suppressedSmaller.damageAppliedEvent.sourceIncarnation, 3);
-const largerReset = resolveGpuCircleBodyMaximumDamageWindow({
+const largerPeakWithoutExpiryExtension = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 10,
     maximumDamageWindowDurationTicks: 60,
     peakFinalDamageFixedPoint: 600,
@@ -766,10 +921,23 @@ const largerReset = resolveGpuCircleBodyMaximumDamageWindow({
     peakSourceIncarnation: 9,
     candidates: [{ finalDamageFixedPoint: 700, sourceEntityId: 7, sourceIncarnation: 3 }]
 });
-assert.equal(largerReset.appliedDamageFixedPoint, 100);
-assert.equal(largerReset.peakFinalDamageFixedPoint, 700);
-assert.equal(largerReset.expiresAtFixedTick, 70);
-assert.equal(largerReset.peakSourceEntityId, 7);
+assert.equal(largerPeakWithoutExpiryExtension.appliedDamageFixedPoint, 100);
+assert.equal(largerPeakWithoutExpiryExtension.peakFinalDamageFixedPoint, 700);
+assert.equal(largerPeakWithoutExpiryExtension.expiresAtFixedTick, 69);
+assert.equal(largerPeakWithoutExpiryExtension.peakSourceEntityId, 7);
+const activeNearUint32Boundary = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 0xffffffff - 30,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 600,
+    expiresAtFixedTick: 0xffffffff - 1,
+    peakSourceEntityId: 1,
+    peakSourceIncarnation: 9,
+    candidates: [{ finalDamageFixedPoint: 700, sourceEntityId: 7, sourceIncarnation: 3 }]
+});
+assert.equal(activeNearUint32Boundary.appliedDamageFixedPoint, 100);
+assert.equal(activeNearUint32Boundary.peakFinalDamageFixedPoint, 700);
+assert.equal(activeNearUint32Boundary.expiresAtFixedTick, 0xffffffff - 1);
+assert.equal(activeNearUint32Boundary.peakSourceEntityId, 7);
 const clampedWinner = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 11,
     maximumDamageWindowDurationTicks: 60,
@@ -796,7 +964,8 @@ assert.equal(
     GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
 );
 
-// 실제 연속 fixed tick 산술: 0.1→6→4→8→만료 뒤 0.1을 state chaining으로 고정합니다.
+// 실제 연속 fixed tick 산술: 최초 N+60 expiry를 유지한 채
+// 0.1→6→4→8→만료 뒤 0.1을 state chaining으로 고정합니다.
 const chainedWindowFirst = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 100,
     maximumDamageWindowDurationTicks: 60,
@@ -842,7 +1011,7 @@ assert.deepEqual({
     applied: 590,
     health: 2400,
     peak: 600,
-    expires: 161,
+    expires: 160,
     source: [2, 1],
     event: 590
 });
@@ -871,7 +1040,7 @@ assert.deepEqual({
     applied: 0,
     health: 2400,
     peak: 600,
-    expires: 161,
+    expires: 160,
     source: [2, 1],
     event: 0,
     eventSource: [3, 1]
@@ -897,12 +1066,12 @@ assert.deepEqual({
     applied: 200,
     health: 2200,
     peak: 800,
-    expires: 163,
+    expires: 160,
     source: [4, 1],
     event: 200
 });
 const chainedWindowExpiry = resolveGpuCircleBodyMaximumDamageWindow({
-    fixedTick: 163,
+    fixedTick: 160,
     maximumDamageWindowDurationTicks: 60,
     currentHealthFixedPoint: chainedWindowEight.remainingHealthFixedPoint,
     peakFinalDamageFixedPoint: chainedWindowEight.peakFinalDamageFixedPoint,
@@ -925,7 +1094,7 @@ assert.deepEqual({
     applied: 10,
     health: 2190,
     peak: 10,
-    expires: 223,
+    expires: 220,
     source: [5, 1],
     event: 10
 });
@@ -1100,6 +1269,27 @@ assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
         | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS
 }), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
+    flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+}), 'RangeError');
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
+    flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS
+}), 'RangeError');
+writeGpuCircleContactHandler(storage, 0, {
+    damageSelf: 1,
+    flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+});
+assert.equal(
+    readGpuCircleContactHandler(storage, 0).flags,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
+);
+assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, {
     chaining: 0x80000000
 }), 'RangeError');
 assertThrowsNamed(() => writeGpuCircleContactHandler(storage, 0, null), 'TypeError');
@@ -1200,7 +1390,7 @@ assert.equal(
     GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
 );
 
-// Physics plane의 V5 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
+// Physics plane의 V6 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
 const fixtureStorage = createGpuCircleBodyAbiStorage(1);
 writeGpuCircleBodySpawn(fixtureStorage, 0, {
     position: { x: 1, y: -2 },

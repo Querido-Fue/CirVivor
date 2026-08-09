@@ -35,7 +35,8 @@ export function createGpuCoreProxySpawnIntent(options) {
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
         collisionMask: 0,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY,
-        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
         contactHandler: Object.freeze({
             damageSelf: 0,
             damageOther: 0,

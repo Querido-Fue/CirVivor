@@ -37,16 +37,22 @@ const {
 const { WaveDirector } = await loadGameModule('ingame/flow/wave_director.js');
 const { createTileMap } = await loadGameModule('ingame/map/tile_map.js');
 
-const NORMAL_WAVE_DEFINITION_IDS = Object.freeze([
+const CATALOG_DEFINITION_IDS = Object.freeze([
     basicEnemyData.BASIC_SQUARE_ENEMY_DATA.id,
     basicEnemyData.BASIC_TRIANGLE_ENEMY_DATA.id,
     basicEnemyData.BASIC_ARROW_ENEMY_DATA.id,
     basicEnemyData.BASIC_PENTA_ENEMY_DATA.id,
     basicEnemyData.BASIC_HEXA_ENEMY_DATA.id,
-    basicEnemyData.BASIC_GEN_ENEMY_DATA.id
+    basicEnemyData.BASIC_GEN_ENEMY_DATA.id,
+    basicEnemyData.BASIC_RHOM_ENEMY_DATA.id
 ]);
 const PRODUCTION_WAVE_DEFINITION_IDS = Object.freeze([
-    ...NORMAL_WAVE_DEFINITION_IDS,
+    basicEnemyData.BASIC_CIRCLE_ENEMY_DATA.id,
+    basicEnemyData.BASIC_TRIANGLE_ENEMY_DATA.id,
+    basicEnemyData.BASIC_ARROW_ENEMY_DATA.id,
+    basicEnemyData.BASIC_RHOM_ENEMY_DATA.id,
+    basicEnemyData.BASIC_CIRCLE_ENEMY_DATA.id,
+    basicEnemyData.BASIC_TRIANGLE_ENEMY_DATA.id,
     ARCHER_ENEMY_DATA.id
 ]);
 const PRODUCTION_ARCHER_SPAWN_INDEXES = Object.freeze([6, 13, 20, 27]);
@@ -89,13 +95,13 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA), true);
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA.colorRgba), true);
 
-    assert.equal(basicEnemyData.INGAME_ENEMY_DEFINITIONS.length, 6);
+    assert.equal(basicEnemyData.INGAME_ENEMY_DEFINITIONS.length, 7);
     assert.deepEqual(
         Array.from(
             basicEnemyData.INGAME_ENEMY_DEFINITIONS,
             ({ id }) => id
         ),
-        Array.from(NORMAL_WAVE_DEFINITION_IDS)
+        Array.from(CATALOG_DEFINITION_IDS)
     );
     assert.strictEqual(
         basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID[ARCHER_ENEMY_DATA.id],
@@ -104,7 +110,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     const catalogIds = Object.keys(
         basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID
     );
-    assert.equal(catalogIds.length, 8);
+    assert.equal(catalogIds.length, 9);
     assert.equal(new Set(catalogIds).size, catalogIds.length);
     assert.equal(
         Object.isFrozen(basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID),
@@ -119,22 +125,21 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     assert.equal(basicEnemyData.BASIC_ARROW_ENEMY_DATA.id, 'basic_arrow_01');
 });
 
-test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추가한다', () => {
-    const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
-    const group = phase.spawnGroups[0];
-    assert.equal(phase.startTick, 1);
-    assert.equal(phase.durationTicks, 156);
+test('production corridor timeline은 32/5 C/T/A/M/C/T/Archer cycle을 고정한다', () => {
+    const timelineEntry = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0];
+    const group = timelineEntry.spawnGroups[0];
+    assert.equal(timelineEntry.durationSeconds * 60, 156);
     assert.equal(group.count, 32);
     assert.equal(group.intervalTicks, 5);
     assert.deepEqual(
         Array.from(group.enemyDefinitionIds),
         Array.from(PRODUCTION_WAVE_DEFINITION_IDS)
     );
-    assert.deepEqual(
-        Array.from(group.enemyDefinitionIds).slice(0, 6),
-        Array.from(NORMAL_WAVE_DEFINITION_IDS)
-    );
-    assert.equal(group.enemyDefinitionId, basicEnemyData.BASIC_SQUARE_ENEMY_DATA.id);
+    assert.equal(group.enemyDefinitionId, basicEnemyData.BASIC_CIRCLE_ENEMY_DATA.id);
+    assert.deepEqual({ ...group.routeBinding }, {
+        gateId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].gateId,
+        pathId: CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0].pathId
+    });
     assert.equal(group.policyId, 'corebound');
     assert.deepEqual(Array.from(group.laneOffsetsTiles), [-1.8, -0.6, 0.6, 1.8]);
 
@@ -155,7 +160,7 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
         assert.equal('intent' in entry, false);
         assert.equal(
             entry.commandId,
-            `corridor_eight_wave_01:0:0:${index}`
+            `authored-wave-spawn:corridor_eight_wave_01:main-authored-duration:main-deterministic-cycle:spawn-${index}`
         );
     }
     const archerEntries = director.schedule
@@ -208,7 +213,7 @@ test('production corridor wave는 기존 32/5 계약에 Archer를 7번째로 추
     assert.deepEqual(
         Array.from(replacementArcherEntries, ({ entry }) => entry.commandId),
         PRODUCTION_ARCHER_SPAWN_INDEXES.map(
-            (index) => `corridor_eight_wave_01:0:0:${index}`
+            (index) => `authored-wave-spawn:corridor_eight_wave_01:main-authored-duration:main-deterministic-cycle:spawn-${index}`
         )
     );
     replacementDirector.destroy();

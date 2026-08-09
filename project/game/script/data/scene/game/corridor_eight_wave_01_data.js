@@ -1,9 +1,7 @@
 import {
     BASIC_ARROW_ENEMY_DATA,
-    BASIC_GEN_ENEMY_DATA,
-    BASIC_HEXA_ENEMY_DATA,
-    BASIC_PENTA_ENEMY_DATA,
-    BASIC_SQUARE_ENEMY_DATA,
+    BASIC_CIRCLE_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
 import {
@@ -14,15 +12,17 @@ import { CORRIDOR_EIGHT_MAP_DATA } from './corridor_eight_map_data.js';
 const FIRST_ROUTE = CORRIDOR_EIGHT_MAP_DATA.enemySpawnRoutes[0];
 const SPAWN_COUNT = 32;
 const SPAWN_INTERVAL_TICKS = 5;
-const SPAWN_DURATION_TICKS = ((SPAWN_COUNT - 1) * SPAWN_INTERVAL_TICKS) + 1;
+const SPAWN_DURATION_SECONDS = (
+    (((SPAWN_COUNT - 1) * SPAWN_INTERVAL_TICKS) + 1) / 60
+);
 const LANE_OFFSETS_TILES = Object.freeze([-1.8, -0.6, 0.6, 1.8]);
 const ENEMY_DEFINITION_ID_CYCLE = Object.freeze([
-    BASIC_SQUARE_ENEMY_DATA.id,
+    BASIC_CIRCLE_ENEMY_DATA.id,
     BASIC_TRIANGLE_ENEMY_DATA.id,
     BASIC_ARROW_ENEMY_DATA.id,
-    BASIC_PENTA_ENEMY_DATA.id,
-    BASIC_HEXA_ENEMY_DATA.id,
-    BASIC_GEN_ENEMY_DATA.id,
+    BASIC_RHOM_ENEMY_DATA.id,
+    BASIC_CIRCLE_ENEMY_DATA.id,
+    BASIC_TRIANGLE_ENEMY_DATA.id,
     ARCHER_ENEMY_DATA.id
 ]);
 
@@ -42,17 +42,21 @@ const CORRIDOR_EIGHT_WAVE_01_ENEMY_MODIFIERS = Object.freeze({
     byEnemyDefinitionId: Object.freeze({})
 });
 
-const CORRIDOR_EIGHT_WAVE_01_PHASES = Object.freeze([
+const CORRIDOR_EIGHT_WAVE_01_TIMELINE = Object.freeze([
     Object.freeze({
-        startTick: 1,
-        durationTicks: SPAWN_DURATION_TICKS,
+        timelineEntryId: 'main-authored-duration',
+        type: 'SPAWN_FOR_DURATION',
+        durationSeconds: SPAWN_DURATION_SECONDS,
         spawnGroups: Object.freeze([
             Object.freeze({
                 // singular ID는 이전 WaveDefinition 소비자의 fallback 계약입니다.
-                enemyDefinitionId: BASIC_SQUARE_ENEMY_DATA.id,
+                groupId: 'main-deterministic-cycle',
+                enemyDefinitionId: BASIC_CIRCLE_ENEMY_DATA.id,
                 enemyDefinitionIds: ENEMY_DEFINITION_ID_CYCLE,
-                gateId: FIRST_ROUTE.gateId,
-                pathChoicePolicy: 'fixed-route',
+                routeBinding: Object.freeze({
+                    gateId: FIRST_ROUTE.gateId,
+                    pathId: FIRST_ROUTE.pathId
+                }),
                 count: SPAWN_COUNT,
                 intervalTicks: SPAWN_INTERVAL_TICKS,
                 policyId: 'corebound',
@@ -71,5 +75,5 @@ export const CORRIDOR_EIGHT_WAVE_01_DATA = Object.freeze({
     waveId: 'corridor_eight_wave_01',
     mapId: CORRIDOR_EIGHT_MAP_DATA.id,
     enemyModifiers: CORRIDOR_EIGHT_WAVE_01_ENEMY_MODIFIERS,
-    phases: CORRIDOR_EIGHT_WAVE_01_PHASES
+    timeline: CORRIDOR_EIGHT_WAVE_01_TIMELINE
 });

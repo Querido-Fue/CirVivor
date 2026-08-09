@@ -151,11 +151,14 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
     assert.equal(packedHandler.damageOther, 2.5);
 });
 
-test('named target policy는 Team과 독립적으로 Enemy 129와 Player-damageable 640을 결정한다', () => {
+test('named target policy는 Team과 독립적으로 Enemy/Player/Core/GPU-selected mask를 결정한다', () => {
     assert.equal(Object.isFrozen(PROJECTILE_TARGET_POLICY_ID), true);
     assert.deepEqual({ ...PROJECTILE_TARGET_POLICY_ID }, {
         ENEMY_AND_TERRAIN: 'enemy-and-terrain',
-        PLAYER_DAMAGEABLE_AND_TERRAIN: 'player-damageable-and-terrain'
+        PLAYER_DAMAGEABLE_AND_TERRAIN: 'player-damageable-and-terrain',
+        CORE_PROXY_AND_TERRAIN: 'core-proxy-and-terrain',
+        GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN:
+            'gpu-selected-core-or-player-damageable-and-terrain'
     });
     assert.equal(
         normalizeProjectileTargetPolicyId(),
@@ -183,6 +186,18 @@ test('named target policy는 Team과 독립적으로 Enemy 129와 Player-damagea
         teamId: GAMEPLAY_TEAM_ID.PLAYER,
         targetPolicyId:
             PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+    });
+    const hostileCoreTarget = createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        targetPolicyId: PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN
+    });
+    const hostileGpuSelectedTarget = createGpuProjectileSpawnIntent({
+        ...shared,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID
+                .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN
     });
 
     assert.equal(
@@ -213,6 +228,19 @@ test('named target policy는 Team과 독립적으로 Enemy 129와 Player-damagea
         playerTowerTarget.interactionMask,
         'target policy는 projectile Team에서 추론하지 않습니다.'
     );
+    assert.equal(
+        hostileCoreTarget.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+    );
+    assert.equal(hostileCoreTarget.interactionMask, 384);
+    assert.equal(
+        hostileGpuSelectedTarget.interactionMask,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+    );
+    assert.equal(hostileGpuSelectedTarget.interactionMask, 896);
     assert.throws(
         () => normalizeProjectileTargetPolicyId('kinematic-obstacles'),
         /target policy/

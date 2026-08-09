@@ -12,7 +12,8 @@ export const ENEMY_CAPABILITY_ID = Object.freeze({
     DIRECTIONAL_DEFENSE: 'enemy-directional-defense',
     PROJECTILE_CAPTURE: 'enemy-projectile-capture',
     ROUTE_CLOSURE: 'enemy-route-closure',
-    CORE_IMPACT: 'enemy-core-impact'
+    CORE_IMPACT: 'enemy-core-impact',
+    CHARGE: 'enemy-charge'
 });
 
 /** Runtime/WorldRegistry 경계에서 capability를 primitive로 보존하는 stable bit입니다. */
@@ -27,7 +28,9 @@ export const ENEMY_CAPABILITY_BIT = Object.freeze({
     PROJECTILE_CAPTURE: 0x080,
     ROUTE_CLOSURE: 0x100,
     // 기존 stable bit를 이동시키지 않는 append-only Turn 1 bit입니다.
-    CORE_IMPACT: 0x200
+    CORE_IMPACT: 0x200,
+    // Arrow A의 실제 GPU charge runtime이 소비하는 append-only Turn 2 bit입니다.
+    CHARGE: 0x400
 });
 
 export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
@@ -40,7 +43,8 @@ export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
     [ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE]: ENEMY_CAPABILITY_BIT.DIRECTIONAL_DEFENSE,
     [ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE]: ENEMY_CAPABILITY_BIT.PROJECTILE_CAPTURE,
     [ENEMY_CAPABILITY_ID.ROUTE_CLOSURE]: ENEMY_CAPABILITY_BIT.ROUTE_CLOSURE,
-    [ENEMY_CAPABILITY_ID.CORE_IMPACT]: ENEMY_CAPABILITY_BIT.CORE_IMPACT
+    [ENEMY_CAPABILITY_ID.CORE_IMPACT]: ENEMY_CAPABILITY_BIT.CORE_IMPACT,
+    [ENEMY_CAPABILITY_ID.CHARGE]: ENEMY_CAPABILITY_BIT.CHARGE
 });
 
 export const ENEMY_CAPABILITY_ALL_MASK = Object.values(ENEMY_CAPABILITY_BIT)

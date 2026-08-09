@@ -5,6 +5,9 @@ import {
 import {
     LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES
 } from './enemy_shape_geometry_data.js';
+import {
+    BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE
+} from './basic_rhom_profile_data.js';
 
 /** main GPU enemy의 legacy geometry에서 유도한 단일 원형 collider 반경입니다. */
 export const MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES = (
@@ -25,7 +28,17 @@ export const MAIN_GPU_ENEMY_COLOR_RGBA = Object.freeze([
 export const MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID = 'main-gpu-enemy-physics-01';
 export const MAIN_GPU_ENEMY_COMBAT_PROFILE_ID = 'main-gpu-enemy-combat-01';
 export const CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'core-route-contact-01';
+export const TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID = (
+    'triangle-fast-light-physics-01'
+);
+export const TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID = (
+    'triangle-fast-light-combat-01'
+);
+export const TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID = (
+    'triangle-core-route-fast-01'
+);
 export const ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'archer-core-route-01';
+export const ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID = 'arrow-tower-charge-01';
 export const ARCHER_ATTACK_DEFINITION_ID = 'archer_basic_shot_01';
 
 const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
@@ -36,12 +49,26 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             weight: 1,
             pairCollisionRadiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
             knockbackResistancePolicy: 'inverse-mass'
+        }),
+        Object.freeze({
+            id: TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID,
+            collisionRadiusTiles: MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
+            weight: 0.6,
+            pairCollisionRadiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+            knockbackResistancePolicy: 'inverse-mass'
         })
     ]),
     combat: Object.freeze([
         Object.freeze({
             id: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
             maxHealth: 1,
+            towerContactDamage: 0.1,
+            coreImpactDamage: 1,
+            bountyBudget: 1
+        }),
+        Object.freeze({
+            id: TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
+            maxHealth: 0.7,
             towerContactDamage: 0.1,
             coreImpactDamage: 1,
             bountyBudget: 1
@@ -62,6 +89,19 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             formationPolicy: ENEMY_FORMATION_POLICY.NONE
         }),
         Object.freeze({
+            id: TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'core-route',
+            navigationMode: 'route-flow-field',
+            moveSpeedTilesPerSecond: 3.5,
+            towerEngagement: 'continuous-contact',
+            towerTargetSelection: 'none',
+            towerPhysicalResponse: 'weight-based-pushable',
+            fallback: 'route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.NONE
+        }),
+        Object.freeze({
             id: ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
             navigationObjective: 'core-route',
             navigationMode: 'route-flow-field',
@@ -73,7 +113,33 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             attackDefinitionId: ARCHER_ATTACK_DEFINITION_ID,
             coreImpactPolicy: 'despawn-on-core-impact',
             formationPolicy: ENEMY_FORMATION_POLICY.NONE
-        })
+        }),
+        Object.freeze({
+            id: ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'tower-charge-with-core-fallback',
+            navigationMode: 'gpu-exact-tower-charge',
+            moveSpeedTilesPerSecond: 2.5,
+            towerEngagement: 'charge-contact',
+            towerTargetSelection: 'tracked-exact-single-living-tower',
+            towerPhysicalResponse: 'opposite-contact-recoil',
+            fallback: 'route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.NONE,
+            charge: Object.freeze({
+                windupTicks: 30,
+                windupRangeTiles: 3,
+                chargeSpeedTilesPerSecond: 6,
+                chargeMaxTicks: 60,
+                recoilImpulseTilesPerSecond: 4,
+                recoilTicks: 12,
+                recoverTicks: 30,
+                telegraphStyleCode: 1,
+                telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
+                telegraphRadiusScale: 1.35
+            })
+        }),
+        BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE
     ])
 });
 

@@ -5,10 +5,24 @@ import {
     HOSTILE_ATTACK_DEFINITION_BY_ID
 } from 'data/object/enemy/archer_attack_data.js';
 import {
+    BASIC_RHOM_ATTACK_DEFINITION_BY_ID,
+    HOSTILE_RANGED_DISTANCE_POLICY_ID,
+    HOSTILE_RANGED_MOVEMENT_POLICY_ID,
+    HOSTILE_RANGED_TARGET_SELECTION_POLICY_ID,
+    HOSTILE_RANGED_TARGET_SNAPSHOT_POLICY_ID
+} from 'data/object/enemy/basic_rhom_attack_data.js';
+import {
+    HOSTILE_ATTACK_RUNTIME_DATA
+} from 'data/object/enemy/hostile_attack_runtime_data.js';
+import {
     HOSTILE_BASIC_BULLET_DATA
 } from 'data/object/projectile/hostile_basic_bullet_data.js';
 import {
-    GAMEPLAY_ALLEGIANCE_POLICY
+    HOSTILE_RHOM_PROJECTILE_DATA
+} from 'data/object/projectile/hostile_rhom_projectile_data.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
 import {
     PROJECTILE_TARGET_POLICY_ID
@@ -22,22 +36,52 @@ import {
     GPU_PROJECTILE_SPAWN_MODE,
     GpuProjectileSpawnAdapter
 } from '../projectile/gpu_projectile_spawn_adapter.js';
+import {
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_STATE_FLAGS
+} from '../../physics/gpu/gpu_fixed_primitive_abi.js';
+import {
+    GPU_CORE_PROXY_DEFINITION_ID,
+    GPU_CORE_PROXY_WORLD_KIND_ID
+} from '../core/gpu_core_proxy_spawn_adapter.js';
+import {
+    GPU_TOWER_DEFINITION_ID,
+    GPU_TOWER_WORLD_KIND_ID
+} from '../tower/gpu_tower_spawn_adapter.js';
+import {
+    ENEMY_LIFECYCLE_DISPOSITION_ID
+} from '../../contract/enemy_lifecycle_disposition_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMPLETION_HISTORY_CAPACITY = 2048;
 const EMPTY_COMMAND_IDS = Object.freeze([]);
 const CURRENT_TOWER_TARGET_POLICY = 'current-single-living-tower';
 const CAST_START_TARGET_SNAPSHOT_POLICY = 'cast-start-exact-handle';
+const GPU_DEATH_EVENT_TYPE = 'death';
+const GPU_DEATH_DISPOSITION = 'despawn-requested';
+const HOSTILE_ATTACK_TARGET_MODE = Object.freeze({
+    CURRENT_TOWER: 'current-tower',
+    CORE_PRIORITY_SELECTED: 'core-priority-selected'
+});
 
 export const HOSTILE_ATTACK_COMMAND_NAMESPACE = 'gpu-hostile-archer-shot';
+export const HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE
+    = 'gpu-hostile-rhom-priority-control';
 export const HOSTILE_ATTACK_SHOT_STATE = Object.freeze({
     IDLE: 'IDLE',
     REQUESTED_FOR_FIXED_TICK: 'REQUESTED_FOR_FIXED_TICK',
     GPU_RESOLVE_PENDING: 'GPU_RESOLVE_PENDING'
 });
 
+const DEFAULT_HOSTILE_ENEMY_DEFINITION_BY_ID = INGAME_ENEMY_DEFINITION_BY_ID;
+const DEFAULT_HOSTILE_ATTACK_DEFINITION_BY_ID = Object.freeze({
+    ...HOSTILE_ATTACK_DEFINITION_BY_ID,
+    ...BASIC_RHOM_ATTACK_DEFINITION_BY_ID
+});
 const DEFAULT_HOSTILE_PROJECTILE_DEFINITION_BY_ID = Object.freeze({
-    [HOSTILE_BASIC_BULLET_DATA.id]: HOSTILE_BASIC_BULLET_DATA
+    [HOSTILE_BASIC_BULLET_DATA.id]: HOSTILE_BASIC_BULLET_DATA,
+    [HOSTILE_RHOM_PROJECTILE_DATA.id]: HOSTILE_RHOM_PROJECTILE_DATA
 });
 
 function requireNonEmptyString(value, label) {
@@ -151,15 +195,7 @@ function normalizeAttackDefinition(source, label) {
     if (allegiancePolicy !== GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT) {
         throw new RangeError(`${label}은 inherit-subject allegiance를 사용해야 합니다.`);
     }
-    if (targetPolicyId
-        !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN) {
-        throw new RangeError(`${label}은 Player-damageable target policy를 사용해야 합니다.`);
-    }
-    if (source.targetPolicy !== CURRENT_TOWER_TARGET_POLICY
-        || source.targetSnapshotPolicy !== CAST_START_TARGET_SNAPSHOT_POLICY) {
-        throw new RangeError(`${label}의 Tower target snapshot policy가 올바르지 않습니다.`);
-    }
-    return Object.freeze({
+    const common = {
         id: requireNonEmptyString(source.id, `${label}.id`),
         sourceEnemyDefinitionId: requireNonEmptyString(
             source.sourceEnemyDefinitionId,
@@ -187,12 +223,6 @@ function normalizeAttackDefinition(source, label) {
             source.phaseSpreadTicks,
             `${label}.phaseSpreadTicks`
         ),
-        maximumStartsPerFixedTick: requirePositiveSafeInteger(
-            source.maximumStartsPerFixedTick,
-            `${label}.maximumStartsPerFixedTick`
-        ),
-        targetPolicy: source.targetPolicy,
-        targetSnapshotPolicy: source.targetSnapshotPolicy,
         allegiancePolicy,
         targetPolicyId,
         producerId: requireNonEmptyString(source.producerId, `${label}.producerId`),
@@ -200,6 +230,60 @@ function normalizeAttackDefinition(source, label) {
             source.sourceAbilityId,
             `${label}.sourceAbilityId`
         )
+    };
+    const isCorePrioritySelected = source.targetSelectionPolicy
+        === HOSTILE_RANGED_TARGET_SELECTION_POLICY_ID
+            .CORE_FIRST_IN_RANGE_THEN_TOWER;
+    if (!isCorePrioritySelected) {
+        if (targetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN) {
+            throw new RangeError(
+                `${label}은 Player-damageable target policy를 사용해야 합니다.`
+            );
+        }
+        if (source.targetPolicy !== CURRENT_TOWER_TARGET_POLICY
+            || source.targetSnapshotPolicy !== CAST_START_TARGET_SNAPSHOT_POLICY) {
+            throw new RangeError(
+                `${label}의 Tower target snapshot policy가 올바르지 않습니다.`
+            );
+        }
+        return Object.freeze({
+            ...common,
+            targetMode: HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER,
+            targetPolicy: source.targetPolicy,
+            targetSnapshotPolicy: source.targetSnapshotPolicy
+        });
+    }
+    if (targetPolicyId
+        !== PROJECTILE_TARGET_POLICY_ID
+            .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN
+        || source.targetSnapshotPolicy
+            !== HOSTILE_RANGED_TARGET_SNAPSHOT_POLICY_ID
+                .GPU_FIXED_TICK_EXACT_PRIORITY
+        || source.distancePolicy
+            !== HOSTILE_RANGED_DISTANCE_POLICY_ID.TICK_START_CENTER_INCLUSIVE
+        || source.movementPolicy
+            !== HOSTILE_RANGED_MOVEMENT_POLICY_ID.STOP_WHILE_TARGET_IN_RANGE
+        || source.towerTargetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+        || source.coreTargetPolicyId
+            !== PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN) {
+        throw new RangeError(`${label}의 Core-priority ranged policy가 올바르지 않습니다.`);
+    }
+    return Object.freeze({
+        ...common,
+        targetMode: HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED,
+        targetSelectionPolicy: source.targetSelectionPolicy,
+        targetSnapshotPolicy: source.targetSnapshotPolicy,
+        distancePolicy: source.distancePolicy,
+        movementPolicy: source.movementPolicy,
+        attackRangeTiles: requirePositiveFloat32(
+            source.attackRangeTiles,
+            `${label}.attackRangeTiles`
+        ),
+        coreDamage: requirePositiveFloat32(source.coreDamage, `${label}.coreDamage`),
+        towerTargetPolicyId: source.towerTargetPolicyId,
+        coreTargetPolicyId: source.coreTargetPolicyId
     });
 }
 
@@ -209,7 +293,6 @@ function compileAttackDefinitions(
     projectileDefinitions
 ) {
     const byEnemyDefinitionId = new Map();
-    let maximumStartsPerFixedTick = Number.POSITIVE_INFINITY;
     for (const catalogId of Object.keys(attackDefinitions)) {
         const attack = normalizeAttackDefinition(
             attackDefinitions[catalogId],
@@ -250,6 +333,17 @@ function compileAttackDefinitions(
                 `attack projectile catalog 연결이 올바르지 않습니다: ${attack.id}`
             );
         }
+        if (attack.targetMode === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && (projectileDefinition.coreDamage !== attack.coreDamage
+                || projectileDefinition.requiresExactSelectedTarget !== true
+                || projectileDefinition.towerTargetPolicyId
+                    !== attack.towerTargetPolicyId
+                || projectileDefinition.coreTargetPolicyId
+                    !== attack.coreTargetPolicyId)) {
+            throw new RangeError(
+                `Core-priority projectile metadata 연결이 올바르지 않습니다: ${attack.id}`
+            );
+        }
         if (byEnemyDefinitionId.has(attack.sourceEnemyDefinitionId)) {
             throw new RangeError(
                 `enemy definition에 attack이 중복 연결되었습니다: ${attack.sourceEnemyDefinitionId}`
@@ -257,19 +351,32 @@ function compileAttackDefinitions(
         }
         byEnemyDefinitionId.set(attack.sourceEnemyDefinitionId, Object.freeze({
             attack,
-            projectileDefinition
+            projectileDefinition,
+            expectedSourceMetadata: Object.freeze({
+                definitionId: enemyDefinition.id,
+                enemyDefinitionId: enemyDefinition.id,
+                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                capabilityMask,
+                physicsProfileId: requireNonEmptyString(
+                    enemyDefinition.physicsProfileId,
+                    `enemyDefinitions.${enemyDefinition.id}.physicsProfileId`
+                ),
+                combatProfileId: requireNonEmptyString(
+                    enemyDefinition.combatProfileId,
+                    `enemyDefinitions.${enemyDefinition.id}.combatProfileId`
+                ),
+                behaviorProfileId: requireNonEmptyString(
+                    enemyDefinition.behaviorProfileId,
+                    `enemyDefinitions.${enemyDefinition.id}.behaviorProfileId`
+                )
+            })
         }));
-        maximumStartsPerFixedTick = Math.min(
-            maximumStartsPerFixedTick,
-            attack.maximumStartsPerFixedTick
-        );
     }
     if (byEnemyDefinitionId.size === 0) {
         throw new RangeError('HostileAttackDirector에는 하나 이상의 attack definition이 필요합니다.');
     }
     return Object.freeze({
-        byEnemyDefinitionId,
-        maximumStartsPerFixedTick
+        byEnemyDefinitionId
     });
 }
 
@@ -298,16 +405,84 @@ export function computeHostileAttackPhaseOffset(options = {}) {
 /** Archer targeted shot의 모든 exact cast identity를 포함하는 command ID입니다. */
 export function createHostileAttackCommandId(options = {}) {
     const sourceHandle = freezeHandle(options.sourceHandle, 'sourceHandle');
-    const targetHandle = freezeHandle(options.targetHandle, 'targetHandle');
-    return [
+    const common = [
         HOSTILE_ATTACK_COMMAND_NAMESPACE,
         requirePositiveSafeInteger(options.sessionGeneration, 'sessionGeneration'),
         sourceHandle.entityId,
-        sourceHandle.incarnation,
-        targetHandle.entityId,
-        targetHandle.incarnation,
+        sourceHandle.incarnation
+    ];
+    if (options.coreTargetHandle !== undefined
+        && options.coreTargetHandle !== null) {
+        const coreTargetHandle = freezeHandle(
+            options.coreTargetHandle,
+            'coreTargetHandle'
+        );
+        const towerTargetHandle = options.towerTargetHandle === undefined
+            || options.towerTargetHandle === null
+            ? null
+            : freezeHandle(options.towerTargetHandle, 'towerTargetHandle');
+        common.push(
+            'selected',
+            'core',
+            coreTargetHandle.entityId,
+            coreTargetHandle.incarnation,
+            'tower',
+            towerTargetHandle?.entityId ?? 'none',
+            towerTargetHandle?.incarnation ?? 'none',
+            'range',
+            Math.fround(requirePositiveFloat32(
+                options.attackRangeTiles,
+                'attackRangeTiles'
+            ))
+        );
+    } else {
+        const targetHandle = freezeHandle(options.targetHandle, 'targetHandle');
+        // Legacy Archer command identity를 바꾸지 않습니다.
+        common.push(targetHandle.entityId, targetHandle.incarnation);
+    }
+    common.push(
         requirePositiveSafeInteger(options.targetFixedTick, 'targetFixedTick'),
         requireNonNegativeSafeInteger(options.shotSequence, 'shotSequence'),
+        encodeURIComponent(requireNonEmptyString(
+            options.attackDefinitionId,
+            'attackDefinitionId'
+        ))
+    );
+    return common.join(':');
+}
+
+/** M priority control의 exact candidate/range/tick/sequence/attack fingerprint입니다. */
+export function createHostileAttackControlCommandId(options = {}) {
+    const sourceHandle = freezeHandle(options.sourceHandle, 'sourceHandle');
+    const coreTargetHandle = freezeHandle(
+        options.coreTargetHandle,
+        'coreTargetHandle'
+    );
+    const towerTargetHandle = options.towerTargetHandle === undefined
+        || options.towerTargetHandle === null
+        ? null
+        : freezeHandle(options.towerTargetHandle, 'towerTargetHandle');
+    return [
+        HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE,
+        requirePositiveSafeInteger(options.sessionGeneration, 'sessionGeneration'),
+        sourceHandle.entityId,
+        sourceHandle.incarnation,
+        'core',
+        coreTargetHandle.entityId,
+        coreTargetHandle.incarnation,
+        'tower',
+        towerTargetHandle?.entityId ?? 'none',
+        towerTargetHandle?.incarnation ?? 'none',
+        'range',
+        Math.fround(requirePositiveFloat32(
+            options.attackRangeTiles,
+            'attackRangeTiles'
+        )),
+        requirePositiveSafeInteger(options.targetFixedTick, 'targetFixedTick'),
+        requireNonNegativeSafeInteger(
+            options.selectionSequence,
+            'selectionSequence'
+        ),
         encodeURIComponent(requireNonEmptyString(
             options.attackDefinitionId,
             'attackDefinitionId'
@@ -333,6 +508,10 @@ function createEmptyStageResult(targetFixedTick, overrides = {}) {
         rejectedCount: 0,
         deferredCount: 0,
         commandIds: EMPTY_COMMAND_IDS,
+        controlAttemptedCount: 0,
+        controlAcceptedCount: 0,
+        controlRejectedCount: 0,
+        controlCommandIds: EMPTY_COMMAND_IDS,
         recoveryRequired: false,
         protocolFailure: null,
         ...overrides
@@ -357,6 +536,10 @@ export class HostileAttackDirector {
             throw new TypeError('HostileAttackDirector에는 backend.hasBody()가 필요합니다.');
         }
         this.backendHasBody = (handle) => backend.hasBody(handle);
+        this.readBackendEventProtocol = typeof backend.getEventProtocolState
+            === 'function'
+            ? () => backend.getEventProtocolState()
+            : null;
 
         const endpointStatus = typeof endpoint?.getStatus === 'function'
             ? endpoint.getStatus()
@@ -366,11 +549,11 @@ export class HostileAttackDirector {
             'sessionGeneration'
         );
         this.enemyDefinitions = requireCatalog(
-            options.enemyDefinitions ?? INGAME_ENEMY_DEFINITION_BY_ID,
+            options.enemyDefinitions ?? DEFAULT_HOSTILE_ENEMY_DEFINITION_BY_ID,
             'enemyDefinitions'
         );
         const attackDefinitions = requireCatalog(
-            options.attackDefinitions ?? HOSTILE_ATTACK_DEFINITION_BY_ID,
+            options.attackDefinitions ?? DEFAULT_HOSTILE_ATTACK_DEFINITION_BY_ID,
             'attackDefinitions'
         );
         const projectileDefinitions = requireCatalog(
@@ -384,7 +567,11 @@ export class HostileAttackDirector {
             projectileDefinitions
         );
         this.attackByEnemyDefinitionId = compiled.byEnemyDefinitionId;
-        this.maximumStartsPerFixedTick = compiled.maximumStartsPerFixedTick;
+        this.maximumStartsPerFixedTick = requirePositiveSafeInteger(
+            options.maximumStartsPerFixedTick
+                ?? HOSTILE_ATTACK_RUNTIME_DATA.MAXIMUM_STARTS_PER_FIXED_TICK,
+            'maximumStartsPerFixedTick'
+        );
 
         this.projectileSpawnAdapter = options.projectileSpawnAdapter
             ?? new GpuProjectileSpawnAdapter(endpoint, {
@@ -395,6 +582,8 @@ export class HostileAttackDirector {
                 'HostileAttackDirector에는 projectileSpawnAdapter.requestProjectile()이 필요합니다.'
             );
         }
+        this.priorityTargetControlPort = options.priorityTargetControlPort
+            ?? endpoint;
         this.historyCapacity = requirePositiveSafeInteger(
             options.historyCapacity ?? DEFAULT_COMPLETION_HISTORY_CAPACITY,
             'historyCapacity'
@@ -402,11 +591,17 @@ export class HostileAttackDirector {
 
         this.recordsByHandle = new Map();
         this.pendingByCommandId = new Map();
+        this.pendingControlsByCommandId = new Map();
+        this.committedGpuDeathsByHandle = new Map();
+        this.committedGpuDeathHandleKeys = [];
+        this.committedGpuDeathHandleHead = 0;
         this.terminalCommands = new Map();
         this.terminalCommandIds = [];
         this.terminalCommandHead = 0;
         this.lastBudgetFixedTick = 0;
         this.startAttemptsInBudgetTick = 0;
+        this.nextAttemptOrdinal = 1;
+        this.nextAcceptedAttemptOrdinal = 1;
         this.protocolFailure = null;
         this.recoveryRequired = false;
         this.lastStageResult = createEmptyStageResult(0);
@@ -418,6 +613,7 @@ export class HostileAttackDirector {
     observeCompletedEvents(snapshot = {}) {
         this.#assertUsable();
         let observedDeathCount = 0;
+        let removedSourceCount = 0;
         let removedArcherCount = 0;
         if (snapshot?.protocolFailure) {
             this.#fail(
@@ -449,8 +645,17 @@ export class HostileAttackDirector {
                 observedDeathCount++;
                 try {
                     const handle = freezeHandle(event, 'deathEvent');
+                    const record = this.recordsByHandle.get(handleKey(handle));
+                    if (record?.attack.targetMode
+                        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED) {
+                        this.#rememberCommittedGpuDeath(event, handle);
+                    }
                     if (this.#removeRecord(handle, 'death')) {
-                        removedArcherCount++;
+                        removedSourceCount++;
+                        if (record?.attack.targetMode
+                            === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
+                            removedArcherCount++;
+                        }
                     }
                 } catch (error) {
                     this.#fail(
@@ -464,6 +669,7 @@ export class HostileAttackDirector {
         }
         return Object.freeze({
             observedDeathCount,
+            removedSourceCount,
             removedArcherCount,
             recoveryRequired: this.recoveryRequired,
             protocolFailure: this.protocolFailure
@@ -504,11 +710,23 @@ export class HostileAttackDirector {
             }));
         }
 
+        const hasCurrentTowerSource = Array.from(
+            this.recordsByHandle.values()
+        ).some((record) => (
+            record.attack.targetMode === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+        ));
+        const hasCorePrioritySource = Array.from(
+            this.recordsByHandle.values()
+        ).some((record) => (
+            record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+        ));
         let targetHandle = null;
-        const suppliedTargetHandle = options.targetHandle;
-        if (suppliedTargetHandle !== undefined && suppliedTargetHandle !== null) {
+        if (hasCurrentTowerSource
+            && options.targetHandle !== undefined
+            && options.targetHandle !== null) {
             try {
-                targetHandle = freezeHandle(suppliedTargetHandle, 'targetHandle');
+                targetHandle = freezeHandle(options.targetHandle, 'targetHandle');
             } catch (error) {
                 this.#fail(
                     'shot-stage',
@@ -524,29 +742,218 @@ export class HostileAttackDirector {
                 protocolFailure: this.protocolFailure
             }));
         }
-        if (!targetHandle) {
-            this.telemetry.noTargetTicks++;
-            return this.#saveStageResult(createEmptyStageResult(targetFixedTick, {
-                removedStaleCount
-            }));
+        if (targetHandle) {
+            const targetDisposition = this.#getExactActiveDisposition(targetHandle);
+            if (targetDisposition === 'desync') {
+                this.#fail(
+                    'shot-stage',
+                    'target-registry-backend-desync',
+                    `target exact liveness가 불일치합니다: ${handleKey(targetHandle)}`
+                );
+            } else if (targetDisposition === 'stale') {
+                targetHandle = null;
+            }
         }
-        const targetDisposition = this.#getExactActiveDisposition(targetHandle);
-        if (targetDisposition === 'desync') {
-            this.#fail(
-                'shot-stage',
-                'target-registry-backend-desync',
-                `target exact liveness가 불일치합니다: ${handleKey(targetHandle)}`
-            );
+        let coreTargetHandle = null;
+        let selectedTowerTargetHandle = null;
+        if (hasCorePrioritySource) {
+            try {
+                coreTargetHandle = freezeHandle(
+                    options.coreTargetHandle,
+                    'coreTargetHandle'
+                );
+            } catch (error) {
+                this.#fail(
+                    'shot-stage',
+                    'core-target-handle-contract',
+                    String(error?.message ?? error)
+                );
+            }
+            if (!this.recoveryRequired) {
+                const coreDisposition = this.#getExactActiveDisposition(
+                    coreTargetHandle
+                );
+                const coreView = coreDisposition === 'active'
+                    ? this.registry.copyEntityView(coreTargetHandle, {})
+                    : null;
+                if (coreDisposition !== 'active'
+                    || coreView?.kindId !== GPU_CORE_PROXY_WORLD_KIND_ID
+                    || coreView?.definitionId
+                        !== GPU_CORE_PROXY_DEFINITION_ID
+                    || !sameHandle(coreView, coreTargetHandle)) {
+                    this.#fail(
+                        'shot-stage',
+                        coreDisposition === 'desync'
+                            ? 'core-target-registry-backend-desync'
+                            : 'core-target-invalid',
+                        `Core exact target이 활성 Core proxy가 아닙니다: ${handleKey(coreTargetHandle)}`
+                    );
+                }
+            }
+            if (!this.recoveryRequired
+                && options.towerTargetHandle !== undefined
+                && options.towerTargetHandle !== null) {
+                try {
+                    const candidateTowerHandle = freezeHandle(
+                        options.towerTargetHandle,
+                        'towerTargetHandle'
+                    );
+                    const towerDisposition = this.#getExactActiveDisposition(
+                        candidateTowerHandle
+                    );
+                    const towerView = towerDisposition === 'active'
+                        ? this.registry.copyEntityView(candidateTowerHandle, {})
+                        : null;
+                    if (towerDisposition === 'active'
+                        && towerView?.kindId === GPU_TOWER_WORLD_KIND_ID
+                        && towerView?.definitionId === GPU_TOWER_DEFINITION_ID
+                        && sameHandle(towerView, candidateTowerHandle)) {
+                        selectedTowerTargetHandle = candidateTowerHandle;
+                    } else {
+                        this.telemetry.invalidTowerTargets++;
+                    }
+                } catch {
+                    // M의 Tower exact target은 invalid/stale면 absent로 간주합니다.
+                    this.telemetry.invalidTowerTargets++;
+                }
+            }
+        }
+        if (this.recoveryRequired) {
             return this.#saveStageResult(createEmptyStageResult(targetFixedTick, {
                 removedStaleCount,
                 recoveryRequired: true,
                 protocolFailure: this.protocolFailure
             }));
         }
-        if (targetDisposition === 'stale') {
+        let controlAttemptedCount = 0;
+        let controlAcceptedCount = 0;
+        let controlRejectedCount = 0;
+        const controlCommandIds = [];
+        const priorityRecords = Array.from(
+            this.recordsByHandle.values()
+        ).filter((record) => (
+            record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+        ));
+        priorityRecords.sort((left, right) => (
+            left.createdAtTick - right.createdAtTick
+            || left.handle.entityId - right.handle.entityId
+            || left.handle.incarnation - right.handle.incarnation
+        ));
+        for (const record of priorityRecords) {
+            const controlCommandId = createHostileAttackControlCommandId({
+                sessionGeneration: this.sessionGeneration,
+                sourceHandle: record.handle,
+                coreTargetHandle,
+                towerTargetHandle: selectedTowerTargetHandle,
+                attackRangeTiles: record.attack.attackRangeTiles,
+                targetFixedTick,
+                selectionSequence: record.shotSequence,
+                attackDefinitionId: record.attack.id
+            });
+            controlAttemptedCount++;
+            this.telemetry.controlRequestAttempts++;
+            controlCommandIds.push(controlCommandId);
+            let receipt;
+            try {
+                receipt = this.priorityTargetControlPort
+                    ?.requestPriorityTargetControl?.({
+                        sourceHandle: record.handle,
+                        coreTargetHandle,
+                        towerTargetHandle: selectedTowerTargetHandle,
+                        attackRangeTiles: record.attack.attackRangeTiles,
+                        targetSelectionPolicyId:
+                            record.attack.targetSelectionPolicy,
+                        distancePolicyId: record.attack.distancePolicy,
+                        stopWhileTargetInRange: true,
+                        selectionSequence: record.shotSequence,
+                        attackDefinitionId: record.attack.id,
+                        projectileDefinitionId:
+                            record.projectileDefinition.id,
+                        producerId: record.attack.producerId,
+                        sourceAbilityId: record.attack.sourceAbilityId
+                    }, targetFixedTick, controlCommandId) ?? Object.freeze({
+                        accepted: false,
+                        reason: 'priority-target-control-unavailable'
+                    });
+            } catch (error) {
+                this.#fail(
+                    'priority-control-request',
+                    'request-exception',
+                    String(error?.message ?? error)
+                );
+                controlRejectedCount++;
+                this.telemetry.controlRequestRejected++;
+                break;
+            }
+            if (receipt.accepted !== true
+                || receipt.commandId !== controlCommandId
+                || Number(receipt.targetFixedTick) !== targetFixedTick
+                || !Number.isSafeInteger(receipt.attackFingerprint)
+                || receipt.attackFingerprint <= 0) {
+                controlRejectedCount++;
+                this.telemetry.controlRequestRejected++;
+                this.#fail(
+                    'priority-control-request',
+                    receipt.reason ?? 'receipt-contract',
+                    `M priority control receipt가 요청과 다릅니다: ${controlCommandId}`
+                );
+                break;
+            }
+            if (this.pendingControlsByCommandId.has(controlCommandId)
+                || this.pendingControlsByCommandId.size >= this.historyCapacity) {
+                this.#fail(
+                    'priority-control-request',
+                    this.pendingControlsByCommandId.has(controlCommandId)
+                        ? 'duplicate-pending-control'
+                        : 'control-pending-capacity',
+                    `M priority control pending을 추적할 수 없습니다: ${controlCommandId}`
+                );
+                break;
+            }
+            this.pendingControlsByCommandId.set(controlCommandId, {
+                commandId: controlCommandId,
+                sourceHandle: record.handle,
+                sourceDefinitionId: record.definitionId,
+                coreTargetHandle,
+                towerTargetHandle: selectedTowerTargetHandle,
+                targetFixedTick,
+                selectionSequence: record.shotSequence,
+                attackFingerprint: receipt.attackFingerprint,
+                attackRangeTiles: record.attack.attackRangeTiles,
+                attackDefinitionId: record.attack.id,
+                projectileDefinitionId: record.projectileDefinition.id,
+                producerId: record.attack.producerId,
+                sourceAbilityId: record.attack.sourceAbilityId
+            });
+            record.lastControlFixedTick = targetFixedTick;
+            record.lastControlCommandId = controlCommandId;
+            controlAcceptedCount++;
+            this.telemetry.controlRequestAccepted++;
+        }
+        if (this.recoveryRequired) {
+            return this.#saveStageResult(createEmptyStageResult(targetFixedTick, {
+                removedStaleCount,
+                controlAttemptedCount,
+                controlAcceptedCount,
+                controlRejectedCount,
+                controlCommandIds: controlCommandIds.length > 0
+                    ? Object.freeze(controlCommandIds)
+                    : EMPTY_COMMAND_IDS,
+                recoveryRequired: true,
+                protocolFailure: this.protocolFailure
+            }));
+        }
+        if (!targetHandle && !coreTargetHandle) {
             this.telemetry.noTargetTicks++;
             return this.#saveStageResult(createEmptyStageResult(targetFixedTick, {
-                removedStaleCount
+                removedStaleCount,
+                controlAttemptedCount,
+                controlAcceptedCount,
+                controlRejectedCount,
+                controlCommandIds: controlCommandIds.length > 0
+                    ? Object.freeze(controlCommandIds)
+                    : EMPTY_COMMAND_IDS
             }));
         }
 
@@ -554,9 +961,14 @@ export class HostileAttackDirector {
             record.pendingCommandId === null
             && record.lastAttemptedFixedTick !== targetFixedTick
             && record.nextEligibleFixedTick <= targetFixedTick
+            && (record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+                ? coreTargetHandle !== null
+                : targetHandle !== null)
         ));
         eligible.sort((left, right) => (
-            left.nextEligibleFixedTick - right.nextEligibleFixedTick
+            left.lastAttemptOrdinal - right.lastAttemptOrdinal
+            || left.nextEligibleFixedTick - right.nextEligibleFixedTick
             || left.createdAtTick - right.createdAtTick
             || left.handle.entityId - right.handle.entityId
             || left.handle.incarnation - right.handle.incarnation
@@ -574,14 +986,31 @@ export class HostileAttackDirector {
         let rejectedCount = 0;
         const commandIds = [];
         for (const record of selected) {
+            const isCorePriority = record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED;
             const commandId = createHostileAttackCommandId({
                 sessionGeneration: this.sessionGeneration,
                 sourceHandle: record.handle,
-                targetHandle,
+                ...(isCorePriority ? {
+                    coreTargetHandle,
+                    towerTargetHandle: selectedTowerTargetHandle,
+                    attackRangeTiles: record.attack.attackRangeTiles
+                } : { targetHandle }),
                 targetFixedTick,
                 shotSequence: record.shotSequence,
                 attackDefinitionId: record.attack.id
             });
+            if (!Number.isSafeInteger(this.nextAttemptOrdinal)
+                || this.nextAttemptOrdinal <= 0
+                || this.nextAttemptOrdinal >= Number.MAX_SAFE_INTEGER) {
+                this.#fail(
+                    'shot-request',
+                    'attempt-ordinal-overflow',
+                    'hostile attempt ordinal을 더 이상 발급할 수 없습니다.'
+                );
+                break;
+            }
+            record.lastAttemptOrdinal = this.nextAttemptOrdinal++;
             record.lastAttemptedFixedTick = targetFixedTick;
             this.startAttemptsInBudgetTick++;
             this.telemetry.requestAttempts++;
@@ -589,11 +1018,21 @@ export class HostileAttackDirector {
             commandIds.push(commandId);
             let receipt;
             try {
-                receipt = this.projectileSpawnAdapter.requestProjectile({
-                    mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                const request = {
+                    mode: isCorePriority
+                        ? GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET
+                        : GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
                     definition: record.projectileDefinition,
                     sourceHandle: record.handle,
-                    targetHandle,
+                    ...(isCorePriority ? {
+                        coreTargetHandle,
+                        towerTargetHandle: selectedTowerTargetHandle,
+                        attackRangeTiles: record.attack.attackRangeTiles,
+                        targetSelectionPolicyId:
+                            record.attack.targetSelectionPolicy,
+                        distancePolicyId: record.attack.distancePolicy,
+                        stopWhileTargetInRange: true
+                    } : { targetHandle }),
                     ownerHandle: record.handle,
                     positionOffset: record.attack.positionOffset,
                     targetOffset: record.attack.targetOffset,
@@ -605,7 +1044,8 @@ export class HostileAttackDirector {
                     producerId: record.attack.producerId,
                     sourceAbilityId: record.attack.sourceAbilityId,
                     commandId
-                });
+                };
+                receipt = this.projectileSpawnAdapter.requestProjectile(request);
             } catch (error) {
                 this.#fail(
                     'shot-request',
@@ -619,7 +1059,9 @@ export class HostileAttackDirector {
                 this.telemetry.requestRejected++;
                 rejectedCount++;
                 if (receipt?.reason === 'registry-backend-desync'
-                    || receipt?.reason === 'source-metadata-missing') {
+                    || receipt?.reason === 'source-metadata-missing'
+                    || receipt?.reason
+                        === 'selected-target-fixed-primitive-unavailable') {
                     this.#fail(
                         'shot-request',
                         receipt.reason,
@@ -638,19 +1080,69 @@ export class HostileAttackDirector {
                 );
                 break;
             }
+            if (!Number.isSafeInteger(this.nextAcceptedAttemptOrdinal)
+                || this.nextAcceptedAttemptOrdinal <= 0
+                || this.nextAcceptedAttemptOrdinal >= Number.MAX_SAFE_INTEGER) {
+                this.#fail(
+                    'shot-request',
+                    'attempt-ordinal-overflow',
+                    'hostile accepted attempt ordinal을 더 이상 발급할 수 없습니다.'
+                );
+                break;
+            }
+            const acceptedAttemptOrdinal = this.nextAcceptedAttemptOrdinal++;
+            const matchingPriorityControl = isCorePriority
+                ? this.pendingControlsByCommandId.get(
+                    record.lastControlCommandId
+                ) ?? null
+                : null;
+            if (isCorePriority
+                && (!matchingPriorityControl
+                    || matchingPriorityControl.targetFixedTick
+                        !== targetFixedTick
+                    || matchingPriorityControl.selectionSequence
+                        !== record.shotSequence
+                    || !sameHandle(
+                        matchingPriorityControl.sourceHandle,
+                        record.handle
+                    ))) {
+                this.#fail(
+                    'shot-request',
+                    'matching-priority-control-provenance',
+                    `M shot의 accepted priority control provenance가 없습니다: ${commandId}`
+                );
+                break;
+            }
             const pending = {
                 commandId,
                 state: HOSTILE_ATTACK_SHOT_STATE.REQUESTED_FOR_FIXED_TICK,
                 sourceHandle: record.handle,
-                targetHandle,
+                sourceDefinitionId: record.definitionId,
+                targetMode: record.attack.targetMode,
+                targetHandle: isCorePriority ? null : targetHandle,
+                coreTargetHandle: isCorePriority ? coreTargetHandle : null,
+                towerTargetHandle: isCorePriority
+                    ? selectedTowerTargetHandle
+                    : targetHandle,
                 targetFixedTick,
                 shotSequence: record.shotSequence,
+                selectionSequence: record.shotSequence,
+                attackFingerprint:
+                    matchingPriorityControl?.attackFingerprint ?? null,
+                attackRangeTiles: isCorePriority
+                    ? record.attack.attackRangeTiles
+                    : null,
                 attackDefinitionId: record.attack.id,
+                projectileDefinitionId: record.projectileDefinition.id,
+                producerId: record.attack.producerId,
+                sourceAbilityId: record.attack.sourceAbilityId,
+                acceptedAttemptOrdinal,
                 destinationHandle: null
             };
             record.pendingCommandId = commandId;
             this.pendingByCommandId.set(commandId, pending);
             this.telemetry.requestAccepted++;
+            record.lastAcceptedAttemptOrdinal = acceptedAttemptOrdinal;
             acceptedCount++;
         }
         return this.#saveStageResult(Object.freeze({
@@ -664,6 +1156,12 @@ export class HostileAttackDirector {
                 ? Object.freeze(commandIds)
                 : EMPTY_COMMAND_IDS,
             removedStaleCount,
+            controlAttemptedCount,
+            controlAcceptedCount,
+            controlRejectedCount,
+            controlCommandIds: controlCommandIds.length > 0
+                ? Object.freeze(controlCommandIds)
+                : EMPTY_COMMAND_IDS,
             recoveryRequired: this.recoveryRequired,
             protocolFailure: this.protocolFailure
         }));
@@ -678,7 +1176,12 @@ export class HostileAttackDirector {
             completedCount: 0,
             fixedAcceptedCount: 0,
             fixedRejectedCount: 0,
+            controlCompletedCount: 0,
+            controlRejectedCount: 0,
+            controlTerminalCancelledCount: 0,
+            spawnedSourceCount: 0,
             spawnedArcherCount: 0,
+            removedSourceCount: 0,
             removedArcherCount: 0,
             staleResultCount: 0
         };
@@ -705,17 +1208,86 @@ export class HostileAttackDirector {
             );
             return this.#freezeObservationSummary(summary);
         }
+        const lifecycleContext = this.#preflightLifecycleDespawns(
+            lifecycleResult,
+            tick
+        );
+        if (this.recoveryRequired) {
+            return this.#freezeObservationSummary(summary);
+        }
 
         const observedCurrentCommands = new Set();
-        for (const completion of fixedCommands?.completed ?? []) {
-            const disposition = this.#classifyResultCommand(completion?.commandId);
-            if (disposition === 'unrelated') {
+        const priorityControlResults = fixedCommands
+            ?.priorityTargetControlResults ?? [];
+        if (!Array.isArray(priorityControlResults)) {
+            this.#fail(
+                'priority-control-completion',
+                'result-family-contract',
+                'priorityTargetControlResults 배열이 필요합니다.'
+            );
+            return this.#freezeObservationSummary(summary);
+        }
+        for (const controlResult of priorityControlResults) {
+            const classification = this.#classifyResultCommand(
+                controlResult?.commandId
+            );
+            if (classification.domain === 'unrelated') {
                 continue;
             }
-            if (disposition === 'stale-session') {
+            if (classification.session === 'stale') {
                 this.telemetry.staleOldSessionResults++;
                 summary.staleResultCount++;
                 continue;
+            }
+            if (classification.domain !== 'control') {
+                this.#fail(
+                    'priority-control-completion',
+                    'result-family-contract',
+                    `shot command가 priority control family에 있습니다: ${controlResult.commandId}`
+                );
+                break;
+            }
+            if (observedCurrentCommands.has(controlResult.commandId)) {
+                this.#fail(
+                    'priority-control-completion',
+                    'duplicate-result-entry',
+                    `한 fixed result에 control command가 중복되었습니다: ${controlResult.commandId}`
+                );
+                break;
+            }
+            observedCurrentCommands.add(controlResult.commandId);
+            if (this.#observePriorityControlCompletion(
+                controlResult,
+                lifecycleContext
+            )) {
+                summary.controlCompletedCount++;
+            }
+            if (this.recoveryRequired) {
+                break;
+            }
+        }
+        if (this.recoveryRequired) {
+            return this.#freezeObservationSummary(summary);
+        }
+        for (const completion of fixedCommands?.completed ?? []) {
+            const classification = this.#classifyResultCommand(
+                completion?.commandId
+            );
+            if (classification.domain === 'unrelated') {
+                continue;
+            }
+            if (classification.session === 'stale') {
+                this.telemetry.staleOldSessionResults++;
+                summary.staleResultCount++;
+                continue;
+            }
+            if (classification.domain !== 'shot') {
+                this.#fail(
+                    'fixed-completion',
+                    'result-family-contract',
+                    `control command가 spawn completion family에 있습니다: ${completion.commandId}`
+                );
+                break;
             }
             if (observedCurrentCommands.has(completion.commandId)) {
                 this.#fail(
@@ -726,7 +1298,7 @@ export class HostileAttackDirector {
                 break;
             }
             observedCurrentCommands.add(completion.commandId);
-            if (this.#observeCompletion(completion)) {
+            if (this.#observeCompletion(completion, lifecycleContext)) {
                 summary.completedCount++;
             }
             if (this.recoveryRequired) {
@@ -737,15 +1309,29 @@ export class HostileAttackDirector {
             return this.#freezeObservationSummary(summary);
         }
 
-        for (const accepted of fixedCommands?.sourceRelativeSpawns ?? []) {
-            const disposition = this.#classifyResultCommand(accepted?.commandId);
-            if (disposition === 'unrelated') {
+        const fixedAcceptedSpawns = [
+            ...(fixedCommands?.sourceRelativeSpawns ?? []),
+            ...(fixedCommands?.selectedTargetSpawns ?? [])
+        ];
+        for (const accepted of fixedAcceptedSpawns) {
+            const classification = this.#classifyResultCommand(
+                accepted?.commandId
+            );
+            if (classification.domain === 'unrelated') {
                 continue;
             }
-            if (disposition === 'stale-session') {
+            if (classification.session === 'stale') {
                 this.telemetry.staleOldSessionResults++;
                 summary.staleResultCount++;
                 continue;
+            }
+            if (classification.domain !== 'shot') {
+                this.#fail(
+                    'fixed-commit',
+                    'result-family-contract',
+                    `control command가 spawn acceptance family에 있습니다: ${accepted.commandId}`
+                );
+                break;
             }
             if (observedCurrentCommands.has(accepted.commandId)) {
                 this.#fail(
@@ -768,11 +1354,13 @@ export class HostileAttackDirector {
         }
 
         for (const rejected of fixedCommands?.rejected ?? []) {
-            const disposition = this.#classifyResultCommand(rejected?.commandId);
-            if (disposition === 'unrelated') {
+            const classification = this.#classifyResultCommand(
+                rejected?.commandId
+            );
+            if (classification.domain === 'unrelated') {
                 continue;
             }
-            if (disposition === 'stale-session') {
+            if (classification.session === 'stale') {
                 this.telemetry.staleOldSessionResults++;
                 summary.staleResultCount++;
                 continue;
@@ -786,11 +1374,74 @@ export class HostileAttackDirector {
                 break;
             }
             observedCurrentCommands.add(rejected.commandId);
-            if (this.#observeFixedRejection(rejected, tick)) {
+            if (classification.domain === 'control') {
+                if (this.#observePriorityControlRejection(
+                    rejected,
+                    tick,
+                    lifecycleContext
+                )) {
+                    summary.controlRejectedCount++;
+                }
+            } else if (this.#observeFixedRejection(
+                rejected,
+                tick,
+                lifecycleContext
+            )) {
                 summary.fixedRejectedCount++;
             }
             if (this.recoveryRequired) {
                 break;
+            }
+        }
+        if (this.recoveryRequired) {
+            return this.#freezeObservationSummary(summary);
+        }
+
+        const terminalCancelled = fixedCommands?.ingressOpen === false;
+        if (terminalCancelled) {
+            for (const pending of this.pendingControlsByCommandId.values()) {
+                this.#rememberTerminalCommand(
+                    pending.commandId,
+                    `control:terminal-cancelled:${fixedCommands.ingressCloseReason
+                        ?? 'gameplay-ingress-closed'}`
+                );
+                summary.controlTerminalCancelledCount++;
+                this.telemetry.controlTerminalCancelled++;
+            }
+            this.pendingControlsByCommandId.clear();
+            for (const pending of Array.from(this.pendingByCommandId.values())) {
+                this.#clearPending(
+                    pending,
+                    `terminal-cancelled:${fixedCommands.ingressCloseReason
+                        ?? 'gameplay-ingress-closed'}`
+                );
+                this.telemetry.shotTerminalCancelled++;
+            }
+        } else if (fixedCommands
+            && fixedCommands.priorityTargetControlCompletedThroughTick
+                !== undefined) {
+            const completedThroughTick = Number(
+                fixedCommands.priorityTargetControlCompletedThroughTick
+            );
+            if (!Number.isSafeInteger(completedThroughTick)
+                || completedThroughTick < 0) {
+                this.#fail(
+                    'priority-control-completion',
+                    'completed-through-contract',
+                    'priority control completed-through tick이 유효하지 않습니다.'
+                );
+            } else {
+                for (const pending of this.pendingControlsByCommandId.values()) {
+                    if (pending.targetFixedTick <= completedThroughTick
+                        && !observedCurrentCommands.has(pending.commandId)) {
+                        this.#fail(
+                            'priority-control-completion',
+                            'missing-control-result',
+                            `accepted priority control 결과가 없습니다: ${pending.commandId}`
+                        );
+                        break;
+                    }
+                }
             }
         }
         if (this.recoveryRequired) {
@@ -817,19 +1468,15 @@ export class HostileAttackDirector {
             return this.#freezeObservationSummary(summary);
         }
 
-        for (const despawned of lifecycleResult?.despawned ?? []) {
-            try {
-                const handle = freezeHandle(despawned?.handle, 'despawned.handle');
-                if (this.#removeRecord(handle, 'despawn')) {
+        for (const despawned of lifecycleContext.despawned) {
+            const handle = despawned.handle;
+            const record = this.recordsByHandle.get(handleKey(handle));
+            if (this.#removeRecord(handle, 'despawn')) {
+                summary.removedSourceCount++;
+                if (record?.attack.targetMode
+                    === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
                     summary.removedArcherCount++;
                 }
-            } catch (error) {
-                this.#fail(
-                    'lifecycle-despawn',
-                    'despawn-contract',
-                    String(error?.message ?? error)
-                );
-                break;
             }
         }
         if (this.recoveryRequired) {
@@ -837,8 +1484,12 @@ export class HostileAttackDirector {
         }
 
         for (const spawned of lifecycleResult?.spawned ?? []) {
-            if (this.#observeSpawn(spawned, tick)) {
-                summary.spawnedArcherCount++;
+            const targetMode = this.#observeSpawn(spawned, tick);
+            if (targetMode) {
+                summary.spawnedSourceCount++;
+                if (targetMode === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
+                    summary.spawnedArcherCount++;
+                }
             }
             if (this.recoveryRequired) {
                 break;
@@ -854,38 +1505,77 @@ export class HostileAttackDirector {
             || left.handle.entityId - right.handle.entityId
             || left.handle.incarnation - right.handle.incarnation
         ));
-        const archers = Object.freeze(records.map((record) => Object.freeze({
+        const sources = Object.freeze(records.map((record) => Object.freeze({
             handle: record.handle,
             definitionId: record.definitionId,
             attackDefinitionId: record.attack.id,
+            targetMode: record.attack.targetMode,
             createdAtTick: record.createdAtTick,
             phaseOffsetTicks: record.phaseOffsetTicks,
             nextEligibleFixedTick: record.nextEligibleFixedTick,
             shotSequence: record.shotSequence,
+            lastAttemptOrdinal: record.lastAttemptOrdinal,
+            lastAcceptedAttemptOrdinal: record.lastAcceptedAttemptOrdinal,
+            lastControlFixedTick: record.lastControlFixedTick,
+            lastControlCommandId: record.lastControlCommandId,
             state: record.pendingCommandId
                 ? this.pendingByCommandId.get(record.pendingCommandId)?.state
                     ?? HOSTILE_ATTACK_SHOT_STATE.IDLE
                 : HOSTILE_ATTACK_SHOT_STATE.IDLE,
             pendingCommandId: record.pendingCommandId
         })));
+        // Archer-only compatibility alias. Canonical roster는 sources입니다.
+        const archers = Object.freeze(sources.filter(({ targetMode }) => (
+            targetMode === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+        )));
         const pendingShots = Object.freeze(
             Array.from(this.pendingByCommandId.values(), (pending) => Object.freeze({
                 commandId: pending.commandId,
                 state: pending.state,
                 sourceHandle: pending.sourceHandle,
                 targetHandle: pending.targetHandle,
+                targetMode: pending.targetMode,
+                coreTargetHandle: pending.coreTargetHandle,
+                towerTargetHandle: pending.towerTargetHandle,
                 targetFixedTick: pending.targetFixedTick,
                 shotSequence: pending.shotSequence,
                 attackDefinitionId: pending.attackDefinitionId,
+                acceptedAttemptOrdinal: pending.acceptedAttemptOrdinal,
                 destinationHandle: pending.destinationHandle
+            }))
+        );
+        const pendingControls = Array.from(
+            this.pendingControlsByCommandId.values()
+        );
+        pendingControls.sort((left, right) => (
+            left.targetFixedTick - right.targetFixedTick
+            || left.sourceHandle.entityId - right.sourceHandle.entityId
+            || left.sourceHandle.incarnation - right.sourceHandle.incarnation
+            || left.commandId.localeCompare(right.commandId)
+        ));
+        const frozenPendingControls = Object.freeze(
+            pendingControls.map((pending) => Object.freeze({
+                commandId: pending.commandId,
+                sourceHandle: pending.sourceHandle,
+                sourceDefinitionId: pending.sourceDefinitionId,
+                coreTargetHandle: pending.coreTargetHandle,
+                towerTargetHandle: pending.towerTargetHandle,
+                targetFixedTick: pending.targetFixedTick,
+                selectionSequence: pending.selectionSequence,
+                attackFingerprint: pending.attackFingerprint,
+                attackRangeTiles: pending.attackRangeTiles,
+                attackDefinitionId: pending.attackDefinitionId
             }))
         );
         return Object.freeze({
             sessionGeneration: this.sessionGeneration,
             maximumStartsPerFixedTick: this.maximumStartsPerFixedTick,
             activeSourceCount: records.length,
-            activeArcherCount: records.length,
+            activeArcherCount: archers.length,
             pendingShotCount: pendingShots.length,
+            pendingControlCount: frozenPendingControls.length,
+            committedGpuDeathCount: this.committedGpuDeathsByHandle.size,
+            committedGpuDeathCapacity: this.historyCapacity,
             terminalHistoryCount: this.terminalCommands.size,
             terminalHistoryCapacity: this.historyCapacity,
             shotStartAttemptCount: this.telemetry.requestAttempts,
@@ -894,8 +1584,10 @@ export class HostileAttackDirector {
             recoveryRequired: this.recoveryRequired,
             protocolFailure: this.protocolFailure,
             lastStageResult: this.lastStageResult,
+            sources,
             archers,
             pendingShots,
+            pendingControls: frozenPendingControls,
             telemetry: Object.freeze({ ...this.telemetry }),
             destroyed: this.destroyed
         });
@@ -912,10 +1604,22 @@ export class HostileAttackDirector {
         for (const pending of this.pendingByCommandId.values()) {
             this.#rememberTerminalCommand(pending.commandId, 'abandoned-reset');
         }
+        for (const pending of this.pendingControlsByCommandId.values()) {
+            this.#rememberTerminalCommand(
+                pending.commandId,
+                'control:abandoned-reset'
+            );
+        }
         this.recordsByHandle.clear();
         this.pendingByCommandId.clear();
+        this.pendingControlsByCommandId.clear();
+        this.committedGpuDeathsByHandle.clear();
+        this.committedGpuDeathHandleKeys.length = 0;
+        this.committedGpuDeathHandleHead = 0;
         this.lastBudgetFixedTick = 0;
         this.startAttemptsInBudgetTick = 0;
+        this.nextAttemptOrdinal = 1;
+        this.nextAcceptedAttemptOrdinal = 1;
         this.protocolFailure = null;
         this.recoveryRequired = false;
         this.lastStageResult = createEmptyStageResult(0);
@@ -928,10 +1632,298 @@ export class HostileAttackDirector {
         }
         this.recordsByHandle.clear();
         this.pendingByCommandId.clear();
+        this.pendingControlsByCommandId.clear();
+        this.committedGpuDeathsByHandle.clear();
+        this.committedGpuDeathHandleKeys.length = 0;
+        this.committedGpuDeathHandleHead = 0;
         this.terminalCommands.clear();
         this.terminalCommandIds.length = 0;
         this.terminalCommandHead = 0;
         this.destroyed = true;
+    }
+
+    /**
+     * Lifecycle owner가 이미 exact registry/backend removal을 끝낸 결과를 roster
+     * mutation 전에 한 번만 materialize합니다. unique lifecycle despawn family,
+     * 현재 M record, exact post-commit stale liveness가 모두 맞는 handle만 terminal
+     * source 증거입니다. CORE_IMPACT disposition은 no-bounty까지 추가 검증합니다.
+     */
+    #preflightLifecycleDespawns(lifecycleResult, fixedTick) {
+        const source = lifecycleResult?.despawned ?? [];
+        if (!Array.isArray(source)) {
+            this.#fail(
+                'lifecycle-despawn',
+                'despawn-family-contract',
+                'lifecycle despawned 배열이 필요합니다.'
+            );
+            return Object.freeze({
+                fixedTick,
+                despawned: Object.freeze([]),
+                exactTerminalSourceKeys: Object.freeze([])
+            });
+        }
+        const despawned = [];
+        const exactTerminalSourceKeys = new Set();
+        const seenCommandIds = new Set();
+        const seenHandleKeys = new Set();
+        const fixedCommands = lifecycleResult?.fixedCommands ?? null;
+        const otherResultFamilies = [
+            lifecycleResult?.spawned,
+            lifecycleResult?.rejected,
+            fixedCommands?.priorityTargetControlResults,
+            fixedCommands?.completed,
+            fixedCommands?.sourceRelativeSpawns,
+            fixedCommands?.selectedTargetSpawns,
+            fixedCommands?.rejected
+        ];
+        const otherFamilyCommandIds = new Set();
+        for (const family of otherResultFamilies) {
+            if (!Array.isArray(family)) {
+                continue;
+            }
+            for (const entry of family) {
+                if (typeof entry?.commandId === 'string'
+                    && entry.commandId.length > 0) {
+                    otherFamilyCommandIds.add(entry.commandId);
+                }
+            }
+        }
+        try {
+            for (const raw of source) {
+                const handle = freezeHandle(raw?.handle, 'despawned.handle');
+                const exactHandleKey = handleKey(handle);
+                const commandId = typeof raw?.commandId === 'string'
+                    ? raw.commandId
+                    : null;
+                const reason = typeof raw?.reason === 'string'
+                    ? raw.reason
+                    : null;
+                const disposition = typeof raw?.disposition === 'string'
+                    ? raw.disposition
+                    : null;
+                const bountyEligible = raw?.bountyEligible;
+                if (disposition
+                        === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                    && bountyEligible !== false) {
+                    throw new RangeError(
+                        `CORE_IMPACT lifecycle result가 no-bounty가 아닙니다: ${exactHandleKey}`
+                    );
+                }
+                if (seenHandleKeys.has(exactHandleKey)) {
+                    throw new RangeError(
+                        `lifecycle despawn handle이 중복되었습니다: ${exactHandleKey}`
+                    );
+                }
+                seenHandleKeys.add(exactHandleKey);
+                const hasUniqueCommandId = commandId !== null
+                    && commandId.length > 0;
+                if (hasUniqueCommandId) {
+                    if (seenCommandIds.has(commandId)) {
+                        throw new RangeError(
+                            `lifecycle despawn command가 중복되었습니다: ${commandId}`
+                        );
+                    }
+                    if (otherFamilyCommandIds.has(commandId)) {
+                        throw new RangeError(
+                            `lifecycle despawn command가 다른 result family와 중복되었습니다: ${commandId}`
+                        );
+                    }
+                    seenCommandIds.add(commandId);
+                }
+                const record = this.recordsByHandle.get(exactHandleKey);
+                if (hasUniqueCommandId
+                    && record?.attack.targetMode
+                        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED) {
+                    const dispositionAtObservation
+                        = this.#getExactActiveDisposition(handle);
+                    if (dispositionAtObservation !== 'stale') {
+                        throw new RangeError(
+                            `committed lifecycle source가 exact stale이 아닙니다: ${exactHandleKey}/${dispositionAtObservation}`
+                        );
+                    }
+                    exactTerminalSourceKeys.add(exactHandleKey);
+                }
+                despawned.push(Object.freeze({
+                    commandId,
+                    handle,
+                    reason,
+                    disposition,
+                    bountyEligible
+                }));
+            }
+        } catch (error) {
+            this.#fail(
+                'lifecycle-despawn',
+                'despawn-contract',
+                String(error?.message ?? error)
+            );
+        }
+        return Object.freeze({
+            fixedTick,
+            despawned: Object.freeze(despawned),
+            exactTerminalSourceKeys: Object.freeze([
+                ...exactTerminalSourceKeys
+            ])
+        });
+    }
+
+    /** Endpoint가 contiguous commit한 exact M death만 current protocol-bound 증거로 보관합니다. */
+    #rememberCommittedGpuDeath(event, handle) {
+        const sessionGeneration = Number(event?.sessionGeneration);
+        const deviceGeneration = Number(event?.deviceGeneration);
+        const authoritativeEpoch = Number(event?.authoritativeEpoch);
+        const sourceTick = Number(event?.sourceTick);
+        const sequence = Number(event?.sequence);
+        if (event?.type !== GPU_DEATH_EVENT_TYPE
+            || event?.eventType !== GPU_DEATH_EVENT_TYPE
+            || event?.disposition !== GPU_DEATH_DISPOSITION
+            || !Number.isSafeInteger(sessionGeneration)
+            || sessionGeneration !== this.sessionGeneration
+            || !Number.isSafeInteger(deviceGeneration)
+            || deviceGeneration < 0
+            || !Number.isSafeInteger(authoritativeEpoch)
+            || authoritativeEpoch < 0
+            || !Number.isSafeInteger(sourceTick)
+            || sourceTick <= 0
+            || !Number.isSafeInteger(sequence)
+            || sequence < 0) {
+            return false;
+        }
+        if (this.readBackendEventProtocol !== null) {
+            let current;
+            try {
+                current = this.readBackendEventProtocol();
+            } catch {
+                return false;
+            }
+            if (Number(current?.sessionGeneration) !== sessionGeneration
+                || Number(current?.deviceGeneration) !== deviceGeneration
+                || !Number.isSafeInteger(Number(current?.authoritativeEpoch))
+                || authoritativeEpoch > Number(current.authoritativeEpoch)) {
+                return false;
+            }
+        }
+        const key = handleKey(handle);
+        if (this.committedGpuDeathsByHandle.has(key)) {
+            return true;
+        }
+        this.committedGpuDeathsByHandle.set(key, Object.freeze({
+            handle,
+            sessionGeneration,
+            deviceGeneration,
+            authoritativeEpoch,
+            sourceTick,
+            sequence
+        }));
+        this.committedGpuDeathHandleKeys.push(key);
+        while ((this.committedGpuDeathHandleKeys.length
+                - this.committedGpuDeathHandleHead) > this.historyCapacity) {
+            const forgotten = this.committedGpuDeathHandleKeys[
+                this.committedGpuDeathHandleHead++
+            ];
+            this.committedGpuDeathsByHandle.delete(forgotten);
+        }
+        if (this.committedGpuDeathHandleHead >= this.historyCapacity) {
+            this.committedGpuDeathHandleKeys
+                = this.committedGpuDeathHandleKeys.slice(
+                    this.committedGpuDeathHandleHead
+                );
+            this.committedGpuDeathHandleHead = 0;
+        }
+        this.telemetry.committedGpuDeathSources++;
+        return true;
+    }
+
+    #hasTerminalizedMSourceProof(sourceHandle, lifecycleContext) {
+        const key = handleKey(sourceHandle);
+        return lifecycleContext.exactTerminalSourceKeys.includes(key)
+            || this.committedGpuDeathsByHandle.has(key);
+    }
+
+    /** Pending-only state도 canonical authored provenance로 재구성 가능한지 검증합니다. */
+    #validateTerminalizedMSourcePending(pending, domain, lifecycleContext) {
+        const attackEntry = this.attackByEnemyDefinitionId.get(
+            pending?.sourceDefinitionId
+        );
+        const attack = attackEntry?.attack ?? null;
+        const projectile = attackEntry?.projectileDefinition ?? null;
+        let expectedCommandId = null;
+        try {
+            expectedCommandId = domain === 'control'
+                ? createHostileAttackControlCommandId({
+                    sessionGeneration: this.sessionGeneration,
+                    sourceHandle: pending.sourceHandle,
+                    coreTargetHandle: pending.coreTargetHandle,
+                    towerTargetHandle: pending.towerTargetHandle,
+                    attackRangeTiles: pending.attackRangeTiles,
+                    targetFixedTick: pending.targetFixedTick,
+                    selectionSequence: pending.selectionSequence,
+                    attackDefinitionId: pending.attackDefinitionId
+                })
+                : createHostileAttackCommandId({
+                    sessionGeneration: this.sessionGeneration,
+                    sourceHandle: pending.sourceHandle,
+                    coreTargetHandle: pending.coreTargetHandle,
+                    towerTargetHandle: pending.towerTargetHandle,
+                    attackRangeTiles: pending.attackRangeTiles,
+                    targetFixedTick: pending.targetFixedTick,
+                    shotSequence: pending.shotSequence,
+                    attackDefinitionId: pending.attackDefinitionId
+                });
+        } catch (error) {
+            this.#fail(
+                'source-terminal-cancel',
+                'source-terminal-provenance-contract',
+                String(error?.message ?? error)
+            );
+            return false;
+        }
+        const selectionSequence = domain === 'control'
+            ? pending.selectionSequence
+            : pending.shotSequence;
+        const record = this.recordsByHandle.get(handleKey(pending.sourceHandle));
+        if ((pending.targetMode !== undefined
+                && pending.targetMode
+                    !== HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED)
+            || attack?.targetMode
+                !== HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            || attack?.id !== pending.attackDefinitionId
+            || projectile?.id !== pending.projectileDefinitionId
+            || attack?.producerId !== pending.producerId
+            || attack?.sourceAbilityId !== pending.sourceAbilityId
+            || attack?.attackRangeTiles !== pending.attackRangeTiles
+            || selectionSequence !== pending.selectionSequence
+            || !Number.isSafeInteger(pending.attackFingerprint)
+            || pending.attackFingerprint <= 0
+            || expectedCommandId !== pending.commandId
+            || (record !== undefined
+                && (record.definitionId !== pending.sourceDefinitionId
+                    || record.attack.id !== pending.attackDefinitionId
+                    || record.projectileDefinition.id
+                        !== pending.projectileDefinitionId
+                    || record.shotSequence !== selectionSequence
+                    || (domain === 'shot'
+                        && record.pendingCommandId !== pending.commandId)
+                    || !sameHandle(record.handle, pending.sourceHandle)))) {
+            this.#fail(
+                'source-terminal-cancel',
+                'source-terminal-provenance-contract',
+                `terminalized M ${domain} pending provenance가 canonical하지 않습니다: ${pending.commandId}`
+            );
+            return false;
+        }
+        if (!this.#hasTerminalizedMSourceProof(
+            pending.sourceHandle,
+            lifecycleContext
+        )) {
+            this.#fail(
+                'source-terminal-cancel',
+                'source-terminal-proof-missing',
+                `M source stale 결과에 exact terminal 증거가 없습니다: ${pending.commandId}`
+            );
+            return false;
+        }
+        return true;
     }
 
     #observeSpawn(spawned, fixedTick) {
@@ -972,26 +1964,6 @@ export class HostileAttackDirector {
             this.telemetry.nonAttackSpawnsIgnored++;
             return false;
         }
-        let runtimeTargetingEnabled = false;
-        try {
-            runtimeTargetingEnabled = view.metadata?.capabilityMask !== undefined
-                && hasEnemyCapability(
-                    view.metadata.capabilityMask,
-                    ENEMY_CAPABILITY_ID.TARGETING,
-                    'spawned.metadata.capabilityMask'
-                );
-        } catch (error) {
-            this.#fail(
-                'lifecycle-spawn',
-                'spawn-capability-mask-contract',
-                String(error?.message ?? error)
-            );
-            return false;
-        }
-        if (!runtimeTargetingEnabled) {
-            this.telemetry.nonAttackSpawnsIgnored++;
-            return false;
-        }
         const attackEntry = this.attackByEnemyDefinitionId.get(view.definitionId);
         const enemyDefinition = this.enemyDefinitions[view.definitionId];
         if (!attackEntry
@@ -999,6 +1971,27 @@ export class HostileAttackDirector {
             || enemyDefinition.id !== view.definitionId
             || enemyDefinition.attackDefinitionId !== attackEntry.attack.id) {
             this.telemetry.nonAttackSpawnsIgnored++;
+            return false;
+        }
+        const expectedMetadata = attackEntry.expectedSourceMetadata;
+        const metadata = view.metadata;
+        if (!metadata
+            || metadata.definitionId !== expectedMetadata.definitionId
+            || metadata.enemyDefinitionId
+                !== expectedMetadata.enemyDefinitionId
+            || metadata.teamId !== expectedMetadata.teamId
+            || metadata.capabilityMask !== expectedMetadata.capabilityMask
+            || metadata.physicsProfileId
+                !== expectedMetadata.physicsProfileId
+            || metadata.combatProfileId
+                !== expectedMetadata.combatProfileId
+            || metadata.behaviorProfileId
+                !== expectedMetadata.behaviorProfileId) {
+            this.#fail(
+                'lifecycle-spawn',
+                'spawn-source-metadata-contract',
+                `hostile source metadata가 canonical definition과 다릅니다: ${handleKey(handle)}`
+            );
             return false;
         }
 
@@ -1028,7 +2021,7 @@ export class HostileAttackDirector {
                 this.#fail(
                     'lifecycle-spawn',
                     'entity-id-reuse-overlap',
-                    `같은 entityId의 Archer incarnation이 겹칩니다: ${handle.entityId}`
+                    `같은 entityId의 hostile source incarnation이 겹칩니다: ${handle.entityId}`
                 );
                 return false;
             }
@@ -1053,7 +2046,7 @@ export class HostileAttackDirector {
             this.#fail(
                 'lifecycle-spawn',
                 'created-tick-future',
-                `Archer createdAtTick이 관찰 boundary보다 미래입니다: ${createdAtTick}/${fixedTick}`
+                `hostile source createdAtTick이 관찰 boundary보다 미래입니다: ${createdAtTick}/${fixedTick}`
             );
             return false;
         }
@@ -1090,10 +2083,211 @@ export class HostileAttackDirector {
             nextEligibleFixedTick,
             shotSequence: 0,
             pendingCommandId: null,
-            lastAttemptedFixedTick: 0
+            lastAttemptedFixedTick: 0,
+            lastAttemptOrdinal: 0,
+            lastAcceptedAttemptOrdinal: 0,
+            lastControlFixedTick: 0,
+            lastControlCommandId: null
         });
         this.telemetry.registered++;
+        return attackEntry.attack.targetMode;
+    }
+
+    #observePriorityControlCompletion(entry, lifecycleContext) {
+        const pending = this.pendingControlsByCommandId.get(entry.commandId);
+        if (!pending) {
+            return this.#handleUnknownCurrentResult(
+                entry.commandId,
+                'control-completion',
+                entry.outcome ?? null
+            );
+        }
+        let sourceHandle;
+        let coreTargetHandle;
+        let towerTargetHandle = null;
+        let selectedTargetHandle = null;
+        try {
+            sourceHandle = freezeHandle(
+                entry.sourceHandle,
+                'priorityControlResult.sourceHandle'
+            );
+            coreTargetHandle = freezeHandle(
+                entry.coreTargetHandle,
+                'priorityControlResult.coreTargetHandle'
+            );
+            if (entry.towerTargetHandle !== null
+                && entry.towerTargetHandle !== undefined) {
+                towerTargetHandle = freezeHandle(
+                    entry.towerTargetHandle,
+                    'priorityControlResult.towerTargetHandle'
+                );
+            }
+            if (entry.selectedTargetHandle !== null
+                && entry.selectedTargetHandle !== undefined) {
+                selectedTargetHandle = freezeHandle(
+                    entry.selectedTargetHandle,
+                    'priorityControlResult.selectedTargetHandle'
+                );
+            }
+        } catch (error) {
+            this.#fail(
+                'priority-control-completion',
+                'exact-handle-contract',
+                String(error?.message ?? error)
+            );
+            return false;
+        }
+        const targetFixedTick = Number(entry.targetFixedTick);
+        const sourceTick = Number(entry.sourceTick);
+        const selectionSequence = Number(entry.selectionSequence);
+        const attackFingerprint = Number(entry.attackFingerprint);
+        const result = Number(entry.result);
+        const selectedTargetKind = Number(entry.selectedTargetKind);
+        const stateFlags = Number(entry.stateFlags);
+        const towerMatches = pending.towerTargetHandle === null
+            ? towerTargetHandle === null
+            : sameHandle(towerTargetHandle, pending.towerTargetHandle);
+        if (targetFixedTick !== pending.targetFixedTick
+            || sourceTick !== pending.targetFixedTick
+            || !sameHandle(sourceHandle, pending.sourceHandle)
+            || !sameHandle(coreTargetHandle, pending.coreTargetHandle)
+            || !towerMatches
+            || selectionSequence !== pending.selectionSequence
+            || attackFingerprint !== pending.attackFingerprint
+            || entry.attackRangeTiles !== pending.attackRangeTiles
+            || entry.attackDefinitionId !== pending.attackDefinitionId
+            || entry.projectileDefinitionId
+                !== pending.projectileDefinitionId
+            || entry.producerId !== pending.producerId
+            || entry.sourceAbilityId !== pending.sourceAbilityId) {
+            this.#fail(
+                'priority-control-completion',
+                'control-result-provenance-contract',
+                `priority control result가 pending identity/fingerprint와 다릅니다: ${entry.commandId}`
+            );
+            return false;
+        }
+
+        let expectedOutcome = null;
+        let expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE;
+        let expectedStateFlags = 0;
+        let expectedSelectedTargetHandle = null;
+        if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET) {
+            expectedOutcome = 'no-target';
+            expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW;
+        } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED) {
+            expectedOutcome = 'core';
+            expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE;
+            expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED;
+            expectedSelectedTargetHandle = pending.coreTargetHandle;
+        } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED) {
+            expectedOutcome = 'tower';
+            expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
+            expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
+            expectedSelectedTargetHandle = pending.towerTargetHandle;
+        } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
+            expectedOutcome = 'source-invalid';
+        } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
+            expectedOutcome = 'core-invalid';
+        }
+        const selectedMatches = expectedSelectedTargetHandle === null
+            ? selectedTargetHandle === null
+            : sameHandle(selectedTargetHandle, expectedSelectedTargetHandle);
+        if (expectedOutcome === null
+            || entry.outcome !== expectedOutcome
+            || selectedTargetKind !== expectedKind
+            || stateFlags !== expectedStateFlags
+            || !selectedMatches) {
+            this.#fail(
+                'priority-control-completion',
+                'control-result-state-contract',
+                `priority control result/state 조합이 올바르지 않습니다: ${entry.commandId}`
+            );
+            return false;
+        }
+        if (entry.outcome === 'core-invalid') {
+            this.#fail(
+                'priority-control-completion',
+                entry.outcome,
+                `priority control exact source/Core가 GPU에서 invalid입니다: ${entry.commandId}`
+            );
+            return false;
+        }
+        if (entry.outcome === 'source-invalid') {
+            if (!this.#validateTerminalizedMSourcePending(
+                pending,
+                'control',
+                lifecycleContext
+            )) {
+                return false;
+            }
+            this.pendingControlsByCommandId.delete(entry.commandId);
+            this.#rememberTerminalCommand(
+                entry.commandId,
+                'control:terminal-cancelled:completion:source-invalid'
+            );
+            this.telemetry.sourceTerminalCancelledControls++;
+            return true;
+        }
+        this.pendingControlsByCommandId.delete(entry.commandId);
+        this.#rememberTerminalCommand(
+            entry.commandId,
+            `control:${entry.outcome}`
+        );
+        if (entry.outcome === 'no-target') {
+            this.telemetry.controlCompletedNoTarget++;
+        } else if (entry.outcome === 'core') {
+            this.telemetry.controlCompletedCore++;
+        } else {
+            this.telemetry.controlCompletedTower++;
+        }
         return true;
+    }
+
+    #observePriorityControlRejection(entry, fixedTick, lifecycleContext) {
+        const pending = this.pendingControlsByCommandId.get(entry.commandId);
+        if (!pending) {
+            return this.#handleUnknownCurrentResult(
+                entry.commandId,
+                'control-rejected',
+                entry.code ?? null
+            );
+        }
+        const rejectionCode = String(entry.code ?? 'unknown');
+        if (entry.domain !== 'control'
+            || pending.targetFixedTick !== fixedTick) {
+            this.#fail(
+                'priority-control-rejection',
+                'control-rejection-contract',
+                `priority control rejection domain/tick이 pending과 다릅니다: ${entry.commandId}`
+            );
+            return false;
+        }
+        if (rejectionCode === 'stale-handle'
+            || rejectionCode === 'stale-source') {
+            if (!this.#validateTerminalizedMSourcePending(
+                pending,
+                'control',
+                lifecycleContext
+            )) {
+                return false;
+            }
+            this.pendingControlsByCommandId.delete(entry.commandId);
+            this.#rememberTerminalCommand(
+                entry.commandId,
+                `control:terminal-cancelled:rejected:${rejectionCode}`
+            );
+            this.telemetry.sourceTerminalCancelledControls++;
+            return true;
+        }
+        this.#fail(
+            'priority-control-rejection',
+            rejectionCode,
+            `accepted priority control이 fixed boundary에서 거절되었습니다: ${entry.commandId}`
+        );
+        return false;
     }
 
     #observeFixedAcceptance(entry, fixedTick) {
@@ -1158,7 +2352,7 @@ export class HostileAttackDirector {
         return true;
     }
 
-    #observeFixedRejection(entry, fixedTick) {
+    #observeFixedRejection(entry, fixedTick, lifecycleContext) {
         const pending = this.pendingByCommandId.get(entry.commandId);
         if (!pending) {
             return this.#handleUnknownCurrentResult(
@@ -1194,12 +2388,30 @@ export class HostileAttackDirector {
             );
             return false;
         }
+        if (pending.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && (rejectionCode === 'stale-source'
+                || rejectionCode === 'stale-handle')) {
+            if (!this.#validateTerminalizedMSourcePending(
+                pending,
+                'shot',
+                lifecycleContext
+            )) {
+                return false;
+            }
+            this.#clearPending(
+                pending,
+                `terminal-cancelled:fixed-rejected:${rejectionCode}`
+            );
+            this.telemetry.sourceTerminalCancelledShots++;
+            return true;
+        }
         this.#clearPending(pending, `fixed-rejected:${rejectionCode}`);
         this.telemetry.fixedRejected++;
         return true;
     }
 
-    #observeCompletion(entry) {
+    #observeCompletion(entry, lifecycleContext) {
         const pending = this.pendingByCommandId.get(entry.commandId);
         if (!pending) {
             return this.#handleUnknownCurrentResult(
@@ -1237,12 +2449,83 @@ export class HostileAttackDirector {
         }
         if (entry.outcome !== 'resolved'
             && entry.outcome !== 'source-invalid'
-            && entry.outcome !== 'target-invalid') {
+            && entry.outcome !== 'target-invalid'
+            && entry.outcome !== 'no-target'
+            && entry.outcome !== 'core-invalid'
+            && entry.outcome !== 'tower-invalid') {
             this.#fail(
                 'fixed-completion',
                 'completion-outcome-contract',
                 `지원하지 않는 hostile shot outcome입니다: ${entry.outcome}`
             );
+            return false;
+        }
+        if (pending.targetMode
+            === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && (entry.outcome === 'core-invalid'
+                || entry.outcome === 'target-invalid')) {
+            this.#fail(
+                'fixed-completion',
+                'core-target-invalid',
+                `M shot의 exact Core target이 GPU resolve에서 invalid입니다: ${entry.commandId}`
+            );
+            return false;
+        }
+        if (pending.targetMode
+            === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+            && (entry.outcome === 'no-target'
+                || entry.outcome === 'core-invalid'
+                || entry.outcome === 'tower-invalid')) {
+            this.#fail(
+                'fixed-completion',
+                'completion-outcome-target-mode',
+                `legacy Tower shot에 selected-target outcome이 도착했습니다: ${entry.commandId}`
+            );
+            return false;
+        }
+        if (pending.targetMode
+            === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && entry.outcome === 'resolved') {
+            let selectedTargetHandle;
+            try {
+                selectedTargetHandle = freezeHandle(
+                    entry.targetHandle,
+                    'completed.targetHandle'
+                );
+            } catch (error) {
+                this.#fail(
+                    'fixed-completion',
+                    'selected-target-handle-contract',
+                    String(error?.message ?? error)
+                );
+                return false;
+            }
+            const selectedMatches = entry.selectedTargetKind === 'core'
+                ? sameHandle(selectedTargetHandle, pending.coreTargetHandle)
+                : entry.selectedTargetKind === 'tower'
+                    && pending.towerTargetHandle !== null
+                    && sameHandle(
+                        selectedTargetHandle,
+                        pending.towerTargetHandle
+                    );
+            if (!selectedMatches) {
+                this.#fail(
+                    'fixed-completion',
+                    'selected-target-provenance-contract',
+                    `M resolved target provenance가 pending candidate와 다릅니다: ${entry.commandId}`
+                );
+                return false;
+            }
+        }
+        const terminalizedSelectedSource = pending.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && entry.outcome === 'source-invalid';
+        if (terminalizedSelectedSource
+            && !this.#validateTerminalizedMSourcePending(
+                pending,
+                'shot',
+                lifecycleContext
+            )) {
             return false;
         }
 
@@ -1289,12 +2572,25 @@ export class HostileAttackDirector {
             }
         }
 
-        this.#clearPending(pending, `completion:${entry.outcome}`);
+        this.#clearPending(
+            pending,
+            terminalizedSelectedSource
+                ? 'terminal-cancelled:completion:source-invalid'
+                : `completion:${entry.outcome}`
+        );
         if (entry.outcome === 'resolved') {
             this.telemetry.completedResolved++;
         } else if (entry.outcome === 'source-invalid') {
             this.telemetry.completedSourceInvalid++;
-            this.#removeRecord(pending.sourceHandle, 'source-invalid');
+            if (terminalizedSelectedSource) {
+                this.telemetry.sourceTerminalCancelledShots++;
+            } else {
+                this.#removeRecord(pending.sourceHandle, 'source-invalid');
+            }
+        } else if (entry.outcome === 'no-target'
+            || entry.outcome === 'tower-invalid') {
+            // M no-target/Tower-invalid은 shot sequence와 cooldown을 소비하지 않습니다.
+            this.telemetry.completedNoTarget++;
         } else {
             this.telemetry.completedTargetInvalid++;
         }
@@ -1315,6 +2611,65 @@ export class HostileAttackDirector {
             }
             if (kind === 'fixed-rejected'
                 && terminal === `fixed-rejected:${detail ?? 'unknown'}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'completion'
+                && terminal
+                    === `terminal-cancelled:completion:${detail}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'fixed-rejected'
+                && terminal
+                    === `terminal-cancelled:fixed-rejected:${detail
+                        ?? 'unknown'}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            const exactShotSourceTerminal = terminal.startsWith(
+                'terminal-cancelled:completion:'
+            ) || terminal.startsWith(
+                'terminal-cancelled:fixed-rejected:'
+            );
+            if ((kind === 'completion' || kind === 'fixed-rejected')
+                && terminal.startsWith('terminal-cancelled:')
+                && !exactShotSourceTerminal) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'control-completion'
+                && terminal === `control:${detail}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'control-completion'
+                && terminal
+                    === `control:terminal-cancelled:completion:${detail}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'control-rejected'
+                && terminal
+                    === `control-rejected:${detail ?? 'unknown'}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            if (kind === 'control-rejected'
+                && terminal
+                    === `control:terminal-cancelled:rejected:${detail
+                        ?? 'unknown'}`) {
+                this.telemetry.duplicateResults++;
+                return false;
+            }
+            const exactControlSourceTerminal = terminal.startsWith(
+                'control:terminal-cancelled:completion:'
+            ) || terminal.startsWith(
+                'control:terminal-cancelled:rejected:'
+            );
+            if ((kind === 'control-completion' || kind === 'control-rejected')
+                && terminal.startsWith('control:terminal-cancelled:')
+                && !exactControlSourceTerminal) {
                 this.telemetry.duplicateResults++;
                 return false;
             }
@@ -1390,12 +2745,25 @@ export class HostileAttackDirector {
     }
 
     #classifyResultCommand(commandId) {
-        if (typeof commandId !== 'string'
-            || !commandId.startsWith(`${HOSTILE_ATTACK_COMMAND_NAMESPACE}:`)) {
-            return 'unrelated';
+        const domain = typeof commandId === 'string'
+                && commandId.startsWith(
+                    `${HOSTILE_ATTACK_COMMAND_NAMESPACE}:`
+                )
+            ? 'shot'
+            : typeof commandId === 'string'
+                && commandId.startsWith(
+                    `${HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE}:`
+                )
+                ? 'control'
+                : 'unrelated';
+        if (domain === 'unrelated') {
+            return Object.freeze({ domain, session: 'unrelated' });
         }
+        const namespace = domain === 'shot'
+            ? HOSTILE_ATTACK_COMMAND_NAMESPACE
+            : HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE;
         const sessionText = commandId.slice(
-            HOSTILE_ATTACK_COMMAND_NAMESPACE.length + 1
+            namespace.length + 1
         ).split(':', 1)[0];
         if (!/^[1-9][0-9]*$/.test(sessionText)) {
             this.#fail(
@@ -1403,7 +2771,7 @@ export class HostileAttackDirector {
                 'command-session-contract',
                 `hostile command session identity가 유효하지 않습니다: ${commandId}`
             );
-            return 'current';
+            return Object.freeze({ domain, session: 'current' });
         }
         const sessionGeneration = Number(sessionText);
         if (!Number.isSafeInteger(sessionGeneration)
@@ -1413,10 +2781,10 @@ export class HostileAttackDirector {
                 'command-session-contract',
                 `hostile command session identity가 범위를 벗어났습니다: ${commandId}`
             );
-            return 'current';
+            return Object.freeze({ domain, session: 'current' });
         }
         if (sessionGeneration < this.sessionGeneration) {
-            return 'stale-session';
+            return Object.freeze({ domain, session: 'stale' });
         }
         if (sessionGeneration > this.sessionGeneration) {
             this.#fail(
@@ -1425,7 +2793,7 @@ export class HostileAttackDirector {
                 `현재보다 미래 session의 hostile command 결과입니다: ${commandId}`
             );
         }
-        return 'current';
+        return Object.freeze({ domain, session: 'current' });
     }
 
     #rememberTerminalCommand(commandId, terminal) {
@@ -1489,14 +2857,27 @@ export class HostileAttackDirector {
             requestAttempts: 0,
             requestAccepted: 0,
             requestRejected: 0,
+            controlRequestAttempts: 0,
+            controlRequestAccepted: 0,
+            controlRequestRejected: 0,
+            controlCompletedNoTarget: 0,
+            controlCompletedCore: 0,
+            controlCompletedTower: 0,
+            controlTerminalCancelled: 0,
+            sourceTerminalCancelledControls: 0,
+            sourceTerminalCancelledShots: 0,
+            shotTerminalCancelled: 0,
             fixedAccepted: 0,
             fixedRejected: 0,
             completedResolved: 0,
             completedSourceInvalid: 0,
             completedTargetInvalid: 0,
+            completedNoTarget: 0,
+            invalidTowerTargets: 0,
             budgetDeferred: 0,
             noTargetTicks: 0,
             staleOldSessionResults: 0,
+            committedGpuDeathSources: 0,
             duplicateResults: 0,
             protocolFailures: 0,
             resets: 0

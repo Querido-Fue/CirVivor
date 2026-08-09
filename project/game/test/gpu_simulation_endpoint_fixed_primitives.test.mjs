@@ -6,6 +6,12 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const {
     GpuSimulationEndpoint,
     GpuEnemySimulationEndpoint,
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_SELECTION_POLICY,
+    GPU_BODY_CONTROL_STATE_FLAGS,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     createGpuSimulationEndpoint
 } = await loadGameModule('ingame/gpu_simulation_endpoint.js');
 const {
@@ -16,6 +22,31 @@ const {
 const {
     GPU_SPAWN_PROGRAM_MODE
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
+const {
+    BASIC_RHOM_ENEMY_DATA
+} = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const {
+    BASIC_RHOM_ATTACK_DATA
+} = await loadGameModule('data/object/enemy/basic_rhom_attack_data.js');
+const {
+    HOSTILE_RHOM_PROJECTILE_DATA
+} = await loadGameModule(
+    'data/object/projectile/hostile_rhom_projectile_data.js'
+);
+const {
+    createGpuEnemySpawnIntent
+} = await loadGameModule('ingame/object/enemy/gpu_enemy_spawn_adapter.js');
+const {
+    createGpuCoreProxySpawnIntent
+} = await loadGameModule('ingame/object/core/gpu_core_proxy_spawn_adapter.js');
+const {
+    createGpuTowerSpawnIntent
+} = await loadGameModule('ingame/object/tower/gpu_tower_spawn_adapter.js');
+const {
+    createGpuSelectedTargetProjectileIntent
+} = await loadGameModule(
+    'ingame/object/projectile/gpu_projectile_spawn_adapter.js'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -52,6 +83,7 @@ function createCanonicalSpawnIntent(
 function createPrimitiveBackend(options = {}) {
     const bodies = new Map();
     const calls = [];
+    const completedBodyControlProgramBatches = [];
     const completedSpawnProgramBatches = [];
     const completedEventBatches = [];
     let protocol = Object.freeze({
@@ -66,6 +98,7 @@ function createPrimitiveBackend(options = {}) {
     const backend = {
         bodies,
         calls,
+        completedBodyControlProgramBatches,
         completedSpawnProgramBatches,
         completedEventBatches,
         setProtocol(next) {
@@ -76,6 +109,9 @@ function createPrimitiveBackend(options = {}) {
         },
         queueSpawnProgramBatch(batch) {
             completedSpawnProgramBatches.push(batch);
+        },
+        queueBodyControlProgramBatch(batch) {
+            completedBodyControlProgramBatches.push(batch);
         },
         queueEventBatch(batch) {
             completedEventBatches.push(batch);
@@ -165,6 +201,11 @@ function createPrimitiveBackend(options = {}) {
                 }
                 out.push(batch);
             }
+            return out;
+        },
+        drainCompletedBodyControlProgramBatches(out = []) {
+            calls.push({ type: 'drainCompletedBodyControlProgramBatches' });
+            out.push(...completedBodyControlProgramBatches.splice(0));
             return out;
         },
         hasPendingSpawnProgramThroughTick(sourceTick) {
@@ -313,8 +354,104 @@ function assertNoPublicSlotKeys(value, path = 'root') {
     }
 }
 
+function createRhomPriorityFixture(endpoint) {
+    const route = Object.freeze({
+        gateId: 'endpoint-rhom-gate',
+        pathId: 'endpoint-rhom-route',
+        waypoints: Object.freeze([
+            Object.freeze({ x: 1, y: 1 }),
+            Object.freeze({ x: 8, y: 1 })
+        ])
+    });
+    const rhomIntent = createGpuEnemySpawnIntent({
+        definition: BASIC_RHOM_ENEMY_DATA,
+        route,
+        spawnSequence: 0,
+        waveId: 'endpoint-rhom-priority',
+        policyId: 'endpoint-contract'
+    });
+    const requests = [
+        endpoint.requestSpawn(rhomIntent, 1, 'rhom:source'),
+        endpoint.requestSpawn(
+            createGpuCoreProxySpawnIntent({ position: { x: 8, y: 1 } }),
+            1,
+            'rhom:core'
+        ),
+        endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: { x: 4, y: 1 } }),
+            1,
+            'rhom:tower'
+        ),
+        endpoint.requestSpawn(
+            createCanonicalSpawnIntent('rhom-forged-projectile-source'),
+            1,
+            'rhom:projectile'
+        )
+    ];
+    assert.equal(requests.every(({ accepted }) => accepted), true);
+    const commit = endpoint.commitAtFixedBoundary(1);
+    const handles = new Map(
+        commit.spawned.map(({ commandId, handle }) => [commandId, handle])
+    );
+    return Object.freeze({
+        source: handles.get('rhom:source'),
+        core: handles.get('rhom:core'),
+        tower: handles.get('rhom:tower'),
+        projectile: handles.get('rhom:projectile')
+    });
+}
+
+function createRhomPriorityControl(handles, overrides = {}) {
+    return {
+        sourceHandle: handles.source,
+        coreTargetHandle: handles.core,
+        towerTargetHandle: handles.tower,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        selectionSequence: 0,
+        attackDefinitionId: BASIC_RHOM_ATTACK_DATA.id,
+        projectileDefinitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId,
+        ...overrides
+    };
+}
+
+function createRhomSelectedIntent(handles) {
+    return createGpuSelectedTargetProjectileIntent({
+        definition: HOSTILE_RHOM_PROJECTILE_DATA,
+        sourceHandle: handles.source,
+        ownerHandle: handles.source,
+        coreTargetHandle: handles.core,
+        towerTargetHandle: handles.tower,
+        positionOffset: BASIC_RHOM_ATTACK_DATA.positionOffset,
+        targetOffset: BASIC_RHOM_ATTACK_DATA.targetOffset,
+        launchSpeed: BASIC_RHOM_ATTACK_DATA.launchSpeed,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        targetPolicyId: BASIC_RHOM_ATTACK_DATA.targetPolicyId,
+        allegiancePolicy: BASIC_RHOM_ATTACK_DATA.allegiancePolicy,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId,
+        spawnSequence: 0
+    });
+}
+
 test('generic endpoint는 fixed primitive public seam을 제공하고 private GPU slot을 노출하지 않는다', () => {
     assert.strictEqual(GpuSimulationEndpoint, GpuEnemySimulationEndpoint);
+    assert.equal(GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE, 2);
+    assert.equal(GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED, 2);
+    assert.equal(GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER, 2);
+    assert.equal(
+        GPU_BODY_CONTROL_SELECTION_POLICY.CORE_FIRST_IN_RANGE_THEN_TOWER,
+        1
+    );
+    assert.equal(GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW, 2);
+    assert.equal(GPU_SPAWN_PROGRAM_REQUEST_FLAGS.REQUIRE_EXACT_SELECTED_TARGET, 1);
     const backend = createPrimitiveBackend();
     const endpoint = createEndpoint(backend);
     const source = spawnSource(endpoint);
@@ -353,6 +490,99 @@ test('generic endpoint는 fixed primitive public seam을 제공하고 private GP
     assertNoPublicSlotKeys(control, 'controlReceipt');
     assertNoPublicSlotKeys(committed.fixedCommands, 'fixedCommit');
     assertNoPublicSlotKeys(endpoint.getStatus(), 'status');
+    endpoint.destroy();
+});
+
+test('M public wrapper는 exact canonical source/Core/Tower와 selected policy 증거만 owner에 전달한다', () => {
+    const backend = createPrimitiveBackend({ capacity: 12 });
+    const endpoint = createEndpoint(backend);
+    const handles = createRhomPriorityFixture(endpoint);
+    const control = createRhomPriorityControl(handles);
+
+    const acceptedControl = endpoint.requestPriorityTargetControl(
+        control,
+        2,
+        'rhom:control:valid'
+    );
+    assert.equal(acceptedControl.accepted, true);
+    assert.equal(Number.isSafeInteger(acceptedControl.attackFingerprint), true);
+    assert.ok(acceptedControl.attackFingerprint > 0);
+
+    const selectedIntent = createRhomSelectedIntent(handles);
+    const acceptedSpawn = endpoint.requestSelectedTargetSpawn(
+        selectedIntent,
+        2,
+        'rhom:spawn:valid'
+    );
+    assert.equal(acceptedSpawn.accepted, true);
+
+    assert.deepEqual({ ...endpoint.requestPriorityTargetControl(
+        createRhomPriorityControl(handles, {
+            sourceHandle: handles.projectile
+        }),
+        3,
+        'rhom:control:forged-source-kind'
+    ) }, {
+        accepted: false,
+        reason: 'priority-source-kind-definition-invalid'
+    });
+    assert.deepEqual({ ...endpoint.requestPriorityTargetControl(
+        createRhomPriorityControl(handles, {
+            coreTargetHandle: handles.tower
+        }),
+        3,
+        'rhom:control:forged-core-kind'
+    ) }, {
+        accepted: false,
+        reason: 'priority-core-kind-definition-invalid'
+    });
+    assert.deepEqual({ ...endpoint.requestPriorityTargetControl(
+        createRhomPriorityControl(handles, {
+            projectileDefinitionId: 'forged-projectile'
+        }),
+        3,
+        'rhom:control:forged-profile-evidence'
+    ) }, {
+        accepted: false,
+        reason: 'priority-target-control-evidence-invalid'
+    });
+    assert.deepEqual({ ...endpoint.requestSelectedTargetSpawn({
+        ...selectedIntent,
+        destinationSpawn: {
+            ...selectedIntent.destinationSpawn,
+            definitionId: 'forged-selected-projectile'
+        }
+    }, 3, 'rhom:spawn:forged-definition') }, {
+        accepted: false,
+        reason: 'selected-target-spawn-evidence-invalid'
+    });
+    assert.deepEqual({ ...endpoint.requestSelectedTargetSpawn({
+        ...selectedIntent,
+        destinationSpawn: {
+            ...selectedIntent.destinationSpawn,
+            contactHandler: {
+                ...selectedIntent.destinationSpawn.contactHandler,
+                flags: 0
+            }
+        }
+    }, 3, 'rhom:spawn:forged-handler-policy') }, {
+        accepted: false,
+        reason: 'selected-target-spawn-evidence-invalid'
+    });
+
+    const committed = endpoint.commitAtFixedBoundary(2);
+    assert.equal(committed.fixedCommands.controls.length, 1);
+    assert.equal(committed.fixedCommands.selectedTargetSpawns.length, 1);
+    const staged = backend.calls.findLast(
+        ({ type }) => type === 'stageFixedPrograms'
+    ).plan;
+    assert.equal(staged.controls.length, 1);
+    assert.equal(staged.sourceRelativeSpawns.length, 1);
+    assert.equal(
+        staged.sourceRelativeSpawns[0].destinationSpawn.definitionId,
+        HOSTILE_RHOM_PROJECTILE_DATA.id
+    );
+    assertNoPublicSlotKeys(committed.fixedCommands, 'rhomFixedCommit');
     endpoint.destroy();
 });
 

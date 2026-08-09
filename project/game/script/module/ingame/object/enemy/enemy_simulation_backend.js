@@ -233,11 +233,44 @@ export class EnemySimulationBackend {
         return result;
     }
 
+    /** 완료된 priority BodyControlProgram 결과를 submit 순서대로 이동합니다. */
+    drainCompletedBodyControlProgramBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('BodyControlProgram 완료 출력은 배열이어야 합니다.');
+        }
+        return this.simulation?.drainCompletedBodyControlProgramBatches?.(out) ?? out;
+    }
+
     drainCompletedSpawnProgramBatches(out = []) {
         if (!Array.isArray(out)) {
             throw new TypeError('SpawnProgram 완료 출력은 배열이어야 합니다.');
         }
         return this.simulation?.drainCompletedSpawnProgramBatches?.(out) ?? out;
+    }
+
+    /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */
+    cancelPendingFixedProgramsForTerminal(request) {
+        if (!this.simulation
+            || typeof this.simulation.cancelPendingFixedProgramsForTerminal
+                !== 'function') {
+            return Object.freeze({
+                abiVersion: request?.abiVersion ?? 0,
+                finalFixedTick: request?.finalFixedTick ?? 0,
+                accepted: false,
+                state: 'failed',
+                reason: 'gpu-unavailable',
+                destinationCount: 0,
+                priorityControlCount: 0
+            });
+        }
+        const result = this.simulation
+            .cancelPendingFixedProgramsForTerminal(request);
+        this.#syncState();
+        return result;
+    }
+
+    getTerminalFixedProgramCancelStatus() {
+        return this.simulation?.getTerminalFixedProgramCancelStatus?.() ?? null;
     }
 
     hasPendingSpawnProgramThroughTick(sourceTick) {

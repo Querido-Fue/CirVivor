@@ -2,8 +2,26 @@ import {
     ARCHER_ENEMY_DATA
 } from './archer_enemy_data.js';
 import {
-    createMainGpuEnemyDefinition
+    createMainGpuEnemyDefinition,
+    MAIN_GPU_ENEMY_COLOR_RGBA,
+    MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS
 } from './main_gpu_enemy_definition_data.js';
+import {
+    ENEMY_CAPABILITY_ID
+} from 'ingame/contract/enemy_capability_contract.js';
+import {
+    normalizeEnemyDefinition
+} from 'ingame/contract/enemy_profile_contract.js';
+import {
+    ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID,
+    ENEMY_PROFILE_CATALOG,
+    TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
+    TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
+    TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID
+} from './enemy_profile_catalog_data.js';
+import {
+    BASIC_RHOM_ENEMY_DEFINITION_SOURCE
+} from './basic_rhom_enemy_data.js';
 
 export {
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
@@ -16,13 +34,33 @@ export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_square_01',
     'square'
 );
-export const BASIC_TRIANGLE_ENEMY_DATA = createMainGpuEnemyDefinition(
-    'basic_triangle_01',
-    'triangle'
+export const BASIC_TRIANGLE_ENEMY_DATA = normalizeEnemyDefinition(
+    Object.freeze({
+        id: 'basic_triangle_01',
+        shapeDefinitionId: 'triangle',
+        physicsProfileId: TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID,
+        combatProfileId: TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
+        behaviorProfileId: TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
+        capabilityIds: MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
+        render: Object.freeze({
+            colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
+            radiusScale: 1
+        })
+    }),
+    ENEMY_PROFILE_CATALOG
 );
 export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_arrow_01',
-    'arrow'
+    'arrow',
+    {
+        behaviorProfileId: ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID,
+        capabilityIds: Object.freeze([
+            ENEMY_CAPABILITY_ID.NAVIGATION,
+            ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
+            ENEMY_CAPABILITY_ID.CORE_IMPACT,
+            ENEMY_CAPABILITY_ID.CHARGE
+        ])
+    }
 );
 export const BASIC_PENTA_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_penta_01',
@@ -35,6 +73,10 @@ export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
 export const BASIC_GEN_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_gen_01',
     'gen'
+);
+export const BASIC_RHOM_ENEMY_DATA = normalizeEnemyDefinition(
+    BASIC_RHOM_ENEMY_DEFINITION_SOURCE,
+    ENEMY_PROFILE_CATALOG
 );
 
 /**
@@ -52,7 +94,8 @@ export const INGAME_ENEMY_DEFINITIONS = Object.freeze([
     BASIC_ARROW_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
-    BASIC_GEN_ENEMY_DATA
+    BASIC_GEN_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA
 ]);
 
 /** 적 definition ID를 선언 데이터로 해석하는 읽기 전용 catalog입니다. */

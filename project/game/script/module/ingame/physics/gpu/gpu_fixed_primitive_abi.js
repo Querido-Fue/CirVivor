@@ -2,14 +2,20 @@ const UINT32_MAX = 0xffffffff;
 const LITTLE_ENDIAN = true;
 
 /** Body ABI와 독립적으로 versioning되는 next-fixed control program ABI입니다. */
-export const GPU_BODY_CONTROL_PROGRAM_ABI_VERSION = 1;
+export const GPU_BODY_CONTROL_PROGRAM_ABI_VERSION = 2;
 
 /** Source-relative destination materialization 전용 SpawnProgram ABI version입니다. */
-export const GPU_SPAWN_PROGRAM_ABI_VERSION = 3;
+export const GPU_SPAWN_PROGRAM_ABI_VERSION = 4;
 
 /**
- * Phase 3 fixed primitive의 host/WGSL 공용 byte layout입니다.
- * Body/event ABI v2의 stride나 offset에는 영향을 주지 않습니다.
+ * Core depletion terminal boundary에서 unresolved fixed programs를 exact set으로
+ * 취소하는 host/backend seam version입니다. Body/SpawnProgram byte ABI와 독립입니다.
+ */
+export const GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION = 1;
+
+/**
+ * Fixed primitive의 host/WGSL 공용 byte layout입니다.
+ * Circle Body/event ABI와 독립 version이며 그 stride/offset에는 영향을 주지 않습니다.
  */
 export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
     PROGRAM_HEADER: Object.freeze({
@@ -20,25 +26,55 @@ export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
         STATUS: 12
     }),
     BODY_CONTROL_RECORD: Object.freeze({
-        STRIDE: 32,
+        STRIDE: 96,
         DESTINATION_SLOT: 0,
         ENTITY_ID: 4,
         INCARNATION: 8,
+        MODE_FLAGS: 12,
         FLAGS: 12,
         MOVE_INTENT_X: 16,
         MOVE_INTENT_Y: 20,
-        RESERVED_0: 24,
-        RESERVED_1: 28
+        SOURCE_TICK: 24,
+        SELECTION_SEQUENCE: 28,
+        CORE_TARGET_SLOT: 32,
+        CORE_TARGET_ENTITY_ID: 36,
+        CORE_TARGET_INCARNATION: 40,
+        TOWER_TARGET_SLOT: 44,
+        TOWER_TARGET_ENTITY_ID: 48,
+        TOWER_TARGET_INCARNATION: 52,
+        ATTACK_RANGE: 56,
+        RESULT: 60,
+        SELECTED_TARGET_KIND: 64,
+        SELECTED_TARGET_SLOT: 68,
+        SELECTED_TARGET_ENTITY_ID: 72,
+        SELECTED_TARGET_INCARNATION: 76,
+        STATE_FLAGS: 80,
+        ATTACK_FINGERPRINT: 84,
+        SELECTION_POLICY: 88,
+        RESERVED_0: 92,
+        RESERVED_1: 92
     }),
     BODY_CONTROL_STATE: Object.freeze({
-        STRIDE: 16,
+        STRIDE: 64,
         MOVE_INTENT_X: 0,
         MOVE_INTENT_Y: 4,
         ENTITY_ID: 8,
-        INCARNATION: 12
+        INCARNATION: 12,
+        SOURCE_TICK: 16,
+        SELECTION_SEQUENCE: 20,
+        ATTACK_FINGERPRINT: 24,
+        RESULT: 28,
+        SELECTED_TARGET_KIND: 32,
+        SELECTED_TARGET_SLOT: 36,
+        SELECTED_TARGET_ENTITY_ID: 40,
+        SELECTED_TARGET_INCARNATION: 44,
+        STATE_FLAGS: 48,
+        SELECTION_POLICY: 52,
+        ATTACK_RANGE: 56,
+        RESERVED_0: 60
     }),
     SPAWN_PROGRAM_RECORD: Object.freeze({
-        STRIDE: 80,
+        STRIDE: 96,
         DESTINATION_SLOT: 0,
         DESTINATION_ENTITY_ID: 4,
         DESTINATION_INCARNATION: 8,
@@ -64,7 +100,11 @@ export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
         LAUNCH_VELOCITY_X: 64,
         LAUNCH_VELOCITY_Y: 68,
         SOURCE_VELOCITY_SCALE: 72,
-        RESERVED_0: 76
+        RESERVED_0: 76,
+        SELECTION_SEQUENCE: 80,
+        ATTACK_FINGERPRINT: 84,
+        SELECTED_TARGET_KIND: 88,
+        REQUEST_FLAGS: 92
     }),
     TRACKED_POSE_CONFIG: Object.freeze({
         STRIDE: 16,
@@ -97,11 +137,48 @@ export const GPU_FIXED_PROGRAM_STATUS = Object.freeze({
     RECORD_INVALID: 1 << 2
 });
 
+export const GPU_BODY_CONTROL_PROGRAM_MODE = Object.freeze({
+    MOVE_INTENT: 1,
+    PRIORITY_TARGET_IN_RANGE: 2
+});
+
+export const GPU_BODY_CONTROL_SELECTION_POLICY = Object.freeze({
+    NONE: 0,
+    CORE_FIRST_IN_RANGE_THEN_TOWER: 1
+});
+
+export const GPU_BODY_CONTROL_PROGRAM_RESULT = Object.freeze({
+    PENDING: 0,
+    NO_TARGET: 1,
+    CORE_SELECTED: 2,
+    TOWER_SELECTED: 3,
+    SOURCE_INVALID: 4,
+    CORE_INVALID: 5
+});
+
+export const GPU_BODY_CONTROL_SELECTED_TARGET_KIND = Object.freeze({
+    NONE: 0,
+    CORE: 1,
+    TOWER: 2
+});
+
+export const GPU_BODY_CONTROL_STATE_FLAGS = Object.freeze({
+    STOP: 1 << 0,
+    ROUTE_FLOW: 1 << 1,
+    CORE_SELECTED: 1 << 2,
+    TOWER_SELECTED: 1 << 3
+});
+
 export const GPU_SPAWN_PROGRAM_MODE = Object.freeze({
     SOURCE_RELATIVE_VELOCITY: 1,
     SOURCE_RELATIVE_TICK_START: 1,
     SOURCE_RELATIVE_AIM_POINT: 2,
-    SOURCE_RELATIVE_TARGET_ENTITY: 3
+    SOURCE_RELATIVE_TARGET_ENTITY: 3,
+    SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET: 4
+});
+
+export const GPU_SPAWN_PROGRAM_REQUEST_FLAGS = Object.freeze({
+    REQUIRE_EXACT_SELECTED_TARGET: 1 << 0
 });
 
 export const GPU_SPAWN_PROGRAM_RESULT = Object.freeze({
@@ -109,7 +186,10 @@ export const GPU_SPAWN_PROGRAM_RESULT = Object.freeze({
     RESOLVED: 1,
     SOURCE_INVALID: 2,
     DESTINATION_INVALID: 3,
-    TARGET_INVALID: 4
+    TARGET_INVALID: 4,
+    NO_TARGET: 5,
+    CONTROL_STATE_MISMATCH: 6,
+    CORE_TARGET_INVALID: 7
 });
 
 function requireCapacity(value, label) {
@@ -280,8 +360,19 @@ export function writeGpuBodyControlProgramRecord(storage, index, command) {
     if (slot >= capacity) {
         throw new RangeError('bodyControlProgram.index가 capacity를 벗어났습니다.');
     }
-    const moveX = requireFloat32(command?.moveIntentX, 'command.moveIntentX');
-    const moveY = requireFloat32(command?.moveIntentY, 'command.moveIntentY');
+    const modeFlags = requireUint32(
+        command?.modeFlags ?? GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT,
+        'command.modeFlags',
+        true
+    );
+    if (modeFlags !== GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT
+        && modeFlags !== GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE) {
+        throw new RangeError('지원하지 않는 BodyControlProgram mode입니다.');
+    }
+    const isPrioritySelection = modeFlags
+        === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE;
+    const moveX = requireFloat32(command?.moveIntentX ?? 0, 'command.moveIntentX');
+    const moveY = requireFloat32(command?.moveIntentY ?? 0, 'command.moveIntentY');
     if (Math.hypot(moveX, moveY) > 1.000001) {
         throw new RangeError('body control move intent의 크기는 1 이하여야 합니다.');
     }
@@ -301,21 +392,232 @@ export function writeGpuBodyControlProgramRecord(storage, index, command) {
         command.incarnation,
         'command.incarnation'
     ), LITTLE_ENDIAN);
-    const flags = requireUint32(
-        command.flags ?? 0,
-        'command.flags',
+    const sourceTick = requireUint32(command.sourceTick ?? 0, 'command.sourceTick', true);
+    const selectionSequence = requireUint32(
+        command.selectionSequence ?? 0,
+        'command.selectionSequence',
         true
     );
-    if (flags !== 0
-        || requireUint32(command.reserved0 ?? 0, 'command.reserved0', true) !== 0
-        || requireUint32(command.reserved1 ?? 0, 'command.reserved1', true) !== 0) {
-        throw new RangeError('body control flags/reserved는 Phase 3에서 0이어야 합니다.');
+    const attackFingerprint = requireUint32(
+        command.attackFingerprint ?? 0,
+        'command.attackFingerprint',
+        true
+    );
+    const selectionPolicy = requireUint32(
+        command.selectionPolicy
+            ?? GPU_BODY_CONTROL_SELECTION_POLICY.NONE,
+        'command.selectionPolicy',
+        true
+    );
+    const coreTargetSlot = requireUint32(
+        command.coreTargetSlot ?? UINT32_MAX,
+        'command.coreTargetSlot',
+        true
+    );
+    const coreTargetEntityId = requireUint32(
+        command.coreTargetEntityId ?? UINT32_MAX,
+        'command.coreTargetEntityId',
+        true
+    );
+    const coreTargetIncarnation = requireUint32(
+        command.coreTargetIncarnation ?? UINT32_MAX,
+        'command.coreTargetIncarnation',
+        true
+    );
+    const towerTargetSlot = requireUint32(
+        command.towerTargetSlot ?? UINT32_MAX,
+        'command.towerTargetSlot',
+        true
+    );
+    const towerTargetEntityId = requireUint32(
+        command.towerTargetEntityId ?? UINT32_MAX,
+        'command.towerTargetEntityId',
+        true
+    );
+    const towerTargetIncarnation = requireUint32(
+        command.towerTargetIncarnation ?? UINT32_MAX,
+        'command.towerTargetIncarnation',
+        true
+    );
+    const attackRange = requireFloat32(command.attackRange ?? 0, 'command.attackRange');
+    const ingressResult = requireUint32(
+        command.result ?? GPU_BODY_CONTROL_PROGRAM_RESULT.PENDING,
+        'command.result',
+        true
+    );
+    const selectedTargetKind = requireUint32(
+        command.selectedTargetKind
+            ?? GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+        'command.selectedTargetKind',
+        true
+    );
+    const selectedTargetSlot = requireUint32(
+        command.selectedTargetSlot ?? UINT32_MAX,
+        'command.selectedTargetSlot',
+        true
+    );
+    const selectedTargetEntityId = requireUint32(
+        command.selectedTargetEntityId ?? UINT32_MAX,
+        'command.selectedTargetEntityId',
+        true
+    );
+    const selectedTargetIncarnation = requireUint32(
+        command.selectedTargetIncarnation ?? UINT32_MAX,
+        'command.selectedTargetIncarnation',
+        true
+    );
+    const stateFlags = requireUint32(command.stateFlags ?? 0, 'command.stateFlags', true);
+    const reserved0 = requireUint32(command.reserved0 ?? 0, 'command.reserved0', true);
+    const reserved1 = requireUint32(command.reserved1 ?? 0, 'command.reserved1', true);
+    if (ingressResult !== GPU_BODY_CONTROL_PROGRAM_RESULT.PENDING
+        || selectedTargetKind !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
+        || selectedTargetSlot !== UINT32_MAX
+        || selectedTargetEntityId !== UINT32_MAX
+        || selectedTargetIncarnation !== UINT32_MAX
+        || stateFlags !== 0
+        || reserved0 !== 0
+        || reserved1 !== 0) {
+        throw new RangeError('BodyControlProgram GPU output/reserved ingress는 초기값이어야 합니다.');
     }
-    view.setUint32(offset + abi.FLAGS, flags, LITTLE_ENDIAN);
+    if (isPrioritySelection) {
+        if (moveX !== 0 || moveY !== 0
+            || sourceTick === 0
+            || attackFingerprint === 0
+            || selectionPolicy
+                !== GPU_BODY_CONTROL_SELECTION_POLICY
+                    .CORE_FIRST_IN_RANGE_THEN_TOWER
+            || attackRange <= 0
+            || coreTargetSlot === UINT32_MAX
+            || coreTargetEntityId === 0
+            || coreTargetEntityId === UINT32_MAX
+            || coreTargetIncarnation === 0
+            || coreTargetIncarnation === UINT32_MAX) {
+            throw new RangeError('priority BodyControlProgram ingress 계약이 올바르지 않습니다.');
+        }
+        const towerAbsent = towerTargetSlot === UINT32_MAX
+            && towerTargetEntityId === UINT32_MAX
+            && towerTargetIncarnation === UINT32_MAX;
+        const towerExact = towerTargetSlot !== UINT32_MAX
+            && towerTargetEntityId > 0
+            && towerTargetEntityId !== UINT32_MAX
+            && towerTargetIncarnation > 0
+            && towerTargetIncarnation !== UINT32_MAX;
+        if (!towerAbsent && !towerExact) {
+            throw new RangeError('priority BodyControlProgram Tower identity가 partial입니다.');
+        }
+    } else if (sourceTick !== 0
+        || selectionSequence !== 0
+        || attackFingerprint !== 0
+        || selectionPolicy !== GPU_BODY_CONTROL_SELECTION_POLICY.NONE
+        || attackRange !== 0
+        || coreTargetSlot !== UINT32_MAX
+        || coreTargetEntityId !== UINT32_MAX
+        || coreTargetIncarnation !== UINT32_MAX
+        || towerTargetSlot !== UINT32_MAX
+        || towerTargetEntityId !== UINT32_MAX
+        || towerTargetIncarnation !== UINT32_MAX) {
+        throw new RangeError('move-only BodyControlProgram에는 selection payload를 사용할 수 없습니다.');
+    }
+    view.setUint32(offset + abi.MODE_FLAGS, modeFlags, LITTLE_ENDIAN);
     view.setFloat32(offset + abi.MOVE_INTENT_X, moveX, LITTLE_ENDIAN);
     view.setFloat32(offset + abi.MOVE_INTENT_Y, moveY, LITTLE_ENDIAN);
-    view.setUint32(offset + abi.RESERVED_0, 0, LITTLE_ENDIAN);
-    view.setUint32(offset + abi.RESERVED_1, 0, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SOURCE_TICK, sourceTick, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTION_SEQUENCE, selectionSequence, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.CORE_TARGET_SLOT, coreTargetSlot, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.CORE_TARGET_ENTITY_ID, coreTargetEntityId, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.CORE_TARGET_INCARNATION, coreTargetIncarnation, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.TOWER_TARGET_SLOT, towerTargetSlot, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.TOWER_TARGET_ENTITY_ID, towerTargetEntityId, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.TOWER_TARGET_INCARNATION, towerTargetIncarnation, LITTLE_ENDIAN);
+    view.setFloat32(offset + abi.ATTACK_RANGE, attackRange, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.RESULT, ingressResult, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTED_TARGET_KIND, selectedTargetKind, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTED_TARGET_SLOT, selectedTargetSlot, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTED_TARGET_ENTITY_ID, selectedTargetEntityId, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTED_TARGET_INCARNATION, selectedTargetIncarnation, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.STATE_FLAGS, stateFlags, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.ATTACK_FINGERPRINT, attackFingerprint, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTION_POLICY, selectionPolicy, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.RESERVED_0, reserved0, LITTLE_ENDIAN);
+}
+
+export function readGpuBodyControlProgramRecord(storage, index) {
+    const capacity = requireProgramStorage(
+        storage,
+        GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD.STRIDE,
+        GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+        'bodyControlProgram'
+    );
+    const recordIndex = requireUint32(index, 'bodyControlProgram.index', true);
+    if (recordIndex >= capacity) {
+        throw new RangeError('bodyControlProgram.index가 capacity를 벗어났습니다.');
+    }
+    const abi = GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD;
+    const offset = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+        + (recordIndex * abi.STRIDE);
+    const view = new DataView(storage.buffer);
+    return Object.freeze({
+        destinationSlot: view.getUint32(offset + abi.DESTINATION_SLOT, LITTLE_ENDIAN),
+        entityId: view.getUint32(offset + abi.ENTITY_ID, LITTLE_ENDIAN),
+        incarnation: view.getUint32(offset + abi.INCARNATION, LITTLE_ENDIAN),
+        modeFlags: view.getUint32(offset + abi.MODE_FLAGS, LITTLE_ENDIAN),
+        moveIntentX: view.getFloat32(offset + abi.MOVE_INTENT_X, LITTLE_ENDIAN),
+        moveIntentY: view.getFloat32(offset + abi.MOVE_INTENT_Y, LITTLE_ENDIAN),
+        sourceTick: view.getUint32(offset + abi.SOURCE_TICK, LITTLE_ENDIAN),
+        selectionSequence: view.getUint32(
+            offset + abi.SELECTION_SEQUENCE,
+            LITTLE_ENDIAN
+        ),
+        coreTargetSlot: view.getUint32(offset + abi.CORE_TARGET_SLOT, LITTLE_ENDIAN),
+        coreTargetEntityId: view.getUint32(
+            offset + abi.CORE_TARGET_ENTITY_ID,
+            LITTLE_ENDIAN
+        ),
+        coreTargetIncarnation: view.getUint32(
+            offset + abi.CORE_TARGET_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        towerTargetSlot: view.getUint32(
+            offset + abi.TOWER_TARGET_SLOT,
+            LITTLE_ENDIAN
+        ),
+        towerTargetEntityId: view.getUint32(
+            offset + abi.TOWER_TARGET_ENTITY_ID,
+            LITTLE_ENDIAN
+        ),
+        towerTargetIncarnation: view.getUint32(
+            offset + abi.TOWER_TARGET_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        attackRange: view.getFloat32(offset + abi.ATTACK_RANGE, LITTLE_ENDIAN),
+        result: view.getUint32(offset + abi.RESULT, LITTLE_ENDIAN),
+        selectedTargetKind: view.getUint32(
+            offset + abi.SELECTED_TARGET_KIND,
+            LITTLE_ENDIAN
+        ),
+        selectedTargetSlot: view.getUint32(
+            offset + abi.SELECTED_TARGET_SLOT,
+            LITTLE_ENDIAN
+        ),
+        selectedTargetEntityId: view.getUint32(
+            offset + abi.SELECTED_TARGET_ENTITY_ID,
+            LITTLE_ENDIAN
+        ),
+        selectedTargetIncarnation: view.getUint32(
+            offset + abi.SELECTED_TARGET_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        stateFlags: view.getUint32(offset + abi.STATE_FLAGS, LITTLE_ENDIAN),
+        attackFingerprint: view.getUint32(
+            offset + abi.ATTACK_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        selectionPolicy: view.getUint32(
+            offset + abi.SELECTION_POLICY,
+            LITTLE_ENDIAN
+        ),
+        reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN)
+    });
 }
 
 export function createGpuSpawnProgramStorage(capacity) {
@@ -400,24 +702,23 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         'spawnProgram.reserved0',
         true
     );
-    const reserved1 = requireUint32(
-        record.reserved1 ?? 0,
-        'spawnProgram.reserved1',
-        true
-    );
     if ((modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY
             && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT
-            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY)
+            && modeFlags !== GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+            && modeFlags
+                !== GPU_SPAWN_PROGRAM_MODE
+                    .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET)
         || result !== GPU_SPAWN_PROGRAM_RESULT.PENDING
-        || reserved0 !== 0
-        || reserved1 !== 0) {
+        || reserved0 !== 0) {
         throw new RangeError(
-            'SpawnProgram mode/result/reserved가 v3 ingress 계약과 다릅니다.'
+            'SpawnProgram mode/result/reserved가 v4 ingress 계약과 다릅니다.'
         );
     }
     const isAimPoint = modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT;
     const isTargetEntity = modeFlags
         === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY;
+    const isSelectedTarget = modeFlags
+        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
     if (isAimPoint
         && (record.launchVelocity !== undefined
             || record.launchVelocityX !== undefined
@@ -425,14 +726,14 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
             || record.sourceVelocityScale !== undefined)) {
         throw new TypeError('aim-point SpawnProgram에는 launchVelocity/sourceVelocityScale을 사용할 수 없습니다.');
     }
-    if (!isAimPoint && !isTargetEntity
+    if (!isAimPoint && !isTargetEntity && !isSelectedTarget
         && (record.aimWorldPoint !== undefined
             || record.aimWorldPointX !== undefined
             || record.aimWorldPointY !== undefined
             || record.launchSpeed !== undefined)) {
         throw new TypeError('velocity SpawnProgram에는 aimWorldPoint/launchSpeed를 사용할 수 없습니다.');
     }
-    if (isTargetEntity
+    if ((isTargetEntity || isSelectedTarget)
         && (record.launchVelocity !== undefined
             || record.launchVelocityX !== undefined
             || record.launchVelocityY !== undefined
@@ -440,7 +741,7 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
             || record.aimWorldPoint !== undefined
             || record.aimWorldPointX !== undefined
             || record.aimWorldPointY !== undefined)) {
-        throw new TypeError('target-entity SpawnProgram에는 velocity/aim-point payload를 사용할 수 없습니다.');
+        throw new TypeError('target SpawnProgram에는 velocity/aim-point payload를 사용할 수 없습니다.');
     }
     const targetSlot = requireUint32(
         record.targetSlot ?? UINT32_MAX,
@@ -475,6 +776,14 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
                 'target-entity SpawnProgram에는 exact target identity가 필요합니다.'
             );
         }
+    } else if (isSelectedTarget) {
+        if (targetSlot !== UINT32_MAX
+            || targetEntityId !== UINT32_MAX
+            || targetIncarnation !== UINT32_MAX) {
+            throw new RangeError(
+                'selected-target SpawnProgram ingress target identity는 sentinel이어야 합니다.'
+            );
+        }
     } else if (targetSlot !== UINT32_MAX
         || targetEntityId !== UINT32_MAX
         || targetIncarnation !== UINT32_MAX
@@ -484,19 +793,19 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
             'non-target SpawnProgram의 target identity/offset은 sentinel/zero여야 합니다.'
         );
     }
-    const vector = isTargetEntity
+    const vector = (isTargetEntity || isSelectedTarget)
         ? (record.vector ?? record.modeVector)
         : (isAimPoint
             ? (record.vector ?? record.modeVector ?? record.aimWorldPoint)
             : (record.vector ?? record.modeVector ?? record.launchVelocity));
-    const scalar = (isAimPoint || isTargetEntity)
+    const scalar = (isAimPoint || isTargetEntity || isSelectedTarget)
         ? (record.scalar ?? record.modeScalar ?? record.launchSpeed)
         : (record.scalar ?? record.modeScalar ?? record.sourceVelocityScale ?? 0);
     const vectorX = requireFloat32(
         vector?.x
             ?? (isAimPoint ? record.aimWorldPointX : record.launchVelocityX)
             ?? 0,
-        isTargetEntity
+        (isTargetEntity || isSelectedTarget)
             ? 'spawnProgram.modeVector.x'
             : (isAimPoint
                 ? 'spawnProgram.aimWorldPoint.x'
@@ -506,7 +815,7 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
         vector?.y
             ?? (isAimPoint ? record.aimWorldPointY : record.launchVelocityY)
             ?? 0,
-        isTargetEntity
+        (isTargetEntity || isSelectedTarget)
             ? 'spawnProgram.modeVector.y'
             : (isAimPoint
                 ? 'spawnProgram.aimWorldPoint.y'
@@ -514,20 +823,59 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
     );
     const scalarValue = requireFloat32(
         scalar,
-        (isAimPoint || isTargetEntity)
+        (isAimPoint || isTargetEntity || isSelectedTarget)
             ? 'spawnProgram.launchSpeed'
             : 'spawnProgram.sourceVelocityScale'
     );
-    if ((isAimPoint || isTargetEntity) && scalarValue <= 0) {
+    if ((isAimPoint || isTargetEntity || isSelectedTarget) && scalarValue <= 0) {
         throw new RangeError('aim SpawnProgram launchSpeed는 양의 float32여야 합니다.');
     }
-    if (isTargetEntity && (vectorX !== 0 || vectorY !== 0)) {
-        throw new RangeError('target-entity SpawnProgram modeVector는 zero여야 합니다.');
+    if ((isTargetEntity || isSelectedTarget) && (vectorX !== 0 || vectorY !== 0)) {
+        throw new RangeError('target SpawnProgram modeVector는 zero여야 합니다.');
     }
-    const encodedTargetOffsetX = isTargetEntity ? targetOffsetX : 0;
-    const encodedTargetOffsetY = isTargetEntity ? targetOffsetY : 0;
-    const encodedVectorX = isTargetEntity ? 0 : vectorX;
-    const encodedVectorY = isTargetEntity ? 0 : vectorY;
+    const selectionSequence = requireUint32(
+        record.selectionSequence ?? 0,
+        'spawnProgram.selectionSequence',
+        true
+    );
+    const attackFingerprint = requireUint32(
+        record.attackFingerprint ?? 0,
+        'spawnProgram.attackFingerprint',
+        true
+    );
+    const selectedTargetKind = requireUint32(
+        record.selectedTargetKind
+            ?? GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+        'spawnProgram.selectedTargetKind',
+        true
+    );
+    const requestFlags = requireUint32(
+        record.requestFlags ?? 0,
+        'spawnProgram.requestFlags',
+        true
+    );
+    if (isSelectedTarget) {
+        if (attackFingerprint === 0
+            || selectedTargetKind !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
+            || requestFlags
+                !== GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                    .REQUIRE_EXACT_SELECTED_TARGET) {
+            throw new RangeError('selected-target SpawnProgram selection 계약이 올바르지 않습니다.');
+        }
+    } else if (selectionSequence !== 0
+        || attackFingerprint !== 0
+        || selectedTargetKind !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
+        || requestFlags !== 0) {
+        throw new RangeError('legacy SpawnProgram에는 selected-target payload를 사용할 수 없습니다.');
+    }
+    const encodedTargetOffsetX = (isTargetEntity || isSelectedTarget)
+        ? targetOffsetX
+        : 0;
+    const encodedTargetOffsetY = (isTargetEntity || isSelectedTarget)
+        ? targetOffsetY
+        : 0;
+    const encodedVectorX = (isTargetEntity || isSelectedTarget) ? 0 : vectorX;
+    const encodedVectorY = (isTargetEntity || isSelectedTarget) ? 0 : vectorY;
     view.setUint32(offset + abi.TARGET_SLOT, targetSlot, LITTLE_ENDIAN);
     view.setUint32(offset + abi.TARGET_ENTITY_ID, targetEntityId, LITTLE_ENDIAN);
     view.setUint32(offset + abi.TARGET_INCARNATION, targetIncarnation, LITTLE_ENDIAN);
@@ -564,6 +912,10 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
     view.setFloat32(offset + abi.MODE_VECTOR_Y, encodedVectorY, LITTLE_ENDIAN);
     view.setFloat32(offset + abi.MODE_SCALAR, scalarValue, LITTLE_ENDIAN);
     view.setUint32(offset + abi.RESERVED_0, 0, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTION_SEQUENCE, selectionSequence, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.ATTACK_FINGERPRINT, attackFingerprint, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.SELECTED_TARGET_KIND, selectedTargetKind, LITTLE_ENDIAN);
+    view.setUint32(offset + abi.REQUEST_FLAGS, requestFlags, LITTLE_ENDIAN);
 }
 
 export function readGpuSpawnProgramRecord(storage, index) {
@@ -597,7 +949,9 @@ export function readGpuSpawnProgramRecord(storage, index) {
             aimWorldPoint: vector,
             launchSpeed: scalar
         };
-    } else if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY) {
+    } else if (modeFlags === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+        || modeFlags
+            === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET) {
         modePayload = {
             targetOffset,
             launchSpeed: scalar
@@ -641,6 +995,19 @@ export function readGpuSpawnProgramRecord(storage, index) {
         vector,
         scalar,
         ...modePayload,
-        reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN)
+        reserved0: view.getUint32(offset + abi.RESERVED_0, LITTLE_ENDIAN),
+        selectionSequence: view.getUint32(
+            offset + abi.SELECTION_SEQUENCE,
+            LITTLE_ENDIAN
+        ),
+        attackFingerprint: view.getUint32(
+            offset + abi.ATTACK_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        selectedTargetKind: view.getUint32(
+            offset + abi.SELECTED_TARGET_KIND,
+            LITTLE_ENDIAN
+        ),
+        requestFlags: view.getUint32(offset + abi.REQUEST_FLAGS, LITTLE_ENDIAN)
     });
 }

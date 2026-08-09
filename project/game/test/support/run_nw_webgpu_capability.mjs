@@ -10,14 +10,19 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/archer_attack_data.js',
     'data/object/enemy/archer_enemy_data.js',
     'data/object/enemy/basic_circle_enemy_data.js',
+    'data/object/enemy/basic_rhom_attack_data.js',
+    'data/object/enemy/basic_rhom_enemy_data.js',
+    'data/object/enemy/basic_rhom_profile_data.js',
     'data/object/enemy/enemy_ai_data.js',
     'data/object/enemy/enemy_catalog_data.js',
     'data/object/enemy/enemy_profile_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
+    'data/object/enemy/hostile_attack_runtime_data.js',
     'data/object/enemy/main_gpu_enemy_definition_data.js',
     'data/object/core/the_core_data.js',
     'data/object/projectile/basic_bullet_data.js',
     'data/object/projectile/hostile_basic_bullet_data.js',
+    'data/object/projectile/hostile_rhom_projectile_data.js',
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
@@ -32,6 +37,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/projectile_target_policy_contract.js',
     'module/ingame/contract/run_outcome_contract.js',
     'module/ingame/game_world_session_mode.js',
+    'module/ingame/flow/authored_wave_timeline_contract.js',
     'module/ingame/flow/wave_director.js',
     'module/ingame/gpu_simulation_endpoint.js',
     'module/ingame/map/tile_map.js',
@@ -132,6 +138,59 @@ function assertDeadControlRaceResult(result) {
             })}`
         );
     }
+}
+
+function assertDedicatedFixtureResult(result, fixtureStage) {
+    let fixture = null;
+    let scenarioValid = true;
+
+    if (fixtureStage === 'enemy-arrow-charge') {
+        fixture = result?.productionEnemyArrowCharge;
+    } else if (fixtureStage === 'maximum-damage-window') {
+        fixture = result?.productionMaximumDamageWindow;
+    } else if (fixtureStage === 'enemy-rhom-priority') {
+        fixture = result?.productionEnemyRhomPriority;
+        scenarioValid = result?.productionEnemyRhomPriority?.scenario
+            === 'rhom-core-priority-selected-target';
+    }
+
+    const fixtureExists = fixture !== null
+        && typeof fixture === 'object'
+        && !Array.isArray(fixture);
+    const valid = result?.status === 'pass'
+        && fixtureExists
+        && scenarioValid
+        && result.uncapturedErrorCount === 0
+        && result.deviceLostReason === 'destroyed';
+    if (!valid) {
+        throw new Error(
+            `NW ${fixtureStage} 결과 계약 실패: ${JSON.stringify({
+                fixture,
+                fixtureExists,
+                scenarioValid,
+                status: result?.status,
+                uncapturedErrorCount: result?.uncapturedErrorCount,
+                deviceLostReason: result?.deviceLostReason
+            })}`
+        );
+    }
+}
+
+function assertFixtureStageResult(result) {
+    const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
+    if (fixtureStage === 'full') {
+        assertDeadControlRaceResult(result);
+        return;
+    }
+    if (
+        fixtureStage === 'enemy-arrow-charge'
+        || fixtureStage === 'maximum-damage-window'
+        || fixtureStage === 'enemy-rhom-priority'
+    ) {
+        assertDedicatedFixtureResult(result, fixtureStage);
+        return;
+    }
+    throw new Error(`지원하지 않는 NW WebGPU fixture stage입니다: ${fixtureStage}`);
 }
 
 function waitForChild(child) {
@@ -340,7 +399,7 @@ async function runHarness() {
                 || `NW.js WebGPU capability 실패: exit=${exit.exitCode}, signal=${exit.signal}`
             );
         }
-        assertDeadControlRaceResult(result);
+        assertFixtureStageResult(result);
 
         console.log(JSON.stringify(result, null, 2));
         await removeRunDirectory(runDirectory);

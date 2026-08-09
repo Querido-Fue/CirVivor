@@ -1,6 +1,7 @@
 import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -15,7 +16,10 @@ import {
     resolveGameplayAllegianceTeam
 } from '../../contract/gameplay_team_contract.js';
 import {
+    PROJECTILE_CORE_DAMAGE_REQUEST_POLICY_ID,
     PROJECTILE_TARGET_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_POLICY_ID,
     normalizeProjectileTargetPolicyId
 } from '../../contract/projectile_target_policy_contract.js';
 import {
@@ -31,8 +35,13 @@ export const GPU_PROJECTILE_SPAWN_MODE = Object.freeze({
     ABSOLUTE: 'absolute',
     SOURCE_RELATIVE_VELOCITY: 'source-relative-velocity',
     SOURCE_RELATIVE_AIM_POINT: 'source-relative-aim-point',
-    SOURCE_RELATIVE_TARGET_ENTITY: 'source-relative-target-entity'
+    SOURCE_RELATIVE_TARGET_ENTITY: 'source-relative-target-entity',
+    SOURCE_RELATIVE_SELECTED_TARGET: 'source-relative-selected-target'
 });
+export const GPU_PROJECTILE_SELECTED_TARGET_POLICY_ID
+    = PROJECTILE_SELECTED_TARGET_POLICY_ID;
+export const GPU_PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+    = PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID;
 export const GPU_PROJECTILE_CONTACT_HANDLER_FLAGS = Object.freeze({
     KILL_IF_OTHER_TERRAIN:
         GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.KILL_IF_OTHER_TERRAIN,
@@ -40,7 +49,9 @@ export const GPU_PROJECTILE_CONTACT_HANDLER_FLAGS = Object.freeze({
     INTERACTION_ENTER_ONLY:
         GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY,
     INTERACTION_CONTINUOUS:
-        GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS
+        GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS,
+    CORE_DAMAGE_REQUEST:
+        GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
 });
 
 function requireNonEmptyString(value, label) {
@@ -184,13 +195,59 @@ function resolveProjectileTargetPolicy(options, definition) {
             ?? definition.targetPolicyId
             ?? PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN
     );
-    const interactionMask = targetPolicyId
-        === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
-        ? GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
-            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
-        : GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+    let interactionMask;
+    if (targetPolicyId === PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN) {
+        interactionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    } else if (targetPolicyId
+        === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN) {
+        interactionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    } else if (targetPolicyId
+        === PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN) {
+        interactionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    } else {
+        interactionMask = GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
+    }
     return Object.freeze({ targetPolicyId, interactionMask });
+}
+
+function resolveOptionalCoreDamageMetadata(definition) {
+    const hasCoreDamage = definition.coreDamage !== undefined
+        && definition.coreDamage !== null;
+    if (!hasCoreDamage) {
+        return Object.freeze({});
+    }
+    const coreDamage = requireGpuFixedPointCompatible(
+        definition.coreDamage,
+        'definition.coreDamage'
+    );
+    const coreDamageRequestPolicyId = requireNonEmptyString(
+        definition.coreDamageRequestPolicyId,
+        'definition.coreDamageRequestPolicyId'
+    );
+    if (definition.requiresExactSelectedTarget !== true) {
+        throw new RangeError(
+            'Core damage request projectile에는 requiresExactSelectedTarget=true가 필요합니다.'
+        );
+    }
+    return Object.freeze({
+        coreDamage,
+        coreDamageFixedPoint: encodeGpuCircleBodyFixedPoint(coreDamage),
+        coreDamageRequestPolicyId,
+        requiresExactSelectedTarget: true,
+        towerTargetPolicyId: normalizeProjectileTargetPolicyId(
+            definition.towerTargetPolicyId,
+            'definition.towerTargetPolicyId'
+        ),
+        coreTargetPolicyId: normalizeProjectileTargetPolicyId(
+            definition.coreTargetPolicyId,
+            'definition.coreTargetPolicyId'
+        )
+    });
 }
 
 function normalizeColor(source) {
@@ -221,6 +278,10 @@ function createContactHandler(definition) {
     }
     if (definition.closestOnly === true) {
         flags |= GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.CLOSEST_ONLY;
+    }
+    if (definition.coreDamageRequestPolicyId
+        === PROJECTILE_CORE_DAMAGE_REQUEST_POLICY_ID.TYPED_CPU_CORE_DAMAGE) {
+        flags |= GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.CORE_DAMAGE_REQUEST;
     }
     // ABI writer가 shader용 fixed-point 변환을 소유하므로 gameplay 단위를 보존합니다.
     return Object.freeze({
@@ -283,6 +344,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
             ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
     );
     const targetPolicy = resolveProjectileTargetPolicy(options, definition);
+    const coreDamageMetadata = resolveOptionalCoreDamageMetadata(definition);
     const spawnSequence = requireNonNegativeSafeInteger(
         options.spawnSequence ?? 0,
         'spawnSequence'
@@ -297,6 +359,7 @@ export function createGpuProjectileSpawnIntent(options = {}) {
         ...allegiance,
         damagePolicyId,
         targetPolicyId: targetPolicy.targetPolicyId,
+        ...coreDamageMetadata,
         spawnSequence,
         ...(sourceHandle ? {
             sourceEntityId: sourceHandle.entityId,
@@ -337,6 +400,13 @@ export function createGpuProjectileSpawnIntent(options = {}) {
             'definition.lifetimeSeconds'
         ),
         contactHandler: createContactHandler(definition),
+        ...(coreDamageMetadata.coreDamageFixedPoint !== undefined ? {
+            enemyBehaviorState: Object.freeze({
+                programId:
+                    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE,
+                coreDamageFixedPoint: coreDamageMetadata.coreDamageFixedPoint
+            })
+        } : {}),
         alive: true,
         ...(renderStyle ? { renderStyle } : {})
     });
@@ -370,6 +440,211 @@ export function createGpuProjectileCommandId(options = {}) {
         return `${encodeURIComponent(namespace)}:${sourceKey}:target:${targetHandle.entityId}:${targetHandle.incarnation}:${targetFixedTick}:${spawnSequence}:${encodeURIComponent(definitionId)}`;
     }
     return `${encodeURIComponent(namespace)}:${sourceKey}:${targetFixedTick}:${spawnSequence}:${encodeURIComponent(definitionId)}`;
+}
+
+/**
+ * GPU fixed primitive가 tick-start exact Core/Tower 중 하나를 선택할 Phase 2 ingress입니다.
+ * Phase 1은 ABI 숫자를 참조하지 않고 불변 host descriptor만 완성합니다.
+ */
+export function createGpuSelectedTargetProjectileIntent(options = {}) {
+    const snapshot = materializeGpuPlainDataSnapshot(
+        options,
+        'gpuSelectedTargetProjectileIntent'
+    );
+    const sourceHandle = normalizeEntityHandle(
+        snapshot.sourceHandle,
+        'sourceHandle'
+    );
+    const coreTargetHandle = normalizeEntityHandle(
+        snapshot.coreTargetHandle,
+        'coreTargetHandle'
+    );
+    const towerTargetHandle = normalizeEntityHandle(
+        snapshot.towerTargetHandle,
+        'towerTargetHandle'
+    );
+    if (!sourceHandle || !coreTargetHandle) {
+        throw new TypeError('selected-target mode에는 source/Core exact handle이 필요합니다.');
+    }
+    const targetSelectionPolicyId = requireNonEmptyString(
+        snapshot.targetSelectionPolicyId,
+        'targetSelectionPolicyId'
+    );
+    if (targetSelectionPolicyId
+        !== GPU_PROJECTILE_SELECTED_TARGET_POLICY_ID
+            .CORE_FIRST_IN_RANGE_THEN_TOWER) {
+        throw new RangeError('지원하지 않는 selected-target priority policy입니다.');
+    }
+    const distancePolicyId = requireNonEmptyString(
+        snapshot.distancePolicyId,
+        'distancePolicyId'
+    );
+    if (distancePolicyId
+        !== GPU_PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+            .TICK_START_CENTER_INCLUSIVE) {
+        throw new RangeError('지원하지 않는 selected-target distance policy입니다.');
+    }
+    if (snapshot.stopWhileTargetInRange !== true) {
+        throw new RangeError(
+            'selected-target mode는 in-range 전체 기간 정지 policy를 사용해야 합니다.'
+        );
+    }
+    const attackRangeTiles = requirePositiveFinite(
+        snapshot.attackRangeTiles,
+        'attackRangeTiles'
+    );
+    const baseDestinationSpawn = createGpuProjectileSpawnIntent({
+        definition: snapshot.definition,
+        position: { x: 0, y: 0 },
+        velocity: { x: 0, y: 0 },
+        spawnSequence: snapshot.spawnSequence,
+        sourceHandle,
+        ownerHandle: snapshot.ownerHandle,
+        producerId: snapshot.producerId,
+        sourceAbilityId: snapshot.sourceAbilityId,
+        teamId: snapshot.teamId,
+        allegiancePolicy: snapshot.allegiancePolicy
+            ?? GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+        damagePolicyId: snapshot.damagePolicyId,
+        targetPolicyId: snapshot.targetPolicyId
+    });
+    if (baseDestinationSpawn.targetPolicyId
+        !== PROJECTILE_TARGET_POLICY_ID
+            .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN) {
+        throw new RangeError(
+            'selected-target projectile에는 GPU-selected Core/Tower target policy가 필요합니다.'
+        );
+    }
+    const destinationSpawn = Object.freeze({
+        ...baseDestinationSpawn,
+        targetSelectionPolicyId,
+        distancePolicyId,
+        attackRangeTiles,
+        coreTargetEntityId: coreTargetHandle.entityId,
+        coreTargetIncarnation: coreTargetHandle.incarnation,
+        ...(towerTargetHandle ? {
+            towerTargetEntityId: towerTargetHandle.entityId,
+            towerTargetIncarnation: towerTargetHandle.incarnation
+        } : {})
+    });
+    return Object.freeze({
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET,
+        sourceHandle,
+        coreTargetHandle,
+        towerTargetHandle,
+        destinationSpawn,
+        positionOffset: normalizeVector(snapshot.positionOffset, 'positionOffset'),
+        targetOffset: normalizeVector(
+            snapshot.targetOffset ?? { x: 0, y: 0 },
+            'targetOffset'
+        ),
+        launchSpeed: requirePositiveFinite(snapshot.launchSpeed, 'launchSpeed'),
+        attackRangeTiles,
+        targetSelectionPolicyId,
+        distancePolicyId,
+        stopWhileTargetInRange: true
+    });
+}
+
+export function createGpuSelectedTargetProjectileCommandId(options = {}) {
+    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
+    const coreTargetHandle = normalizeEntityHandle(
+        options.coreTargetHandle,
+        'coreTargetHandle'
+    );
+    const towerTargetHandle = normalizeEntityHandle(
+        options.towerTargetHandle,
+        'towerTargetHandle'
+    );
+    if (!sourceHandle || !coreTargetHandle) {
+        throw new TypeError('selected-target command에는 source/Core exact handle이 필요합니다.');
+    }
+    const towerKey = towerTargetHandle
+        ? `${towerTargetHandle.entityId}:${towerTargetHandle.incarnation}`
+        : 'none';
+    return [
+        encodeURIComponent(requireNonEmptyString(
+            options.commandNamespace ?? DEFAULT_COMMAND_NAMESPACE,
+            'commandNamespace'
+        )),
+        sourceHandle.entityId,
+        sourceHandle.incarnation,
+        'core',
+        coreTargetHandle.entityId,
+        coreTargetHandle.incarnation,
+        'tower',
+        towerKey,
+        requirePositiveSafeInteger(options.targetFixedTick, 'targetFixedTick'),
+        requireNonNegativeSafeInteger(options.spawnSequence, 'spawnSequence'),
+        encodeURIComponent(requireNonEmptyString(options.definitionId, 'definitionId'))
+    ].join(':');
+}
+
+/**
+ * Phase 2 selected-target fixed primitive port로 host descriptor를 요청합니다.
+ * 현재 endpoint가 아직 port를 노출하지 않으면 불변 rejection을 반환하여
+ * 기존 source-relative ABI로 잘못 라우팅하지 않습니다.
+ */
+export function requestGpuSelectedTargetProjectile(options = {}) {
+    const snapshot = materializeGpuPlainDataSnapshot(
+        options,
+        'gpuSelectedTargetProjectileRequest',
+        { opaqueKeys: ['endpoint'] }
+    );
+    rejectPresentProperties(snapshot, [
+        'position',
+        'velocity',
+        'launchVelocity',
+        'sourceVelocityScale',
+        'aimWorldPoint',
+        'targetHandle',
+        'targetEntityId',
+        'targetIncarnation',
+        'trackedPose',
+        'targetPosition',
+        'targetWorldPosition',
+        'cpuTargetPosition'
+    ], GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET);
+    if (!snapshot.endpoint || typeof snapshot.endpoint !== 'object') {
+        throw new TypeError('GPU selected-target projectile endpoint가 필요합니다.');
+    }
+    const targetFixedTick = requirePositiveSafeInteger(
+        snapshot.targetFixedTick,
+        'targetFixedTick'
+    );
+    const spawnSequence = requireNonNegativeSafeInteger(
+        snapshot.spawnSequence ?? 0,
+        'spawnSequence'
+    );
+    const intent = createGpuSelectedTargetProjectileIntent({
+        ...snapshot,
+        spawnSequence
+    });
+    const commandId = snapshot.commandId === undefined
+        || snapshot.commandId === null
+        ? createGpuSelectedTargetProjectileCommandId({
+            definitionId: intent.destinationSpawn.definitionId,
+            sourceHandle: intent.sourceHandle,
+            coreTargetHandle: intent.coreTargetHandle,
+            towerTargetHandle: intent.towerTargetHandle,
+            targetFixedTick,
+            spawnSequence,
+            commandNamespace: snapshot.commandNamespace
+        })
+        : requireNonEmptyString(snapshot.commandId, 'commandId');
+    if (typeof snapshot.endpoint.requestSelectedTargetSpawn !== 'function') {
+        return Object.freeze({
+            accepted: false,
+            reason: 'selected-target-fixed-primitive-unavailable',
+            commandId,
+            targetFixedTick
+        });
+    }
+    return snapshot.endpoint.requestSelectedTargetSpawn(
+        intent,
+        targetFixedTick,
+        commandId
+    );
 }
 
 /**
@@ -449,6 +724,9 @@ export function requestGpuProjectile(options = {}) {
             'cpuTargetPosition'
         ], 'ABSOLUTE');
         return requestGpuProjectileSpawn(options);
+    }
+    if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET) {
+        return requestGpuSelectedTargetProjectile(options);
     }
 
     rejectPresentProperties(options, ['position', 'velocity'], mode);

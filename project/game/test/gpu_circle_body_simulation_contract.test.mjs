@@ -9,16 +9,24 @@ const { GpuCircleBodySimulation } = await loadGameModule(
 const {
     GPU_CIRCLE_BODY_ABI,
     GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_APPLIED_EVENT_TYPE,
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     packGpuCircleAppliedEventMeta
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_STATE_FLAGS,
     GPU_FIXED_PRIMITIVE_ABI,
     GPU_FIXED_PRIMITIVE_IDENTITY,
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
     GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_RESULT,
     readGpuSpawnProgramRecord
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
@@ -268,6 +276,8 @@ class FakeGpuDevice {
         this.eventPayloads = [];
         this.eventPayloadCursor = 0;
         this.eventMapRequests = [];
+        this.bodyControlResultPayloads = [];
+        this.bodyControlResultCursor = 0;
         this.deferSpawnProgramMaps = false;
         this.spawnProgramMapRequests = [];
         this.spawnProgramResultPayloads = [];
@@ -514,6 +524,57 @@ class FakeGpuDevice {
             new Uint8Array(target.data, targetOffset, size).set(
                 new Uint8Array(source.data, sourceOffset, size)
             );
+            const payload = this.bodyControlResultPayloads[
+                this.bodyControlResultCursor++
+            ];
+            if (payload !== undefined) {
+                const view = new DataView(target.data);
+                const header = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER;
+                const recordAbi = GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD;
+                const count = view.getUint32(targetOffset + header.COUNT, true);
+                const records = Array.isArray(payload)
+                    ? payload
+                    : Array.from({ length: count }, () => payload);
+                assert.equal(records.length, count);
+                for (let index = 0; index < count; index++) {
+                    const result = records[index];
+                    const offset = targetOffset + header.STRIDE
+                        + (index * recordAbi.STRIDE);
+                    if (result === null) {
+                        continue;
+                    }
+                    view.setUint32(offset + recordAbi.RESULT, result.result, true);
+                    view.setUint32(
+                        offset + recordAbi.SELECTED_TARGET_KIND,
+                        result.selectedTargetKind
+                            ?? GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+                        true
+                    );
+                    view.setUint32(
+                        offset + recordAbi.SELECTED_TARGET_SLOT,
+                        result.selectedTargetSlot
+                            ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                        true
+                    );
+                    view.setUint32(
+                        offset + recordAbi.SELECTED_TARGET_ENTITY_ID,
+                        result.selectedTargetEntityId
+                            ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                        true
+                    );
+                    view.setUint32(
+                        offset + recordAbi.SELECTED_TARGET_INCARNATION,
+                        result.selectedTargetIncarnation
+                            ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                        true
+                    );
+                    view.setUint32(
+                        offset + recordAbi.STATE_FLAGS,
+                        result.stateFlags ?? 0,
+                        true
+                    );
+                }
+            }
             return;
         }
         if (source.label.includes('contact-state')) {
@@ -1309,7 +1370,7 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
         assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
 
         assert.deepEqual(
-            device.computePasses[0].slice(0, 9).map(({ entryPoint }) => entryPoint),
+            device.computePasses[0].slice(0, 10).map(({ entryPoint }) => entryPoint),
             [
                 'update_indirect_args',
                 'validate_source_relative_spawns',
@@ -1318,12 +1379,13 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
                 'validate_body_control_commands',
                 'apply_body_control_commands',
                 'apply_controlled_motion',
+                'advance_enemy_charge',
                 'prepare_bodies',
                 'clear_grid'
             ]
         );
         assert.deepEqual(
-            device.computePasses[0].slice(1, 8).map(({ pipelineLayout }) => (
+            device.computePasses[0].slice(1, 9).map(({ pipelineLayout }) => (
                 pipelineLayout
             )),
             [
@@ -1333,9 +1395,248 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
                 'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
                 'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
                 'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout'
             ]
         );
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('priority control completion은 cooldown no-shot tick도 exact ordered outcome으로 readback한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 4,
+        controlCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const sourceHandle = Object.freeze({ entityId: 101, incarnation: 2 });
+    const coreTargetHandle = Object.freeze({ entityId: 102, incarnation: 3 });
+    const towerTargetHandle = Object.freeze({ entityId: 103, incarnation: 4 });
+    const stagePriority = (targetFixedTick, selectionSequence, attackFingerprint) => (
+        simulation.stageFixedPrograms({
+            targetFixedTick,
+            controls: [{
+                modeFlags:
+                    GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
+                sourceHandle,
+                coreTargetHandle,
+                towerTargetHandle,
+                attackRangeTiles: 3.5,
+                selectionSequence,
+                attackFingerprint
+            }]
+        })
+    );
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            ...sourceHandle
+        }, {
+            ...createBody(2),
+            ...coreTargetHandle
+        }, {
+            ...createBody(3),
+            ...towerTargetHandle
+        }]).accepted, 3);
+        const coreTargetSlot = simulation.handleToSlot.get(
+            `${coreTargetHandle.entityId}:${coreTargetHandle.incarnation}`
+        );
+        device.bodyControlResultPayloads.push({
+            result: GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED,
+            selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE,
+            selectedTargetSlot: coreTargetSlot,
+            selectedTargetEntityId: coreTargetHandle.entityId,
+            selectedTargetIncarnation: coreTargetHandle.incarnation,
+            stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED
+        });
+        const staged = stagePriority(31, 11, 0x12345678);
+        assert.equal(staged.controlCount, 1);
+        assert.equal(staged.sourceRelativeSpawnCount, 0);
+        assert.equal(simulation.fixedUpdate(1 / 60, 31), true);
+        assert.deepEqual(
+            device.computePasses[0].slice(0, 6).map(({ entryPoint }) => entryPoint),
+            [
+                'update_indirect_args',
+                'clear_body_control_states',
+                'validate_body_control_commands',
+                'apply_body_control_commands',
+                'apply_controlled_motion',
+                'advance_enemy_charge'
+            ],
+            'cooldown/no-shot priority tick도 control state를 GPU에서 결정합니다.'
+        );
+        device.resolveEventMap(0);
+        await flushMicrotasks();
+        let batches = simulation.drainCompletedBodyControlProgramBatches([]);
+        assert.equal(batches.length, 1);
+        assert.equal(batches[0].sourceTick, 31);
+        assert.equal(batches[0].failure, null);
+        assert.equal(batches[0].outcomes.length, 1);
+        let outcome = batches[0].outcomes[0];
+        assert.deepEqual({ ...outcome.sourceHandle }, { ...sourceHandle });
+        assert.deepEqual({ ...outcome.coreTargetHandle }, { ...coreTargetHandle });
+        assert.deepEqual({ ...outcome.towerTargetHandle }, { ...towerTargetHandle });
+        assert.equal(outcome.sourceTick, 31);
+        assert.equal(outcome.selectionSequence, 11);
+        assert.equal(outcome.attackFingerprint, 0x12345678);
+        assert.equal(outcome.attackRangeTiles, 3.5);
+        assert.equal(outcome.result, GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED);
+        assert.equal(outcome.outcome, 'core');
+        assert.equal(
+            outcome.selectedTargetKind,
+            GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE
+        );
+        assert.deepEqual(
+            { ...outcome.selectedTargetHandle },
+            { ...coreTargetHandle }
+        );
+        assert.equal(
+            outcome.stateFlags,
+            GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED
+        );
+        simulation.drainCompletedEventBatches([]);
+
+        device.bodyControlResultPayloads.push({
+            result: GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET,
+            selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+            stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW
+        });
+        assert.equal(stagePriority(32, 12, 0x23456789).controlCount, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 32), true);
+        device.resolveEventMap(1);
+        await flushMicrotasks();
+        batches = simulation.drainCompletedBodyControlProgramBatches([]);
+        assert.equal(batches.length, 1);
+        [outcome] = batches[0].outcomes;
+        assert.equal(outcome.outcome, 'no-target');
+        assert.equal(
+            outcome.selectedTargetKind,
+            GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
+        );
+        assert.equal(outcome.selectedTargetHandle, null);
+        assert.equal(outcome.stateFlags, GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW);
+        assert.equal(outcome.selectionSequence, 12);
+        assert.equal(outcome.attackFingerprint, 0x23456789);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('mixed SpawnProgram은 legacy modes를 pre-control, mode4를 post-priority에서 exact once 처리한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferSpawnProgramMaps = true;
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 6,
+        controlCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const sourceHandle = Object.freeze({ entityId: 201, incarnation: 1 });
+    const coreTargetHandle = Object.freeze({ entityId: 202, incarnation: 1 });
+    const towerTargetHandle = Object.freeze({ entityId: 203, incarnation: 1 });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            ...sourceHandle
+        }, {
+            ...createBody(2),
+            ...coreTargetHandle
+        }, {
+            ...createBody(3),
+            ...towerTargetHandle
+        }]).accepted, 3);
+        const selectionSequence = 4;
+        const attackFingerprint = 0x3456789a;
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 41,
+            controls: [{
+                modeFlags:
+                    GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
+                sourceHandle,
+                coreTargetHandle,
+                towerTargetHandle,
+                attackRangeTiles: 3,
+                selectionSequence,
+                attackFingerprint
+            }],
+            sourceRelativeSpawns: [
+                createSourceRelativeSpawn({
+                    sourceEntityId: sourceHandle.entityId,
+                    sourceIncarnation: sourceHandle.incarnation,
+                    destinationEntityId: 204
+                }),
+                {
+                    sourceHandle,
+                    destinationHandle: { entityId: 205, incarnation: 1 },
+                    destinationSpawn: {
+                        ...createBody(0),
+                        radius: 0.1,
+                        bodyLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+                        interactionLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+                        interactionMask: GPU_CIRCLE_BODY_LAYER.CORE_PROXY
+                            | GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE
+                            | GPU_CIRCLE_BODY_LAYER.TERRAIN,
+                        enemyBehaviorState: {
+                            programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+                                .SELECTED_TARGET_PROJECTILE,
+                            coreDamageFixedPoint: 500
+                        }
+                    },
+                    modeFlags: GPU_SPAWN_PROGRAM_MODE
+                        .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET,
+                    coreTargetHandle,
+                    towerTargetHandle,
+                    positionOffset: { x: 0, y: 0 },
+                    targetOffset: { x: 0, y: 0 },
+                    launchSpeed: 7,
+                    selectionSequence,
+                    attackFingerprint,
+                    requestFlags: GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                        .REQUIRE_EXACT_SELECTED_TARGET
+                }
+            ]
+        });
+        assert.equal(staged.controlCount, 1);
+        assert.equal(staged.sourceRelativeSpawnCount, 2);
+        assert.equal(simulation.fixedUpdate(1 / 60, 41), true);
+        const operations = device.computePasses[0].map(({ entryPoint }) => entryPoint);
+        const orderedPrefix = [
+            'update_indirect_args',
+            'validate_source_relative_spawns',
+            'resolve_source_relative_spawns',
+            'clear_body_control_states',
+            'validate_body_control_commands',
+            'apply_body_control_commands',
+            'validate_selected_target_spawns',
+            'resolve_selected_target_spawns',
+            'apply_controlled_motion'
+        ];
+        assert.deepEqual(operations.slice(0, orderedPrefix.length), orderedPrefix);
+        for (const entryPoint of [
+            'validate_source_relative_spawns',
+            'resolve_source_relative_spawns',
+            'validate_selected_target_spawns',
+            'resolve_selected_target_spawns'
+        ]) {
+            assert.equal(
+                operations.filter((value) => value === entryPoint).length,
+                1,
+                `${entryPoint}는 mixed batch의 records를 한 번만 순회합니다.`
+            );
+        }
+        assert.equal(device.commandEncoderDescriptors.length, 1);
+        assert.equal(device.submissions.length, 1);
     } finally {
         simulation.destroy();
         restoreGlobals();
@@ -1446,15 +1747,19 @@ test('target-entity SpawnProgram은 private exact slot을 pack하고 target ABA�
         assert.equal(status.fixedPrimitives.spawnProgram.invalidCount, 1);
         assert.equal(
             status.fixedPrimitives.spawnProgram.storageBuffersPerStage,
-            5
+            8
         );
-        assert.equal(status.fixedPrimitives.storageProfile.sourceResolve, 5);
+        assert.equal(status.fixedPrimitives.storageProfile.sourceResolve, 8);
         assert.equal(
             status.fixedPrimitives.storageProfile.requiredMaximum,
             9
         );
         assert.equal(status.fixedPrimitives.windowStorageBuffersPerStage, 7);
         assert.equal(status.fixedPrimitives.storageProfile.maximumDamageWindow, 7);
+        assert.equal(status.fixedPrimitives.enemyBehavior.storageBuffersPerStage, 8);
+        assert.equal(status.fixedPrimitives.storageProfile.enemyBehavior, 8);
+        assert.equal(status.fixedPrimitives.coreDamageRequest.storageBuffersPerStage, 9);
+        assert.equal(status.fixedPrimitives.storageProfile.coreDamageRequest, 9);
         assert.ok(Object.entries(status.fixedPrimitives.storageProfile)
             .filter(([name]) => name !== 'requiredMaximum')
             .every(([, count]) => count <= 9));
@@ -2024,6 +2329,236 @@ test('SpawnProgram result ring은 4개로 bounded되고 pending outcome/event dr
     }
 });
 
+test('terminal cancel은 submitted mode4/program2 exact set을 final submit 앞에서 tombstone하고 late map을 무해화한다', async () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferSpawnProgramMaps = true;
+    device.deferOverflowMaps = true;
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 6,
+        controlCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const sourceHandle = Object.freeze({ entityId: 301, incarnation: 1 });
+    const coreTargetHandle = Object.freeze({ entityId: 302, incarnation: 1 });
+    const towerTargetHandle = Object.freeze({ entityId: 303, incarnation: 1 });
+    const destinationHandle = Object.freeze({ entityId: 304, incarnation: 1 });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            ...sourceHandle
+        }, {
+            ...createBody(2),
+            ...coreTargetHandle
+        }, {
+            ...createBody(3),
+            ...towerTargetHandle
+        }]).accepted, 3);
+        const selectionSequence = 9;
+        const attackFingerprint = 0x456789ab;
+        const staged = simulation.stageFixedPrograms({
+            targetFixedTick: 51,
+            controls: [{
+                modeFlags:
+                    GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
+                sourceHandle,
+                coreTargetHandle,
+                towerTargetHandle,
+                attackRangeTiles: 3,
+                selectionSequence,
+                attackFingerprint
+            }],
+            sourceRelativeSpawns: [{
+                sourceHandle,
+                destinationHandle,
+                destinationSpawn: {
+                    ...createBody(0),
+                    radius: 0.1,
+                    bodyLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+                    interactionLayer: GPU_CIRCLE_BODY_LAYER.PROJECTILE,
+                    interactionMask: GPU_CIRCLE_BODY_LAYER.CORE_PROXY
+                        | GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE
+                        | GPU_CIRCLE_BODY_LAYER.TERRAIN,
+                    enemyBehaviorState: {
+                        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+                            .SELECTED_TARGET_PROJECTILE,
+                        coreDamageFixedPoint: 500
+                    }
+                },
+                modeFlags: GPU_SPAWN_PROGRAM_MODE
+                    .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET,
+                coreTargetHandle,
+                towerTargetHandle,
+                positionOffset: { x: 0, y: 0 },
+                targetOffset: { x: 0, y: 0 },
+                launchSpeed: 7,
+                selectionSequence,
+                attackFingerprint,
+                requestFlags: GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                    .REQUIRE_EXACT_SELECTED_TARGET
+            }]
+        });
+        assert.equal(staged.accepted, 2);
+        const destinationSlot = simulation.pendingHandleToSlot.get('304:1');
+        assert.equal(Number.isInteger(destinationSlot), true);
+        assert.equal(simulation.fixedUpdate(1 / 60, 51), true);
+        assert.equal(device.submissions.length, 1);
+        assert.equal(simulation.getStatus().pendingBodyCount, 1);
+        assert.equal(
+            simulation.getStatus().fixedPrimitives.spawnProgram.pendingReadbacks,
+            1
+        );
+
+        const cancelled = simulation.cancelPendingFixedProgramsForTerminal({
+            abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+            finalFixedTick: 52,
+            reason: 'run-defeated',
+            destinationHandles: [destinationHandle],
+            priorityControls: [{ sourceTick: 51, sourceHandle }]
+        });
+        assert.equal(cancelled.accepted, true);
+        assert.equal(cancelled.state, 'armed');
+        assert.equal(cancelled.destinationCount, 1);
+        assert.equal(cancelled.priorityControlCount, 1);
+        assert.equal(device.submissions.length, 1,
+            'terminal tombstone upload 자체는 submit을 추가하지 않습니다.');
+        let status = simulation.getStatus();
+        assert.equal(status.activeBodyCount, 3);
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.pendingReadbacks, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.queuedBatches, 0);
+        assert.equal(status.events.pendingReadbacks, 0);
+        assert.equal(status.events.queuedBatches, 0);
+        assert.equal(simulation.hasBody(destinationHandle), false);
+        assert.equal(simulation.hasBody(sourceHandle), true);
+        const simulationBuffer = device.buffers.get(
+            'cirvivor-gpu-circle-simulation'
+        );
+        const destinationOffset = destinationSlot
+            * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
+        const simulationView = new DataView(simulationBuffer.data);
+        assert.equal(
+            simulationView.getUint32(
+                destinationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.ENTITY_ID,
+                true
+            ),
+            GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+        );
+        for (const label of [
+            'cirvivor-gpu-circle-body-control-program',
+            'cirvivor-gpu-circle-spawn-program'
+        ]) {
+            const programView = new DataView(device.buffers.get(label).data);
+            assert.equal(programView.getUint32(
+                GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.COUNT,
+                true
+            ), 0, label);
+        }
+
+        const readbackCountsBeforeFinal = Object.freeze({
+            event: device.eventMapRequests.length,
+            spawn: device.spawnProgramMapRequests.length,
+            overflow: device.overflowMapRequests.length,
+            copies: device.bufferCopies.length
+        });
+        assert.equal(simulation.fixedUpdate(1 / 60, 52), true);
+        assert.equal(device.submissions.length, 2);
+        status = simulation.getStatus();
+        assert.equal(status.fixedPrimitives.terminalCancellation.state, 'submitted');
+        assert.equal(
+            status.fixedPrimitives.terminalCancellation.submittedSourceTick,
+            52
+        );
+        assert.deepEqual({
+            event: device.eventMapRequests.length,
+            spawn: device.spawnProgramMapRequests.length,
+            overflow: device.overflowMapRequests.length,
+            copies: device.bufferCopies.length
+        }, readbackCountsBeforeFinal, '마지막 submit은 새 readback을 만들지 않습니다.');
+        const submittedTickCount = status.submittedTickCount;
+        assert.equal(simulation.fixedUpdate(1 / 60, 53), false);
+        assert.equal(device.submissions.length, 2);
+
+        for (const index of device.pendingEventMapIndices()) {
+            device.resolveEventMap(index);
+        }
+        for (const index of device.pendingSpawnProgramMapIndices()) {
+            device.resolveSpawnProgramMap(index);
+        }
+        for (const index of device.pendingOverflowMapIndices()) {
+            device.resolveOverflowMap(index);
+        }
+        await flushMicrotasks();
+        status = simulation.getStatus();
+        assert.equal(status.submittedTickCount, submittedTickCount);
+        assert.equal(status.activeBodyCount, 3);
+        assert.equal(status.pendingBodyCount, 0);
+        assert.equal(status.events.pendingReadbacks, 0);
+        assert.equal(status.events.queuedBatches, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.pendingReadbacks, 0);
+        assert.equal(status.fixedPrimitives.spawnProgram.queuedBatches, 0);
+        assert.equal(status.fixedPrimitives.terminalCancellation.state, 'submitted');
+        assert.equal(simulation.hasBody(destinationHandle), false);
+        assert.equal(simulation.stageFixedPrograms({
+            targetFixedTick: 53,
+            controls: [],
+            sourceRelativeSpawns: []
+        }).reason, 'fixed-program-ingress-closed');
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
+test('terminal cancel exact destination set mismatch는 GPU/host pending을 mutation 전에 보존한다', () => {
+    const restoreGlobals = installFakeWebGpuGlobals();
+    const device = new FakeGpuDevice();
+    device.deferSpawnProgramMaps = true;
+    const simulation = new GpuCircleBodySimulation(createFakePlatformPort(device), {
+        capacity: 3,
+        spawnProgramCapacity: 1,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 }
+    });
+    const destinationHandle = Object.freeze({ entityId: 402, incarnation: 1 });
+    try {
+        assert.equal(simulation.spawnBodies([{
+            ...createBody(1),
+            entityId: 401,
+            incarnation: 1
+        }]).accepted, 1);
+        assert.equal(simulation.stageFixedPrograms({
+            targetFixedTick: 61,
+            sourceRelativeSpawns: [createSourceRelativeSpawn({
+                sourceEntityId: 401,
+                destinationEntityId: destinationHandle.entityId
+            })]
+        }).accepted, 1);
+        assert.equal(simulation.fixedUpdate(1 / 60, 61), true);
+        const submissions = device.submissions.length;
+        const failed = simulation.cancelPendingFixedProgramsForTerminal({
+            abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+            finalFixedTick: 62,
+            destinationHandles: [],
+            priorityControls: []
+        });
+        assert.equal(failed.accepted, false);
+        assert.equal(failed.reason, 'terminal-destination-exact-set-mismatch');
+        assert.equal(device.submissions.length, submissions);
+        assert.equal(simulation.getStatus().pendingBodyCount, 1);
+        assert.equal(
+            simulation.getStatus().fixedPrimitives.spawnProgram.pendingReadbacks,
+            1
+        );
+        assert.equal(simulation.pendingHandleToSlot.has('402:1'), true);
+    } finally {
+        simulation.destroy();
+        restoreGlobals();
+    }
+});
+
 test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 watermark를 지킨다', async () => {
     const restoreGlobals = installFakeWebGpuGlobals();
     const device = new FakeGpuDevice();
@@ -2180,6 +2715,23 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             ),
             [0, 1, 2]
         );
+        const computeEnemyBehaviorBodiesLayout = device.bindGroupLayouts.get(
+            'cirvivor-gpu-circle-compute-enemy-behavior-bodies-layout'
+        );
+        assert.deepEqual(
+            Array.from(
+                computeEnemyBehaviorBodiesLayout.entries,
+                (entry) => entry.binding
+            ),
+            [0, 1, 2, 8, 11]
+        );
+        const computeEnemyBehaviorEventsLayout = device.bindGroupLayouts.get(
+            'cirvivor-gpu-circle-compute-enemy-behavior-events-layout'
+        );
+        assert.deepEqual(
+            Array.from(computeEnemyBehaviorEventsLayout.entries, (entry) => entry.binding),
+            [0, 1, 2]
+        );
         const storageBindingCount = (pipelineLayout) => (
             pipelineLayout.bindGroupLayouts.reduce((total, bindGroupLayout) => (
                 total + bindGroupLayout.entries.filter(({ buffer }) => (
@@ -2193,8 +2745,10 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'world-contacts',
             'contact-handling',
             'maximum-damage-window',
+            'core-damage-request',
             'fixed-control',
             'source-resolve',
+            'enemy-behavior',
             'tracked-pose'
         ].map((profile) => {
             const layout = device.pipelineLayouts.get(
@@ -2209,8 +2763,10 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'world-contacts': 7,
             'contact-handling': 9,
             'maximum-damage-window': 7,
+            'core-damage-request': 9,
             'fixed-control': 5,
-            'source-resolve': 5,
+            'source-resolve': 8,
+            'enemy-behavior': 8,
             'tracked-pose': 6
         });
         assert.ok(
@@ -2222,54 +2778,76 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         );
         assert.equal(renderBodiesLayout.entries[4].binding, 4);
         assert.equal(renderBodiesLayout.entries[4].buffer.type, 'read-only-storage');
+        assert.equal(renderBodiesLayout.entries[5].binding, 5);
+        assert.equal(renderBodiesLayout.entries[5].buffer.type, 'read-only-storage');
 
         assert.equal(simulation.fixedUpdate(1 / 60, 100), true);
         assert.equal(simulation.fixedUpdate(1 / 60, 101), true);
         const operations = device.computePasses[0];
         assert.deepEqual(
-            operations.slice(0, 14).map((operation) => operation.entryPoint),
+            operations.slice(0, 20).map((operation) => operation.entryPoint),
             [
                 'update_indirect_args',
                 'clear_body_control_states',
                 'apply_controlled_motion',
+                'advance_enemy_charge',
                 'prepare_bodies',
                 'clear_grid',
                 'build_grid',
                 'clear_contact_state',
+                'emit_enemy_charge_telegraphs',
                 'generate_body_contacts',
                 'generate_world_contacts',
                 'handle_contacts',
+                'resolve_enemy_charge_contacts',
+                'preflight_core_damage_requests',
                 'preflight_maximum_damage_window',
+                'finalize_core_damage_request_preflight',
                 'finalize_maximum_damage_window_preflight',
+                'resolve_core_damage_requests',
                 'resolve_maximum_damage_window',
                 'mark_dead'
             ]
         );
         assert.equal(operations[0].mode, 'direct');
         assert.equal(operations[0].workgroups, 1);
-        assert.equal(operations[6].mode, 'direct');
-        assert.equal(operations[6].workgroups, 1);
-        assert.equal(operations[9].mode, 'direct');
-        assert.equal(operations[9].workgroups, 1);
-        assert.equal(operations[10].mode, 'indirect');
+        assert.equal(operations[7].mode, 'direct');
+        assert.equal(operations[7].workgroups, 1);
         assert.equal(operations[11].mode, 'direct');
         assert.equal(operations[11].workgroups, 1);
-        assert.equal(operations[12].mode, 'indirect');
+        assert.equal(operations[12].mode, 'direct');
+        assert.equal(operations[12].workgroups, 1);
+        assert.equal(operations[13].mode, 'direct');
+        assert.equal(operations[13].workgroups, 1);
+        assert.equal(operations[14].mode, 'indirect');
+        assert.equal(operations[15].mode, 'direct');
+        assert.equal(operations[15].workgroups, 1);
+        assert.equal(operations[16].mode, 'direct');
+        assert.equal(operations[16].workgroups, 1);
+        assert.equal(operations[17].mode, 'direct');
+        assert.equal(operations[17].workgroups, 1);
+        assert.equal(operations[18].mode, 'indirect');
         assert.deepEqual(
-            operations.slice(0, 14).map(({ pipelineLayout }) => pipelineLayout),
+            operations.slice(0, 20).map(({ pipelineLayout }) => pipelineLayout),
             [
                 'cirvivor-gpu-circle-indirect-pipeline-layout',
                 'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
                 'cirvivor-gpu-circle-compute-fixed-control-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-physics-pipeline-layout',
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
                 'cirvivor-gpu-circle-compute-body-contacts-pipeline-layout',
                 'cirvivor-gpu-circle-compute-world-contacts-pipeline-layout',
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
+                'cirvivor-gpu-circle-compute-core-damage-request-pipeline-layout',
                 'cirvivor-gpu-circle-compute-maximum-damage-window-pipeline-layout',
+                'cirvivor-gpu-circle-compute-core-damage-request-pipeline-layout',
                 'cirvivor-gpu-circle-compute-maximum-damage-window-pipeline-layout',
+                'cirvivor-gpu-circle-compute-core-damage-request-pipeline-layout',
                 'cirvivor-gpu-circle-compute-maximum-damage-window-pipeline-layout',
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout'
             ]
@@ -2283,35 +2861,56 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'cirvivor-gpu-circle-compute-params'
         ]);
         assert.deepEqual(operations[3].bindGroups, [
+            'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
+            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-params',
+            'cirvivor-gpu-circle-compute-enemy-behavior-events'
+        ]);
+        assert.deepEqual(operations[4].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-full',
             'cirvivor-gpu-circle-compute-params'
         ]);
-        assert.deepEqual(operations[7].bindGroups, [
+        assert.deepEqual(operations[9].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-world-grid',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[8].bindGroups, [
+        assert.deepEqual(operations[10].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(operations[9].bindGroups, [
+        assert.deepEqual(operations[11].bindGroups, [
             'cirvivor-gpu-circle-compute-contact-handling-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-all-events'
         ]);
-        assert.deepEqual(operations[10].bindGroups, [
+        assert.deepEqual(operations[12].bindGroups, [
+            'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
+            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-params',
+            'cirvivor-gpu-circle-compute-enemy-behavior-events'
+        ]);
+        assert.deepEqual(operations[13].bindGroups, [
+            'cirvivor-gpu-circle-compute-core-damage-request-bodies',
+            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-params',
+            'cirvivor-gpu-circle-compute-maximum-damage-window-events'
+        ]);
+        assert.deepEqual(operations[14].bindGroups, [
             'cirvivor-gpu-circle-compute-maximum-damage-window-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
-        assert.deepEqual(operations[11].bindGroups, operations[10].bindGroups);
+        assert.deepEqual(operations[15].bindGroups, operations[13].bindGroups);
+        assert.deepEqual(operations[16].bindGroups, operations[14].bindGroups);
+        assert.deepEqual(operations[17].bindGroups, operations[13].bindGroups);
+        assert.deepEqual(operations[18].bindGroups, operations[14].bindGroups);
         assert.equal(
             operations.filter((operation) => operation.entryPoint === 'solve_body_body').length,
             6
@@ -2729,6 +3328,10 @@ test('typed applied event의 unknown/모순 flag 조합은 decode 전에 fail-cl
         eventType: GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
         flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY | (1 << 20),
         valueFixedPoint: 100
+    }, {
+        eventType: GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED,
+        flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY,
+        valueFixedPoint: 0
     }];
     try {
         for (let index = 0; index < invalidCases.length; index++) {

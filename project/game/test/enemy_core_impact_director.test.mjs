@@ -416,6 +416,177 @@ test('같은 snapshot의 첫 impact가 Core를 소진해도 후속 impact는 app
     );
 });
 
+test('Core cleanup commit은 exact lifecycle provenance 전체가 맞지 않으면 fail-close recovery한다', () => {
+    const contradictions = [
+        {
+            label: 'wrong exact handle',
+            buildResult: (entry) => ({
+                despawned: [{
+                    ...entry,
+                    handle: { entityId: entry.handle.entityId, incarnation: 99 }
+                }],
+                rejected: []
+            })
+        },
+        {
+            label: 'wrong direct reason',
+            buildResult: (entry) => ({
+                despawned: [{ ...entry, reason: 'gpu-death' }],
+                rejected: []
+            })
+        },
+        {
+            label: 'wrong disposition',
+            buildResult: (entry) => ({
+                despawned: [{ ...entry, disposition: 'killed' }],
+                rejected: []
+            })
+        },
+        {
+            label: 'bounty eligible contradiction',
+            buildResult: (entry) => ({
+                despawned: [{ ...entry, bountyEligible: true }],
+                rejected: []
+            })
+        },
+        {
+            label: 'despawn and rejection contradiction',
+            buildResult: (entry) => ({
+                despawned: [entry],
+                rejected: [{ commandId: entry.commandId, code: 'stale-handle' }]
+            })
+        },
+        {
+            label: 'duplicate committed command',
+            buildResult: (entry) => ({
+                despawned: [entry, { ...entry }],
+                rejected: []
+            })
+        },
+        {
+            label: 'duplicate exact handle with distinct command',
+            buildResult: (entry) => ({
+                despawned: [entry, {
+                    ...entry,
+                    commandId: 'other-lifecycle-command'
+                }],
+                rejected: []
+            })
+        }
+    ];
+
+    for (const { label, buildResult } of contradictions) {
+        const core = new CoreIntegrity({ maxIntegrity: 10 });
+        const endpoint = createEndpoint();
+        const registry = createRegistry([
+            { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
+            {
+                entityId: 2,
+                incarnation: 3,
+                kindId: 'enemy',
+                metadata: { coreImpactDamage: 1, bountyBudget: 0 }
+            }
+        ]);
+        const director = new EnemyCoreImpactDirector({ coreIntegrity: core, endpoint });
+        director.observeCompletedEvents(snapshot([coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 3,
+            sequence: 0
+        })]), registry);
+        assert.equal(
+            director.stageForFixedTick({ targetFixedTick: 18, endpoint }).requested,
+            1,
+            label
+        );
+        const request = endpoint.requests[0];
+        const exactCommit = {
+            commandId: request.commandId,
+            handle: request.handle,
+            reason: 'core-impact',
+            disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
+            bountyEligible: false
+        };
+
+        const outcome = director.observeFixedCommit(
+            buildResult(exactCommit),
+            18
+        );
+        const status = director.getStatus();
+        assert.equal(outcome.recoveryRequired, true, label);
+        assert.equal(status.cleanupCommittedCount, 0, label);
+        assert.equal(status.trackedCleanupCount, 0, label);
+        assert.equal(
+            status.cleanupFailure?.reason,
+            'despawn-commit-provenance-contract',
+            label
+        );
+    }
+});
+
+test('Core cleanup commit batch는 provenance 인증 전에 일부 cleanup을 전진시키지 않는다', () => {
+    const core = new CoreIntegrity({ maxIntegrity: 10 });
+    const endpoint = createEndpoint();
+    const registry = createRegistry([
+        { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
+        {
+            entityId: 2,
+            incarnation: 1,
+            kindId: 'enemy',
+            metadata: { coreImpactDamage: 1, bountyBudget: 0 }
+        },
+        {
+            entityId: 3,
+            incarnation: 1,
+            kindId: 'enemy',
+            metadata: { coreImpactDamage: 1, bountyBudget: 0 }
+        }
+    ]);
+    const director = new EnemyCoreImpactDirector({ coreIntegrity: core, endpoint });
+    director.observeCompletedEvents(snapshot([
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 1,
+            sequence: 0
+        }),
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 3,
+            otherIncarnation: 1,
+            sequence: 1
+        })
+    ]), registry);
+    assert.equal(
+        director.stageForFixedTick({ targetFixedTick: 18, endpoint }).requested,
+        2
+    );
+    const exactCommits = endpoint.requests.map(({ commandId, handle }) => ({
+        commandId,
+        handle,
+        reason: 'core-impact',
+        disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
+        bountyEligible: false
+    }));
+    exactCommits[1] = { ...exactCommits[1], reason: 'forged-cleanup' };
+
+    const outcome = director.observeFixedCommit({
+        despawned: exactCommits,
+        rejected: []
+    }, 18);
+    const status = director.getStatus();
+    assert.equal(outcome.recoveryRequired, true);
+    assert.equal(status.cleanupCommittedCount, 0);
+    assert.equal(status.pendingCleanupCount, 1);
+    assert.equal(
+        status.cleanupFailure?.reason,
+        'despawn-commit-provenance-contract'
+    );
+});
+
 test('old protocol/stale event는 Core를 건드리지 않고 same-tick GPU death cleanup duplicate는 정상 성공이다', () => {
     const core = new CoreIntegrity({ maxIntegrity: 9 });
     const endpoint = createEndpoint([
@@ -476,7 +647,11 @@ test('old protocol/stale event는 Core를 건드리지 않고 same-tick GPU deat
     assert.equal(director.getStatus().trackedCleanupCount, 1);
     director.observeFixedCommit({
         despawned: Object.freeze([Object.freeze({
-            commandId: 'gpu-death:exact-fixture'
+            commandId: 'gpu-death:exact-fixture',
+            handle: Object.freeze({ entityId: 2, incarnation: 3 }),
+            reason: 'gpu-death',
+            disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
+            bountyEligible: false
         })]),
         rejected: Object.freeze([])
     }, 18);

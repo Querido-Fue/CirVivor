@@ -7,6 +7,9 @@ const { RUN_OUTCOME_STATE } = await loadGameModule('ingame/state/run_outcome.js'
 const {
     createGpuEnemySpawnIntent
 } = await loadGameModule('ingame/object/enemy/gpu_enemy_spawn_adapter.js');
+const {
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+} = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -16,7 +19,11 @@ class TerminalBackend {
     constructor({ fixedResult = true, sessionGeneration = 1 } = {}) {
         this.fixedResult = fixedResult;
         this.calls = [];
+        this.presentationFrames = [];
+        this.referencePresentationSeconds = 0;
+        this.lastFixedSourceTick = 0;
         this.destroyed = false;
+        this.terminalCancelStatus = null;
         this.protocol = Object.freeze({
             sessionGeneration,
             deviceGeneration: 0,
@@ -52,11 +59,52 @@ class TerminalBackend {
         });
     }
     drainCompletedSpawnProgramBatches(out) { return out; }
+    drainCompletedBodyControlProgramBatches(out) { return out; }
+    cancelPendingFixedProgramsForTerminal(request) {
+        this.terminalCancelStatus = Object.freeze({
+            abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+            finalFixedTick: request.finalFixedTick,
+            accepted: true,
+            state: 'armed',
+            reason: null,
+            destinationCount: request.destinationHandles.length,
+            priorityControlCount: request.priorityControls.length,
+            pendingBodyCount: 0,
+            pendingSpawnProgramReadbacks: 0
+        });
+        return this.terminalCancelStatus;
+    }
+    getTerminalFixedProgramCancelStatus() {
+        return this.terminalCancelStatus;
+    }
     hasPendingSpawnProgramThroughTick() { return false; }
     getEventProtocolState() { return this.protocol; }
     drainCompletedEventBatches(out) { return out; }
-    fixedUpdate() { this.calls.push('fixed'); return this.fixedResult; }
-    updatePresentation() { this.calls.push('presentation'); }
+    fixedUpdate(_delta, sourceTick) {
+        this.calls.push('fixed');
+        if (this.fixedResult && Number.isSafeInteger(sourceTick)) {
+            this.lastFixedSourceTick = sourceTick;
+            if (this.terminalCancelStatus?.state === 'armed') {
+                this.terminalCancelStatus = Object.freeze({
+                    ...this.terminalCancelStatus,
+                    state: 'submitted',
+                    submittedSourceTick: sourceTick
+                });
+            }
+        }
+        return this.fixedResult;
+    }
+    updatePresentation(frame = {}) {
+        this.calls.push('presentation');
+        const frameDelta = Number(frame.frameDelta);
+        const snapshot = Object.freeze({
+            frameDelta: Number.isFinite(frameDelta) ? frameDelta : 0,
+            fixedDelta: Number(frame.fixedDelta),
+            fixedAlpha: Number(frame.fixedAlpha)
+        });
+        this.presentationFrames.push(snapshot);
+        this.referencePresentationSeconds += Math.max(0, snapshot.frameDelta);
+    }
     synchronizePresentation() { this.calls.push('synchronize'); }
     draw() { this.calls.push('draw'); return true; }
     getRuntimeState() { return this.destroyed ? 'destroyed' : 'gpu-ready'; }
@@ -68,6 +116,30 @@ class TerminalBackend {
         });
     }
     destroy() { this.destroyed = true; }
+}
+
+class TerminalEvidenceMismatchBackend extends TerminalBackend {
+    constructor(kind, options = {}) {
+        super(options);
+        this.mismatchKind = kind;
+    }
+
+    fixedUpdate(delta, sourceTick) {
+        const submitted = super.fixedUpdate(delta, sourceTick);
+        if (!submitted || this.terminalCancelStatus?.state !== 'submitted') {
+            return submitted;
+        }
+        const override = this.mismatchKind === 'version'
+            ? { abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION + 1 }
+            : this.mismatchKind === 'count'
+                ? { destinationCount: this.terminalCancelStatus.destinationCount + 1 }
+                : { finalFixedTick: this.terminalCancelStatus.finalFixedTick + 1 };
+        this.terminalCancelStatus = Object.freeze({
+            ...this.terminalCancelStatus,
+            ...override
+        });
+        return submitted;
+    }
 }
 
 class CoreImpactBackend extends TerminalBackend {
@@ -111,6 +183,23 @@ class CoreImpactBackend extends TerminalBackend {
         }
         this.trackedHandle = handle === null ? null : Object.freeze({ ...handle });
         return Object.freeze({ accepted: true });
+    }
+    getObservedTrackedPose() {
+        if (!this.trackedHandle || this.lastFixedSourceTick <= 0) {
+            return Object.freeze({ valid: false, reason: 'awaiting-sample' });
+        }
+        const sourceTick = this.lastFixedSourceTick;
+        return Object.freeze({
+            valid: true,
+            ...this.protocol,
+            entityId: this.trackedHandle.entityId,
+            incarnation: this.trackedHandle.incarnation,
+            sourceTick,
+            observedThroughTick: sourceTick,
+            position: Object.freeze({ x: 10 + sourceTick, y: 12 }),
+            previousPosition: Object.freeze({ x: 9 + sourceTick, y: 12 }),
+            velocity: Object.freeze({ x: 60, y: 0 })
+        });
     }
     drainCompletedEventBatches(out) {
         out.push(...this.completedEventBatches.splice(0));
@@ -233,7 +322,8 @@ function createGameSystem({
     depleteOnFirstObserve = true,
     gameplayWorldActorsEnabled = false,
     backendFactory = null,
-    useRealCoreImpactDirector = false
+    useRealCoreImpactDirector = false,
+    initialCameraZoom = undefined
 } = {}) {
     let backend = backendFactory
         ? null
@@ -289,7 +379,8 @@ function createGameSystem({
     };
     const gameSystem = new GameSystem(dependencies, {
         enemyWaveEnabled: false,
-        gameplayWorldActorsEnabled
+        gameplayWorldActorsEnabled,
+        initialCameraZoom
     });
     assert.equal(gameSystem.enter(), true);
     return { backend, directorFactory, gameSystem };
@@ -389,6 +480,7 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     const { backend, gameSystem } = createGameSystem({
         gameplayWorldActorsEnabled: true,
         useRealCoreImpactDirector: true,
+        initialCameraZoom: 2,
         backendFactory: (endpointOptions) => new CoreImpactBackend({
             sessionGeneration: endpointOptions.sessionGeneration
         })
@@ -399,6 +491,8 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     const endpoint = gameSystem.getGpuSimulationEndpoint();
     const coreHandle = objectSystem.getGpuWorldActorStatus().coreProxyHandle;
     assert.ok(coreHandle);
+    gameSystem.update();
+    assert.equal(objectSystem.getTower().getStatus().followEnabled, true);
 
     const targetFixedTick = gameSystem.getNextGpuLifecycleFixedTick();
     const coreIntegrity = gameSystem.getCoreIntegrity();
@@ -426,6 +520,7 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     }), targetFixedTick, 'terminal-core-impact:enemy');
     assert.equal(enemyReceipt.accepted, true);
     assert.equal(gameSystem.fixedUpdate(), true);
+    gameSystem.update();
     const enemyHandle = endpoint.getRegistry().copyActiveHandlesInto([], {
         kindId: 'enemy'
     }).at(0);
@@ -480,8 +575,49 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, fixedCallsBeforeTerminal + 1);
     assert.equal(endpoint.requestSpawn({}, gameSystem.getNextGpuLifecycleFixedTick()).accepted, false);
 
+    const fixedTickAtSeal = gameSystem.getFixedTick();
+    const enemyFixedTickAtSeal = objectSystem.getLastCompletedEnemyFixedTick();
+    const nextLifecycleTickAtSeal = gameSystem.getNextGpuLifecycleFixedTick();
+    const presentationCountAtSeal = backend.presentationFrames.length;
+    const referenceSecondsAtSeal = backend.referencePresentationSeconds;
+    const towerStatusAtSeal = objectSystem.getTower().getStatus();
+    const cameraTarget = objectSystem.getCameraFollowTarget();
+    const cameraTargetPositionAtSeal = Object.freeze({
+        ...cameraTarget.copyCameraFollowPositionInto({})
+    });
+    const camera = objectSystem.getWorldViewProjection();
+    const cameraAtSeal = Object.freeze({
+        revision: camera.getProjectionRevision(),
+        x: camera.viewCenterWorld.x,
+        y: camera.viewCenterWorld.y
+    });
+    const gameplayStatusAtSeal = gameSystem.getGameplayStatus();
+
     assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    gameSystem.update();
+    gameSystem.update();
+    gameSystem.synchronizePresentation();
+    gameSystem.draw();
+
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, fixedCallsBeforeTerminal + 1);
+    assert.equal(gameSystem.getFixedTick(), fixedTickAtSeal);
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), enemyFixedTickAtSeal);
+    assert.equal(gameSystem.getNextGpuLifecycleFixedTick(), nextLifecycleTickAtSeal);
+    assert.equal(backend.presentationFrames.length, presentationCountAtSeal);
+    assert.equal(backend.referencePresentationSeconds, referenceSecondsAtSeal);
+    assert.deepEqual(objectSystem.getTower().getStatus(), towerStatusAtSeal);
+    assert.deepEqual(
+        cameraTarget.copyCameraFollowPositionInto({}),
+        cameraTargetPositionAtSeal
+    );
+    assert.deepEqual({
+        revision: camera.getProjectionRevision(),
+        x: camera.viewCenterWorld.x,
+        y: camera.viewCenterWorld.y
+    }, cameraAtSeal);
+    assert.deepEqual(gameSystem.getGameplayStatus(), gameplayStatusAtSeal);
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
 });
 
@@ -517,9 +653,53 @@ test('마지막 terminal fixed submit 실패는 retry/recovery 없이 SEALED_FAI
         'sealed-failed:raw-source'
     ).accepted, false);
 
+    const gameFixedTickAtSeal = gameSystem.getFixedTick();
+    const objectFixedTickAtSeal = gameSystem.getObjectSystem()
+        .getLastCompletedEnemyFixedTick();
     assert.equal(gameSystem.fixedUpdate(), true);
+    gameSystem.update();
+    gameSystem.synchronizePresentation();
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), gameFixedTickAtSeal);
+    assert.equal(
+        gameSystem.getObjectSystem().getLastCompletedEnemyFixedTick(),
+        objectFixedTickAtSeal
+    );
     assert.equal(backend.calls.filter((call) => call === 'fixed').length, 1);
+    assert.equal(backend.calls.filter((call) => call === 'presentation').length, 0);
+    assert.equal(backend.calls.filter((call) => call === 'synchronize').length, 0);
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+});
+
+test('terminal cancel final evidence의 ABI version/count/tick mismatch는 success seal을 금지한다', () => {
+    for (const mismatchKind of ['version', 'count', 'tick']) {
+        const { backend, gameSystem } = createGameSystem({
+            backendFactory: (options) => new TerminalEvidenceMismatchBackend(
+                mismatchKind,
+                { sessionGeneration: options.sessionGeneration }
+            )
+        });
+        assert.equal(gameSystem.fixedUpdate(), false, mismatchKind);
+        const terminal = gameSystem.getGameplayStatus().terminal;
+        assert.equal(terminal.state, 'SEALED_FAILED', mismatchKind);
+        assert.equal(
+            terminal.diagnostic.stage,
+            'terminal-fixed-program-cancel',
+            mismatchKind
+        );
+        assert.equal(
+            backend.calls.filter((call) => call === 'fixed').length,
+            1,
+            mismatchKind
+        );
+        assert.equal(gameSystem.fixedUpdate(), true, mismatchKind);
+        assert.equal(
+            backend.calls.filter((call) => call === 'fixed').length,
+            1,
+            mismatchKind
+        );
+        gameSystem.destroy();
+    }
 });
 
 test('Core가 이미 depleted인 protocol-failure 경로도 RunFailed를 한 번 생성하고 재시도 없이 seal한다', () => {

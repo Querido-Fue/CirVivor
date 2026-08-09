@@ -8,6 +8,9 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_IDENTITY,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
     packGpuCircleGameplayMeta,
     unpackGpuCircleInteractionMeta,
     unpackGpuCircleGameplayMeta
@@ -25,8 +28,15 @@ import {
     PLAYER_ACTION_TYPES
 } from './production/script/module/ingame/contract/player_controllable_contract.js';
 import {
+    GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_STATE_FLAGS,
     GPU_FIXED_PRIMITIVE_ABI,
+    GPU_SPAWN_PROGRAM_ABI_VERSION,
     GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_RESULT
 } from './production/script/module/ingame/physics/gpu/gpu_fixed_primitive_abi.js';
 import { GpuCircleBodySimulation } from './production/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js';
@@ -50,6 +60,7 @@ import {
     BASIC_HEXA_ENEMY_DATA,
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
     BASIC_PENTA_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
@@ -62,6 +73,12 @@ import {
 import {
     HOSTILE_BASIC_BULLET_DATA
 } from './production/script/data/object/projectile/hostile_basic_bullet_data.js';
+import {
+    BASIC_RHOM_ATTACK_DATA
+} from './production/script/data/object/enemy/basic_rhom_attack_data.js';
+import {
+    HOSTILE_RHOM_PROJECTILE_DATA
+} from './production/script/data/object/projectile/hostile_rhom_projectile_data.js';
 import {
     CORRIDOR_EIGHT_WAVE_01_DATA
 } from './production/script/data/scene/game/corridor_eight_wave_01_data.js';
@@ -121,6 +138,9 @@ import {
     GPU_PROJECTILE_SPAWN_MODE,
     GpuProjectileSpawnAdapter
 } from './production/script/module/ingame/gpu_simulation_endpoint.js';
+import {
+    createGpuSelectedTargetProjectileIntent
+} from './production/script/module/ingame/object/projectile/gpu_projectile_spawn_adapter.js';
 import {
     requestGpuBenchmarkEnemyBatch
 } from './production/script/module/scene/benchmark/gpu_benchmark_enemy_spawn_adapter.js';
@@ -329,6 +349,9 @@ async function runProductionShaderSmoke(device, format) {
         'apply_controlled_motion',
         'validate_source_relative_spawns',
         'resolve_source_relative_spawns',
+        'validate_selected_target_spawns',
+        'resolve_selected_target_spawns',
+        'advance_enemy_charge',
         'prepare_bodies',
         'clear_grid',
         'build_grid',
@@ -336,6 +359,14 @@ async function runProductionShaderSmoke(device, format) {
         'generate_body_contacts',
         'generate_world_contacts',
         'handle_contacts',
+        'emit_enemy_charge_telegraphs',
+        'resolve_enemy_charge_contacts',
+        'preflight_core_damage_requests',
+        'finalize_core_damage_request_preflight',
+        'resolve_core_damage_requests',
+        'preflight_maximum_damage_window',
+        'finalize_maximum_damage_window_preflight',
+        'resolve_maximum_damage_window',
         'mark_dead',
         'clear_position_deltas',
         'solve_body_body',
@@ -344,6 +375,7 @@ async function runProductionShaderSmoke(device, format) {
         'rebuild_velocities',
         'finalize_velocities',
         'finalize_controlled_motion',
+        'apply_enemy_charge_recoil',
         'pack_tracked_pose'
     ];
     await Promise.all(computeEntryPoints.map((entryPoint) => (
@@ -5767,8 +5799,13 @@ async function runProductionTargetEntityMovingAimHardwareSmoke(device) {
         assert(
             !status.recoveryRequired
                 && status.reservedCount === 0
-                && status.backend.gpu.fixedPrimitives.spawnProgram.abiVersion === 3
-                && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 80
+                && status.backend.gpu.fixedPrimitives.spawnProgram.abiVersion
+                    === GPU_SPAWN_PROGRAM_ABI_VERSION
+                && GPU_SPAWN_PROGRAM_ABI_VERSION === 4
+                && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 96
+                && GPU_BODY_CONTROL_PROGRAM_ABI_VERSION === 2
+                && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD.STRIDE === 96
+                && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE.STRIDE === 64
                 && status.backend.gpu.fixedPrimitives.storageProfile.requiredMaximum
                     === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
             `Target-entity moving recovery/storage 불일치: ${JSON.stringify(status)}`
@@ -6385,7 +6422,11 @@ async function runProductionTargetEntityAimHardwareSmoke(device) {
                 === 'source-relative-target-entity'
             && GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY === 3
             && GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID === 4
-            && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 80,
+            && GPU_SPAWN_PROGRAM_ABI_VERSION === 4
+            && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 96
+            && GPU_BODY_CONTROL_PROGRAM_ABI_VERSION === 2
+            && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD.STRIDE === 96
+            && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE.STRIDE === 64,
         'Target-entity public/SpawnProgram canonical protocol 불일치'
     );
     const moving = await runProductionTargetEntityMovingAimHardwareSmoke(device);
@@ -8608,10 +8649,1593 @@ async function runProductionMaximumDamageWindowCapacityAtomicityHardwareSmoke(de
 }
 
 /**
+ * Arrow A의 production adapter/side-plane/compute pass를 실제 WebGPU에서 bounded하게
+ * 검증합니다. Arrow에는 CPU pose/control을 쓰지 않고 exact tracked Tower만 제공합니다.
+ */
+async function runProductionEnemyArrowChargeHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 8, y: 8 });
+    const arrowPosition = Object.freeze({ x: 5.5, y: 8 });
+    const submittedTicks = [];
+    const chargeEvents = [];
+    let towerHandle = null;
+    let arrowHandle = null;
+    let projectileHandle = null;
+
+    const maximumCandidateProjectile = Object.freeze({
+        id: 'nw-arrow-charge-window-maximum-projectile',
+        collisionRadius: 0.18,
+        inverseMass: 1,
+        penetration: 1,
+        damage: 1,
+        damageSelf: 1,
+        lifetimeSeconds: 5,
+        killOnTerrain: false,
+        closestOnly: true,
+        continuousInteraction: true,
+        colorRgba: [1, 0.1, 0.1, 1],
+        radiusScale: 1,
+        visible: true
+    });
+    const exactHandleMatches = (left, right) => (
+        left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation
+    );
+    const findBody = (bodies, handle, label) => findPhase5Body(
+        bodies,
+        handle,
+        `Arrow charge ${label}`
+    );
+    const submitTick = async (tick, label, { alreadyCommitted = false } = {}) => {
+        let commit = null;
+        if (!alreadyCommitted) {
+            commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                !commit.recoveryRequired,
+                `${label} lifecycle/fixed commit 실패: ${JSON.stringify(commit)}`
+            );
+        }
+        assert(
+            !submittedTicks.includes(tick),
+            `${label} fixed tick을 두 번 submit하려 합니다: ${tick}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        submittedTicks.push(tick);
+        await settlePhase5Endpoint(endpoint, label);
+        const bodies = await readPhase5Bodies(endpoint);
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick + 1);
+        assert(
+            completed.protocolFailure === null,
+            `${label} completed event protocol 실패: ${JSON.stringify(completed)}`
+        );
+        chargeEvents.push(...completed.contactEvents.filter((event) => (
+            event.eventType === 'enemy-charge-windup-started'
+            || event.eventType === 'enemy-charge-contact-recoil-started'
+        )));
+        return Object.freeze({ commit, bodies, completed });
+    };
+    const assertState = (body, state, entered, expires, label) => {
+        const behavior = body.enemyBehaviorState;
+        assert(
+            behavior?.programId
+                === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE
+                && behavior.state === state
+                && behavior.stateEnteredFixedTick === entered
+                && behavior.stateExpiresAtFixedTick === expires,
+            `${label} state [entered,expires) 불일치: ${JSON.stringify(behavior)}`
+        );
+        return behavior;
+    };
+    const assertExactTowerTarget = (behavior, towerBody, label) => {
+        assert(
+            behavior.targetSlot === towerBody.index
+                && behavior.targetEntityId === towerHandle.entityId
+                && behavior.targetIncarnation === towerHandle.incarnation
+                && (behavior.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID) !== 0,
+            `${label} exact tracked Tower handle 불일치: ${JSON.stringify({ behavior, towerBody, towerHandle })}`
+        );
+    };
+    const createArrowIntent = (position, spawnSequence) => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: BASIC_ARROW_ENEMY_DATA,
+            route: navigationSource.route,
+            spawnSequence,
+            waveId: 'nw-arrow-charge',
+            policyId: 'hardware-fixture'
+        }),
+        position: Object.freeze({ ...position })
+    });
+    const createMaximumCandidateIntent = (position, spawnSequence) => (
+        createGpuProjectileSpawnIntent({
+            definition: maximumCandidateProjectile,
+            position: Object.freeze({ ...position }),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            sourceHandle: arrowHandle,
+            ownerHandle: arrowHandle,
+            producerId: 'nw-arrow-charge-window-maximum',
+            sourceAbilityId: maximumCandidateProjectile.id,
+            teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+            damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+            targetPolicyId:
+                PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+            spawnSequence
+        })
+    );
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Arrow charge endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const requests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'arrow-charge:initial-tower'
+            ),
+            endpoint.requestSpawn(
+                createArrowIntent(arrowPosition, 0),
+                1,
+                'arrow-charge:initial-arrow'
+            )
+        ];
+        assert(requests.every(({ accepted }) => accepted),
+            `Arrow charge 초기 spawn 요청 실패: ${JSON.stringify(requests)}`);
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        towerHandle = initialHandles.get('arrow-charge:initial-tower');
+        arrowHandle = initialHandles.get('arrow-charge:initial-arrow');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && towerHandle
+                && arrowHandle,
+            `Arrow charge 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        assert(
+            endpoint.configureTrackedBody(towerHandle).accepted,
+            'Arrow charge exact Tower tracking 구성 실패'
+        );
+
+        const tickOne = await submitTick(1, 'Arrow charge tick 1 WINDUP', {
+            alreadyCommitted: true
+        });
+        let towerBody = findBody(tickOne.bodies, towerHandle, 'tick 1 Tower');
+        let arrowBody = findBody(tickOne.bodies, arrowHandle, 'tick 1 Arrow');
+        const initialTowerHealth = towerBody.health;
+        let behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            1,
+            31,
+            'Arrow charge 첫 WINDUP'
+        );
+        assertExactTowerTarget(behavior, towerBody, 'Arrow charge 첫 WINDUP');
+        const firstWindupEvent = tickOne.completed.contactEvents.find((event) => (
+            event.eventType === 'enemy-charge-windup-started'
+            && exactHandleMatches(event, arrowHandle)
+            && event.otherEntityId === towerHandle.entityId
+            && event.otherIncarnation === towerHandle.incarnation
+        ));
+        assert(
+            firstWindupEvent?.valueFixedPoint === 0,
+            `Arrow charge 첫 typed telegraph event 불일치: ${JSON.stringify(tickOne.completed)}`
+        );
+
+        const trackingDisabled = endpoint.configureTrackedBody(null);
+        assert(
+            trackingDisabled.accepted && trackingDisabled.tracked === false,
+            `Arrow charge Tower absence 구성 실패: ${JSON.stringify(trackingDisabled)}`
+        );
+        const tickTwo = await submitTick(2, 'Arrow charge tick 2 CORE_FALLBACK');
+        arrowBody = findBody(tickTwo.bodies, arrowHandle, 'fallback Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK,
+            2,
+            0,
+            'Arrow charge target loss fallback'
+        );
+        assert(
+            behavior.targetSlot === 0
+                && behavior.targetEntityId === 0
+                && behavior.targetIncarnation === 0
+                && behavior.flags === 0
+                && behavior.chargeDirection.x === 0
+                && behavior.chargeDirection.y === 0,
+            `Arrow charge fallback transient clear 불일치: ${JSON.stringify(behavior)}`
+        );
+
+        assert(
+            endpoint.configureTrackedBody(towerHandle).accepted,
+            'Arrow charge Tower reacquire tracking 구성 실패'
+        );
+        const tickThree = await submitTick(3, 'Arrow charge tick 3 SEEK only');
+        towerBody = findBody(tickThree.bodies, towerHandle, 'reacquire Tower');
+        arrowBody = findBody(tickThree.bodies, arrowHandle, 'reacquire Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+            3,
+            0,
+            'Arrow charge fallback→SEEK'
+        );
+        assertExactTowerTarget(behavior, towerBody, 'Arrow charge fallback→SEEK');
+
+        const tickFour = await submitTick(4, 'Arrow charge tick 4 reacquired WINDUP');
+        arrowBody = findBody(tickFour.bodies, arrowHandle, 'reacquired WINDUP Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            4,
+            34,
+            'Arrow charge reacquired WINDUP'
+        );
+        assert(
+            tickFour.completed.contactEvents.some((event) => (
+                event.eventType === 'enemy-charge-windup-started'
+                && exactHandleMatches(event, arrowHandle)
+                && event.otherEntityId === towerHandle.entityId
+                && event.otherIncarnation === towerHandle.incarnation
+                && event.valueFixedPoint === 0
+            )),
+            `Arrow charge reacquired telegraph event 불일치: ${JSON.stringify(tickFour.completed)}`
+        );
+
+        let beforeWindupExpiry = null;
+        for (let tick = 5; tick < 34; tick++) {
+            const step = await submitTick(tick, `Arrow charge WINDUP boundary ${tick}`);
+            if (tick === 33) beforeWindupExpiry = step;
+        }
+        arrowBody = findBody(
+            beforeWindupExpiry.bodies,
+            arrowHandle,
+            'WINDUP expires 직전 Arrow'
+        );
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            4,
+            34,
+            'Arrow charge WINDUP expires 직전'
+        );
+
+        const chargeStart = await submitTick(34, 'Arrow charge exact CHARGE boundary');
+        towerBody = findBody(chargeStart.bodies, towerHandle, 'CHARGE Tower');
+        arrowBody = findBody(chargeStart.bodies, arrowHandle, 'CHARGE Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE,
+            34,
+            94,
+            'Arrow charge CHARGE start'
+        );
+        assertExactTowerTarget(behavior, towerBody, 'Arrow charge CHARGE start');
+        const snapshotDirection = Object.freeze({ ...behavior.chargeDirection });
+        assertNear(Math.hypot(snapshotDirection.x, snapshotDirection.y), 1, 0.00001,
+            'Arrow charge snapshot direction unit length');
+
+        const moveTower = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 1
+        }, 35, 'arrow-charge:tower-perpendicular-probe');
+        assert(moveTower.accepted,
+            `Arrow charge Tower perpendicular control 실패: ${JSON.stringify(moveTower)}`);
+        const movedTarget = await submitTick(35, 'Arrow charge non-homing probe');
+        towerBody = findBody(movedTarget.bodies, towerHandle, 'moved Tower');
+        arrowBody = findBody(movedTarget.bodies, arrowHandle, 'non-homing Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE,
+            34,
+            94,
+            'Arrow charge non-homing state'
+        );
+        assertNear(behavior.chargeDirection.x, snapshotDirection.x, 0.000001,
+            'Arrow charge non-homing direction.x');
+        assertNear(behavior.chargeDirection.y, snapshotDirection.y, 0.000001,
+            'Arrow charge non-homing direction.y');
+        const velocityLength = Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y);
+        assert(
+            velocityLength > 0
+                && ((arrowBody.velocity.x * snapshotDirection.x)
+                    + (arrowBody.velocity.y * snapshotDirection.y)) / velocityLength
+                    > 0.9999
+                && Math.abs(towerBody.position.y - towerPosition.y) > 0.0001,
+            `Arrow charge가 moved Tower로 재조준했습니다: ${JSON.stringify({ towerBody, arrowBody, behavior })}`
+        );
+
+        const stopTower = endpoint.requestBodyControl({
+            handle: towerHandle,
+            moveIntentX: 0,
+            moveIntentY: 0
+        }, 36, 'arrow-charge:tower-stop');
+        assert(stopTower.accepted,
+            `Arrow charge Tower stop control 실패: ${JSON.stringify(stopTower)}`);
+        let latest = await submitTick(36, 'Arrow charge Tower stop');
+        let primedMaximumCandidate = false;
+        let contactTick = null;
+        let contactSnapshot = null;
+        let towerHealthBeforeContact = null;
+        for (let tick = 37; tick < 94 && contactTick === null; tick++) {
+            const previousArrow = findBody(latest.bodies, arrowHandle, 'pre-contact Arrow');
+            const previousTower = findBody(latest.bodies, towerHandle, 'pre-contact Tower');
+            const previousBehavior = previousArrow.enemyBehaviorState;
+            const distance = Math.hypot(
+                previousTower.position.x - previousArrow.position.x,
+                previousTower.position.y - previousArrow.position.y
+            );
+            const contactDistance = previousTower.radius + previousArrow.radius;
+            if (!primedMaximumCandidate
+                && previousBehavior.state === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE
+                && distance <= contactDistance + 0.13) {
+                towerHealthBeforeContact = previousTower.health;
+                const request = endpoint.requestSpawn(
+                    createMaximumCandidateIntent(previousTower.position, 1),
+                    tick,
+                    'arrow-charge:window-maximum-projectile'
+                );
+                assert(request.accepted,
+                    `Arrow charge same-tick maximum candidate 요청 실패: ${JSON.stringify(request)}`);
+                primedMaximumCandidate = true;
+            }
+            latest = await submitTick(tick, `Arrow charge contact approach ${tick}`);
+            if (primedMaximumCandidate && projectileHandle === null) {
+                projectileHandle = latest.commit?.spawned.find(({ commandId }) => (
+                    commandId === 'arrow-charge:window-maximum-projectile'
+                ))?.handle ?? null;
+            }
+            const currentArrow = findBody(latest.bodies, arrowHandle, 'contact approach Arrow');
+            if (currentArrow.enemyBehaviorState.state
+                === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
+                contactTick = tick;
+                contactSnapshot = latest;
+            }
+        }
+        assert(
+            primedMaximumCandidate && projectileHandle && contactTick !== null,
+            `Arrow charge valid same-tick contact를 만들지 못했습니다: ${JSON.stringify({ primedMaximumCandidate, projectileHandle, contactTick })}`
+        );
+
+        towerBody = findBody(contactSnapshot.bodies, towerHandle, 'contact Tower');
+        arrowBody = findBody(contactSnapshot.bodies, arrowHandle, 'contact Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
+            contactTick,
+            contactTick + 12,
+            'Arrow charge CONTACT_RECOIL start'
+        );
+        const recoilDot = (arrowBody.velocity.x * snapshotDirection.x)
+            + (arrowBody.velocity.y * snapshotDirection.y);
+        assert(
+            recoilDot < 0
+                && Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y) > 3.9
+                && (behavior.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING) === 0,
+            `Arrow charge solver 후 opposite one-shot recoil 불일치: ${JSON.stringify({ arrowBody, behavior, recoilDot })}`
+        );
+        assertNear(towerBody.health, towerHealthBeforeContact - 1, 0.000001,
+            'Arrow charge same-tick max Tower HP delta');
+        assert(
+            towerBody.combatState.peakFinalDamageFixedPoint === 100
+                && towerBody.combatState.peakSourceEntityId
+                    === projectileHandle.entityId
+                && towerBody.combatState.peakSourceIncarnation
+                    === projectileHandle.incarnation,
+            `Arrow charge same-tick Maximum Damage Window winner 불일치: ${JSON.stringify(towerBody.combatState)}`
+        );
+        const damageEvent = contactSnapshot.completed.contactEvents.find((event) => (
+            event.eventType === 'damage-applied'
+            && exactHandleMatches(event, projectileHandle)
+            && event.otherEntityId === towerHandle.entityId
+            && event.otherIncarnation === towerHandle.incarnation
+        ));
+        const recoilEvent = contactSnapshot.completed.contactEvents.find((event) => (
+            event.eventType === 'enemy-charge-contact-recoil-started'
+            && exactHandleMatches(event, arrowHandle)
+            && event.otherEntityId === towerHandle.entityId
+            && event.otherIncarnation === towerHandle.incarnation
+        ));
+        assert(
+            damageEvent?.valueFixedPoint === 100
+                && recoilEvent?.valueFixedPoint === 0
+                && !contactSnapshot.completed.contactEvents.some((event) => (
+                    event.eventType === 'damage-applied'
+                    && exactHandleMatches(event, arrowHandle)
+                )),
+            `Arrow charge valid applied0 contact/recoil provenance 불일치: ${JSON.stringify(contactSnapshot.completed)}`
+        );
+
+        const postContact = await submitTick(
+            contactTick + 1,
+            'Arrow charge recoil one-shot next tick'
+        );
+        arrowBody = findBody(postContact.bodies, arrowHandle, 'post-contact Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
+            contactTick,
+            contactTick + 12,
+            'Arrow charge recoil one-shot hold'
+        );
+        assert(
+            (behavior.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING) === 0
+                && !postContact.completed.contactEvents.some((event) => (
+                    event.eventType === 'enemy-charge-contact-recoil-started'
+                )),
+            `Arrow charge recoil가 재적용됐습니다: ${JSON.stringify({ behavior, completed: postContact.completed })}`
+        );
+
+        let recoilBeforeExpiry = postContact;
+        for (let tick = contactTick + 2; tick < contactTick + 12; tick++) {
+            recoilBeforeExpiry = await submitTick(tick, `Arrow charge recoil boundary ${tick}`);
+        }
+        arrowBody = findBody(
+            recoilBeforeExpiry.bodies,
+            arrowHandle,
+            'CONTACT_RECOIL expires 직전 Arrow'
+        );
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
+            contactTick,
+            contactTick + 12,
+            'Arrow charge CONTACT_RECOIL expires 직전'
+        );
+        const recoverStartTick = contactTick + 12;
+        const recoverStart = await submitTick(
+            recoverStartTick,
+            'Arrow charge exact RECOVER boundary'
+        );
+        arrowBody = findBody(recoverStart.bodies, arrowHandle, 'RECOVER Arrow');
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER,
+            recoverStartTick,
+            recoverStartTick + 30,
+            'Arrow charge RECOVER start'
+        );
+
+        let recoverBeforeExpiry = recoverStart;
+        for (let tick = recoverStartTick + 1; tick < recoverStartTick + 30; tick++) {
+            recoverBeforeExpiry = await submitTick(tick, `Arrow charge recover boundary ${tick}`);
+        }
+        arrowBody = findBody(
+            recoverBeforeExpiry.bodies,
+            arrowHandle,
+            'RECOVER expires 직전 Arrow'
+        );
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER,
+            recoverStartTick,
+            recoverStartTick + 30,
+            'Arrow charge RECOVER expires 직전'
+        );
+        const seekAgainTick = recoverStartTick + 30;
+        const seekAgain = await submitTick(
+            seekAgainTick,
+            'Arrow charge RECOVER expiry SEEK only'
+        );
+        towerBody = findBody(seekAgain.bodies, towerHandle, 'repeat SEEK Tower');
+        arrowBody = findBody(seekAgain.bodies, arrowHandle, 'repeat SEEK Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+            seekAgainTick,
+            0,
+            'Arrow charge repeat SEEK only'
+        );
+        assertExactTowerTarget(behavior, towerBody, 'Arrow charge repeat SEEK only');
+
+        const repeatWindupTick = seekAgainTick + 1;
+        const repeatWindup = await submitTick(
+            repeatWindupTick,
+            'Arrow charge repeat WINDUP'
+        );
+        arrowBody = findBody(repeatWindup.bodies, arrowHandle, 'repeat WINDUP Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            repeatWindupTick,
+            repeatWindupTick + 30,
+            'Arrow charge repeat WINDUP state'
+        );
+        assert(
+            repeatWindup.completed.contactEvents.some((event) => (
+                event.eventType === 'enemy-charge-windup-started'
+                && exactHandleMatches(event, arrowHandle)
+                && event.valueFixedPoint === 0
+            )),
+            `Arrow charge repeat telegraph 누락: ${JSON.stringify(repeatWindup.completed)}`
+        );
+        let repeatBeforeCharge = repeatWindup;
+        for (let tick = repeatWindupTick + 1; tick < repeatWindupTick + 30; tick++) {
+            repeatBeforeCharge = await submitTick(tick, `Arrow charge repeat windup ${tick}`);
+        }
+        arrowBody = findBody(
+            repeatBeforeCharge.bodies,
+            arrowHandle,
+            'repeat WINDUP expires 직전 Arrow'
+        );
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            repeatWindupTick,
+            repeatWindupTick + 30,
+            'Arrow charge repeat WINDUP expires 직전'
+        );
+        const repeatChargeTick = repeatWindupTick + 30;
+        const repeatCharge = await submitTick(
+            repeatChargeTick,
+            'Arrow charge repeat CHARGE'
+        );
+        arrowBody = findBody(repeatCharge.bodies, arrowHandle, 'repeat CHARGE Arrow');
+        assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE,
+            repeatChargeTick,
+            repeatChargeTick + 60,
+            'Arrow charge repeat CHARGE state'
+        );
+
+        assert(endpoint.configureTrackedBody(null).accepted,
+            'Arrow charge reuse reset tracking 해제 실패');
+        const oldArrowIndex = arrowBody.index;
+        const resetDespawnTick = repeatChargeTick + 1;
+        const despawnRequest = endpoint.requestDespawn(
+            arrowHandle,
+            'arrow-charge-reuse-reset',
+            resetDespawnTick,
+            'arrow-charge:reuse-old-arrow'
+        );
+        assert(despawnRequest.accepted,
+            `Arrow charge reuse despawn 요청 실패: ${JSON.stringify(despawnRequest)}`);
+        const despawned = await submitTick(
+            resetDespawnTick,
+            'Arrow charge reuse despawn'
+        );
+        assert(
+            !despawned.bodies.some((body) => exactHandleMatches(body.handle, arrowHandle)),
+            `Arrow charge old handle이 reuse 경계 뒤 남았습니다: ${JSON.stringify(despawned.bodies)}`
+        );
+
+        const resetSpawnTick = resetDespawnTick + 1;
+        const resetRequest = endpoint.requestSpawn(
+            createArrowIntent(arrowPosition, 2),
+            resetSpawnTick,
+            'arrow-charge:reuse-new-arrow'
+        );
+        assert(resetRequest.accepted,
+            `Arrow charge reuse spawn 요청 실패: ${JSON.stringify(resetRequest)}`);
+        const resetSpawn = await submitTick(
+            resetSpawnTick,
+            'Arrow charge reuse reset submit'
+        );
+        const replacementHandle = resetSpawn.commit?.spawned.find(({ commandId }) => (
+            commandId === 'arrow-charge:reuse-new-arrow'
+        ))?.handle;
+        assert(replacementHandle,
+            `Arrow charge reuse replacement handle 누락: ${JSON.stringify(resetSpawn.commit)}`);
+        const replacementArrow = findBody(
+            resetSpawn.bodies,
+            replacementHandle,
+            'reuse replacement Arrow'
+        );
+        const replacementBehavior = assertState(
+            replacementArrow,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK,
+            resetSpawnTick,
+            0,
+            'Arrow charge reuse replacement fallback'
+        );
+        assert(
+            replacementArrow.index === oldArrowIndex
+                && !exactHandleMatches(replacementHandle, arrowHandle)
+                && replacementBehavior.targetSlot === 0
+                && replacementBehavior.targetEntityId === 0
+                && replacementBehavior.targetIncarnation === 0
+                && replacementBehavior.flags === 0
+                && replacementBehavior.chargeDirection.x === 0
+                && replacementBehavior.chargeDirection.y === 0,
+            `Arrow charge side-plane reuse reset 불일치: ${JSON.stringify({ oldArrowIndex, replacementHandle, replacementArrow })}`
+        );
+        const finalTower = findBody(resetSpawn.bodies, towerHandle, 'final Tower');
+        assertNear(finalTower.health, initialTowerHealth - 1, 0.000001,
+            'Arrow charge reuse 중 Tower HP preservation');
+
+        const finalStatus = endpoint.getStatus();
+        const gpuStatus = finalStatus.backend?.gpu ?? finalStatus.backend;
+        const storageProfile = gpuStatus.fixedPrimitives.storageProfile;
+        const recoilEvents = chargeEvents.filter((event) => (
+            event.eventType === 'enemy-charge-contact-recoil-started'
+        ));
+        const errors = Object.freeze({
+            contactOverflow: gpuStatus.contact.lastOverflowCount,
+            eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
+            deathOverflow: gpuStatus.events.lastDeathOverflowCount
+        });
+        assert(
+            submittedTicks.every((tick, index) => tick === index + 1)
+                && new Set(submittedTicks).size === submittedTicks.length
+                && gpuStatus.submittedTickCount === submittedTicks.length
+                && recoilEvents.length === 1
+                && storageProfile.enemyBehavior === 8
+                && storageProfile.contactHandling === 9
+                && storageProfile.requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                && Object.values(storageProfile).every((count) => (
+                    count <= REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
+                ))
+                && Object.values(errors).every((count) => count === 0)
+                && !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery(),
+            `Arrow charge bounded submit/storage/recovery 불일치: ${JSON.stringify({ submittedTicks, finalStatus, storageProfile, errors, recoilEvents })}`
+        );
+
+        return Object.freeze({
+            states: Object.freeze({
+                firstWindup: Object.freeze({ entered: 1, expires: 31 }),
+                fallback: Object.freeze({ entered: 2, expires: 0 }),
+                reacquiredSeek: Object.freeze({ entered: 3, expires: 0 }),
+                charge: Object.freeze({ entered: 34, expires: 94 }),
+                contactRecoil: Object.freeze({
+                    entered: contactTick,
+                    expires: contactTick + 12
+                }),
+                recover: Object.freeze({
+                    entered: recoverStartTick,
+                    expires: recoverStartTick + 30
+                }),
+                repeatCharge: Object.freeze({
+                    entered: repeatChargeTick,
+                    expires: repeatChargeTick + 60
+                })
+            }),
+            exactTowerHandle: Object.freeze({ ...towerHandle }),
+            snapshotDirection,
+            sameTickWindow: Object.freeze({
+                projectile: Object.freeze({ ...projectileHandle }),
+                appliedFixedPoint: damageEvent.valueFixedPoint,
+                arrowAppliedFixedPoint: recoilEvent.valueFixedPoint,
+                recoilDot
+            }),
+            typedEventCount: chargeEvents.length,
+            submittedTickCount: submittedTicks.length,
+            singleSubmitPerTick: true,
+            reuseReset: Object.freeze({
+                slot: oldArrowIndex,
+                replacement: Object.freeze({ ...replacementHandle }),
+                state: replacementBehavior.state,
+                towerHealth: finalTower.health
+            }),
+            errors,
+            storageProfile
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+/**
  * 실제 GPU 경로에서 Tower의 Maximum Damage Window와 Enemy 접촉 후보가 같은
  * fixed tick에 모이는지 검증합니다. readback은 이 capability fixture의 bounded
  * diagnostic에만 사용하며 frame 권위에는 연결하지 않습니다.
  */
+async function runRhomPrioritySelectionHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 20,
+        controlCommandCapacity: 8,
+        sourceRelativeSpawnCommandCapacity: 8,
+        spawnProgramCapacity: 8
+    });
+    const fixedDelta = 1 / 60;
+    const corePosition = Object.freeze({ x: 12, y: 8 });
+    const towerPosition = Object.freeze({ x: 1.5, y: 2 });
+    const wrongTowerPosition = Object.freeze({ x: 2.25, y: 2 });
+    const scenarioPositions = Object.freeze({
+        core: Object.freeze({ x: 10, y: 8 }),
+        tower: Object.freeze({ x: 3, y: 2 }),
+        none: Object.freeze({ x: 0.5, y: 15.5 }),
+        equality: Object.freeze({ x: 4, y: 8 })
+    });
+    const scenarioNames = Object.keys(scenarioPositions);
+    const handlesByScenario = new Map();
+    const controlReceipts = new Map();
+    const commandIds = new Map();
+    let coreHandle = null;
+    let towerHandle = null;
+    let wrongTowerHandle = null;
+    let replacementTowerHandle = null;
+    let initialCommit = null;
+    const createRhomIntent = (scenario, spawnSequence) => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: BASIC_RHOM_ENEMY_DATA,
+            route: navigationSource.route,
+            spawnSequence,
+            waveId: 'nw-rhom-priority-selection',
+            policyId: 'hardware-fixture'
+        }),
+        position: scenarioPositions[scenario]
+    });
+    const createControl = (sourceHandle, towerCandidate, selectionSequence) => ({
+        sourceHandle,
+        coreTargetHandle: coreHandle,
+        towerTargetHandle: towerCandidate,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        selectionSequence,
+        attackDefinitionId: BASIC_RHOM_ATTACK_DATA.id,
+        projectileDefinitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId
+    });
+    const createSelectedIntent = (
+        sourceHandle,
+        towerCandidate,
+        spawnSequence
+    ) => createGpuSelectedTargetProjectileIntent({
+        definition: HOSTILE_RHOM_PROJECTILE_DATA,
+        sourceHandle,
+        ownerHandle: sourceHandle,
+        coreTargetHandle: coreHandle,
+        towerTargetHandle: towerCandidate,
+        positionOffset: BASIC_RHOM_ATTACK_DATA.positionOffset,
+        targetOffset: BASIC_RHOM_ATTACK_DATA.targetOffset,
+        launchSpeed: BASIC_RHOM_ATTACK_DATA.launchSpeed,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        targetPolicyId: BASIC_RHOM_ATTACK_DATA.targetPolicyId,
+        allegiancePolicy: BASIC_RHOM_ATTACK_DATA.allegiancePolicy,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId,
+        spawnSequence
+    });
+    const stageScenario = (scenario, tick, towerCandidate, sequence) => {
+        const sourceHandle = handlesByScenario.get(scenario);
+        const controlCommandId = `rhom:${scenario}:control:${tick}`;
+        const spawnCommandId = `rhom:${scenario}:spawn:${tick}`;
+        const control = endpoint.requestPriorityTargetControl(
+            createControl(sourceHandle, towerCandidate, sequence),
+            tick,
+            controlCommandId
+        );
+        assert(
+            control.accepted
+                && Number.isSafeInteger(control.attackFingerprint)
+                && control.attackFingerprint > 0,
+            `Rhom ${scenario} priority control ingress 실패: ${JSON.stringify(control)}`
+        );
+        const spawn = endpoint.requestSelectedTargetSpawn(
+            createSelectedIntent(sourceHandle, towerCandidate, sequence),
+            tick,
+            spawnCommandId
+        );
+        assert(
+            spawn.accepted,
+            `Rhom ${scenario} selected spawn ingress 실패: ${JSON.stringify(spawn)}`
+        );
+        controlReceipts.set(controlCommandId, control);
+        commandIds.set(`${scenario}:control:${tick}`, controlCommandId);
+        commandIds.set(`${scenario}:spawn:${tick}`, spawnCommandId);
+        return Object.freeze({ control, spawn });
+    };
+    const drainBoundary = (tick) => {
+        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+        assert(
+            completedEvents.protocolFailure === null,
+            `Rhom selection completed event protocol 실패: ${JSON.stringify(completedEvents)}`
+        );
+        const spawnCompletion = endpoint.getStatus()
+            .fixedCommands.lastCompletionResult;
+        const commit = endpoint.commitAtFixedBoundary(tick);
+        assert(
+            !commit.recoveryRequired,
+            `Rhom selection completion commit 실패: ${JSON.stringify(commit)}`
+        );
+        return Object.freeze({ completedEvents, spawnCompletion, commit });
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Rhom selection endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const initialRequests = [
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({ position: corePosition }),
+                1,
+                'rhom:core'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'rhom:tower'
+            ),
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: wrongTowerPosition }),
+                1,
+                'rhom:tower:wrong'
+            ),
+            ...scenarioNames.map((scenario, index) => endpoint.requestSpawn(
+                createRhomIntent(scenario, index),
+                1,
+                `rhom:source:${scenario}`
+            ))
+        ];
+        assert(
+            initialRequests.every(({ accepted }) => accepted),
+            `Rhom selection 초기 spawn ingress 실패: ${JSON.stringify(initialRequests)}`
+        );
+        initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        coreHandle = initialHandles.get('rhom:core');
+        towerHandle = initialHandles.get('rhom:tower');
+        wrongTowerHandle = initialHandles.get('rhom:tower:wrong');
+        for (const scenario of scenarioNames) {
+            handlesByScenario.set(
+                scenario,
+                initialHandles.get(`rhom:source:${scenario}`)
+            );
+        }
+        assert(
+            initialCommit.spawned.length === 7
+                && coreHandle
+                && towerHandle
+                && wrongTowerHandle
+                && scenarioNames.every((name) => handlesByScenario.get(name)),
+            `Rhom selection 초기 exact handle 실패: ${JSON.stringify(initialCommit)}`
+        );
+
+        for (const [index, scenario] of scenarioNames.entries()) {
+            stageScenario(scenario, 2, towerHandle, index);
+        }
+        const selectionCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            selectionCommit.fixedCommands.controls.length === 4
+                && selectionCommit.fixedCommands.selectedTargetSpawns.length === 4
+                && selectionCommit.fixedCommands.rejected.length === 0,
+            `Rhom selection mixed control/spawn commit 실패: ${JSON.stringify(selectionCommit)}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 2), 'Rhom selection fixed submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Rhom selection GPU completion',
+            { spawnProgram: true }
+        );
+        const selectedBodies = await readPhase5Bodies(endpoint);
+        const selectionDrain = drainBoundary(3);
+        const controlResults = new Map(
+            selectionDrain.commit.fixedCommands.priorityTargetControlResults
+                .map((entry) => [entry.commandId, entry])
+        );
+        const expected = Object.freeze({
+            core: Object.freeze({
+                outcome: 'core',
+                result: GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED,
+                kind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE,
+                flags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                    | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED,
+                handle: coreHandle
+            }),
+            tower: Object.freeze({
+                outcome: 'tower',
+                result: GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED,
+                kind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER,
+                flags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                    | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED,
+                handle: towerHandle
+            }),
+            none: Object.freeze({
+                outcome: 'no-target',
+                result: GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET,
+                kind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+                flags: GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW,
+                handle: null
+            }),
+            equality: Object.freeze({
+                outcome: 'core',
+                result: GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED,
+                kind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE,
+                flags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                    | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED,
+                handle: coreHandle
+            })
+        });
+        const selectionEvidence = {};
+        for (const scenario of scenarioNames) {
+            const controlId = commandIds.get(`${scenario}:control:2`);
+            const result = controlResults.get(controlId);
+            const receipt = controlReceipts.get(controlId);
+            const expectation = expected[scenario];
+            assert(
+                result?.outcome === expectation.outcome
+                    && result.result === expectation.result
+                    && result.selectedTargetKind === expectation.kind
+                    && result.stateFlags === expectation.flags
+                    && result.attackFingerprint === receipt.attackFingerprint
+                    && (expectation.handle === null
+                        ? result.selectedTargetHandle === null
+                        : result.selectedTargetHandle?.entityId
+                                === expectation.handle.entityId
+                            && result.selectedTargetHandle?.incarnation
+                                === expectation.handle.incarnation),
+                `Rhom ${scenario} exact selection 결과 불일치: ${JSON.stringify({ result, expectation, receipt })}`
+            );
+            selectionEvidence[scenario] = result;
+        }
+
+        const selectedSpawnByCommandId = new Map(
+            selectionCommit.fixedCommands.selectedTargetSpawns.map(
+                (entry) => [entry.commandId, entry]
+            )
+        );
+        const coreProjectileHandle = selectedSpawnByCommandId.get(
+            commandIds.get('core:spawn:2')
+        ).handle;
+        const towerProjectileHandle = selectedSpawnByCommandId.get(
+            commandIds.get('tower:spawn:2')
+        ).handle;
+        const coreProjectile = findPhase5Body(
+            selectedBodies,
+            coreProjectileHandle,
+            'Rhom selected Core projectile'
+        );
+        const towerProjectile = findPhase5Body(
+            selectedBodies,
+            towerProjectileHandle,
+            'Rhom selected Tower projectile'
+        );
+        const wrongTower = findPhase5Body(
+            selectedBodies,
+            wrongTowerHandle,
+            'Rhom non-selected wrong Tower'
+        );
+        const wrongTowerEvents = selectionDrain.completedEvents.contactEvents.filter(
+            (event) => (
+                event.entityId === towerProjectileHandle.entityId
+                    && event.incarnation === towerProjectileHandle.incarnation
+                    && event.otherEntityId === wrongTowerHandle.entityId
+                    && event.otherIncarnation === wrongTowerHandle.incarnation
+            ) || (
+                event.entityId === wrongTowerHandle.entityId
+                    && event.incarnation === wrongTowerHandle.incarnation
+                    && event.otherEntityId === towerProjectileHandle.entityId
+                    && event.otherIncarnation === towerProjectileHandle.incarnation
+            )
+        );
+        assert(
+            towerProjectile.health === HOSTILE_RHOM_PROJECTILE_DATA.penetration
+                && wrongTower.health === THE_TOWER_COMBAT_DATA.MAX_HEALTH
+                && wrongTowerEvents.length === 0,
+            `Rhom wrong Tower가 exact selected 검증 전에 budget/damage/event를 소비했습니다: ${JSON.stringify({ towerProjectile, wrongTower, wrongTowerEvents })}`
+        );
+        const coreMask = unpackGpuCircleInteractionMeta(
+            coreProjectile.interactionMeta
+        ).interactionMask;
+        const towerMask = unpackGpuCircleInteractionMeta(
+            towerProjectile.interactionMeta
+        ).interactionMask;
+        assert(
+            coreMask === (
+                GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+                | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+            )
+                && towerMask === (
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                    | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+                ),
+            `Rhom selected projectile dynamic mask 불일치: ${JSON.stringify({ coreMask, towerMask })}`
+        );
+        const initialCoreDirection = Object.freeze({
+            x: coreProjectile.velocity.x,
+            y: coreProjectile.velocity.y
+        });
+        assert(
+            initialCoreDirection.x > 0
+                && Math.abs(initialCoreDirection.y) < 0.0001,
+            `Rhom Core projectile initial non-homing snapshot 방향 불일치: ${JSON.stringify(initialCoreDirection)}`
+        );
+        for (const scenario of ['core', 'tower', 'equality']) {
+            const body = findPhase5Body(
+                selectedBodies,
+                handlesByScenario.get(scenario),
+                `Rhom ${scenario} STOP source`
+            );
+            assert(
+                Math.hypot(body.velocity.x, body.velocity.y) < 0.0001,
+                `Rhom ${scenario} STOP velocity가 0이 아닙니다: ${JSON.stringify(body)}`
+            );
+        }
+        const noneBody = findPhase5Body(
+            selectedBodies,
+            handlesByScenario.get('none'),
+            'Rhom no-target ROUTE_FLOW source'
+        );
+        assert(
+            Math.hypot(noneBody.velocity.x, noneBody.velocity.y) > 0,
+            `Rhom no-target flow가 진행되지 않았습니다: ${JSON.stringify(noneBody)}`
+        );
+
+        assert(endpoint.requestDespawn(
+            towerHandle,
+            'rhom-stale-tower',
+            4,
+            'rhom:tower:despawn'
+        ).accepted, 'Rhom stale Tower despawn ingress 실패');
+        const towerDespawnCommit = endpoint.commitAtFixedBoundary(4);
+        assert(
+            towerDespawnCommit.despawned.length === 1,
+            `Rhom stale Tower despawn commit 실패: ${JSON.stringify(towerDespawnCommit)}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 4), 'Rhom stale Tower cleanup submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Rhom stale Tower cleanup');
+        const staleRejected = endpoint.requestPriorityTargetControl(
+            createControl(handlesByScenario.get('tower'), towerHandle, 4),
+            5,
+            'rhom:tower:stale-control:5'
+        );
+        assert(
+            staleRejected.accepted === false
+                && staleRejected.reason === 'priority-tower-stale',
+            `Rhom stale Tower public wrapper가 fail-close하지 않았습니다: ${JSON.stringify(staleRejected)}`
+        );
+        stageScenario('tower', 5, null, 4);
+        const fallbackCommit = endpoint.commitAtFixedBoundary(5);
+        assert(endpoint.fixedUpdate(fixedDelta, 5), 'Rhom Tower absent fallback submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Rhom Tower absent fallback completion',
+            { spawnProgram: true }
+        );
+        const fallbackDrain = endpoint.commitCompletedEventsAtFixedBoundary(6);
+        assert(fallbackDrain.protocolFailure === null, 'Rhom fallback event protocol 실패');
+        const replacementRequest = endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: towerPosition }),
+            6,
+            'rhom:tower:replacement'
+        );
+        assert(replacementRequest.accepted, 'Rhom replacement Tower ingress 실패');
+        const fallbackCompletionCommit = endpoint.commitAtFixedBoundary(6);
+        replacementTowerHandle = fallbackCompletionCommit.spawned.find(
+            ({ commandId }) => commandId === 'rhom:tower:replacement'
+        )?.handle ?? null;
+        const fallbackResult = fallbackCompletionCommit.fixedCommands
+            .priorityTargetControlResults.find(({ commandId }) => (
+                commandId === commandIds.get('tower:control:5')
+            ));
+        assert(
+            fallbackResult?.outcome === 'no-target'
+                && fallbackResult.stateFlags
+                    === GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW
+                && replacementTowerHandle,
+            `Rhom Tower absent fallback/replacement 불일치: ${JSON.stringify({ fallbackResult, fallbackCommit, fallbackCompletionCommit })}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, 6), 'Rhom replacement Tower submit 실패');
+        await settlePhase5Endpoint(endpoint, 'Rhom replacement Tower materialization');
+        stageScenario('tower', 7, replacementTowerHandle, 5);
+        const reacquireCommit = endpoint.commitAtFixedBoundary(7);
+        assert(endpoint.fixedUpdate(fixedDelta, 7), 'Rhom Tower reacquire submit 실패');
+        await settlePhase5Endpoint(
+            endpoint,
+            'Rhom Tower reacquire completion',
+            { spawnProgram: true }
+        );
+        const reacquireDrain = drainBoundary(8);
+        const reacquireResult = reacquireDrain.commit.fixedCommands
+            .priorityTargetControlResults.find(({ commandId }) => (
+                commandId === commandIds.get('tower:control:7')
+            ));
+        assert(
+            reacquireResult?.outcome === 'tower'
+                && reacquireResult.selectedTargetHandle?.entityId
+                    === replacementTowerHandle.entityId
+                && reacquireResult.selectedTargetHandle?.incarnation
+                    === replacementTowerHandle.incarnation,
+            `Rhom replacement Tower reacquire 불일치: ${JSON.stringify(reacquireResult)}`
+        );
+
+        const invalidCoreDirector = new HostileAttackDirector({ endpoint });
+        invalidCoreDirector.observeFixedCommit(initialCommit, 1);
+        const invalidCoreStage = invalidCoreDirector.stageForFixedTick({
+            targetFixedTick: 9,
+            coreTargetHandle: replacementTowerHandle,
+            towerTargetHandle: replacementTowerHandle
+        });
+        assert(
+            invalidCoreStage.recoveryRequired
+                && invalidCoreStage.protocolFailure?.code === 'core-target-invalid',
+            `Rhom invalid Core가 Hostile runtime recovery를 요구하지 않았습니다: ${JSON.stringify(invalidCoreStage)}`
+        );
+        invalidCoreDirector.destroy();
+
+        const status = endpoint.getStatus();
+        assert(
+            !status.recoveryRequired
+                && status.backend.gpu.fixedPrimitives.storageProfile
+                    .requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Rhom selection storage/recovery 불일치: ${JSON.stringify(status)}`
+        );
+        return Object.freeze({
+            selection: Object.freeze(selectionEvidence),
+            equalityDistance: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+            masks: Object.freeze({ core: coreMask, tower: towerMask }),
+            wrongTower: Object.freeze({
+                handle: wrongTowerHandle,
+                projectileBudgetAfterRejectedContact: towerProjectile.health,
+                towerHpAfterRejectedContact: wrongTower.health,
+                eventCount: wrongTowerEvents.length
+            }),
+            nonHomingDirection: initialCoreDirection,
+            fallback: fallbackResult,
+            reacquire: reacquireResult,
+            invalidCore: Object.freeze({
+                recoveryRequired: invalidCoreStage.recoveryRequired,
+                code: invalidCoreStage.protocolFailure.code
+            }),
+            storageProfile: status.backend.gpu.fixedPrimitives.storageProfile
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    let coreImpactCleanupPort = null;
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device),
+        coreImpactCleanupPortReceiver: ({ port }) => {
+            coreImpactCleanupPort = port;
+        }
+    }, {
+        capacity: 8,
+        controlCommandCapacity: 2,
+        sourceRelativeSpawnCommandCapacity: 2,
+        spawnProgramCapacity: 2,
+        completedEventSnapshotCapacity: 64
+    });
+    const coreIntegrity = new CoreIntegrity({ maxIntegrity: 10 });
+    const coreImpactDirector = new EnemyCoreImpactDirector({
+        endpoint,
+        coreImpactCleanupPort,
+        coreIntegrity,
+        eventHistoryCapacity: 32,
+        factCapacity: 32
+    });
+    const hostileDirector = new HostileAttackDirector({ endpoint });
+    const fixedDelta = 1 / 60;
+    const corePosition = Object.freeze({ x: 12, y: 8 });
+    const sourcePosition = Object.freeze({ x: 10, y: 8 });
+    let coreHandle = null;
+    let sourceHandle = null;
+    let fixedSubmitCount = 0;
+    let finalLifecycleCommitCount = 0;
+    let finalCleanupSubmitCount = 0;
+    let terminalClosed = false;
+    const typedEvents = [];
+    const damageFacts = [];
+    const projectileHandles = [];
+    const stageHistory = [];
+    const createRhomIntent = () => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: BASIC_RHOM_ENEMY_DATA,
+            route: navigationSource.route,
+            spawnSequence: 0,
+            waveId: 'nw-rhom-core-damage-runtime',
+            policyId: 'hardware-fixture'
+        }),
+        position: sourcePosition
+    });
+    const observeCompleted = (completed) => {
+        const hostile = hostileDirector.observeCompletedEvents(completed);
+        const impact = coreImpactDirector.observeCompletedEvents(
+            completed,
+            endpoint.getRegistry()
+        );
+        const events = completed.contactEvents.filter((event) => (
+            event.eventType === 'core-damage-request'
+        ));
+        typedEvents.push(...events);
+        damageFacts.push(...impact.facts.filter((fact) => (
+            fact.type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
+        )));
+        return Object.freeze({ hostile, impact, events });
+    };
+    const advanceBoundary = async (tick, label, { stage = true } = {}) => {
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick);
+        assert(
+            completed.protocolFailure === null,
+            `${label} completed event protocol 실패: ${JSON.stringify(completed)}`
+        );
+        const observed = observeCompleted(completed);
+        const depleted = observed.impact.facts.some(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DEPLETED
+        );
+        let closeResult = null;
+        if (depleted) {
+            closeResult = endpoint.closeGameplayIngress(
+                'rhom-core-depleted',
+                tick
+            );
+            assert(
+                closeResult.cleanup?.fixedCommands?.terminalCancellation?.state
+                    === 'armed'
+                    && closeResult.cleanup.fixedCommands.terminalCancellation
+                        .finalFixedTick === tick,
+                `${label} terminal fixed-program cancel arm 실패: ${JSON.stringify(closeResult)}`
+            );
+            terminalClosed = true;
+        }
+        let staged = null;
+        if (stage && !terminalClosed) {
+            staged = hostileDirector.stageForFixedTick({
+                targetFixedTick: tick,
+                coreTargetHandle: coreHandle,
+                towerTargetHandle: null
+            });
+            assert(
+                !staged.recoveryRequired,
+                `${label} hostile stage recovery: ${JSON.stringify(staged)}`
+            );
+            stageHistory.push(staged);
+        }
+        const commit = endpoint.commitAtFixedBoundary(tick);
+        const hostileCommit = hostileDirector.observeFixedCommit(commit, tick);
+        const coreImpactCommit = coreImpactDirector.observeFixedCommit(
+            commit,
+            tick
+        );
+        assert(
+            !commit.recoveryRequired
+                && !hostileCommit.recoveryRequired
+                && !coreImpactCommit.recoveryRequired,
+            `${label} lifecycle/fixed observation 실패: ${JSON.stringify({ commit, hostileCommit, coreImpactCommit })}`
+        );
+        if (depleted) {
+            finalLifecycleCommitCount++;
+        }
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        fixedSubmitCount++;
+        if (depleted) {
+            finalCleanupSubmitCount++;
+        }
+        await settlePhase5Endpoint(
+            endpoint,
+            label,
+            { spawnProgram: true }
+        );
+        return Object.freeze({
+            completed,
+            observed,
+            staged,
+            commit,
+            hostileCommit,
+            coreImpactCommit,
+            closeResult,
+            depleted
+        });
+    };
+    const waitForNextCoreDamage = async (startTick, label) => {
+        for (let tick = startTick; tick < startTick + 24; tick++) {
+            const boundary = await advanceBoundary(tick, `${label} tick ${tick}`);
+            if (boundary.observed.events.length > 0) {
+                return Object.freeze({ tick, boundary });
+            }
+        }
+        throw new Error(`${label} typed Core damage request가 bounded tick 안에 없습니다.`);
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Rhom Core damage endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const requests = [
+            endpoint.requestSpawn(
+                createGpuCoreProxySpawnIntent({ position: corePosition }),
+                1,
+                'rhom-runtime:core'
+            ),
+            endpoint.requestSpawn(
+                createRhomIntent(),
+                1,
+                'rhom-runtime:source'
+            )
+        ];
+        assert(
+            requests.every(({ accepted }) => accepted),
+            `Rhom Core damage 초기 spawn ingress 실패: ${JSON.stringify(requests)}`
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        coreHandle = handles.get('rhom-runtime:core');
+        sourceHandle = handles.get('rhom-runtime:source');
+        const initialObservation = hostileDirector.observeFixedCommit(
+            initialCommit,
+            1
+        );
+        coreImpactDirector.observeFixedCommit(initialCommit, 1);
+        assert(
+            coreHandle
+                && sourceHandle
+                && initialObservation.spawnedSourceCount === 1,
+            `Rhom Core damage source registration 실패: ${JSON.stringify({ initialCommit, initialObservation })}`
+        );
+        const initialSource = hostileDirector.getStatus().sources.find(
+            ({ handle }) => handle.entityId === sourceHandle.entityId
+                && handle.incarnation === sourceHandle.incarnation
+        );
+        const firstEligibleTick = initialSource?.nextEligibleFixedTick;
+        assert(
+            Number.isSafeInteger(firstEligibleTick)
+                && firstEligibleTick > 2,
+            `Rhom initial cooldown tick이 유효하지 않습니다: ${JSON.stringify(initialSource)}`
+        );
+
+        const beforeFirst = await advanceBoundary(
+            firstEligibleTick - 1,
+            'Rhom first cooldown 직전'
+        );
+        assert(
+            beforeFirst.staged.acceptedCount === 0
+                && beforeFirst.staged.controlAcceptedCount === 1,
+            `Rhom first cooldown 직전 shot/control 불일치: ${JSON.stringify(beforeFirst.staged)}`
+        );
+        const firstShot = await advanceBoundary(
+            firstEligibleTick,
+            'Rhom first cooldown exact'
+        );
+        assert(
+            firstShot.staged.acceptedCount === 1
+                && firstShot.staged.controlAcceptedCount === 1
+                && firstShot.commit.fixedCommands.selectedTargetSpawns.length === 1,
+            `Rhom first exact cooldown shot 실패: ${JSON.stringify(firstShot)}`
+        );
+        const firstProjectileHandle = firstShot.commit.fixedCommands
+            .selectedTargetSpawns[0].handle;
+        projectileHandles.push(firstProjectileHandle);
+        const firstImpact = await waitForNextCoreDamage(
+            firstEligibleTick + 1,
+            'Rhom first projectile'
+        );
+        const firstEvent = firstImpact.boundary.observed.events[0];
+        const firstFact = firstImpact.boundary.observed.impact.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
+        );
+        assert(
+            firstEvent.entityId === firstProjectileHandle.entityId
+                && firstEvent.incarnation === firstProjectileHandle.incarnation
+                && firstEvent.otherEntityId === coreHandle.entityId
+                && firstEvent.otherIncarnation === coreHandle.incarnation
+                && firstEvent.valueFixedPoint
+                    === Math.round(HOSTILE_RHOM_PROJECTILE_DATA.coreDamage * 100)
+                && firstEvent.damageFixedPoint === 0
+                && firstEvent.maximumDamageWindow === false
+                && firstFact?.projectileDefinitionId
+                    === HOSTILE_RHOM_PROJECTILE_DATA.id
+                && firstFact.producerId === BASIC_RHOM_ATTACK_DATA.producerId
+                && firstFact.sourceHandle.entityId === sourceHandle.entityId
+                && firstFact.sourceHandle.incarnation === sourceHandle.incarnation
+                && firstFact.appliedDamage === HOSTILE_RHOM_PROJECTILE_DATA.coreDamage
+                && coreIntegrity.getCurrentIntegrity() === 5,
+            `Rhom first typed Core request/fact 불일치: ${JSON.stringify({ firstEvent, firstFact, integrity: coreIntegrity.getCurrentIntegrity() })}`
+        );
+        const duplicateObservation = coreImpactDirector.observeCompletedEvents(
+            firstImpact.boundary.completed,
+            endpoint.getRegistry()
+        );
+        assert(
+            duplicateObservation.facts.length === 0
+                && coreImpactDirector.getStatus().dedupedCount > 0
+                && coreIntegrity.getCurrentIntegrity() === 5,
+            `Rhom typed Core request dedupe 실패: ${JSON.stringify({ duplicateObservation, status: coreImpactDirector.getStatus() })}`
+        );
+        assert(
+            !endpoint.getRegistry().has(firstProjectileHandle)
+                && !endpoint.hasBody(firstProjectileHandle),
+            `Rhom first projectile GPU-death cleanup 실패: ${JSON.stringify(firstProjectileHandle)}`
+        );
+
+        const sourceAfterFirst = hostileDirector.getStatus().sources.find(
+            ({ handle }) => handle.entityId === sourceHandle.entityId
+                && handle.incarnation === sourceHandle.incarnation
+        );
+        const secondEligibleTick = sourceAfterFirst?.nextEligibleFixedTick;
+        assert(
+            secondEligibleTick
+                === firstEligibleTick + BASIC_RHOM_ATTACK_DATA.intervalTicks,
+            `Rhom repeat cooldown authority 불일치: ${JSON.stringify({ firstEligibleTick, secondEligibleTick, sourceAfterFirst })}`
+        );
+        const beforeSecond = await advanceBoundary(
+            secondEligibleTick - 1,
+            'Rhom repeat cooldown 직전'
+        );
+        assert(
+            beforeSecond.staged.acceptedCount === 0,
+            `Rhom repeat cooldown 직전 shot이 발생했습니다: ${JSON.stringify(beforeSecond.staged)}`
+        );
+        const secondShot = await advanceBoundary(
+            secondEligibleTick,
+            'Rhom repeat cooldown exact'
+        );
+        assert(
+            secondShot.staged.acceptedCount === 1
+                && secondShot.commit.fixedCommands.selectedTargetSpawns.length === 1,
+            `Rhom repeat exact cooldown shot 실패: ${JSON.stringify(secondShot)}`
+        );
+        const secondProjectileHandle = secondShot.commit.fixedCommands
+            .selectedTargetSpawns[0].handle;
+        projectileHandles.push(secondProjectileHandle);
+        const secondImpact = await waitForNextCoreDamage(
+            secondEligibleTick + 1,
+            'Rhom lethal projectile'
+        );
+        const depletedFact = secondImpact.boundary.observed.impact.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DEPLETED
+        );
+        const secondDamageFact = secondImpact.boundary.observed.impact.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
+        );
+        assert(
+            secondImpact.boundary.depleted
+                && secondImpact.boundary.closeResult?.closed
+                && depletedFact?.currentIntegrity === 0
+                && secondDamageFact?.projectileHandle.entityId
+                    === secondProjectileHandle.entityId
+                && secondDamageFact.projectileHandle.incarnation
+                    === secondProjectileHandle.incarnation
+                && coreIntegrity.isDepleted()
+                && coreIntegrity.isTerminallySealed(),
+            `Rhom lethal typed request/terminal close 불일치: ${JSON.stringify({ secondImpact, depletedFact, secondDamageFact, core: coreIntegrity.getCurrentIntegrity() })}`
+        );
+        assert(
+            finalLifecycleCommitCount === 1
+                && finalCleanupSubmitCount === 1
+                && !endpoint.getRegistry().has(secondProjectileHandle)
+                && !endpoint.hasBody(secondProjectileHandle),
+            `Rhom terminal final cleanup commit/submit 불일치: ${JSON.stringify({ finalLifecycleCommitCount, finalCleanupSubmitCount, secondProjectileHandle })}`
+        );
+        const rejectedAfterTerminal = endpoint.requestSpawn(
+            createRhomIntent(),
+            secondImpact.tick + 1,
+            'rhom-runtime:terminal-rejected'
+        );
+        const finalized = endpoint.finalizeClosedGameplayIngress();
+        const status = endpoint.getStatus();
+        const terminalCancelEvidence = endpoint
+            .getTerminalFixedProgramCancelStatus();
+        const hostileStatus = hostileDirector.getStatus();
+        const impactStatus = coreImpactDirector.getStatus();
+        assert(
+            rejectedAfterTerminal.accepted === false
+                && rejectedAfterTerminal.reason === 'rhom-core-depleted'
+                && status.pendingCommandCount === 0
+                && status.reservedCount === 0
+                && status.pendingPriorityTargetControlCount === 0
+                && terminalCancelEvidence.owner?.state === 'armed'
+                && terminalCancelEvidence.owner.finalFixedTick
+                    === secondImpact.tick
+                && terminalCancelEvidence.backend?.state === 'submitted'
+                && terminalCancelEvidence.backend.finalFixedTick
+                    === secondImpact.tick
+                && terminalCancelEvidence.backend.submittedSourceTick
+                    === secondImpact.tick
+                && terminalCancelEvidence.backend.destinationCount
+                    === terminalCancelEvidence.owner.destinationCount
+                && terminalCancelEvidence.backend.priorityControlCount
+                    === terminalCancelEvidence.owner.priorityControlCount
+                && terminalCancelEvidence.backend.pendingBodyCount === 0
+                && terminalCancelEvidence.backend
+                    .pendingSpawnProgramReadbacks === 0
+                && !status.recoveryRequired
+                && !hostileStatus.recoveryRequired
+                && !impactStatus.recoveryRequired
+                && status.backend.gpu.fixedPrimitives.storageProfile
+                    .requiredMaximum
+                    === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE,
+            `Rhom terminal pending/recovery/storage 불일치: ${JSON.stringify({ rejectedAfterTerminal, finalized, status, hostileStatus, impactStatus, terminalCancelEvidence })}`
+        );
+        return Object.freeze({
+            firstEligibleTick,
+            secondEligibleTick,
+            cooldownIntervalTicks: BASIC_RHOM_ATTACK_DATA.intervalTicks,
+            typedEvents: Object.freeze(typedEvents),
+            damageFacts: Object.freeze(damageFacts),
+            projectileHandles: Object.freeze(projectileHandles),
+            dedupedCount: impactStatus.dedupedCount,
+            terminal: Object.freeze({
+                depletedTick: secondImpact.tick,
+                finalLifecycleCommitCount,
+                finalCleanupSubmitCount,
+                fixedSubmitCount,
+                pendingCommandCount: status.pendingCommandCount,
+                reservedCount: status.reservedCount
+            }),
+            storageProfile: status.backend.gpu.fixedPrimitives.storageProfile
+        });
+    } finally {
+        hostileDirector.destroy();
+        coreImpactDirector.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+async function runProductionEnemyRhomPriorityHardwareSmoke(device) {
+    assert(
+        GPU_BODY_CONTROL_PROGRAM_ABI_VERSION === 2
+            && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD.STRIDE === 96
+            && GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE.STRIDE === 64
+            && GPU_SPAWN_PROGRAM_ABI_VERSION === 4
+            && GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE === 96
+            && GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE === 2
+            && GPU_SPAWN_PROGRAM_MODE
+                .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET === 4
+            && GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                .REQUIRE_EXACT_SELECTED_TARGET === 1,
+        'Rhom BodyControl v2/SpawnProgram v4 protocol 불일치'
+    );
+    const selection = await runRhomPrioritySelectionHardwareSmoke(device);
+    const runtime = await runRhomCoreDamageRuntimeHardwareSmoke(device);
+    return Object.freeze({
+        scenario: 'rhom-core-priority-selected-target',
+        selection,
+        cooldown: Object.freeze({
+            firstEligibleTick: runtime.firstEligibleTick,
+            secondEligibleTick: runtime.secondEligibleTick,
+            intervalTicks: runtime.cooldownIntervalTicks
+        }),
+        typedCoreDamage: Object.freeze({
+            eventCount: runtime.typedEvents.length,
+            facts: runtime.damageFacts,
+            dedupedCount: runtime.dedupedCount
+        }),
+        projectileCleanup: Object.freeze({
+            handles: runtime.projectileHandles
+        }),
+        terminal: runtime.terminal,
+        abi: Object.freeze({
+            bodyControlVersion: GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+            bodyControlRecordStride:
+                GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_RECORD.STRIDE,
+            bodyControlStateStride:
+                GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE.STRIDE,
+            spawnProgramVersion: GPU_SPAWN_PROGRAM_ABI_VERSION,
+            spawnProgramRecordStride:
+                GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE
+        }),
+        storageProfile: runtime.storageProfile
+    });
+}
+
 async function runProductionMaximumDamageWindowHardwareSmoke(device) {
     const isolatedWeight = await runProductionMaximumDamageWindowWeightHardwareSmoke(
         device
@@ -9052,9 +10676,9 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterLarger,
             22,
             800,
-            64,
+            62,
             largerHandle,
-            'Maximum Damage Window 큰 후보'
+            'Maximum Damage Window 큰 후보 expiry 비연장'
         );
         const largerCompleted = endpoint.commitCompletedEventsAtFixedBoundary(5);
         completedBatches.push(largerCompleted);
@@ -9094,7 +10718,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             `Maximum Damage Window expiry cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
         );
         const continuousContactEvents = [];
-        for (let tick = 5; tick < 64; tick++) {
+        for (let tick = 5; tick < 62; tick++) {
             if (tick > 5) {
                 requestTowerPressureControl(tick);
                 const pressureCommit = endpoint.commitAtFixedBoundary(tick);
@@ -9143,18 +10767,18 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerBeforeExpiry,
             22,
             800,
-            64,
+            62,
             largerHandle,
             'Maximum Damage Window exact expiry 직전'
         );
-        requestTowerPressureControl(64);
-        const expiryPressureCommit = endpoint.commitAtFixedBoundary(64);
+        requestTowerPressureControl(62);
+        const expiryPressureCommit = endpoint.commitAtFixedBoundary(62);
         assert(
             expiryPressureCommit.state === 'committed'
                 && expiryPressureCommit.fixedCommands.controls.length === 1,
             `Maximum Damage Window exact expiry pressure control commit 실패: ${JSON.stringify(expiryPressureCommit)}`
         );
-        await runFixed(64, 'Maximum Damage Window exact expiry 연속 접촉 완료');
+        await runFixed(62, 'Maximum Damage Window exact expiry 연속 접촉 완료');
         const towerAfterExpiry = await readTower(
             towerHandle,
             'Maximum Damage Window exact expiry Tower'
@@ -9163,11 +10787,11 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterExpiry,
             21.9,
             10,
-            124,
+            122,
             contactEnemyHandle,
             'Maximum Damage Window T>=expires Enemy full 재적용'
         );
-        const expiryCompleted = endpoint.commitCompletedEventsAtFixedBoundary(65);
+        const expiryCompleted = endpoint.commitCompletedEventsAtFixedBoundary(63);
         completedBatches.push(expiryCompleted);
         const expiryDamageEvent = expiryCompleted.contactEvents.find((event) => (
             eventMatches(event, contactEnemyHandle, towerHandle)
@@ -9188,12 +10812,12 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 10 + spawnSequence,
                 towerAfterExpiry.position
             ),
-            65,
+            63,
             `maximum-damage-window:tie-projectile:${spawnSequence}`
         ));
         assert(tieRequests.every(({ accepted }) => accepted),
             `Maximum Damage Window tie 발사체 요청 실패: ${JSON.stringify(tieRequests)}`);
-        const tieCommit = endpoint.commitAtFixedBoundary(65);
+        const tieCommit = endpoint.commitAtFixedBoundary(63);
         const tieHandles = tieCommit.spawned
             .filter(({ commandId }) => commandId.startsWith('maximum-damage-window:tie-projectile:'))
             .map(({ handle }) => handle);
@@ -9204,7 +10828,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
         const tieWinner = [...tieHandles].sort((left, right) => (
             left.entityId - right.entityId || left.incarnation - right.incarnation
         ))[0];
-        await runFixed(65, 'Maximum Damage Window tie 후보 완료');
+        await runFixed(63, 'Maximum Damage Window tie 후보 완료');
         const towerAfterTie = await readTower(
             towerHandle,
             'Maximum Damage Window tie 후 Tower'
@@ -9213,11 +10837,11 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterTie,
             17,
             500,
-            125,
+            122,
             tieWinner,
-            'Maximum Damage Window tie provenance'
+            'Maximum Damage Window tie provenance/expiry 비연장'
         );
-        const tieCompleted = endpoint.commitCompletedEventsAtFixedBoundary(66);
+        const tieCompleted = endpoint.commitCompletedEventsAtFixedBoundary(64);
         completedBatches.push(tieCompleted);
         const tieDamageEvent = tieCompleted.contactEvents.find((event) => (
             eventMatches(event, tieWinner, towerHandle)
@@ -9236,12 +10860,12 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 20,
                 towerAfterTie.position
             ),
-            66,
+            64,
             'maximum-damage-window:lethal-projectile'
         );
         assert(lethalRequest.accepted,
             `Maximum Damage Window lethal 발사체 요청 실패: ${JSON.stringify(lethalRequest)}`);
-        const lethalCommit = endpoint.commitAtFixedBoundary(66);
+        const lethalCommit = endpoint.commitAtFixedBoundary(64);
         const lethalHandle = lethalCommit.spawned.find(({ commandId }) => (
             commandId === 'maximum-damage-window:lethal-projectile'
         ))?.handle;
@@ -9249,7 +10873,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             lethalCommit.state === 'committed' && lethalHandle,
             `Maximum Damage Window lethal commit 실패: ${JSON.stringify(lethalCommit)}`
         );
-        await runFixed(66, 'Maximum Damage Window lethal 후보 완료');
+        await runFixed(64, 'Maximum Damage Window lethal 후보 완료');
         const afterLethalBodies = await readPhase5Bodies(endpoint);
         assert(
             !afterLethalBodies.some((body) => exactHandleMatches(body.handle, towerHandle))
@@ -9257,7 +10881,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 && endpoint.hasBody(towerHandle),
             `Maximum Damage Window lethal Tower lifecycle 불일치: ${JSON.stringify(afterLethalBodies)}`
         );
-        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(67);
+        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(65);
         completedBatches.push(lethalCompleted);
         const lethalDamageEvent = lethalCompleted.contactEvents.find((event) => (
             eventMatches(event, lethalHandle, towerHandle)
@@ -9487,7 +11111,7 @@ async function runProductionCoreImpactDefeatHardwareSmoke(device) {
             sourceEventKey: depletedFact.eventKey,
             coreImpactKey: depletedFact.impactKey
         });
-        const ingressClosed = endpoint.closeGameplayIngress('run-defeated');
+        const ingressClosed = endpoint.closeGameplayIngress('run-defeated', 2);
         const rejectedSpawn = endpoint.requestSpawn(
             createCoreImpactEnemyIntent(1),
             3,
@@ -9507,6 +11131,10 @@ async function runProductionCoreImpactDefeatHardwareSmoke(device) {
                 && runOutcome.isDefeated()
                 && runFailure.fact?.fixedTick === 2
                 && ingressClosed.closed
+                && ingressClosed.cleanup?.fixedCommands
+                    ?.terminalCancellation?.state === 'armed'
+                && ingressClosed.cleanup.fixedCommands.terminalCancellation
+                    .finalFixedTick === 2
                 && rejectedSpawn.accepted === false
                 && rejectedSpawn.reason === 'run-defeated'
                 && cleanupStage.requested === 1
@@ -9528,6 +11156,8 @@ async function runProductionCoreImpactDefeatHardwareSmoke(device) {
         );
         const retryFailure = runOutcome.transitionToDefeated({ fixedTick: 3 });
         const endpointStatus = endpoint.getStatus();
+        const terminalCancelEvidence = endpoint
+            .getTerminalFixedProgramCancelStatus();
         assert(
             coreAfterCleanup.handle?.entityId === coreHandle.entityId
                 && !endpoint.getRegistry().has(enemyHandle)
@@ -9536,10 +11166,24 @@ async function runProductionCoreImpactDefeatHardwareSmoke(device) {
                 && coreIntegrity.restoreIntegrity(1) === 0
                 && retryFailure.transitioned === false
                 && retryFailure.fact === runFailure.fact
+                && endpointStatus.reservedCount === 0
+                && endpointStatus.pendingCommandCount === 0
+                && terminalCancelEvidence.owner?.state === 'armed'
+                && terminalCancelEvidence.owner.finalFixedTick === 2
+                && terminalCancelEvidence.backend?.state === 'submitted'
+                && terminalCancelEvidence.backend.finalFixedTick === 2
+                && terminalCancelEvidence.backend.submittedSourceTick === 2
+                && terminalCancelEvidence.backend.destinationCount
+                    === terminalCancelEvidence.owner.destinationCount
+                && terminalCancelEvidence.backend.priorityControlCount
+                    === terminalCancelEvidence.owner.priorityControlCount
+                && terminalCancelEvidence.backend.pendingBodyCount === 0
+                && terminalCancelEvidence.backend
+                    .pendingSpawnProgramReadbacks === 0
                 && !endpointStatus.recoveryRequired
                 && !endpoint.requiresRecovery()
                 && !coreImpactDirector.requiresRecovery(),
-            `Core impact terminal state/recovery 불일치: ${JSON.stringify({ coreAfterCleanup, endpointStatus, core: coreIntegrity.getCurrentIntegrity(), runOutcome: runOutcome.getStatus(), coreImpact: coreImpactDirector.getStatus() })}`
+            `Core impact terminal state/recovery 불일치: ${JSON.stringify({ coreAfterCleanup, endpointStatus, terminalCancelEvidence, core: coreIntegrity.getCurrentIntegrity(), runOutcome: runOutcome.getStatus(), coreImpact: coreImpactDirector.getStatus() })}`
         );
         endpoint.destroy();
         coreImpactDirector.destroy();
@@ -13363,7 +15007,17 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         sourceRelativeSpawnCommandCapacity: 4,
         spawnProgramCapacity: 4
     });
-    const director = new HostileAttackDirector({ endpoint });
+    // R1 Archer lifecycle 회귀는 Turn 2 M runtime과 분리한다. C/T/A/M wave
+    // cycle 자체는 그대로 검증하고 M의 selected-target runtime은 전용 fixture가 소유한다.
+    const director = new HostileAttackDirector({
+        endpoint,
+        attackDefinitions: Object.freeze({
+            [ARCHER_ATTACK_DATA.id]: ARCHER_ATTACK_DATA
+        }),
+        projectileDefinitions: Object.freeze({
+            [HOSTILE_BASIC_BULLET_DATA.id]: HOSTILE_BASIC_BULLET_DATA
+        })
+    });
     const waveDirector = new WaveDirector({
         waveDefinition: CORRIDOR_EIGHT_WAVE_01_DATA
     });
@@ -13406,12 +15060,12 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     });
     productionCamera.zoom = 3;
     const expectedCycle = Object.freeze([
-        BASIC_SQUARE_ENEMY_DATA.id,
+        BASIC_CIRCLE_ENEMY_DATA.id,
         BASIC_TRIANGLE_ENEMY_DATA.id,
         BASIC_ARROW_ENEMY_DATA.id,
-        BASIC_PENTA_ENEMY_DATA.id,
-        BASIC_HEXA_ENEMY_DATA.id,
-        BASIC_GEN_ENEMY_DATA.id,
+        BASIC_RHOM_ENEMY_DATA.id,
+        BASIC_CIRCLE_ENEMY_DATA.id,
+        BASIC_TRIANGLE_ENEMY_DATA.id,
         ARCHER_ENEMY_DATA.id
     ]);
     const expectedArcherSpawnIndexes = Object.freeze([6, 13, 20, 27]);
@@ -13567,18 +15221,20 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     };
 
     try {
-        const phase = CORRIDOR_EIGHT_WAVE_01_DATA.phases[0];
-        const group = phase.spawnGroups[0];
+        const timelineEntry = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0];
+        const group = timelineEntry.spawnGroups[0];
+        const productionRoute = tileMap.getSpawnRoutes()[0];
         assert(
-            phase.startTick === 1
-                && phase.durationTicks === 156
+            timelineEntry.durationSeconds * 60 === 156
                 && group.count === 32
                 && group.intervalTicks === 5
                 && JSON.stringify(group.enemyDefinitionIds)
                     === JSON.stringify(expectedCycle)
-                && group.enemyDefinitionId === BASIC_SQUARE_ENEMY_DATA.id
+                && group.enemyDefinitionId === BASIC_CIRCLE_ENEMY_DATA.id
+                && group.routeBinding.gateId === productionRoute.gateId
+                && group.routeBinding.pathId === productionRoute.pathId
                 && !Object.hasOwn(BASIC_ARROW_ENEMY_DATA, 'attackDefinitionId'),
-            `Production-wave authored cycle이 정확하지 않습니다: ${JSON.stringify({ phase, group, expectedCycle })}`
+            `Production-wave authored cycle이 정확하지 않습니다: ${JSON.stringify({ timelineEntry, group, expectedCycle })}`
         );
         assert(
             waveDirector.init(tileMap),
@@ -13587,7 +15243,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         const scheduledArcherEntries = waveDirector.schedule
             .map((entry, spawnIndex) => ({ entry, spawnIndex }))
             .filter(({ entry }) => (
-                entry.intent.definitionId === ARCHER_ENEMY_DATA.id
+                entry.definition.id === ARCHER_ENEMY_DATA.id
             ));
         assert(
             waveDirector.schedule.length === 32
@@ -13599,7 +15255,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 ))) === JSON.stringify(expectedArcherSpawnTicks)
                 && waveDirector.schedule.every((entry, spawnIndex) => (
                     entry.commandId
-                        === `corridor_eight_wave_01:0:0:${spawnIndex}`
+                        === `authored-wave-spawn:corridor_eight_wave_01:main-authored-duration:main-deterministic-cycle:spawn-${spawnIndex}`
                 )),
             `Production-wave deterministic schedule 불일치: ${JSON.stringify(waveDirector.schedule)}`
         );
@@ -15872,6 +17528,10 @@ async function runProductionFixedPrimitiveSmoke(device) {
     const targetEntityInvalid =
         await runProductionTargetEntityInvalidHardwareSmoke(device);
     const towerCombat = await runProductionTowerCombatHardwareSmoke(device);
+    const enemyArrowCharge =
+        await runProductionEnemyArrowChargeHardwareSmoke(device);
+    const enemyRhomPriority =
+        await runProductionEnemyRhomPriorityHardwareSmoke(device);
     const maximumDamageWindow =
         await runProductionMaximumDamageWindowHardwareSmoke(device);
     const coreImpactDefeat =
@@ -15901,6 +17561,8 @@ async function runProductionFixedPrimitiveSmoke(device) {
         targetEntityAim,
         targetEntityInvalid,
         towerCombat,
+        enemyArrowCharge,
+        enemyRhomPriority,
         maximumDamageWindow,
         coreImpactDefeat,
         deadControlRace,
@@ -15957,7 +17619,13 @@ async function run() {
             navigator.gpu.getPreferredCanvasFormat()
         );
         const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE ?? 'full';
-        if (fixtureStage === 'maximum-damage-window') {
+        if (fixtureStage === 'enemy-arrow-charge') {
+            result.productionEnemyArrowCharge =
+                await runProductionEnemyArrowChargeHardwareSmoke(device);
+        } else if (fixtureStage === 'enemy-rhom-priority') {
+            result.productionEnemyRhomPriority =
+                await runProductionEnemyRhomPriorityHardwareSmoke(device);
+        } else if (fixtureStage === 'maximum-damage-window') {
             result.productionMaximumDamageWindow =
                 await runProductionMaximumDamageWindowHardwareSmoke(device);
             result.productionCoreImpactDefeat =

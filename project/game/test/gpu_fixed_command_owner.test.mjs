@@ -9,7 +9,10 @@ const { WorldRegistry } = await loadGameModule(
 const { GpuFixedCommandOwner } = await loadGameModule(
     'ingame/object/gpu_fixed_command_owner.js'
 );
-const { GPU_SPAWN_PROGRAM_MODE } = await loadGameModule(
+const {
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_MODE
+} = await loadGameModule(
     'ingame/physics/gpu/gpu_fixed_primitive_abi.js'
 );
 const {
@@ -97,18 +100,23 @@ function createTargetEntityIntent(sourceHandle, targetHandle, overrides = {}) {
 function createFakeBackend(options = {}) {
     const bodies = new Map();
     const stagedPlans = [];
+    const bodyControlCompletionBatches = [];
     const completionBatches = [];
+    const terminalCancelRequests = [];
     let protocol = {
         sessionGeneration: options.sessionGeneration ?? 1,
         deviceGeneration: options.deviceGeneration ?? 2,
         authoritativeEpoch: options.authoritativeEpoch ?? 3
     };
     let recoveryRequired = false;
+    let terminalCancelStatus = null;
 
     return {
         bodies,
         stagedPlans,
+        bodyControlCompletionBatches,
         completionBatches,
+        terminalCancelRequests,
         addBody(handle, bodyOptions = {}) {
             bodies.set(handleKey(handle), {
                 controllable: bodyOptions.controllable !== false
@@ -155,6 +163,26 @@ function createFakeBackend(options = {}) {
         drainCompletedSpawnProgramBatches(out) {
             out.push(...completionBatches.splice(0));
             return out;
+        },
+        drainCompletedBodyControlProgramBatches(out) {
+            out.push(...bodyControlCompletionBatches.splice(0));
+            return out;
+        },
+        cancelPendingFixedProgramsForTerminal(request) {
+            terminalCancelRequests.push(request);
+            terminalCancelStatus = Object.freeze({
+                abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+                finalFixedTick: request.finalFixedTick,
+                accepted: true,
+                state: 'armed',
+                reason: null,
+                destinationCount: request.destinationHandles.length,
+                priorityControlCount: request.priorityControls.length
+            });
+            return terminalCancelStatus;
+        },
+        getTerminalFixedProgramCancelStatus() {
+            return terminalCancelStatus;
         },
         getEventProtocolState() {
             return { ...protocol };
@@ -1870,4 +1898,70 @@ test('closeIngress는 pending/reservation을 한 번 회수하고 raw fixed ingr
     assert.equal(finalBoundary.sourceRelativeSpawns.length, 0);
     assert.equal(owner.getPendingCount(), 0);
     assert.equal(registry.getReservedCount(), 0);
+});
+
+test('terminal close는 backend exact cancel arm 뒤에만 submitted destination reservation을 회수한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        70,
+        'spawn:terminal:future-k'
+    ).accepted, true);
+    const committed = owner.commitAtFixedBoundary(70);
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    assert.equal(registry.hasReservation(destination), true);
+    assert.equal(owner.getStatus().pendingDestinationCount, 1);
+
+    const closed = owner.closeIngress('run-defeated', 71);
+    assert.equal(closed.terminalCancellation.abiVersion,
+        GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION);
+    assert.equal(closed.terminalCancellation.finalFixedTick, 71);
+    assert.equal(closed.terminalCancellation.state, 'armed');
+    assert.equal(closed.terminalCancellation.destinationCount, 1);
+    assert.equal(owner.getStatus().terminalCancelResult,
+        closed.terminalCancellation);
+    assert.equal(backend.terminalCancelRequests.length, 1);
+    assert.deepEqual(
+        Array.from(backend.terminalCancelRequests[0].destinationHandles),
+        [destination]
+    );
+    assert.equal(registry.hasReservation(destination), false);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(owner.getPendingCount(), 0);
+});
+
+test('terminal exact-set/version/count 실패는 registry와 owner pending을 부분 삭제하지 않는다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const source = activateBody(registry, backend);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createSourceRelativeIntent(source),
+        80,
+        'spawn:terminal:mismatch'
+    ).accepted, true);
+    const committed = owner.commitAtFixedBoundary(80);
+    const destination = committed.sourceRelativeSpawns[0].handle;
+    backend.cancelPendingFixedProgramsForTerminal = (request) => ({
+        abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+        finalFixedTick: request.finalFixedTick,
+        accepted: true,
+        state: 'armed',
+        destinationCount: 0,
+        priorityControlCount: request.priorityControls.length
+    });
+
+    const closed = owner.closeIngress('run-defeated', 81);
+    assert.equal(closed.terminalCancellation.state, 'failed');
+    assert.equal(closed.terminalCancellation.reason,
+        'terminal-fixed-program-exact-set-mismatch');
+    assert.equal(owner.getStatus().recoveryRequired, true);
+    assert.equal(owner.getStatus().pendingDestinationCount, 1);
+    assert.equal(registry.hasReservation(destination), true);
+    assert.equal(registry.getReservedCount(), 1);
 });

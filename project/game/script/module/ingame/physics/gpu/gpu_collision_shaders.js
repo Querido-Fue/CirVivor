@@ -2,8 +2,13 @@ import {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_APPLIED_EVENT_TYPE,
     GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
-    GPU_CIRCLE_BODY_RENDER_SHAPE
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE
 } from './gpu_circle_body_abi.js';
 import {
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -13,10 +18,16 @@ import {
 import { THE_TOWER_DATA } from '../../../../data/object/tower/the_tower_data.js';
 import {
     GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_SELECTION_POLICY,
+    GPU_BODY_CONTROL_STATE_FLAGS,
     GPU_FIXED_PRIMITIVE_IDENTITY,
     GPU_FIXED_PROGRAM_STATUS,
     GPU_SPAWN_PROGRAM_ABI_VERSION,
     GPU_SPAWN_PROGRAM_MODE,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_RESULT
 } from './gpu_fixed_primitive_abi.js';
 import {
@@ -64,14 +75,36 @@ const SPAWN_PROGRAM_ABI_VERSION: u32 = ${GPU_SPAWN_PROGRAM_ABI_VERSION}u;
 const FIXED_PROGRAM_STATUS_ABI_MISMATCH: u32 = ${GPU_FIXED_PROGRAM_STATUS.ABI_MISMATCH}u;
 const FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED: u32 = ${GPU_FIXED_PROGRAM_STATUS.CAPACITY_EXCEEDED}u;
 const FIXED_PROGRAM_STATUS_RECORD_INVALID: u32 = ${GPU_FIXED_PROGRAM_STATUS.RECORD_INVALID}u;
+const BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT: u32 = ${GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT}u;
+const BODY_CONTROL_PROGRAM_MODE_PRIORITY_TARGET_IN_RANGE: u32 = ${GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE}u;
+const BODY_CONTROL_SELECTION_POLICY_NONE: u32 = ${GPU_BODY_CONTROL_SELECTION_POLICY.NONE}u;
+const BODY_CONTROL_SELECTION_POLICY_CORE_FIRST_IN_RANGE_THEN_TOWER: u32 = ${GPU_BODY_CONTROL_SELECTION_POLICY.CORE_FIRST_IN_RANGE_THEN_TOWER}u;
+const BODY_CONTROL_RESULT_PENDING: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.PENDING}u;
+const BODY_CONTROL_RESULT_NO_TARGET: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET}u;
+const BODY_CONTROL_RESULT_CORE_SELECTED: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED}u;
+const BODY_CONTROL_RESULT_TOWER_SELECTED: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED}u;
+const BODY_CONTROL_RESULT_SOURCE_INVALID: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID}u;
+const BODY_CONTROL_RESULT_CORE_INVALID: u32 = ${GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID}u;
+const BODY_CONTROL_SELECTED_TARGET_NONE: u32 = ${GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE}u;
+const BODY_CONTROL_SELECTED_TARGET_CORE: u32 = ${GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE}u;
+const BODY_CONTROL_SELECTED_TARGET_TOWER: u32 = ${GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER}u;
+const BODY_CONTROL_STATE_FLAG_STOP: u32 = ${GPU_BODY_CONTROL_STATE_FLAGS.STOP}u;
+const BODY_CONTROL_STATE_FLAG_ROUTE_FLOW: u32 = ${GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW}u;
+const BODY_CONTROL_STATE_FLAG_CORE_SELECTED: u32 = ${GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED}u;
+const BODY_CONTROL_STATE_FLAG_TOWER_SELECTED: u32 = ${GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_VELOCITY}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY}u;
+const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET}u;
+const SPAWN_PROGRAM_REQUEST_REQUIRE_EXACT_SELECTED_TARGET: u32 = ${GPU_SPAWN_PROGRAM_REQUEST_FLAGS.REQUIRE_EXACT_SELECTED_TARGET}u;
 const SPAWN_PROGRAM_RESULT_PENDING: u32 = ${GPU_SPAWN_PROGRAM_RESULT.PENDING}u;
 const SPAWN_PROGRAM_RESULT_RESOLVED: u32 = ${GPU_SPAWN_PROGRAM_RESULT.RESOLVED}u;
 const SPAWN_PROGRAM_RESULT_SOURCE_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID}u;
 const SPAWN_PROGRAM_RESULT_DESTINATION_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.DESTINATION_INVALID}u;
 const SPAWN_PROGRAM_RESULT_TARGET_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.TARGET_INVALID}u;
+const SPAWN_PROGRAM_RESULT_NO_TARGET: u32 = ${GPU_SPAWN_PROGRAM_RESULT.NO_TARGET}u;
+const SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH: u32 = ${GPU_SPAWN_PROGRAM_RESULT.CONTROL_STATE_MISMATCH}u;
+const SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.CORE_TARGET_INVALID}u;
 const INVALID_IDENTITY_COMPONENT: u32 = ${GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT}u;
 const CONTROL_ACCELERATION: f32 = ${toWgslFloat(
     THE_TOWER_DATA.CONTROL_ACCELERATION_TILES_PER_SECOND_SQUARED
@@ -94,7 +127,10 @@ const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = 65536u;
 const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
-const BODY_LAYER_TERRAIN: u32 = 128u;
+const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
+const BODY_LAYER_TERRAIN: u32 = ${GPU_CIRCLE_BODY_LAYER.TERRAIN}u;
+const BODY_LAYER_CORE_PROXY: u32 = ${GPU_CIRCLE_BODY_LAYER.CORE_PROXY}u;
+const BODY_LAYER_PLAYER_DAMAGEABLE: u32 = ${GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE}u;
 const GAMEPLAY_TEAM_NEUTRAL: u32 = ${GAMEPLAY_TEAM_ID.NEUTRAL}u;
 const GAMEPLAY_TEAM_PLAYER: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
 const GAMEPLAY_TEAM_HOSTILE: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
@@ -115,6 +151,7 @@ const CONTACT_HANDLER_FLAG_KILL_IF_OTHER_TERRAIN: u32 = 1u;
 const CONTACT_HANDLER_FLAG_CLOSEST_ONLY: u32 = 2u;
 const CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY: u32 = 8u;
 const CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS: u32 = 16u;
+const CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST: u32 = ${GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST}u;
 const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK: u32 = 0u;
 const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE: u32 = 1u;
 // contact.normal은 handle_contacts 이후 physical solver가 다시 읽지 않습니다. 이 marker는
@@ -124,15 +161,38 @@ const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
 const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_MASK: u32 = 0x0000000fu;
 const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER: u32 = 1u;
 const MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS: u32 = 2u;
+const CORE_DAMAGE_REQUEST_MARKER_MAGIC: u32 = 0x7fc00020u;
+const CORE_DAMAGE_REQUEST_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
+const SELECTED_TARGET_TOWER_MARKER_MAGIC: u32 = 0x7fc00030u;
+const SELECTED_TARGET_TOWER_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
+const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK: u32 = 0u;
+const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_FAILURE: u32 = 1u;
 const APPLIED_EVENT_TYPE_DAMAGE_APPLIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED}u;
 const APPLIED_EVENT_TYPE_INTERACTION_ENTER: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER}u;
 const APPLIED_EVENT_TYPE_INTERACTION_CONTINUOUS: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_CONTINUOUS}u;
+const APPLIED_EVENT_TYPE_ENEMY_CHARGE_WINDUP_STARTED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED}u;
+const APPLIED_EVENT_TYPE_ENEMY_CHARGE_CONTACT_RECOIL_STARTED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_CONTACT_RECOIL_STARTED}u;
+const APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.CORE_DAMAGE_REQUEST}u;
 const APPLIED_EVENT_FLAG_TARGET_DIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED}u;
 const APPLIED_EVENT_FLAG_TERRAIN_KILL: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_KILL}u;
 const APPLIED_EVENT_FLAG_ENTER_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY}u;
 const APPLIED_EVENT_FLAG_CONTINUOUS_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY}u;
 const APPLIED_EVENT_FLAG_TERRAIN_CONTACT: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT}u;
 const APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW}u;
+const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
+const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE}u;
+const ENEMY_BEHAVIOR_STATE_SEEK_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER}u;
+const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
+const ENEMY_BEHAVIOR_STATE_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE}u;
+const ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL}u;
+const ENEMY_BEHAVIOR_STATE_RECOVER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER}u;
+const ENEMY_BEHAVIOR_STATE_CORE_FALLBACK: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK}u;
+const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
+const ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TELEGRAPH_PENDING}u;
+const ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING}u;
+const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_VALID}u;
+const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
+const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
 const DEATH_EVENT_FLAG_LIFETIME: u32 = 2u;
 const EPSILON_MASS: f32 = 0.000001;
@@ -186,6 +246,7 @@ struct GridBody {
 
 struct PhysicsBuffer { values: array<BodyPhysics> }
 struct SimulationBuffer { values: array<BodySimulation> }
+
 struct TemporaryBuffer { values: array<BodyTemporary> }
 struct AtomicGridCounts { values: array<atomic<u32>> }
 struct GridBodyBuffer { values: array<GridBody> }
@@ -219,6 +280,30 @@ struct CombatState {
 
 struct CombatStateBuffer { values: array<CombatState> }
 
+struct EnemyBehaviorState {
+    program_id: u32,
+    state: atomic<u32>,
+    state_entered_fixed_tick: u32,
+    state_expires_at_fixed_tick: u32,
+    target_slot: u32,
+    target_entity_id: u32,
+    target_incarnation: u32,
+    flags: atomic<u32>,
+    charge_direction: vec2f,
+    windup_range: f32,
+    charge_speed: f32,
+    recoil_impulse: f32,
+    windup_ticks: u32,
+    charge_max_ticks: u32,
+    recoil_ticks: u32,
+    recover_ticks: u32,
+    telegraph_style_code: u32,
+    telegraph_color_rgba8: u32,
+    telegraph_radius_scale: f32,
+}
+
+struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
+
 struct ContactState {
     contact_count: atomic<u32>,
     contact_overflow: atomic<u32>,
@@ -230,8 +315,8 @@ struct ContactState {
     event_encoding_version: atomic<u32>,
     maximum_damage_window_event_count: atomic<u32>,
     maximum_damage_window_protocol_status: atomic<u32>,
-    reserved_0: u32,
-    reserved_1: u32,
+    core_damage_request_event_count: atomic<u32>,
+    core_damage_request_protocol_status: atomic<u32>,
 }
 
 struct Contact {
@@ -277,10 +362,26 @@ struct BodyControlRecord {
     destination_slot: u32,
     entity_id: u32,
     incarnation: u32,
-    flags: u32,
+    mode_flags: u32,
     move_intent: vec2f,
+    source_tick: u32,
+    selection_sequence: u32,
+    core_target_slot: u32,
+    core_target_entity_id: u32,
+    core_target_incarnation: u32,
+    tower_target_slot: u32,
+    tower_target_entity_id: u32,
+    tower_target_incarnation: u32,
+    attack_range: f32,
+    result: u32,
+    selected_target_kind: u32,
+    selected_target_slot: u32,
+    selected_target_entity_id: u32,
+    selected_target_incarnation: u32,
+    state_flags: u32,
+    attack_fingerprint: u32,
+    selection_policy: u32,
     reserved_0: u32,
-    reserved_1: u32,
 }
 
 struct BodyControlProgram {
@@ -292,6 +393,18 @@ struct BodyControlState {
     move_intent: vec2f,
     entity_id: u32,
     incarnation: u32,
+    source_tick: u32,
+    selection_sequence: u32,
+    attack_fingerprint: u32,
+    result: u32,
+    selected_target_kind: u32,
+    selected_target_slot: u32,
+    selected_target_entity_id: u32,
+    selected_target_incarnation: u32,
+    state_flags: u32,
+    selection_policy: u32,
+    attack_range: f32,
+    reserved_0: u32,
 }
 
 struct BodyControlStateBuffer { values: array<BodyControlState> }
@@ -314,6 +427,10 @@ struct SpawnProgramRecord {
     vector: vec2f,
     scalar: f32,
     reserved_0: u32,
+    selection_sequence: u32,
+    attack_fingerprint: u32,
+    selected_target_kind: u32,
+    request_flags: u32,
 }
 
 struct SpawnProgram {
@@ -389,6 +506,7 @@ struct SimulationParams {
 @group(0) @binding(8) var<storage, read> tracked_pose_config: TrackedPoseConfig;
 @group(0) @binding(9) var<storage, read_write> tracked_pose_output: TrackedPoseRecord;
 @group(0) @binding(10) var<storage, read_write> combat_states: CombatStateBuffer;
+@group(0) @binding(11) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -585,6 +703,51 @@ fn invalidate_tracked_pose_output() {
     tracked_pose_output.incarnation = INVALID_IDENTITY_COMPONENT;
 }
 
+fn exact_living_body(slot: u32, entity_id: u32, incarnation: u32) -> bool {
+    return slot < counts.body_count
+        && slot < arrayLength(&simulations.values)
+        && entity_id != INVALID_IDENTITY_COMPONENT
+        && incarnation != INVALID_IDENTITY_COMPONENT
+        && simulations.values[slot].entity_id == entity_id
+        && simulations.values[slot].incarnation == incarnation
+        && body_id_is_alive(slot);
+}
+
+fn exact_target_is_in_range(source_slot: u32, target_slot: u32, range: f32) -> bool {
+    let delta = physics.values[target_slot].position
+        - physics.values[source_slot].position;
+    return dot(delta, delta) <= range * range;
+}
+
+fn store_body_control_state(
+    body_id: u32,
+    command: BodyControlRecord,
+    result: u32,
+    selected_target_kind: u32,
+    selected_target_slot: u32,
+    selected_target_entity_id: u32,
+    selected_target_incarnation: u32,
+    state_flags: u32
+) {
+    body_control_states.values[body_id] = BodyControlState(
+        command.move_intent,
+        command.entity_id,
+        command.incarnation,
+        command.source_tick,
+        command.selection_sequence,
+        command.attack_fingerprint,
+        result,
+        selected_target_kind,
+        selected_target_slot,
+        selected_target_entity_id,
+        selected_target_incarnation,
+        state_flags,
+        command.selection_policy,
+        command.attack_range,
+        0u
+    );
+}
+
 @compute @workgroup_size(256)
 fn clear_body_control_states(@builtin(global_invocation_id) global_id: vec3u) {
     if (!abi_is_current()) {
@@ -597,7 +760,19 @@ fn clear_body_control_states(@builtin(global_invocation_id) global_id: vec3u) {
     body_control_states.values[body_id] = BodyControlState(
         vec2f(0.0),
         INVALID_IDENTITY_COMPONENT,
-        INVALID_IDENTITY_COMPONENT
+        INVALID_IDENTITY_COMPONENT,
+        0u,
+        0u,
+        0u,
+        BODY_CONTROL_RESULT_PENDING,
+        BODY_CONTROL_SELECTED_TARGET_NONE,
+        INVALID_IDENTITY_COMPONENT,
+        INVALID_IDENTITY_COMPONENT,
+        INVALID_IDENTITY_COMPONENT,
+        0u,
+        BODY_CONTROL_SELECTION_POLICY_NONE,
+        0.0,
+        0u
     );
     atomicAnd(
         &simulations.values[body_id].flags,
@@ -641,17 +816,79 @@ fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3
         return;
     }
     let command = body_control_program.records[command_index];
-    if (command.flags != 0u
+    let body_capacity = arrayLength(&simulations.values);
+    let supported_mode = command.mode_flags
+            == BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT
+        || command.mode_flags
+            == BODY_CONTROL_PROGRAM_MODE_PRIORITY_TARGET_IN_RANGE;
+    let output_is_initial = command.result == BODY_CONTROL_RESULT_PENDING
+        && command.selected_target_kind == BODY_CONTROL_SELECTED_TARGET_NONE
+        && command.selected_target_slot == INVALID_IDENTITY_COMPONENT
+        && command.selected_target_entity_id == INVALID_IDENTITY_COMPONENT
+        && command.selected_target_incarnation == INVALID_IDENTITY_COMPONENT
+        && command.state_flags == 0u;
+    let finite_move = all(command.move_intent <= vec2f(3.402823466e+38))
+        && all(command.move_intent >= vec2f(-3.402823466e+38));
+    let core_payload_structural = command.core_target_slot < body_capacity
+        && command.core_target_entity_id != 0u
+        && command.core_target_entity_id != INVALID_IDENTITY_COMPONENT
+        && command.core_target_incarnation != 0u
+        && command.core_target_incarnation != INVALID_IDENTITY_COMPONENT;
+    let tower_absent = command.tower_target_slot == INVALID_IDENTITY_COMPONENT
+        && command.tower_target_entity_id == INVALID_IDENTITY_COMPONENT
+        && command.tower_target_incarnation == INVALID_IDENTITY_COMPONENT;
+    let tower_exact = command.tower_target_slot < body_capacity
+        && command.tower_target_entity_id != 0u
+        && command.tower_target_entity_id != INVALID_IDENTITY_COMPONENT
+        && command.tower_target_incarnation != 0u
+        && command.tower_target_incarnation != INVALID_IDENTITY_COMPONENT;
+    let priority_payload_valid = command.mode_flags
+            != BODY_CONTROL_PROGRAM_MODE_PRIORITY_TARGET_IN_RANGE
+        || (all(command.move_intent == vec2f(0.0))
+            && command.source_tick == params.fixed_tick
+            && command.source_tick != 0u
+            && command.attack_fingerprint != 0u
+            && command.selection_policy
+                == BODY_CONTROL_SELECTION_POLICY_CORE_FIRST_IN_RANGE_THEN_TOWER
+            && command.attack_range > 0.0
+            && command.attack_range <= 3.402823466e+38
+            && core_payload_structural
+            && (tower_absent || tower_exact));
+    let move_payload_valid = command.mode_flags
+            != BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT
+        || (command.source_tick == 0u
+            && command.selection_sequence == 0u
+            && command.attack_fingerprint == 0u
+            && command.selection_policy == BODY_CONTROL_SELECTION_POLICY_NONE
+            && command.attack_range == 0.0
+            && command.core_target_slot == INVALID_IDENTITY_COMPONENT
+            && command.core_target_entity_id == INVALID_IDENTITY_COMPONENT
+            && command.core_target_incarnation == INVALID_IDENTITY_COMPONENT
+            && tower_absent
+            && dot(command.move_intent, command.move_intent) <= 1.000002);
+    if (!supported_mode
+        || !output_is_initial
+        || !finite_move
+        || !priority_payload_valid
+        || !move_payload_valid
         || command.reserved_0 != 0u
-        || command.reserved_1 != 0u
-        || command.destination_slot >= counts.body_count
-        || simulations.values[command.destination_slot].entity_id != command.entity_id
-        || simulations.values[command.destination_slot].incarnation != command.incarnation
-        || body_has_flag(
+        || command.destination_slot >= body_capacity) {
+        atomicOr(
+            &body_control_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+        return;
+    }
+    if (command.mode_flags == BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT
+        && command.destination_slot < counts.body_count
+        && simulations.values[command.destination_slot].entity_id
+            == command.entity_id
+        && simulations.values[command.destination_slot].incarnation
+            == command.incarnation
+        && body_has_flag(
             load_simulation_flags(command.destination_slot),
             BODY_FLAG_USE_FLOW
-        )
-        || dot(command.move_intent, command.move_intent) > 1.000002) {
+        )) {
         atomicOr(
             &body_control_program.header.status,
             FIXED_PROGRAM_STATUS_RECORD_INVALID
@@ -680,23 +917,115 @@ fn apply_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) 
         return;
     }
     let command = body_control_program.records[command_index];
-    if (command.destination_slot >= counts.body_count
-        || simulations.values[command.destination_slot].entity_id != command.entity_id
-        || simulations.values[command.destination_slot].incarnation != command.incarnation) {
-        return;
-    }
-    if (!body_id_is_alive(command.destination_slot)) {
-        return;
-    }
-    body_control_states.values[command.destination_slot] = BodyControlState(
-        command.move_intent,
+    if (!exact_living_body(
+        command.destination_slot,
         command.entity_id,
         command.incarnation
+    )) {
+        body_control_program.records[command_index].result
+            = BODY_CONTROL_RESULT_SOURCE_INVALID;
+        return;
+    }
+    if (command.mode_flags == BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT) {
+        store_body_control_state(
+            command.destination_slot,
+            command,
+            BODY_CONTROL_RESULT_PENDING,
+            BODY_CONTROL_SELECTED_TARGET_NONE,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            0u
+        );
+        atomicOr(
+            &simulations.values[command.destination_slot].flags,
+            BODY_FLAG_CONTROLLED_THIS_TICK
+        );
+        return;
+    }
+
+    if (!exact_living_body(
+        command.core_target_slot,
+        command.core_target_entity_id,
+        command.core_target_incarnation
+    )) {
+        body_control_program.records[command_index].result
+            = BODY_CONTROL_RESULT_CORE_INVALID;
+        store_body_control_state(
+            command.destination_slot,
+            command,
+            BODY_CONTROL_RESULT_CORE_INVALID,
+            BODY_CONTROL_SELECTED_TARGET_NONE,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            0u
+        );
+        return;
+    }
+
+    var result = BODY_CONTROL_RESULT_NO_TARGET;
+    var selected_kind = BODY_CONTROL_SELECTED_TARGET_NONE;
+    var selected_slot = INVALID_IDENTITY_COMPONENT;
+    var selected_entity_id = INVALID_IDENTITY_COMPONENT;
+    var selected_incarnation = INVALID_IDENTITY_COMPONENT;
+    var state_flags = BODY_CONTROL_STATE_FLAG_ROUTE_FLOW;
+    if (exact_target_is_in_range(
+        command.destination_slot,
+        command.core_target_slot,
+        command.attack_range
+    )) {
+        result = BODY_CONTROL_RESULT_CORE_SELECTED;
+        selected_kind = BODY_CONTROL_SELECTED_TARGET_CORE;
+        selected_slot = command.core_target_slot;
+        selected_entity_id = command.core_target_entity_id;
+        selected_incarnation = command.core_target_incarnation;
+        state_flags = BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_CORE_SELECTED;
+    } else if (exact_living_body(
+            command.tower_target_slot,
+            command.tower_target_entity_id,
+            command.tower_target_incarnation
+        ) && exact_target_is_in_range(
+            command.destination_slot,
+            command.tower_target_slot,
+            command.attack_range
+        )) {
+        result = BODY_CONTROL_RESULT_TOWER_SELECTED;
+        selected_kind = BODY_CONTROL_SELECTED_TARGET_TOWER;
+        selected_slot = command.tower_target_slot;
+        selected_entity_id = command.tower_target_entity_id;
+        selected_incarnation = command.tower_target_incarnation;
+        state_flags = BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED;
+    }
+    body_control_program.records[command_index].result = result;
+    body_control_program.records[command_index].selected_target_kind
+        = selected_kind;
+    body_control_program.records[command_index].selected_target_slot
+        = selected_slot;
+    body_control_program.records[command_index].selected_target_entity_id
+        = selected_entity_id;
+    body_control_program.records[command_index].selected_target_incarnation
+        = selected_incarnation;
+    body_control_program.records[command_index].state_flags = state_flags;
+    store_body_control_state(
+        command.destination_slot,
+        command,
+        result,
+        selected_kind,
+        selected_slot,
+        selected_entity_id,
+        selected_incarnation,
+        state_flags
     );
-    atomicOr(
-        &simulations.values[command.destination_slot].flags,
-        BODY_FLAG_CONTROLLED_THIS_TICK
-    );
+    if ((state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
+        physics.values[command.destination_slot].velocity = vec2f(0.0);
+        atomicOr(
+            &simulations.values[command.destination_slot].flags,
+            BODY_FLAG_CONTROLLED_THIS_TICK
+        );
+    }
 }
 
 @compute @workgroup_size(256)
@@ -711,6 +1040,13 @@ fn apply_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
     let control_state = body_control_states.values[body_id];
     if (control_state.entity_id != simulations.values[body_id].entity_id
         || control_state.incarnation != simulations.values[body_id].incarnation) {
+        return;
+    }
+    if ((control_state.state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
+        physics.values[body_id].velocity = vec2f(0.0);
+        return;
+    }
+    if (control_state.source_tick != 0u) {
         return;
     }
     var velocity = physics.values[body_id].velocity;
@@ -772,7 +1108,9 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
     let supported_mode = program.mode_flags
             == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_VELOCITY
         || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
-        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY;
+        || program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
+        || program.mode_flags
+            == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
     let finite_payload = all(program.position_offset <= vec2f(3.402823466e+38))
         && all(program.position_offset >= vec2f(-3.402823466e+38))
         && all(program.target_offset <= vec2f(3.402823466e+38))
@@ -783,7 +1121,14 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
         && program.scalar >= -3.402823466e+38;
     let target_mode = program.mode_flags
         == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY;
-    let non_target_payload_valid = target_mode
+    let selected_target_mode = program.mode_flags
+        == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+    // Legacy modes 1-3 keep their pre-control tick-start resolve. Mode 4 is
+    // validated only by the post-priority-control entrypoint below.
+    if (selected_target_mode) {
+        return;
+    }
+    let non_target_payload_valid = target_mode || selected_target_mode
         || (program.target_slot == INVALID_IDENTITY_COMPONENT
             && program.target_entity_id == INVALID_IDENTITY_COMPONENT
             && program.target_incarnation == INVALID_IDENTITY_COMPONENT
@@ -793,15 +1138,51 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
             && program.target_entity_id != INVALID_IDENTITY_COMPONENT
             && program.target_incarnation != INVALID_IDENTITY_COMPONENT
             && all(program.vector == vec2f(0.0)));
+    let selected_payload_valid = !selected_target_mode
+        || (program.source_slot < body_capacity
+            && program.target_slot == INVALID_IDENTITY_COMPONENT
+            && program.target_entity_id == INVALID_IDENTITY_COMPONENT
+            && program.target_incarnation == INVALID_IDENTITY_COMPONENT
+            && all(program.vector == vec2f(0.0))
+            && program.attack_fingerprint != 0u
+            && program.selected_target_kind
+                == BODY_CONTROL_SELECTED_TARGET_NONE
+            && program.request_flags
+                == SPAWN_PROGRAM_REQUEST_REQUIRE_EXACT_SELECTED_TARGET);
+    let legacy_selection_payload_valid = selected_target_mode
+        || (program.selection_sequence == 0u
+            && program.attack_fingerprint == 0u
+            && program.selected_target_kind
+                == BODY_CONTROL_SELECTED_TARGET_NONE
+            && program.request_flags == 0u);
+    let selected_destination_config_valid = !selected_target_mode
+        || (program.destination_slot < body_capacity
+            && enemy_behavior_states.values[program.destination_slot].program_id
+                == ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE
+            && bitcast<i32>(enemy_behavior_states.values[program.destination_slot]
+                .windup_range) > 0
+            && atomicLoad(&enemy_behavior_states.values[program.destination_slot].state)
+                == BODY_CONTROL_SELECTED_TARGET_NONE
+            && enemy_behavior_states.values[program.destination_slot].target_slot
+                == INVALID_IDENTITY_COMPONENT
+            && enemy_behavior_states.values[program.destination_slot].target_entity_id
+                == INVALID_IDENTITY_COMPONENT
+            && enemy_behavior_states.values[program.destination_slot].target_incarnation
+                == INVALID_IDENTITY_COMPONENT);
     if (program.result != SPAWN_PROGRAM_RESULT_PENDING
         || !supported_mode
         || !finite_payload
         || !non_target_payload_valid
         || !target_payload_valid
+        || !selected_payload_valid
+        || !legacy_selection_payload_valid
+        || !selected_destination_config_valid
         || ((program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT
-                || target_mode)
+                || target_mode
+                || selected_target_mode)
             && !(program.scalar > 0.0))
         || program.source_tick == 0u
+        || program.source_tick != params.fixed_tick
         || program.reserved_0 != 0u
         || program.destination_slot >= counts.body_count
         || program.destination_slot >= body_capacity
@@ -812,6 +1193,106 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
         || simulations.values[program.destination_slot].incarnation
             != program.destination_incarnation
         || body_id_is_alive(program.destination_slot)) {
+        atomicOr(
+            &spawn_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+        return;
+    }
+}
+
+@compute @workgroup_size(256)
+fn validate_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    let runtime_capacity = arrayLength(&spawn_program.records);
+    if (spawn_program.header.abi_version != SPAWN_PROGRAM_ABI_VERSION) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_ABI_MISMATCH
+            );
+        }
+        return;
+    }
+    if (spawn_program.header.capacity != runtime_capacity
+        || spawn_program.header.count > runtime_capacity) {
+        if (global_id.x == 0u) {
+            atomicOr(
+                &spawn_program.header.status,
+                FIXED_PROGRAM_STATUS_CAPACITY_EXCEEDED
+            );
+        }
+        return;
+    }
+    let program_index = global_id.x;
+    if (program_index >= spawn_program.header.count) {
+        return;
+    }
+    let program = spawn_program.records[program_index];
+    if (program.mode_flags
+        != SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET) {
+        return;
+    }
+    let body_capacity = arrayLength(&simulations.values);
+    let finite_payload = all(program.position_offset <= vec2f(3.402823466e+38))
+        && all(program.position_offset >= vec2f(-3.402823466e+38))
+        && all(program.target_offset <= vec2f(3.402823466e+38))
+        && all(program.target_offset >= vec2f(-3.402823466e+38))
+        && all(program.vector <= vec2f(3.402823466e+38))
+        && all(program.vector >= vec2f(-3.402823466e+38))
+        && program.scalar <= 3.402823466e+38
+        && program.scalar >= -3.402823466e+38;
+    let slots_in_bounds = program.destination_slot < body_capacity
+        && program.source_slot < body_capacity;
+    if (program.result != SPAWN_PROGRAM_RESULT_PENDING
+        || !finite_payload
+        || !slots_in_bounds
+        || program.target_slot != INVALID_IDENTITY_COMPONENT
+        || program.target_entity_id != INVALID_IDENTITY_COMPONENT
+        || program.target_incarnation != INVALID_IDENTITY_COMPONENT
+        || any(program.vector != vec2f(0.0))
+        || !(program.scalar > 0.0)
+        || program.source_tick == 0u
+        || program.source_tick != params.fixed_tick
+        || program.attack_fingerprint == 0u
+        || program.selected_target_kind != BODY_CONTROL_SELECTED_TARGET_NONE
+        || program.request_flags
+            != SPAWN_PROGRAM_REQUEST_REQUIRE_EXACT_SELECTED_TARGET
+        || program.reserved_0 != 0u
+        || program.destination_slot >= counts.body_count
+        || program.destination_slot == program.source_slot) {
+        atomicOr(
+            &spawn_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+        return;
+    }
+    // Bounds를 확인한 뒤에만 destination side-plane을 읽습니다.
+    if (simulations.values[program.destination_slot].entity_id
+            != program.destination_entity_id
+        || simulations.values[program.destination_slot].incarnation
+            != program.destination_incarnation
+        || body_id_is_alive(program.destination_slot)
+        || enemy_behavior_states.values[program.destination_slot].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE
+        || bitcast<i32>(enemy_behavior_states.values[program.destination_slot]
+            .windup_range) <= 0
+        || atomicLoad(&enemy_behavior_states.values[program.destination_slot].state)
+            != BODY_CONTROL_SELECTED_TARGET_NONE
+        || enemy_behavior_states.values[program.destination_slot].target_slot
+            != INVALID_IDENTITY_COMPONENT
+        || enemy_behavior_states.values[program.destination_slot].target_entity_id
+            != INVALID_IDENTITY_COMPONENT
+        || enemy_behavior_states.values[program.destination_slot].target_incarnation
+            != INVALID_IDENTITY_COMPONENT) {
         atomicOr(
             &spawn_program.header.status,
             FIXED_PROGRAM_STATUS_RECORD_INVALID
@@ -838,6 +1319,11 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
     }
     let body_capacity = arrayLength(&simulations.values);
     let program = spawn_program.records[program_index];
+    // Mode 4 is resolved only after the same-tick priority control state exists.
+    if (program.mode_flags
+        == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET) {
+        return;
+    }
     if (program.destination_slot >= counts.body_count
         || program.destination_slot >= body_capacity
         || simulations.values[program.destination_slot].entity_id
@@ -856,6 +1342,165 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
         || !body_id_is_alive(program.source_slot)) {
         spawn_program.records[program_index].result
             = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
+        return;
+    }
+    if (program.mode_flags
+        == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET) {
+        let control_state = body_control_states.values[program.source_slot];
+        if (control_state.entity_id != program.source_entity_id
+            || control_state.incarnation != program.source_incarnation
+            || control_state.source_tick != program.source_tick
+            || control_state.selection_sequence != program.selection_sequence
+            || control_state.attack_fingerprint != program.attack_fingerprint
+            || control_state.selection_policy
+                != BODY_CONTROL_SELECTION_POLICY_CORE_FIRST_IN_RANGE_THEN_TOWER
+            || control_state.reserved_0 != 0u) {
+            spawn_program.records[program_index].result
+                = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+            return;
+        }
+        if (control_state.result == BODY_CONTROL_RESULT_CORE_INVALID) {
+            spawn_program.records[program_index].result
+                = SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID;
+            return;
+        }
+        if (control_state.result == BODY_CONTROL_RESULT_NO_TARGET) {
+            spawn_program.records[program_index].result
+                = SPAWN_PROGRAM_RESULT_NO_TARGET;
+            return;
+        }
+        let selected_is_core = control_state.result
+                == BODY_CONTROL_RESULT_CORE_SELECTED
+            && control_state.selected_target_kind
+                == BODY_CONTROL_SELECTED_TARGET_CORE
+            && (control_state.state_flags & (
+                BODY_CONTROL_STATE_FLAG_STOP
+                | BODY_CONTROL_STATE_FLAG_CORE_SELECTED
+            )) == (
+                BODY_CONTROL_STATE_FLAG_STOP
+                | BODY_CONTROL_STATE_FLAG_CORE_SELECTED
+            );
+        let selected_is_tower = control_state.result
+                == BODY_CONTROL_RESULT_TOWER_SELECTED
+            && control_state.selected_target_kind
+                == BODY_CONTROL_SELECTED_TARGET_TOWER
+            && (control_state.state_flags & (
+                BODY_CONTROL_STATE_FLAG_STOP
+                | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED
+            )) == (
+                BODY_CONTROL_STATE_FLAG_STOP
+                | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED
+            );
+        if (!selected_is_core && !selected_is_tower) {
+            spawn_program.records[program_index].result
+                = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+            return;
+        }
+        if (!exact_living_body(
+            control_state.selected_target_slot,
+            control_state.selected_target_entity_id,
+            control_state.selected_target_incarnation
+        )) {
+            spawn_program.records[program_index].result = select(
+                SPAWN_PROGRAM_RESULT_NO_TARGET,
+                SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID,
+                selected_is_core
+            );
+            return;
+        }
+        let core_damage_fixed_point = bitcast<i32>(
+            enemy_behavior_states.values[program.destination_slot].windup_range
+        );
+        if (enemy_behavior_states.values[program.destination_slot].program_id
+                != ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE
+            || core_damage_fixed_point <= 0
+            || body_interaction_layer(
+                physics.values[program.destination_slot].interaction_meta
+            ) != BODY_LAYER_PROJECTILE) {
+            spawn_program.records[program_index].result
+                = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+            return;
+        }
+
+        let source_physics = physics.values[program.source_slot];
+        let target_physics = physics.values[control_state.selected_target_slot];
+        let destination_position = source_physics.position + program.position_offset;
+        var launch_direction = (target_physics.position + program.target_offset)
+            - destination_position;
+        var launch_direction_length_squared = dot(launch_direction, launch_direction);
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = source_physics.velocity;
+            launch_direction_length_squared = dot(launch_direction, launch_direction);
+        }
+        if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+            launch_direction = vec2f(1.0, 0.0);
+        } else {
+            launch_direction *= inverseSqrt(launch_direction_length_squared);
+        }
+        let destination_velocity = launch_direction * program.scalar;
+        physics.values[program.destination_slot].position = destination_position;
+        physics.values[program.destination_slot].velocity = destination_velocity;
+        let selected_interaction_layer = select(
+            BODY_LAYER_PLAYER_DAMAGEABLE,
+            BODY_LAYER_CORE_PROXY,
+            selected_is_core
+        );
+        let destination_interaction_layer = body_interaction_layer(
+            physics.values[program.destination_slot].interaction_meta
+        );
+        physics.values[program.destination_slot].interaction_meta
+            = destination_interaction_layer
+                | ((BODY_LAYER_TERRAIN | selected_interaction_layer) << 16u);
+        combat_states.values[program.destination_slot]
+            .target_interaction_layer_mask = selected_interaction_layer;
+        temporaries.values[program.destination_slot].previous_position
+            = destination_position;
+        temporaries.values[program.destination_slot].predicted_position
+            = destination_position;
+        temporaries.values[program.destination_slot].position_delta = vec2f(0.0);
+        temporaries.values[program.destination_slot].grid_index = -1;
+        temporaries.values[program.destination_slot].previous_flow_field_index
+            = simulations.values[program.destination_slot].flow_field_index;
+        atomicStore(
+            &enemy_behavior_states.values[program.destination_slot].state,
+            control_state.selected_target_kind
+        );
+        enemy_behavior_states.values[program.destination_slot]
+            .state_entered_fixed_tick = program.source_tick;
+        enemy_behavior_states.values[program.destination_slot]
+            .state_expires_at_fixed_tick = program.selection_sequence;
+        enemy_behavior_states.values[program.destination_slot].target_slot
+            = control_state.selected_target_slot;
+        enemy_behavior_states.values[program.destination_slot].target_entity_id
+            = control_state.selected_target_entity_id;
+        enemy_behavior_states.values[program.destination_slot].target_incarnation
+            = control_state.selected_target_incarnation;
+        atomicStore(
+            &enemy_behavior_states.values[program.destination_slot].flags,
+            ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+                | select(
+                    ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER,
+                    ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE,
+                    selected_is_core
+                )
+        );
+        enemy_behavior_states.values[program.destination_slot].charge_direction.x
+            = bitcast<f32>(program.attack_fingerprint);
+        enemy_behavior_states.values[program.destination_slot].charge_direction.y = 0.0;
+        spawn_program.records[program_index].target_slot
+            = control_state.selected_target_slot;
+        spawn_program.records[program_index].target_entity_id
+            = control_state.selected_target_entity_id;
+        spawn_program.records[program_index].target_incarnation
+            = control_state.selected_target_incarnation;
+        spawn_program.records[program_index].selected_target_kind
+            = control_state.selected_target_kind;
+        atomicOr(
+            &simulations.values[program.destination_slot].flags,
+            BODY_FLAG_ALIVE
+        );
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_RESOLVED;
         return;
     }
     if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
@@ -922,6 +1567,418 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
 }
 
 @compute @workgroup_size(256)
+fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()
+        || spawn_program.header.abi_version != SPAWN_PROGRAM_ABI_VERSION
+        || atomicLoad(&spawn_program.header.status) != 0u) {
+        return;
+    }
+    let runtime_capacity = arrayLength(&spawn_program.records);
+    if (spawn_program.header.capacity != runtime_capacity
+        || spawn_program.header.count > runtime_capacity) {
+        return;
+    }
+    let program_index = global_id.x;
+    if (program_index >= spawn_program.header.count) {
+        return;
+    }
+    let body_capacity = arrayLength(&simulations.values);
+    let program = spawn_program.records[program_index];
+    if (program.mode_flags
+        != SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET) {
+        return;
+    }
+    if (program.destination_slot >= counts.body_count
+        || program.destination_slot >= body_capacity
+        || simulations.values[program.destination_slot].entity_id
+            != program.destination_entity_id
+        || simulations.values[program.destination_slot].incarnation
+            != program.destination_incarnation
+        || body_id_is_alive(program.destination_slot)) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_DESTINATION_INVALID;
+        return;
+    }
+    if (program.source_slot >= body_capacity
+        || simulations.values[program.source_slot].entity_id != program.source_entity_id
+        || simulations.values[program.source_slot].incarnation
+            != program.source_incarnation
+        || !body_id_is_alive(program.source_slot)) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
+        return;
+    }
+
+    let control_state = body_control_states.values[program.source_slot];
+    if (control_state.entity_id != program.source_entity_id
+        || control_state.incarnation != program.source_incarnation
+        || control_state.source_tick != program.source_tick
+        || control_state.selection_sequence != program.selection_sequence
+        || control_state.attack_fingerprint != program.attack_fingerprint
+        || control_state.selection_policy
+            != BODY_CONTROL_SELECTION_POLICY_CORE_FIRST_IN_RANGE_THEN_TOWER
+        || control_state.reserved_0 != 0u) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+        return;
+    }
+    if (control_state.result == BODY_CONTROL_RESULT_CORE_INVALID) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID;
+        return;
+    }
+    if (control_state.result == BODY_CONTROL_RESULT_NO_TARGET) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_NO_TARGET;
+        return;
+    }
+    let selected_is_core = control_state.result
+            == BODY_CONTROL_RESULT_CORE_SELECTED
+        && control_state.selected_target_kind
+            == BODY_CONTROL_SELECTED_TARGET_CORE
+        && (control_state.state_flags & (
+            BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_CORE_SELECTED
+        )) == (
+            BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_CORE_SELECTED
+        );
+    let selected_is_tower = control_state.result
+            == BODY_CONTROL_RESULT_TOWER_SELECTED
+        && control_state.selected_target_kind
+            == BODY_CONTROL_SELECTED_TARGET_TOWER
+        && (control_state.state_flags & (
+            BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED
+        )) == (
+            BODY_CONTROL_STATE_FLAG_STOP
+            | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED
+        );
+    if (!selected_is_core && !selected_is_tower) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+        return;
+    }
+    if (!exact_living_body(
+        control_state.selected_target_slot,
+        control_state.selected_target_entity_id,
+        control_state.selected_target_incarnation
+    )) {
+        spawn_program.records[program_index].result = select(
+            SPAWN_PROGRAM_RESULT_NO_TARGET,
+            SPAWN_PROGRAM_RESULT_CORE_TARGET_INVALID,
+            selected_is_core
+        );
+        return;
+    }
+    let core_damage_fixed_point = bitcast<i32>(
+        enemy_behavior_states.values[program.destination_slot].windup_range
+    );
+    if (enemy_behavior_states.values[program.destination_slot].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE
+        || core_damage_fixed_point <= 0
+        || body_interaction_layer(
+            physics.values[program.destination_slot].interaction_meta
+        ) != BODY_LAYER_PROJECTILE) {
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_CONTROL_STATE_MISMATCH;
+        return;
+    }
+
+    let source_physics = physics.values[program.source_slot];
+    let target_physics = physics.values[control_state.selected_target_slot];
+    let destination_position = source_physics.position + program.position_offset;
+    var launch_direction = (target_physics.position + program.target_offset)
+        - destination_position;
+    var launch_direction_length_squared = dot(launch_direction, launch_direction);
+    if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        launch_direction = source_physics.velocity;
+        launch_direction_length_squared = dot(launch_direction, launch_direction);
+    }
+    if (launch_direction_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        launch_direction = vec2f(1.0, 0.0);
+    } else {
+        launch_direction *= inverseSqrt(launch_direction_length_squared);
+    }
+    let destination_velocity = launch_direction * program.scalar;
+    physics.values[program.destination_slot].position = destination_position;
+    physics.values[program.destination_slot].velocity = destination_velocity;
+    let selected_interaction_layer = select(
+        BODY_LAYER_PLAYER_DAMAGEABLE,
+        BODY_LAYER_CORE_PROXY,
+        selected_is_core
+    );
+    let destination_interaction_layer = body_interaction_layer(
+        physics.values[program.destination_slot].interaction_meta
+    );
+    physics.values[program.destination_slot].interaction_meta
+        = destination_interaction_layer
+            | ((BODY_LAYER_TERRAIN | selected_interaction_layer) << 16u);
+    combat_states.values[program.destination_slot]
+        .target_interaction_layer_mask = selected_interaction_layer;
+    temporaries.values[program.destination_slot].previous_position
+        = destination_position;
+    temporaries.values[program.destination_slot].predicted_position
+        = destination_position;
+    temporaries.values[program.destination_slot].position_delta = vec2f(0.0);
+    temporaries.values[program.destination_slot].grid_index = -1;
+    temporaries.values[program.destination_slot].previous_flow_field_index
+        = simulations.values[program.destination_slot].flow_field_index;
+    atomicStore(
+        &enemy_behavior_states.values[program.destination_slot].state,
+        control_state.selected_target_kind
+    );
+    enemy_behavior_states.values[program.destination_slot]
+        .state_entered_fixed_tick = program.source_tick;
+    enemy_behavior_states.values[program.destination_slot]
+        .state_expires_at_fixed_tick = program.selection_sequence;
+    enemy_behavior_states.values[program.destination_slot].target_slot
+        = control_state.selected_target_slot;
+    enemy_behavior_states.values[program.destination_slot].target_entity_id
+        = control_state.selected_target_entity_id;
+    enemy_behavior_states.values[program.destination_slot].target_incarnation
+        = control_state.selected_target_incarnation;
+    atomicStore(
+        &enemy_behavior_states.values[program.destination_slot].flags,
+        ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+            | select(
+                ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER,
+                ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE,
+                selected_is_core
+            )
+    );
+    enemy_behavior_states.values[program.destination_slot].charge_direction.x
+        = bitcast<f32>(program.attack_fingerprint);
+    enemy_behavior_states.values[program.destination_slot].charge_direction.y = 0.0;
+    spawn_program.records[program_index].target_slot
+        = control_state.selected_target_slot;
+    spawn_program.records[program_index].target_entity_id
+        = control_state.selected_target_entity_id;
+    spawn_program.records[program_index].target_incarnation
+        = control_state.selected_target_incarnation;
+    spawn_program.records[program_index].selected_target_kind
+        = control_state.selected_target_kind;
+    atomicOr(
+        &simulations.values[program.destination_slot].flags,
+        BODY_FLAG_ALIVE
+    );
+    spawn_program.records[program_index].result
+        = SPAWN_PROGRAM_RESULT_RESOLVED;
+}
+
+fn tracked_tower_target_is_valid() -> bool {
+    if (tracked_pose_config.enabled == 0u
+        || tracked_pose_config.source_slot >= counts.body_count) {
+        return false;
+    }
+    let target_slot = tracked_pose_config.source_slot;
+    return simulations.values[target_slot].entity_id == tracked_pose_config.entity_id
+        && simulations.values[target_slot].incarnation
+            == tracked_pose_config.incarnation
+        && body_id_is_alive(target_slot);
+}
+
+fn behavior_target_matches_tracked(body_id: u32) -> bool {
+    let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
+    return (flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
+        && tracked_tower_target_is_valid()
+        && enemy_behavior_states.values[body_id].target_slot
+            == tracked_pose_config.source_slot
+        && enemy_behavior_states.values[body_id].target_entity_id
+            == tracked_pose_config.entity_id
+        && enemy_behavior_states.values[body_id].target_incarnation
+            == tracked_pose_config.incarnation;
+}
+
+fn bind_behavior_target_to_tracked(body_id: u32) {
+    enemy_behavior_states.values[body_id].target_slot
+        = tracked_pose_config.source_slot;
+    enemy_behavior_states.values[body_id].target_entity_id
+        = tracked_pose_config.entity_id;
+    enemy_behavior_states.values[body_id].target_incarnation
+        = tracked_pose_config.incarnation;
+    atomicOr(
+        &enemy_behavior_states.values[body_id].flags,
+        ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+    );
+}
+
+fn set_enemy_behavior_state(
+    body_id: u32,
+    state: u32,
+    expires_at_fixed_tick: u32
+) {
+    atomicStore(&enemy_behavior_states.values[body_id].state, state);
+    enemy_behavior_states.values[body_id].state_entered_fixed_tick
+        = params.fixed_tick;
+    enemy_behavior_states.values[body_id].state_expires_at_fixed_tick
+        = expires_at_fixed_tick;
+}
+
+fn enter_enemy_core_fallback(body_id: u32) {
+    if (atomicLoad(&enemy_behavior_states.values[body_id].state)
+        != ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
+        set_enemy_behavior_state(
+            body_id,
+            ENEMY_BEHAVIOR_STATE_CORE_FALLBACK,
+            0u
+        );
+    }
+    enemy_behavior_states.values[body_id].target_slot = 0u;
+    enemy_behavior_states.values[body_id].target_entity_id = 0u;
+    enemy_behavior_states.values[body_id].target_incarnation = 0u;
+    enemy_behavior_states.values[body_id].charge_direction = vec2f(0.0);
+    atomicStore(&enemy_behavior_states.values[body_id].flags, 0u);
+    atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
+}
+
+fn disable_enemy_flow(body_id: u32) {
+    atomicAnd(&simulations.values[body_id].flags, ~BODY_FLAG_USE_FLOW);
+}
+
+@compute @workgroup_size(256)
+fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || enemy_behavior_states.values[body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
+    if (!tracked_tower_target_is_valid()) {
+        enter_enemy_core_fallback(body_id);
+        return;
+    }
+    if (state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
+        bind_behavior_target_to_tracked(body_id);
+        disable_enemy_flow(body_id);
+        physics.values[body_id].velocity = vec2f(0.0);
+        set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
+        return;
+    }
+    if (state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER) {
+        let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
+        if ((flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
+            && !behavior_target_matches_tracked(body_id)) {
+            enter_enemy_core_fallback(body_id);
+            return;
+        }
+        bind_behavior_target_to_tracked(body_id);
+        disable_enemy_flow(body_id);
+        let target_slot = tracked_pose_config.source_slot;
+        let to_target = physics.values[target_slot].position
+            - physics.values[body_id].position;
+        let distance_squared = dot(to_target, to_target);
+        let windup_range = enemy_behavior_states.values[body_id].windup_range;
+        if (distance_squared <= windup_range * windup_range) {
+            physics.values[body_id].velocity = vec2f(0.0);
+            atomicStore(
+                &enemy_behavior_states.values[body_id].flags,
+                ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+                    | ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING
+            );
+            set_enemy_behavior_state(
+                body_id,
+                ENEMY_BEHAVIOR_STATE_WINDUP,
+                params.fixed_tick
+                    + enemy_behavior_states.values[body_id].windup_ticks
+            );
+            return;
+        }
+        if (distance_squared > EPSILON_DISTANCE_SQUARED) {
+            physics.values[body_id].velocity = to_target
+                * inverseSqrt(distance_squared)
+                * max(simulations.values[body_id].flow_speed, 0.0);
+        } else {
+            physics.values[body_id].velocity = vec2f(0.0);
+        }
+        return;
+    }
+    if (!behavior_target_matches_tracked(body_id)) {
+        enter_enemy_core_fallback(body_id);
+        return;
+    }
+    disable_enemy_flow(body_id);
+    if (state == ENEMY_BEHAVIOR_STATE_WINDUP) {
+        physics.values[body_id].velocity = vec2f(0.0);
+        if (params.fixed_tick
+            < enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
+            return;
+        }
+        let target_slot = enemy_behavior_states.values[body_id].target_slot;
+        var direction = physics.values[target_slot].position
+            - physics.values[body_id].position;
+        let direction_squared = dot(direction, direction);
+        if (direction_squared <= EPSILON_DISTANCE_SQUARED) {
+            direction = deterministic_separation_normal(body_id, target_slot);
+        } else {
+            direction *= inverseSqrt(direction_squared);
+        }
+        enemy_behavior_states.values[body_id].charge_direction = direction;
+        atomicStore(
+            &enemy_behavior_states.values[body_id].flags,
+            ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+        );
+        physics.values[body_id].velocity = direction
+            * enemy_behavior_states.values[body_id].charge_speed;
+        set_enemy_behavior_state(
+            body_id,
+            ENEMY_BEHAVIOR_STATE_CHARGE,
+            params.fixed_tick
+                + enemy_behavior_states.values[body_id].charge_max_ticks
+        );
+        return;
+    }
+    if (state == ENEMY_BEHAVIOR_STATE_CHARGE) {
+        if (params.fixed_tick
+            >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
+            physics.values[body_id].velocity = vec2f(0.0);
+            set_enemy_behavior_state(
+                body_id,
+                ENEMY_BEHAVIOR_STATE_RECOVER,
+                params.fixed_tick
+                    + enemy_behavior_states.values[body_id].recover_ticks
+            );
+            return;
+        }
+        physics.values[body_id].velocity
+            = enemy_behavior_states.values[body_id].charge_direction
+                * enemy_behavior_states.values[body_id].charge_speed;
+        return;
+    }
+    if (state == ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
+        if (params.fixed_tick
+            >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
+            physics.values[body_id].velocity = vec2f(0.0);
+            set_enemy_behavior_state(
+                body_id,
+                ENEMY_BEHAVIOR_STATE_RECOVER,
+                params.fixed_tick
+                    + enemy_behavior_states.values[body_id].recover_ticks
+            );
+        }
+        return;
+    }
+    if (state == ENEMY_BEHAVIOR_STATE_RECOVER) {
+        physics.values[body_id].velocity = vec2f(0.0);
+        if (params.fixed_tick
+            >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
+            set_enemy_behavior_state(
+                body_id,
+                ENEMY_BEHAVIOR_STATE_SEEK_TOWER,
+                0u
+            );
+        }
+        return;
+    }
+    enter_enemy_core_fallback(body_id);
+}
+
+@compute @workgroup_size(256)
 fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
     if (!abi_is_current()) {
         return;
@@ -949,6 +2006,7 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
     if (params.flow_enabled != 0u
         && params.flow_field_count > 0u
         && body_has_flag(simulation_flags, BODY_FLAG_USE_FLOW)
+        && !body_has_flag(simulation_flags, BODY_FLAG_CONTROLLED_THIS_TICK)
         && simulations.values[body_id].flow_field_index < params.flow_field_count) {
         let cell = flow_cell_for_position(current);
         var field_index = simulations.values[body_id].flow_field_index;
@@ -1153,6 +2211,57 @@ fn append_contact(contact: Contact) {
     contacts.values[contact_index] = contact;
 }
 
+fn mark_core_damage_request_candidate(contact_index: u32) {
+    contacts.values[contact_index].normal.y
+        = bitcast<f32>(CORE_DAMAGE_REQUEST_MARKER_MAGIC);
+}
+
+fn contact_is_core_damage_request_candidate(contact: Contact) -> bool {
+    return (bitcast<u32>(contact.normal.y)
+            & CORE_DAMAGE_REQUEST_MARKER_MAGIC_MASK)
+        == CORE_DAMAGE_REQUEST_MARKER_MAGIC;
+}
+
+fn selected_target_tower_marker_for_policy(policy_event_flag: u32) -> u32 {
+    if (policy_event_flag == APPLIED_EVENT_FLAG_ENTER_POLICY) {
+        return SELECTED_TARGET_TOWER_MARKER_MAGIC
+            | MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER;
+    }
+    if (policy_event_flag == APPLIED_EVENT_FLAG_CONTINUOUS_POLICY) {
+        return SELECTED_TARGET_TOWER_MARKER_MAGIC
+            | MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS;
+    }
+    return 0u;
+}
+
+fn selected_target_tower_policy_from_marker(marker: u32) -> u32 {
+    if ((marker & SELECTED_TARGET_TOWER_MARKER_MAGIC_MASK)
+        != SELECTED_TARGET_TOWER_MARKER_MAGIC) {
+        return 0u;
+    }
+    let policy = marker & MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_MASK;
+    if (policy == MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER) {
+        return APPLIED_EVENT_FLAG_ENTER_POLICY;
+    }
+    if (policy == MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS) {
+        return APPLIED_EVENT_FLAG_CONTINUOUS_POLICY;
+    }
+    return 0u;
+}
+
+fn mark_selected_target_tower_candidate(
+    contact_index: u32,
+    final_damage: i32,
+    policy_event_flag: u32
+) {
+    contacts.values[contact_index].normal = vec2f(
+        bitcast<f32>(final_damage),
+        bitcast<f32>(selected_target_tower_marker_for_policy(
+            policy_event_flag
+        ))
+    );
+}
+
 fn consider_body_contact(
     self_body: GridBody,
     other_body: GridBody,
@@ -1292,6 +2401,11 @@ fn clear_contact_state() {
     atomicStore(
         &contact_state.maximum_damage_window_protocol_status,
         MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK
+    );
+    atomicStore(&contact_state.core_damage_request_event_count, 0u);
+    atomicStore(
+        &contact_state.core_damage_request_protocol_status,
+        CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK
     );
     atomicStore(
         &contact_state.abi_status,
@@ -1738,9 +2852,15 @@ fn find_maximum_damage_window_candidate(
         contact_index < contact_count;
         contact_index += 1u) {
         let contact = contacts.values[contact_index];
-        let policy_event_flag = maximum_damage_window_policy_from_marker(
-            bitcast<u32>(contact.normal.y)
-        );
+        let marker = bitcast<u32>(contact.normal.y);
+        var policy_event_flag = maximum_damage_window_policy_from_marker(marker);
+        if (policy_event_flag == 0u) {
+            policy_event_flag = selected_target_tower_policy_from_marker(marker);
+            if (policy_event_flag == 0u
+                || !selected_target_tower_candidate_is_valid(contact)) {
+                continue;
+            }
+        }
         if (policy_event_flag == 0u
             || contact.other_body_id < 0
             || u32(contact.other_body_id) != target_body_id
@@ -1817,7 +2937,12 @@ fn preflight_maximum_damage_window(
     }
     let duration = combat_states.values[body_id]
         .maximum_damage_window_duration_fixed_ticks;
-    if (!maximum_damage_window_tick_is_representable(duration)) {
+    let expires_at_fixed_tick = atomicLoad(
+        &combat_states.values[body_id].expires_at_fixed_tick
+    );
+    let window_is_active = params.fixed_tick < expires_at_fixed_tick;
+    if (!window_is_active
+        && !maximum_damage_window_tick_is_representable(duration)) {
         atomicStore(
             &contact_state.maximum_damage_window_protocol_status,
             MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
@@ -1854,11 +2979,22 @@ fn finalize_maximum_damage_window_preflight() {
     let maximum_damage_window_event_count = atomicLoad(
         &contact_state.maximum_damage_window_event_count
     );
+    let core_damage_request_event_count = atomicLoad(
+        &contact_state.core_damage_request_event_count
+    );
     if (maximum_damage_window_event_count > params.max_events
-        || existing_event_count > params.max_events - maximum_damage_window_event_count) {
+        || core_damage_request_event_count
+            > params.max_events - maximum_damage_window_event_count
+        || existing_event_count > params.max_events
+            - maximum_damage_window_event_count
+            - core_damage_request_event_count) {
         atomicStore(
             &contact_state.maximum_damage_window_protocol_status,
             MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
+        );
+        atomicStore(
+            &contact_state.core_damage_request_protocol_status,
+            CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_FAILURE
         );
         atomicAdd(&contact_state.event_overflow, 1u);
     }
@@ -1907,7 +3043,7 @@ fn resolve_maximum_damage_window(
         max(candidate.final_damage - current_peak, 0),
         window_is_active
     );
-    if (!window_is_active || candidate.final_damage > current_peak) {
+    if (!window_is_active) {
         atomicStore(
             &combat_states.values[body_id].peak_final_damage_fixed_point,
             candidate.final_damage
@@ -1915,6 +3051,21 @@ fn resolve_maximum_damage_window(
         atomicStore(
             &combat_states.values[body_id].expires_at_fixed_tick,
             params.fixed_tick + duration
+        );
+        atomicStore(
+            &combat_states.values[body_id].peak_source_entity_id,
+            candidate.source_entity_id
+        );
+        atomicStore(
+            &combat_states.values[body_id].peak_source_incarnation,
+            candidate.source_incarnation
+        );
+    } else if (candidate.final_damage > current_peak) {
+        // Maximum Damage Window는 최초 active 시작 N+duration에 고정된다.
+        // 더 큰 peak/provenance는 갱신하되 expiry를 T+duration으로 연장하지 않는다.
+        atomicStore(
+            &combat_states.values[body_id].peak_final_damage_fixed_point,
+            candidate.final_damage
         );
         atomicStore(
             &combat_states.values[body_id].peak_source_entity_id,
@@ -2011,6 +3162,51 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         || !body_id_is_alive(other_body_id)) {
         return;
     }
+    if (body_interaction_layer(physics.values[self_body_id].interaction_meta)
+            == BODY_LAYER_CORE_PROXY
+        && body_interaction_layer(physics.values[other_body_id].interaction_meta)
+            == BODY_LAYER_PROJECTILE
+        && contact_handler_has_flag(
+            contact_handlers.values[other_body_id].flags,
+            CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+        )) {
+        // Projectile 방향의 typed request만 event authority를 갖습니다.
+        return;
+    }
+    if (contact_handler_has_flag(
+            handler.flags,
+            CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+        ) && body_interaction_layer(
+            physics.values[other_body_id].interaction_meta
+        ) == BODY_LAYER_CORE_PROXY) {
+        // 전용 pass가 exact selected target/team/policy/budget/event capacity를
+        // 모두 검증한 뒤 mutation하므로 generic handler에서는 marker만 남깁니다.
+        mark_core_damage_request_candidate(contact_index);
+        return;
+    }
+    if (contact_handler_has_flag(
+            handler.flags,
+            CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+        ) && body_interaction_layer(
+            physics.values[other_body_id].interaction_meta
+        ) == BODY_LAYER_PLAYER_DAMAGEABLE
+        && enemy_behavior_states.values[self_body_id].program_id
+            == ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE) {
+        // Program 2 Tower branch도 exact selected target 검증 전에는 generic
+        // budget/window authority를 갖지 않습니다. 전용 <=9-storage pass가
+        // 검증 후 budget을 reserve하고 standard window marker로 승격합니다.
+        mark_selected_target_tower_candidate(
+            contact_index,
+            resolve_final_contact_damage(
+                self_body_id,
+                other_body_id,
+                contact,
+                handler
+            ),
+            policy_event_flag
+        );
+        return;
+    }
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
     let final_damage = resolve_final_contact_damage(
         self_body_id,
@@ -2100,6 +3296,370 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         APPLIED_EVENT_TYPE_DAMAGE_APPLIED
             | policy_event_flag
             | target_died_flag,
+        contact.world_position
+    ));
+}
+
+fn core_damage_request_candidate_is_valid(contact: Contact) -> bool {
+    if (!contact_is_core_damage_request_candidate(contact)
+        || contact.other_body_id < 0) {
+        return false;
+    }
+    let self_body_id = contact.self_body_id;
+    let other_body_id = u32(contact.other_body_id);
+    if (self_body_id >= counts.body_count
+        || other_body_id >= counts.body_count
+        || self_body_id == other_body_id
+        || simulations.values[self_body_id].incarnation
+            != contact.self_incarnation
+        || simulations.values[other_body_id].incarnation
+            != contact.other_incarnation
+        || !body_id_is_alive(self_body_id)
+        || !body_id_is_alive(other_body_id)) {
+        return false;
+    }
+    let handler = contact_handlers.values[self_body_id];
+    let required_handler_flags = CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+        | CONTACT_HANDLER_FLAG_CLOSEST_ONLY
+        | CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY;
+    if ((handler.flags & required_handler_flags) != required_handler_flags
+        || (handler.flags & CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS) != 0u
+        || body_interaction_layer(
+            physics.values[self_body_id].interaction_meta
+        ) != BODY_LAYER_PROJECTILE
+        || body_interaction_layer(
+            physics.values[other_body_id].interaction_meta
+        ) != BODY_LAYER_CORE_PROXY
+        || combat_states.values[self_body_id].target_interaction_layer_mask
+            != BODY_LAYER_CORE_PROXY
+        || gameplay_team_id(simulations.values[self_body_id].gameplay_meta)
+            != GAMEPLAY_TEAM_HOSTILE
+        || enemy_behavior_states.values[self_body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE) {
+        return false;
+    }
+    let selected_flags = atomicLoad(
+        &enemy_behavior_states.values[self_body_id].flags
+    );
+    if (atomicLoad(&enemy_behavior_states.values[self_body_id].state)
+            != BODY_CONTROL_SELECTED_TARGET_CORE
+        || (selected_flags & (
+            ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE
+        )) != (
+            ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE
+        )
+        || (selected_flags & ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER) != 0u
+        || enemy_behavior_states.values[self_body_id].target_slot
+            != other_body_id
+        || enemy_behavior_states.values[self_body_id].target_entity_id
+            != simulations.values[other_body_id].entity_id
+        || enemy_behavior_states.values[self_body_id].target_incarnation
+            != contact.other_incarnation
+        || enemy_behavior_states.values[self_body_id].state_entered_fixed_tick
+            == 0u
+        || bitcast<u32>(enemy_behavior_states.values[self_body_id]
+            .charge_direction.x) == 0u
+        || bitcast<i32>(enemy_behavior_states.values[self_body_id].windup_range)
+            <= 0) {
+        return false;
+    }
+    let damage_self = max(i32(handler.damage_self * 100.0), 0);
+    return damage_self > 0
+        && atomicLoad(&simulations.values[self_body_id].health) >= damage_self;
+}
+
+fn selected_target_tower_candidate_is_valid(contact: Contact) -> bool {
+    let policy_event_flag = selected_target_tower_policy_from_marker(
+        bitcast<u32>(contact.normal.y)
+    );
+    if (policy_event_flag == 0u || contact.other_body_id < 0) {
+        return false;
+    }
+    let self_body_id = contact.self_body_id;
+    let other_body_id = u32(contact.other_body_id);
+    if (self_body_id >= counts.body_count
+        || other_body_id >= counts.body_count
+        || self_body_id == other_body_id
+        || simulations.values[self_body_id].incarnation
+            != contact.self_incarnation
+        || simulations.values[other_body_id].incarnation
+            != contact.other_incarnation
+        || !body_id_is_alive(self_body_id)
+        || !body_id_is_alive(other_body_id)) {
+        return false;
+    }
+    let handler = contact_handlers.values[self_body_id];
+    let required_handler_flags = CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+        | CONTACT_HANDLER_FLAG_CLOSEST_ONLY
+        | CONTACT_HANDLER_FLAG_INTERACTION_ENTER_ONLY;
+    if ((handler.flags & required_handler_flags) != required_handler_flags
+        || (handler.flags & CONTACT_HANDLER_FLAG_INTERACTION_CONTINUOUS) != 0u
+        || body_interaction_layer(
+            physics.values[self_body_id].interaction_meta
+        ) != BODY_LAYER_PROJECTILE
+        || body_interaction_layer(
+            physics.values[other_body_id].interaction_meta
+        ) != BODY_LAYER_PLAYER_DAMAGEABLE
+        || combat_states.values[self_body_id].target_interaction_layer_mask
+            != BODY_LAYER_PLAYER_DAMAGEABLE
+        || gameplay_team_id(simulations.values[self_body_id].gameplay_meta)
+            != GAMEPLAY_TEAM_HOSTILE
+        || enemy_behavior_states.values[self_body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE
+        || !maximum_damage_window_target_is_configured(other_body_id)
+        || !contact_handler_accepts_target(self_body_id, other_body_id)
+        || !gameplay_damage_is_allowed(
+            simulations.values[self_body_id].gameplay_meta,
+            simulations.values[other_body_id].gameplay_meta
+        )
+        || bitcast<i32>(contact.normal.x) <= 0) {
+        return false;
+    }
+    let selected_flags = atomicLoad(
+        &enemy_behavior_states.values[self_body_id].flags
+    );
+    if (atomicLoad(&enemy_behavior_states.values[self_body_id].state)
+            != BODY_CONTROL_SELECTED_TARGET_TOWER
+        || (selected_flags & (
+            ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER
+        )) != (
+            ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER
+        )
+        || (selected_flags & ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE) != 0u
+        || enemy_behavior_states.values[self_body_id].target_slot
+            != other_body_id
+        || enemy_behavior_states.values[self_body_id].target_entity_id
+            != simulations.values[other_body_id].entity_id
+        || enemy_behavior_states.values[self_body_id].target_incarnation
+            != contact.other_incarnation
+        || enemy_behavior_states.values[self_body_id].state_entered_fixed_tick
+            == 0u
+        || bitcast<u32>(enemy_behavior_states.values[self_body_id]
+            .charge_direction.x) == 0u) {
+        return false;
+    }
+    let damage_self = max(i32(handler.damage_self * 100.0), 0);
+    return damage_self > 0
+        && atomicLoad(&simulations.values[self_body_id].health) >= damage_self;
+}
+
+@compute @workgroup_size(256)
+fn preflight_core_damage_requests(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.core_damage_request_protocol_status)
+            != CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    if (core_damage_request_candidate_is_valid(
+        contacts.values[contact_index]
+    )) {
+        atomicAdd(&contact_state.core_damage_request_event_count, 1u);
+    }
+}
+
+@compute @workgroup_size(1)
+fn finalize_core_damage_request_preflight() {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u) {
+        atomicStore(
+            &contact_state.core_damage_request_protocol_status,
+            CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_FAILURE
+        );
+        return;
+    }
+    let existing_event_count = atomicLoad(&contact_state.event_count);
+    let request_count = atomicLoad(
+        &contact_state.core_damage_request_event_count
+    );
+    let maximum_window_count = atomicLoad(
+        &contact_state.maximum_damage_window_event_count
+    );
+    if (request_count > params.max_events
+        || maximum_window_count > params.max_events - request_count
+        || existing_event_count
+            > params.max_events - request_count - maximum_window_count) {
+        atomicStore(
+            &contact_state.core_damage_request_protocol_status,
+            CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_FAILURE
+        );
+        atomicAdd(&contact_state.event_overflow, 1u);
+    }
+}
+
+@compute @workgroup_size(256)
+fn resolve_core_damage_requests(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.core_damage_request_protocol_status)
+            != CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (selected_target_tower_candidate_is_valid(contact)) {
+        let self_body_id = contact.self_body_id;
+        let handler = contact_handlers.values[self_body_id];
+        let damage_self = max(i32(handler.damage_self * 100.0), 0);
+        if (!reserve_self_hit_budget(self_body_id, damage_self)) {
+            return;
+        }
+        mark_maximum_damage_window_candidate(
+            contact_index,
+            bitcast<i32>(contact.normal.x),
+            selected_target_tower_policy_from_marker(
+                bitcast<u32>(contact.normal.y)
+            )
+        );
+        return;
+    }
+    if (!core_damage_request_candidate_is_valid(contact)) {
+        return;
+    }
+    let self_body_id = contact.self_body_id;
+    let other_body_id = u32(contact.other_body_id);
+    let handler = contact_handlers.values[self_body_id];
+    let damage_self = max(i32(handler.damage_self * 100.0), 0);
+    if (!reserve_self_hit_budget(self_body_id, damage_self)) {
+        return;
+    }
+    let core_damage_fixed_point = bitcast<i32>(
+        enemy_behavior_states.values[self_body_id].windup_range
+    );
+    append_applied_event(AppliedEvent(
+        simulations.values[self_body_id].entity_id,
+        contact.self_incarnation,
+        simulations.values[other_body_id].entity_id,
+        contact.other_incarnation,
+        core_damage_fixed_point,
+        APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST,
+        contact.world_position
+    ));
+}
+
+@compute @workgroup_size(256)
+fn emit_enemy_charge_telegraphs(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || enemy_behavior_states.values[body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let previous_flags = atomicAnd(
+        &enemy_behavior_states.values[body_id].flags,
+        ~ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING
+    );
+    if ((previous_flags & ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING) == 0u
+        || atomicLoad(&enemy_behavior_states.values[body_id].state)
+            != ENEMY_BEHAVIOR_STATE_WINDUP
+        || !behavior_target_matches_tracked(body_id)) {
+        return;
+    }
+    append_applied_event(AppliedEvent(
+        simulations.values[body_id].entity_id,
+        simulations.values[body_id].incarnation,
+        enemy_behavior_states.values[body_id].target_entity_id,
+        enemy_behavior_states.values[body_id].target_incarnation,
+        0,
+        APPLIED_EVENT_TYPE_ENEMY_CHARGE_WINDUP_STARTED,
+        physics.values[body_id].position
+    ));
+}
+
+@compute @workgroup_size(256)
+fn resolve_enemy_charge_contacts(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    let policy_event_flag = maximum_damage_window_policy_from_marker(
+        bitcast<u32>(contact.normal.y)
+    );
+    if (policy_event_flag == 0u
+        || contact.other_body_id < 0) {
+        return;
+    }
+    let body_id = contact.self_body_id;
+    let target_slot = u32(contact.other_body_id);
+    if (body_id >= counts.body_count
+        || target_slot >= counts.body_count
+        || enemy_behavior_states.values[body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        || simulations.values[body_id].incarnation != contact.self_incarnation
+        || simulations.values[target_slot].incarnation != contact.other_incarnation
+        || !behavior_target_matches_tracked(body_id)
+        || target_slot != enemy_behavior_states.values[body_id].target_slot
+        || simulations.values[target_slot].entity_id
+            != enemy_behavior_states.values[body_id].target_entity_id
+        || contact.other_incarnation
+            != enemy_behavior_states.values[body_id].target_incarnation) {
+        return;
+    }
+    if (atomicLoad(&enemy_behavior_states.values[body_id].state)
+        != ENEMY_BEHAVIOR_STATE_CHARGE) {
+        return;
+    }
+    let previous_state = atomicExchange(
+        &enemy_behavior_states.values[body_id].state,
+        ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL
+    );
+    if (previous_state != ENEMY_BEHAVIOR_STATE_CHARGE) {
+        return;
+    }
+    enemy_behavior_states.values[body_id].state_entered_fixed_tick
+        = params.fixed_tick;
+    enemy_behavior_states.values[body_id].state_expires_at_fixed_tick
+        = params.fixed_tick + enemy_behavior_states.values[body_id].recoil_ticks;
+    atomicStore(
+        &enemy_behavior_states.values[body_id].flags,
+        ENEMY_BEHAVIOR_FLAG_TARGET_VALID | ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING
+    );
+    append_applied_event(AppliedEvent(
+        simulations.values[body_id].entity_id,
+        contact.self_incarnation,
+        simulations.values[target_slot].entity_id,
+        contact.other_incarnation,
+        0,
+        APPLIED_EVENT_TYPE_ENEMY_CHARGE_CONTACT_RECOIL_STARTED,
         contact.world_position
     ));
 }
@@ -2439,12 +3999,49 @@ fn finalize_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
         || control_state.incarnation != simulations.values[body_id].incarnation) {
         return;
     }
+    if ((control_state.state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
+        physics.values[body_id].velocity = vec2f(0.0);
+        return;
+    }
+    if (!body_has_flag(
+        load_simulation_flags(body_id),
+        BODY_FLAG_CONTROLLED_THIS_TICK
+    )) {
+        return;
+    }
     var velocity = physics.values[body_id].velocity;
     let controlled_speed = length(velocity);
     if (controlled_speed > CONTROL_MAX_LINEAR_SPEED) {
         velocity = (velocity / controlled_speed) * CONTROL_MAX_LINEAR_SPEED;
     }
     physics.values[body_id].velocity = velocity;
+}
+
+@compute @workgroup_size(256)
+fn apply_enemy_charge_recoil(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || enemy_behavior_states.values[body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let previous_flags = atomicAnd(
+        &enemy_behavior_states.values[body_id].flags,
+        ~ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING
+    );
+    if ((previous_flags & ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING) == 0u
+        || atomicLoad(&enemy_behavior_states.values[body_id].state)
+            != ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
+        return;
+    }
+    // solver/rebuild/final velocity 뒤에 한 번만 cached charge 반대 속도를 부여합니다.
+    physics.values[body_id].velocity
+        = -enemy_behavior_states.values[body_id].charge_direction
+            * enemy_behavior_states.values[body_id].recoil_impulse;
 }
 
 @compute @workgroup_size(1)
@@ -2551,6 +4148,28 @@ struct BodySimulation {
     incarnation: u32,
 }
 
+struct EnemyBehaviorState {
+    program_id: u32,
+    state: u32,
+    state_entered_fixed_tick: u32,
+    state_expires_at_fixed_tick: u32,
+    target_slot: u32,
+    target_entity_id: u32,
+    target_incarnation: u32,
+    flags: u32,
+    charge_direction: vec2f,
+    windup_range: f32,
+    charge_speed: f32,
+    recoil_impulse: f32,
+    windup_ticks: u32,
+    charge_max_ticks: u32,
+    recoil_ticks: u32,
+    recover_ticks: u32,
+    telegraph_style_code: u32,
+    telegraph_color_rgba8: u32,
+    telegraph_radius_scale: f32,
+}
+
 struct BodyTemporary {
     previous_position: vec2f,
     predicted_position: vec2f,
@@ -2571,6 +4190,7 @@ struct PhysicsBuffer { values: array<BodyPhysics> }
 struct TemporaryBuffer { values: array<BodyTemporary> }
 struct RenderStyleBuffer { values: array<BodyRenderStyle> }
 struct SimulationBuffer { values: array<BodySimulation> }
+struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
 
 struct RenderParams {
     viewport_origin: vec2f,
@@ -2594,6 +4214,7 @@ struct VertexOutput {
 @group(0) @binding(2) var<storage, read> temporaries: TemporaryBuffer;
 @group(0) @binding(3) var<storage, read> styles: RenderStyleBuffer;
 @group(0) @binding(4) var<storage, read> simulations: SimulationBuffer;
+@group(0) @binding(5) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(1) @binding(0) var<uniform> params: RenderParams;
 
 const QUAD_VERTICES = array<vec2f, 6>(
@@ -2607,6 +4228,10 @@ const RENDER_SHAPE_ARROW: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.ARROW}u;
 const RENDER_SHAPE_PENTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA}u;
 const RENDER_SHAPE_HEXA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA}u;
 const RENDER_SHAPE_GEN: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.GEN}u;
+const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
+const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
+const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
+const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
 const SHAPE_DIRECTION_EPSILON: f32 = 0.000001;
 const SQUARE_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.center)};
 const SQUARE_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.halfSize)};
@@ -2614,6 +4239,7 @@ const TRIANGLE_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.triangle.points
 const ARROW_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.arrow.points)};
 const PENTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.penta.points)};
 const HEXA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.hexa.points)};
+const RHOM_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.rhom.points)};
 const GENERATOR_OUTER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.center)};
 const GENERATOR_OUTER_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.halfSize)};
 const GENERATOR_INNER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.innerBox.center)};
@@ -2724,10 +4350,22 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     if (shape_code == RENDER_SHAPE_HEXA) {
         return polygon_distance(point, HEXA_POINTS, 6u);
     }
+    if (shape_code == RENDER_SHAPE_RHOM) {
+        return polygon_distance(point, RHOM_POINTS, 4u);
+    }
     if (shape_code == RENDER_SHAPE_GEN) {
         return generator_distance(point);
     }
     return length(point) - 1.0;
+}
+
+fn unpack_rgba8(packed: u32) -> vec4f {
+    return vec4f(
+        f32(packed & 255u),
+        f32((packed >> 8u) & 255u),
+        f32((packed >> 16u) & 255u),
+        f32((packed >> 24u) & 255u)
+    ) / 255.0;
 }
 
 @vertex
@@ -2756,6 +4394,7 @@ fn vertex_main(
     let body = physics.values[instance_index];
     let temporary = temporaries.values[instance_index];
     let style = styles.values[instance_index];
+    let behavior = enemy_behavior_states.values[instance_index];
     var body_position = mix(
         temporary.previous_position,
         body.position,
@@ -2765,8 +4404,29 @@ fn vertex_main(
         body_position = body.position + (body.velocity * max(params.prediction_dt, 0.0));
     }
 
+    var presentation_velocity = body.velocity;
+    var presentation_color = style.color;
+    var presentation_radius_scale = style.radius_scale;
+    if (behavior.program_id == ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        && behavior.state == ENEMY_BEHAVIOR_STATE_WINDUP) {
+        if (behavior.telegraph_style_code != 0u) {
+            presentation_color = unpack_rgba8(behavior.telegraph_color_rgba8);
+            presentation_radius_scale *= behavior.telegraph_radius_scale;
+        }
+        if ((behavior.flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
+            && behavior.target_slot < counts.body_count
+            && simulations.values[behavior.target_slot].entity_id
+                == behavior.target_entity_id
+            && simulations.values[behavior.target_slot].incarnation
+                == behavior.target_incarnation
+            && (simulations.values[behavior.target_slot].flags & 1u) != 0u) {
+            presentation_velocity = physics.values[behavior.target_slot].position
+                - body.position;
+        }
+    }
     let local = QUAD_VERTICES[vertex_index];
-    let world_position = body_position + (local * body.radius * style.radius_scale);
+    let world_position = body_position
+        + (local * body.radius * presentation_radius_scale);
     let viewport_position = params.viewport_origin + (world_position * params.world_scale);
     let clip_position = vec2f(
         (viewport_position.x / params.viewport_size.x) * 2.0 - 1.0,
@@ -2774,9 +4434,9 @@ fn vertex_main(
     );
     output.position = vec4f(clip_position, 0.0, 1.0);
     output.local_position = local;
-    output.color = style.color * f32(style.visible != 0u);
+    output.color = presentation_color * f32(style.visible != 0u);
     output.shape_code = style.shape_code;
-    output.velocity = body.velocity;
+    output.velocity = presentation_velocity;
     return output;
 }
 

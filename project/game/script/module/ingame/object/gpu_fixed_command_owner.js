@@ -4,8 +4,19 @@ import {
     normalizeGpuSpawnIntent
 } from './gpu_spawn_intent.js';
 import {
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_SELECTION_POLICY,
+    GPU_BODY_CONTROL_STATE_FLAGS,
+    GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_MODE
 } from '../physics/gpu/gpu_fixed_primitive_abi.js';
+import {
+    PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
+    PROJECTILE_SELECTED_TARGET_POLICY_ID
+} from '../contract/projectile_target_policy_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_CAPACITY = 1024;
@@ -41,6 +52,22 @@ function requireFinite(value, label) {
         throw new RangeError(`${label}은 유한한 float32 범위 숫자여야 합니다.`);
     }
     return Math.fround(number);
+}
+
+function requirePositiveFinite(value, label) {
+    const number = requireFinite(value, label);
+    if (number <= 0) {
+        throw new RangeError(`${label}은 양수여야 합니다.`);
+    }
+    return number;
+}
+
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0 || number >= INVALID_HANDLE_COMPONENT) {
+        throw new RangeError(`${label}은 reserved sentinel보다 작은 0 이상의 정수여야 합니다.`);
+    }
+    return number;
 }
 
 function normalizeHandle(source, label) {
@@ -83,6 +110,17 @@ function stableFingerprint(value, ancestors = new Set()) {
     return fingerprint;
 }
 
+function createNonZeroUint32Fingerprint(value) {
+    const source = typeof value === 'string' ? value : stableFingerprint(value);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < source.length; index++) {
+        hash ^= source.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193);
+    }
+    const result = hash >>> 0;
+    return result === 0 ? 1 : result;
+}
+
 function normalizeMoveIntent(command) {
     const handle = normalizeHandle(command?.handle ?? command, 'control.handle');
     let moveIntentX = requireFinite(
@@ -100,8 +138,201 @@ function normalizeMoveIntent(command) {
     }
     return Object.freeze({
         ...handle,
+        modeFlags: GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT,
         moveIntentX,
         moveIntentY
+    });
+}
+
+function normalizePriorityTargetControl(command, targetFixedTick) {
+    if (!command || typeof command !== 'object') {
+        throw new TypeError('priority target control command가 필요합니다.');
+    }
+    const sourceHandle = normalizeHandle(
+        command.sourceHandle ?? command.handle,
+        'priorityControl.sourceHandle'
+    );
+    const coreTargetHandle = normalizeHandle(
+        command.coreTargetHandle,
+        'priorityControl.coreTargetHandle'
+    );
+    const towerTargetHandle = command.towerTargetHandle === undefined
+        || command.towerTargetHandle === null
+        ? null
+        : normalizeHandle(
+            command.towerTargetHandle,
+            'priorityControl.towerTargetHandle'
+        );
+    const targetSelectionPolicyId = requireNonEmptyString(
+        command.targetSelectionPolicyId,
+        'priorityControl.targetSelectionPolicyId'
+    );
+    const distancePolicyId = requireNonEmptyString(
+        command.distancePolicyId,
+        'priorityControl.distancePolicyId'
+    );
+    if (targetSelectionPolicyId
+            !== PROJECTILE_SELECTED_TARGET_POLICY_ID
+                .CORE_FIRST_IN_RANGE_THEN_TOWER
+        || distancePolicyId
+            !== PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+                .TICK_START_CENTER_INCLUSIVE
+        || command.stopWhileTargetInRange !== true) {
+        throw new RangeError('priority target control policy가 canonical M 계약과 다릅니다.');
+    }
+    const selectionSequence = requireNonNegativeSafeInteger(
+        command.selectionSequence ?? command.shotSequence,
+        'priorityControl.selectionSequence'
+    );
+    const attackDefinitionId = requireNonEmptyString(
+        command.attackDefinitionId,
+        'priorityControl.attackDefinitionId'
+    );
+    const projectileDefinitionId = requireNonEmptyString(
+        command.projectileDefinitionId,
+        'priorityControl.projectileDefinitionId'
+    );
+    const producerId = requireNonEmptyString(
+        command.producerId,
+        'priorityControl.producerId'
+    );
+    const sourceAbilityId = requireNonEmptyString(
+        command.sourceAbilityId,
+        'priorityControl.sourceAbilityId'
+    );
+    const attackRangeTiles = requirePositiveFinite(
+        command.attackRangeTiles,
+        'priorityControl.attackRangeTiles'
+    );
+    const fingerprintSource = {
+        sourceHandle,
+        coreTargetHandle,
+        towerTargetHandle,
+        targetFixedTick,
+        selectionSequence,
+        attackDefinitionId,
+        projectileDefinitionId,
+        producerId,
+        sourceAbilityId,
+        attackRangeTiles,
+        targetSelectionPolicyId,
+        distancePolicyId,
+        stopWhileTargetInRange: true
+    };
+    return Object.freeze({
+        modeFlags: GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
+        ...fingerprintSource,
+        attackFingerprint: createNonZeroUint32Fingerprint(fingerprintSource)
+    });
+}
+
+function sameOptionalHandle(left, right) {
+    return left === null
+        ? right === null
+        : right !== null && handleKey(left) === handleKey(right);
+}
+
+function normalizeSelectedTargetIntent(source, subjectTeamId, controlPayload) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError('selected-target spawn intent가 필요합니다.');
+    }
+    const sourceHandle = normalizeHandle(
+        source.sourceHandle,
+        'selectedTargetSpawn.sourceHandle'
+    );
+    const coreTargetHandle = normalizeHandle(
+        source.coreTargetHandle,
+        'selectedTargetSpawn.coreTargetHandle'
+    );
+    const towerTargetHandle = source.towerTargetHandle === undefined
+        || source.towerTargetHandle === null
+        ? null
+        : normalizeHandle(
+            source.towerTargetHandle,
+            'selectedTargetSpawn.towerTargetHandle'
+        );
+    const attackRangeTiles = requirePositiveFinite(
+        source.attackRangeTiles,
+        'selectedTargetSpawn.attackRangeTiles'
+    );
+    const targetSelectionPolicyId = requireNonEmptyString(
+        source.targetSelectionPolicyId,
+        'selectedTargetSpawn.targetSelectionPolicyId'
+    );
+    const distancePolicyId = requireNonEmptyString(
+        source.distancePolicyId,
+        'selectedTargetSpawn.distancePolicyId'
+    );
+    if (source.stopWhileTargetInRange !== true
+        || targetSelectionPolicyId
+            !== PROJECTILE_SELECTED_TARGET_POLICY_ID
+                .CORE_FIRST_IN_RANGE_THEN_TOWER
+        || distancePolicyId
+            !== PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
+                .TICK_START_CENTER_INCLUSIVE) {
+        throw new RangeError('selected-target spawn policy가 canonical M 계약과 다릅니다.');
+    }
+    const destinationSpawn = normalizeGpuSpawnIntent(
+        source.destinationSpawn,
+        { subjectTeamId }
+    );
+    const selectionSequence = requireNonNegativeSafeInteger(
+        destinationSpawn.spawnSequence,
+        'selectedTargetSpawn.destinationSpawn.spawnSequence'
+    );
+    if (!controlPayload
+        || !sameOptionalHandle(sourceHandle, controlPayload.sourceHandle)
+        || !sameOptionalHandle(coreTargetHandle, controlPayload.coreTargetHandle)
+        || !sameOptionalHandle(towerTargetHandle, controlPayload.towerTargetHandle)
+        || attackRangeTiles !== controlPayload.attackRangeTiles
+        || selectionSequence !== controlPayload.selectionSequence
+        || targetSelectionPolicyId !== controlPayload.targetSelectionPolicyId
+        || distancePolicyId !== controlPayload.distancePolicyId
+        || destinationSpawn.definitionId !== controlPayload.projectileDefinitionId
+        || destinationSpawn.producerId !== controlPayload.producerId
+        || destinationSpawn.sourceAbilityId !== controlPayload.sourceAbilityId
+        || destinationSpawn.sourceEntityId !== sourceHandle.entityId
+        || destinationSpawn.sourceIncarnation !== sourceHandle.incarnation
+        || destinationSpawn.ownerEntityId !== sourceHandle.entityId
+        || destinationSpawn.ownerIncarnation !== sourceHandle.incarnation
+        || destinationSpawn.coreTargetEntityId !== coreTargetHandle.entityId
+        || destinationSpawn.coreTargetIncarnation !== coreTargetHandle.incarnation
+        || (towerTargetHandle === null
+            ? destinationSpawn.towerTargetEntityId !== undefined
+                || destinationSpawn.towerTargetIncarnation !== undefined
+            : destinationSpawn.towerTargetEntityId !== towerTargetHandle.entityId
+                || destinationSpawn.towerTargetIncarnation
+                    !== towerTargetHandle.incarnation)) {
+        throw new RangeError('selected-target spawn이 same source/tick control fingerprint와 다릅니다.');
+    }
+    const launchSpeed = requirePositiveFinite(
+        source.launchSpeed,
+        'selectedTargetSpawn.launchSpeed'
+    );
+    return Object.freeze({
+        modeFlags:
+            GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET,
+        sourceHandle,
+        coreTargetHandle,
+        towerTargetHandle,
+        destinationSpawn,
+        positionOffset: normalizeRequiredVector(
+            source.positionOffset,
+            'selectedTargetSpawn.positionOffset'
+        ),
+        targetOffset: normalizeVector(
+            source.targetOffset,
+            'selectedTargetSpawn.targetOffset'
+        ),
+        launchSpeed,
+        attackRangeTiles,
+        targetSelectionPolicyId,
+        distancePolicyId,
+        selectionSequence,
+        attackFingerprint: controlPayload.attackFingerprint,
+        attackDefinitionId: controlPayload.attackDefinitionId,
+        requestFlags:
+            GPU_SPAWN_PROGRAM_REQUEST_FLAGS.REQUIRE_EXACT_SELECTED_TARGET
     });
 }
 
@@ -297,7 +528,36 @@ function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
 }
 
 function commandDomain(command) {
-    return command?.type === 'control' ? 'control' : 'spawn';
+    return command?.type === 'control'
+        || command?.type === 'priority-target-control'
+        ? 'control'
+        : 'spawn';
+}
+
+function isControlCommand(command) {
+    return command?.type === 'control'
+        || command?.type === 'priority-target-control';
+}
+
+function isSelectedTargetSpawnCommand(command) {
+    return command?.type === 'selected-target-spawn';
+}
+
+function priorityControlBindingKey(sourceTick, sourceHandle) {
+    return `${sourceTick}:${handleKey(sourceHandle)}`;
+}
+
+function selectedSpawnBindingKey(
+    sourceTick,
+    sourceHandle,
+    controlCommandId,
+    selectionSequence
+) {
+    return [
+        priorityControlBindingKey(sourceTick, sourceHandle),
+        controlCommandId,
+        selectionSequence
+    ].join(':');
 }
 
 function normalizeBackendDomainResult(
@@ -336,11 +596,191 @@ function normalizeBackendDomainResult(
     });
 }
 
+function normalizePriorityControlCompletionOutcome(
+    source,
+    pending,
+    sourceTick
+) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError('BodyControlProgram priority outcome 객체가 필요합니다.');
+    }
+    const sourceHandle = normalizeHandle(
+        source.sourceHandle ?? source.handle,
+        'priorityControlOutcome.sourceHandle'
+    );
+    const coreTargetHandle = normalizeHandle(
+        source.coreTargetHandle,
+        'priorityControlOutcome.coreTargetHandle'
+    );
+    const towerTargetHandle = source.towerTargetHandle === undefined
+        || source.towerTargetHandle === null
+        ? null
+        : normalizeHandle(
+            source.towerTargetHandle,
+            'priorityControlOutcome.towerTargetHandle'
+        );
+    const outcomeSourceTick = requirePositiveSafeInteger(
+        source.sourceTick,
+        'priorityControlOutcome.sourceTick'
+    );
+    const selectionSequence = requireNonNegativeSafeInteger(
+        source.selectionSequence,
+        'priorityControlOutcome.selectionSequence'
+    );
+    const attackFingerprint = requirePositiveSafeInteger(
+        source.attackFingerprint,
+        'priorityControlOutcome.attackFingerprint'
+    );
+    const attackRangeTiles = requirePositiveFinite(
+        source.attackRangeTiles,
+        'priorityControlOutcome.attackRangeTiles'
+    );
+    if (sourceTick !== pending.targetFixedTick
+        || outcomeSourceTick !== sourceTick
+        || !sameOptionalHandle(sourceHandle, pending.payload.sourceHandle)
+        || !sameOptionalHandle(coreTargetHandle, pending.payload.coreTargetHandle)
+        || !sameOptionalHandle(
+            towerTargetHandle,
+            pending.payload.towerTargetHandle
+        )
+        || selectionSequence !== pending.payload.selectionSequence
+        || attackFingerprint !== pending.payload.attackFingerprint
+        || attackRangeTiles !== pending.payload.attackRangeTiles) {
+        throw new RangeError(
+            'BodyControlProgram priority outcome이 pending exact command와 다릅니다.'
+        );
+    }
+
+    const result = requireUint32Like(
+        source.result,
+        'priorityControlOutcome.result'
+    );
+    const selectedTargetKind = requireUint32Like(
+        source.selectedTargetKind,
+        'priorityControlOutcome.selectedTargetKind'
+    );
+    const stateFlags = requireUint32Like(
+        source.stateFlags,
+        'priorityControlOutcome.stateFlags'
+    );
+    const selectedTargetHandle = source.selectedTargetHandle === undefined
+        || source.selectedTargetHandle === null
+        ? null
+        : normalizeHandle(
+            source.selectedTargetHandle,
+            'priorityControlOutcome.selectedTargetHandle'
+        );
+    let outcome;
+    let expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE;
+    let expectedStateFlags = 0;
+    let expectedTargetHandle = null;
+    if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET) {
+        outcome = 'no-target';
+        expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW;
+    } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_SELECTED) {
+        outcome = 'core';
+        expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE;
+        expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+            | GPU_BODY_CONTROL_STATE_FLAGS.CORE_SELECTED;
+        expectedTargetHandle = pending.payload.coreTargetHandle;
+    } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED) {
+        outcome = 'tower';
+        expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
+        expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
+            | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
+        expectedTargetHandle = pending.payload.towerTargetHandle;
+    } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
+        outcome = 'source-invalid';
+    } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
+        outcome = 'core-invalid';
+    } else {
+        throw new RangeError(
+            `지원하지 않는 BodyControlProgram priority result입니다: ${result}`
+        );
+    }
+    if (source.outcome !== outcome
+        || selectedTargetKind !== expectedKind
+        || stateFlags !== expectedStateFlags
+        || !sameOptionalHandle(selectedTargetHandle, expectedTargetHandle)) {
+        throw new RangeError(
+            'BodyControlProgram priority result/kind/state/target 조합이 올바르지 않습니다.'
+        );
+    }
+    return Object.freeze({
+        commandId: pending.commandId,
+        sourceHandle: pending.payload.sourceHandle,
+        coreTargetHandle: pending.payload.coreTargetHandle,
+        towerTargetHandle: pending.payload.towerTargetHandle,
+        targetFixedTick: pending.targetFixedTick,
+        sourceTick,
+        selectionSequence,
+        attackFingerprint,
+        attackRangeTiles,
+        attackDefinitionId: pending.payload.attackDefinitionId,
+        projectileDefinitionId: pending.payload.projectileDefinitionId,
+        producerId: pending.payload.producerId,
+        sourceAbilityId: pending.payload.sourceAbilityId,
+        result,
+        outcome,
+        selectedTargetKind,
+        selectedTargetHandle,
+        stateFlags
+    });
+}
+
+function requireUint32Like(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0 || number > 0xffffffff) {
+        throw new RangeError(`${label}은 uint32 정수여야 합니다.`);
+    }
+    return number >>> 0;
+}
+
+function preflightGpuRegistryActivationMetadata(intent, activationEvidence) {
+    const created = createGpuRegistryMetadata(intent, activationEvidence);
+    const metadata = materializeGpuPlainDataSnapshot(
+        created,
+        'gpuRegistryActivationMetadata'
+    );
+    if (stableFingerprint(created) !== stableFingerprint(metadata)
+        || metadata.definitionId !== intent.definitionId
+        || metadata.teamId !== intent.teamId
+        || metadata.damagePolicyId !== intent.damagePolicyId
+        || metadata.allegiancePolicy !== intent.allegiancePolicy
+        || metadata.producerId !== intent.producerId
+        || metadata.sourceAbilityId !== intent.sourceAbilityId
+        || metadata.targetPolicyId !== intent.targetPolicyId) {
+        throw new RangeError(
+            'GPU registry activation metadata가 canonical spawn intent와 다릅니다.'
+        );
+    }
+    if (activationEvidence
+        && (metadata.selectedTargetKind
+                !== activationEvidence.selectedTargetKind
+            || metadata.selectedTargetEntityId
+                !== activationEvidence.selectedTargetHandle.entityId
+            || metadata.selectedTargetIncarnation
+                !== activationEvidence.selectedTargetHandle.incarnation
+            || metadata.selectionSourceTick
+                !== activationEvidence.selectionSourceTick
+            || metadata.selectionSequence
+                !== activationEvidence.selectionSequence
+            || metadata.attackFingerprint
+                !== activationEvidence.attackFingerprint)) {
+        throw new RangeError(
+            'GPU selected-target activation evidence가 canonical metadata에 보존되지 않았습니다.'
+        );
+    }
+    return metadata;
+}
+
 function assertBackend(backend) {
     for (const methodName of [
         'hasBody',
         'canControlBody',
         'stageFixedPrograms',
+        'cancelPendingFixedProgramsForTerminal',
+        'drainCompletedBodyControlProgramBatches',
         'drainCompletedSpawnProgramBatches',
         'getEventProtocolState',
         'requiresRecovery',
@@ -359,6 +799,7 @@ function assertRegistry(registry) {
         'activateReserved',
         'cancelReservation',
         'has',
+        'hasReservation',
         'copyEntityView',
         'getRevision',
         'getStatus'
@@ -396,8 +837,20 @@ function freezeResult(result) {
         sourceRelativeSpawns: Object.freeze(
             result.sourceRelativeSpawns.map((entry) => Object.freeze(entry))
         ),
+        selectedTargetSpawns: Object.freeze(
+            result.selectedTargetSpawns.map((entry) => Object.freeze(entry))
+        ),
+        priorityTargetControlResults: Object.freeze(
+            result.priorityTargetControlResults.map((entry) => (
+                Object.freeze(entry)
+            ))
+        ),
+        priorityTargetControlCompletedThroughTick:
+            result.priorityTargetControlCompletedThroughTick,
         rejected: Object.freeze(result.rejected.map((entry) => Object.freeze(entry))),
         completed: Object.freeze(result.completed.map((entry) => Object.freeze(entry))),
+        ingressOpen: result.ingressOpen !== false,
+        ingressCloseReason: result.ingressCloseReason ?? null,
         recoveryRequired: result.recoveryRequired === true,
         protocolFailure: result.protocolFailure ?? null
     });
@@ -405,7 +858,7 @@ function freezeResult(result) {
 
 /**
  * @class GpuFixedCommandOwner
- * @description Generic next-fixed control과 source-relative SpawnProgram reservation을 bounded하게 소유합니다.
+ * @description Generic move/priority control과 source-relative/selected SpawnProgram reservation을 bounded하게 소유합니다.
  */
 export class GpuFixedCommandOwner {
     constructor(backend, registry, options = {}) {
@@ -446,11 +899,18 @@ export class GpuFixedCommandOwner {
         this.completedCommandIds = [];
         this.completedCommandHead = 0;
         this.controlTargetKeys = new Map();
+        this.selectionBindingClaims = new Map();
+        this.pendingPriorityControlsByKey = new Map();
+        this.pendingPriorityControlsByCommandId = new Map();
         this.pendingDestinations = new Map();
+        this.bodyControlCompletionScratch = [];
         this.spawnCompletionScratch = [];
+        this.priorityTargetControlCompletedThroughTick = 0;
         this.lastCommitResult = null;
         this.lastCompletionResult = Object.freeze({
             fixedTick: 0,
+            priorityTargetControlResults: Object.freeze([]),
+            priorityTargetControlCompletedThroughTick: 0,
             completed: Object.freeze([]),
             protocolFailure: null
         });
@@ -462,11 +922,19 @@ export class GpuFixedCommandOwner {
             capacityRejected: 0,
             completedResolved: 0,
             completedSourceInvalid: 0,
-            completedTargetInvalid: 0
+            completedTargetInvalid: 0,
+            completedNoTarget: 0,
+            completedCoreInvalid: 0,
+            priorityControlCompletedNoTarget: 0,
+            priorityControlCompletedCore: 0,
+            priorityControlCompletedTower: 0,
+            priorityControlCompletedSourceInvalid: 0,
+            priorityControlCompletedCoreInvalid: 0
         };
         this.recoveryRequired = false;
         this.ingressOpen = true;
         this.ingressCloseReason = null;
+        this.terminalCancelResult = null;
         this.destroyed = false;
     }
 
@@ -566,6 +1034,217 @@ export class GpuFixedCommandOwner {
         return enqueued.receipt;
     }
 
+    /** Core-first inclusive range selection과 persistent stop/route state를 stage합니다. */
+    requestPriorityTargetControl(command, targetFixedTick, commandId) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedIngress();
+        if (rejected) {
+            return rejected;
+        }
+        const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const id = requireNonEmptyString(commandId, 'commandId');
+        const payload = normalizePriorityTargetControl(command, tick);
+        const fingerprint = stableFingerprint({
+            type: 'priority-target-control',
+            tick,
+            payload
+        });
+        const duplicate = this.#handleKnownCommand(id, fingerprint);
+        if (duplicate) {
+            return duplicate;
+        }
+        const sourceDisposition = this.#getExactActiveDisposition(
+            payload.sourceHandle
+        );
+        if (sourceDisposition !== 'active') {
+            this.telemetry.stale++;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                sourceDisposition === 'desync'
+                    ? 'registry-backend-desync'
+                    : 'stale-source'
+            );
+        }
+        const coreDisposition = this.#getExactActiveDisposition(
+            payload.coreTargetHandle
+        );
+        if (coreDisposition !== 'active') {
+            this.recoveryRequired = true;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                coreDisposition === 'desync'
+                    ? 'registry-backend-desync'
+                    : 'core-target-invalid'
+            );
+        }
+        const targetKey = `${tick}:${handleKey(payload.sourceHandle)}`;
+        const existing = this.controlTargetKeys.get(targetKey);
+        if (existing?.state === 'conflicted') {
+            this.telemetry.conflicted++;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'body-tick-conflict'
+            );
+        }
+        if (existing) {
+            if (existing.payloadFingerprint === stableFingerprint(payload)) {
+                this.telemetry.coalesced++;
+                const receipt = Object.freeze({
+                    accepted: true,
+                    commandId: id,
+                    targetFixedTick: tick,
+                    coalesced: true,
+                    canonicalCommandId: existing.command.commandId,
+                    attackFingerprint: payload.attackFingerprint
+                });
+                this.#evictCompletedHistoryForInsert();
+                if (this.knownCommands.size >= this.historyCapacity) {
+                    this.telemetry.capacityRejected++;
+                    return Object.freeze({
+                        accepted: false,
+                        commandId: id,
+                        reason: 'command-history-capacity'
+                    });
+                }
+                this.knownCommands.set(id, { fingerprint, receipt, completed: true });
+                this.#rememberCompleted(id);
+                return receipt;
+            }
+            existing.command.conflicted = true;
+            this.controlTargetKeys.set(targetKey, { state: 'conflicted' });
+            this.telemetry.conflicted++;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'body-tick-conflict'
+            );
+        }
+        const enqueued = this.#enqueue({
+            type: 'priority-target-control',
+            commandId: id,
+            targetFixedTick: tick,
+            payload,
+            protocol: normalizeProtocol(
+                this.backend.getEventProtocolState(),
+                'priorityTargetControl.protocol'
+            ),
+            targetKey,
+            conflicted: false
+        }, fingerprint);
+        if (enqueued.accepted) {
+            this.controlTargetKeys.set(targetKey, {
+                state: 'pending',
+                command: enqueued.command,
+                payloadFingerprint: stableFingerprint(payload)
+            });
+        }
+        return enqueued.accepted
+            ? Object.freeze({
+                ...enqueued.receipt,
+                attackFingerprint: payload.attackFingerprint
+            })
+            : enqueued.receipt;
+    }
+
+    /** Same source/tick priority control result를 소비할 selected projectile를 예약합니다. */
+    requestSelectedTargetSpawn(intent, targetFixedTick, commandId) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedIngress();
+        if (rejected) {
+            return rejected;
+        }
+        const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const id = requireNonEmptyString(commandId, 'commandId');
+        const snapshot = materializeGpuPlainDataSnapshot(intent, 'selectedTargetSpawn');
+        const fingerprint = stableFingerprint({
+            type: 'selected-target-spawn',
+            tick,
+            intent: snapshot
+        });
+        const duplicate = this.#handleKnownCommand(id, fingerprint);
+        if (duplicate) {
+            return duplicate;
+        }
+        const sourceHandle = normalizeHandle(
+            snapshot.sourceHandle,
+            'selectedTargetSpawn.sourceHandle'
+        );
+        const targetKey = `${tick}:${handleKey(sourceHandle)}`;
+        const controlEntry = this.controlTargetKeys.get(targetKey);
+        if (controlEntry?.state !== 'pending'
+            || controlEntry.command?.type !== 'priority-target-control') {
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'matching-priority-control-missing'
+            );
+        }
+        const sourceDisposition = this.#getExactActiveDisposition(sourceHandle);
+        if (sourceDisposition !== 'active') {
+            this.telemetry.stale++;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                sourceDisposition === 'desync'
+                    ? 'registry-backend-desync'
+                    : 'stale-source'
+            );
+        }
+        const sourceView = this.registry.copyEntityView(sourceHandle, {});
+        if (!sourceView || !sourceView.metadata) {
+            this.recoveryRequired = true;
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'source-metadata-missing'
+            );
+        }
+        const payload = normalizeSelectedTargetIntent(
+            snapshot,
+            sourceView.metadata.teamId,
+            controlEntry.command.payload
+        );
+        const selectionBindingKey = selectedSpawnBindingKey(
+            tick,
+            sourceHandle,
+            controlEntry.command.commandId,
+            payload.selectionSequence
+        );
+        const existingBinding = this.selectionBindingClaims.get(
+            selectionBindingKey
+        );
+        if (existingBinding) {
+            return this.#rememberImmediateRejection(
+                id,
+                fingerprint,
+                'duplicate-selection-binding'
+            );
+        }
+        const enqueued = this.#enqueue({
+            type: 'selected-target-spawn',
+            commandId: id,
+            targetFixedTick: tick,
+            payload,
+            protocol: normalizeProtocol(
+                this.backend.getEventProtocolState(),
+                'selectedTargetSpawn.protocol'
+            ),
+            selectionBindingKey,
+            controlTargetKey: targetKey,
+            controlCommandId: controlEntry.command.commandId
+        }, fingerprint);
+        if (enqueued.accepted) {
+            this.selectionBindingClaims.set(selectionBindingKey, {
+                commandId: id,
+                state: 'inbox'
+            });
+        }
+        return enqueued.receipt;
+    }
+
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
         this.#assertUsable();
         const rejected = this.#rejectClosedIngress();
@@ -657,25 +1336,41 @@ export class GpuFixedCommandOwner {
         const priorResult = this.lastCompletionResult.fixedTick === tick
             ? this.lastCompletionResult
             : null;
+        const controlBatches = this.bodyControlCompletionScratch;
+        controlBatches.length = 0;
+        this.backend.drainCompletedBodyControlProgramBatches(controlBatches);
         const batches = this.spawnCompletionScratch;
         batches.length = 0;
         this.backend.drainCompletedSpawnProgramBatches(batches);
         if (priorResult?.protocolFailure) {
+            controlBatches.length = 0;
             batches.length = 0;
             return priorResult;
         }
+        const priorityTargetControlResults = priorResult
+            ? [...priorResult.priorityTargetControlResults]
+            : [];
+        let priorityTargetControlCompletedThroughTick = priorResult
+            ? priorResult.priorityTargetControlCompletedThroughTick
+            : this.priorityTargetControlCompletedThroughTick;
         const completed = priorResult
             ? [...priorResult.completed]
             : [];
+        const preparedControlResults = [];
+        const preparedControlKeys = new Set();
         const preparedOutcomes = [];
         const preparedDestinationKeys = new Set();
         let protocolFailure = null;
-        if (batches.length === 0) {
+        let postMutationProtocolFailure = null;
+        let completionStage = 'body-control-program-completion';
+        if (controlBatches.length === 0 && batches.length === 0) {
             if (priorResult) {
                 return priorResult;
             }
             this.lastCompletionResult = Object.freeze({
                 fixedTick: tick,
+                priorityTargetControlResults: Object.freeze([]),
+                priorityTargetControlCompletedThroughTick,
                 completed: Object.freeze(completed),
                 protocolFailure: null
             });
@@ -687,7 +1382,120 @@ export class GpuFixedCommandOwner {
                 this.backend.getEventProtocolState(),
                 'spawnCompletion.protocol'
             );
+            for (const batch of controlBatches) {
+                const batchProtocol = normalizeProtocol(
+                    batch,
+                    'bodyControlCompletion.batch'
+                );
+                if (!sameProtocol(batchProtocol, currentProtocol) || batch.failure) {
+                    protocolFailure = Object.freeze({
+                        stage: 'body-control-program-completion',
+                        code: batch.failure
+                            ? 'gpu-program-failure'
+                            : 'generation-mismatch',
+                        message: batch.failure?.message
+                            ?? 'BodyControlProgram completion generation이 현재 session과 다릅니다.'
+                    });
+                    break;
+                }
+                const sourceTick = requirePositiveSafeInteger(
+                    batch.sourceTick,
+                    'bodyControlCompletion.batch.sourceTick'
+                );
+                if (!Array.isArray(batch.outcomes)) {
+                    throw new TypeError(
+                        'BodyControlProgram completion outcomes 배열이 필요합니다.'
+                    );
+                }
+                const expectedKeys = new Set();
+                for (const pending of this.pendingPriorityControlsByKey.values()) {
+                    if (pending.targetFixedTick === sourceTick) {
+                        expectedKeys.add(pending.bindingKey);
+                    }
+                }
+                if (batch.outcomes.length !== expectedKeys.size) {
+                    protocolFailure = Object.freeze({
+                        stage: 'body-control-program-completion',
+                        code: 'missing-control-result',
+                        message: `priority control result 수가 pending과 다릅니다: ${sourceTick}`
+                    });
+                    break;
+                }
+                for (const outcome of batch.outcomes) {
+                    const sourceHandle = normalizeHandle(
+                        outcome?.sourceHandle ?? outcome?.handle,
+                        'bodyControlCompletion.outcome.sourceHandle'
+                    );
+                    const bindingKey = priorityControlBindingKey(
+                        sourceTick,
+                        sourceHandle
+                    );
+                    const pending = this.pendingPriorityControlsByKey.get(
+                        bindingKey
+                    );
+                    if (!pending
+                        || preparedControlKeys.has(bindingKey)
+                        || !expectedKeys.has(bindingKey)
+                        || !sameProtocol(batchProtocol, pending.protocol)) {
+                        protocolFailure = Object.freeze({
+                            stage: 'body-control-program-completion',
+                            code: 'control-result-contract',
+                            message: `등록되지 않았거나 중복된 priority control outcome입니다: ${bindingKey}`
+                        });
+                        break;
+                    }
+                    const result = normalizePriorityControlCompletionOutcome(
+                        outcome,
+                        pending,
+                        sourceTick
+                    );
+                    preparedControlKeys.add(bindingKey);
+                    preparedControlResults.push(Object.freeze({
+                        bindingKey,
+                        pending,
+                        result
+                    }));
+                }
+                if (protocolFailure) {
+                    break;
+                }
+                for (const expectedKey of expectedKeys) {
+                    if (!preparedControlKeys.has(expectedKey)) {
+                        protocolFailure = Object.freeze({
+                            stage: 'body-control-program-completion',
+                            code: 'missing-control-result',
+                            message: `priority control outcome이 누락되었습니다: ${expectedKey}`
+                        });
+                        break;
+                    }
+                }
+                if (protocolFailure) {
+                    break;
+                }
+                priorityTargetControlCompletedThroughTick = Math.max(
+                    priorityTargetControlCompletedThroughTick,
+                    sourceTick
+                );
+            }
+            if (!protocolFailure) {
+                for (const pending of this.pendingPriorityControlsByKey.values()) {
+                    if (pending.targetFixedTick
+                            <= priorityTargetControlCompletedThroughTick
+                        && !preparedControlKeys.has(pending.bindingKey)) {
+                        protocolFailure = Object.freeze({
+                            stage: 'body-control-program-completion',
+                            code: 'missing-control-result',
+                            message: `completed-through 이전 priority control이 누락되었습니다: ${pending.commandId}`
+                        });
+                        break;
+                    }
+                }
+            }
+            completionStage = 'spawn-program-completion';
             for (const batch of batches) {
+                if (protocolFailure) {
+                    break;
+                }
                 const batchProtocol = normalizeProtocol(batch, 'spawnCompletion.batch');
                 if (!sameProtocol(batchProtocol, currentProtocol) || batch.failure) {
                     protocolFailure = Object.freeze({
@@ -704,18 +1512,14 @@ export class GpuFixedCommandOwner {
                 for (const outcome of batch.outcomes) {
                     const key = handleKey(outcome?.destinationHandle);
                     const pending = this.pendingDestinations.get(key);
+                    const selectedTargetSpawn = isSelectedTargetSpawnCommand(pending);
                     const pendingTargetHandle = pending?.payload?.targetHandle ?? null;
                     const outcomeTargetHandle = outcome?.targetHandle ?? null;
                     if (!pending
                         || preparedDestinationKeys.has(key)
                         || batch.sourceTick !== pending.targetFixedTick
                         || handleKey(outcome?.sourceHandle)
-                            !== handleKey(pending.payload.sourceHandle)
-                        || ((pendingTargetHandle === null)
-                            !== (outcomeTargetHandle === null))
-                        || (pendingTargetHandle !== null
-                            && handleKey(outcomeTargetHandle)
-                                !== handleKey(pendingTargetHandle))) {
+                            !== handleKey(pending.payload.sourceHandle)) {
                         protocolFailure = Object.freeze({
                             stage: 'spawn-program-completion',
                             code: 'destination-contract',
@@ -723,7 +1527,61 @@ export class GpuFixedCommandOwner {
                         });
                         break;
                     }
-                    if (outcome.reason === 'target-invalid'
+                    let activationEvidence = null;
+                    if (selectedTargetSpawn) {
+                        const selectedTargetKind = outcome?.selectedTargetKind ?? null;
+                        if (outcome.reason === 'resolved') {
+                            const expectedTargetHandle = selectedTargetKind === 'core'
+                                ? pending.payload.coreTargetHandle
+                                : selectedTargetKind === 'tower'
+                                    ? pending.payload.towerTargetHandle
+                                    : null;
+                            if (!expectedTargetHandle
+                                || !outcomeTargetHandle
+                                || handleKey(outcomeTargetHandle)
+                                    !== handleKey(expectedTargetHandle)) {
+                                protocolFailure = Object.freeze({
+                                    stage: 'spawn-program-completion',
+                                    code: 'selected-target-contract',
+                                    message: 'resolved selected target이 authored exact candidate와 다릅니다.'
+                                });
+                                break;
+                            }
+                            activationEvidence = Object.freeze({
+                                selectedTargetKind,
+                                selectedTargetHandle: outcomeTargetHandle,
+                                selectedTargetPolicyId: selectedTargetKind === 'core'
+                                    ? pending.payload.destinationSpawn.coreTargetPolicyId
+                                    : pending.payload.destinationSpawn.towerTargetPolicyId,
+                                selectionSourceTick: pending.targetFixedTick,
+                                selectionSequence: pending.payload.selectionSequence,
+                                attackFingerprint: pending.payload.attackFingerprint
+                            });
+                        } else if (outcomeTargetHandle !== null
+                            || (selectedTargetKind !== undefined
+                                && selectedTargetKind !== null
+                                && selectedTargetKind !== 'none')) {
+                            protocolFailure = Object.freeze({
+                                stage: 'spawn-program-completion',
+                                code: 'selected-target-contract',
+                                message: 'unresolved selected outcome은 target identity를 가질 수 없습니다.'
+                            });
+                            break;
+                        }
+                    } else if (((pendingTargetHandle === null)
+                            !== (outcomeTargetHandle === null))
+                        || (pendingTargetHandle !== null
+                            && handleKey(outcomeTargetHandle)
+                                !== handleKey(pendingTargetHandle))) {
+                        protocolFailure = Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'target-contract',
+                            message: 'SpawnProgram target outcome이 ingress와 다릅니다.'
+                        });
+                        break;
+                    }
+                    if (!selectedTargetSpawn
+                        && outcome.reason === 'target-invalid'
                         && pendingTargetHandle === null) {
                         protocolFailure = Object.freeze({
                             stage: 'spawn-program-completion',
@@ -742,7 +1600,10 @@ export class GpuFixedCommandOwner {
                             break;
                         }
                     } else if (outcome.reason === 'source-invalid'
-                        || outcome.reason === 'target-invalid') {
+                        || outcome.reason === 'target-invalid'
+                        || (selectedTargetSpawn
+                            && (outcome.reason === 'no-target'
+                                || outcome.reason === 'core-invalid'))) {
                         if (this.backend.hasBody(outcome.destinationHandle)) {
                             protocolFailure = Object.freeze({
                                 stage: 'spawn-program-completion',
@@ -760,7 +1621,31 @@ export class GpuFixedCommandOwner {
                         break;
                     }
                     preparedDestinationKeys.add(key);
-                    preparedOutcomes.push({ key, outcome, pending });
+                    if (selectedTargetSpawn
+                        && outcome.reason !== 'resolved'
+                        && outcome.reason !== 'source-invalid'
+                        && outcome.reason !== 'no-target'
+                        && outcome.reason !== 'core-invalid') {
+                        protocolFailure = Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'unknown-outcome',
+                            message: `selected SpawnProgram outcome이 올바르지 않습니다: ${outcome.reason}`
+                        });
+                        break;
+                    }
+                    if (selectedTargetSpawn && outcome.reason === 'core-invalid') {
+                        postMutationProtocolFailure ??= Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'core-target-invalid',
+                            message: 'selected SpawnProgram exact Core candidate가 invalid입니다.'
+                        });
+                    }
+                    preparedOutcomes.push({
+                        key,
+                        outcome,
+                        pending,
+                        activationEvidence
+                    });
                 }
                 if (protocolFailure) {
                     break;
@@ -768,19 +1653,71 @@ export class GpuFixedCommandOwner {
             }
         } catch (error) {
             protocolFailure = Object.freeze({
-                stage: 'spawn-program-completion',
+                stage: completionStage,
                 code: 'completion-contract',
                 message: String(error?.message ?? error)
             });
         }
-        // 모든 envelope/identity/result를 먼저 검증해 malformed batch가 registry를
-        // 절반만 변경하지 못하게 한 뒤, exact reservation mutation을 적용합니다.
         if (!protocolFailure) {
-            for (const { key, outcome, pending } of preparedOutcomes) {
+            try {
+                for (const prepared of preparedOutcomes) {
+                    prepared.activationMetadata = prepared.outcome.reason
+                            === 'resolved'
+                        ? preflightGpuRegistryActivationMetadata(
+                            prepared.pending.payload.destinationSpawn,
+                            prepared.activationEvidence
+                        )
+                        : null;
+                }
+            } catch (error) {
+                protocolFailure = Object.freeze({
+                    stage: 'spawn-program-completion',
+                    code: 'activation-metadata-contract',
+                    message: String(error?.message ?? error)
+                });
+            }
+        }
+        // 모든 control/spawn envelope와 모든 activation metadata를 ephemeral
+        // preflight한 뒤에만 pending/history/registry reservation을 변경합니다.
+        if (!protocolFailure) {
+            for (const prepared of preparedControlResults) {
+                this.pendingPriorityControlsByKey.delete(prepared.bindingKey);
+                this.pendingPriorityControlsByCommandId.delete(
+                    prepared.pending.commandId
+                );
+                const known = this.knownCommands.get(
+                    prepared.pending.commandId
+                );
+                if (known) {
+                    known.completed = true;
+                }
+                this.#rememberCompleted(prepared.pending.commandId);
+                priorityTargetControlResults.push(prepared.result);
+                if (prepared.result.outcome === 'no-target') {
+                    this.telemetry.priorityControlCompletedNoTarget++;
+                } else if (prepared.result.outcome === 'core') {
+                    this.telemetry.priorityControlCompletedCore++;
+                } else if (prepared.result.outcome === 'tower') {
+                    this.telemetry.priorityControlCompletedTower++;
+                } else if (prepared.result.outcome === 'source-invalid') {
+                    this.telemetry.priorityControlCompletedSourceInvalid++;
+                } else {
+                    this.telemetry.priorityControlCompletedCoreInvalid++;
+                }
+            }
+            this.priorityTargetControlCompletedThroughTick =
+                priorityTargetControlCompletedThroughTick;
+            for (const {
+                key,
+                outcome,
+                pending,
+                activationEvidence,
+                activationMetadata
+            } of preparedOutcomes) {
                 const applied = outcome.reason === 'resolved'
                     ? this.registry.activateReserved(
                         outcome.destinationHandle,
-                        createGpuRegistryMetadata(pending.payload.destinationSpawn)
+                        activationMetadata
                     )
                     : this.registry.cancelReservation(outcome.destinationHandle);
                 if (!applied) {
@@ -797,22 +1734,44 @@ export class GpuFixedCommandOwner {
                     this.telemetry.completedResolved++;
                 } else if (outcome.reason === 'source-invalid') {
                     this.telemetry.completedSourceInvalid++;
+                } else if (outcome.reason === 'no-target') {
+                    this.telemetry.completedNoTarget++;
+                } else if (outcome.reason === 'core-invalid') {
+                    this.telemetry.completedCoreInvalid++;
                 } else {
                     this.telemetry.completedTargetInvalid++;
                 }
                 this.pendingDestinations.delete(key);
+                this.#releaseSelectionBinding(
+                    pending.selectionBindingKey,
+                    pending.commandId
+                );
                 completed.push(Object.freeze({
                     commandId: pending.commandId,
                     handle: outcome.destinationHandle,
-                    outcome: outcome.reason
+                    outcome: outcome.reason,
+                    ...(activationEvidence ? {
+                        selectedTargetKind:
+                            activationEvidence.selectedTargetKind,
+                        targetHandle:
+                            activationEvidence.selectedTargetHandle
+                    } : {})
                 }));
             }
+        }
+        if (!protocolFailure && postMutationProtocolFailure) {
+            protocolFailure = postMutationProtocolFailure;
         }
         if (protocolFailure) {
             this.recoveryRequired = true;
         }
         this.lastCompletionResult = Object.freeze({
             fixedTick: tick,
+            priorityTargetControlResults: Object.freeze(
+                priorityTargetControlResults
+            ),
+            priorityTargetControlCompletedThroughTick:
+                priorityTargetControlCompletedThroughTick,
             completed: Object.freeze(completed),
             protocolFailure
         });
@@ -827,8 +1786,17 @@ export class GpuFixedCommandOwner {
             state: 'committed',
             controls: [],
             sourceRelativeSpawns: [],
+            selectedTargetSpawns: [],
+            priorityTargetControlResults: [
+                ...this.lastCompletionResult.priorityTargetControlResults
+            ],
+            priorityTargetControlCompletedThroughTick:
+                this.lastCompletionResult
+                    .priorityTargetControlCompletedThroughTick,
             rejected: [],
             completed: [...this.lastCompletionResult.completed],
+            ingressOpen: this.ingressOpen,
+            ingressCloseReason: this.ingressCloseReason,
             recoveryRequired: this.recoveryRequired,
             protocolFailure: this.lastCompletionResult.protocolFailure
         };
@@ -910,8 +1878,10 @@ export class GpuFixedCommandOwner {
                 consumed.add(command.commandId);
                 continue;
             }
-            const handle = command.type === 'control'
-                ? command.payload
+            const handle = isControlCommand(command)
+                ? command.type === 'control'
+                    ? command.payload
+                    : command.payload.sourceHandle
                 : command.payload.sourceHandle;
             const disposition = this.#getExactActiveDisposition(handle);
             if (disposition !== 'active') {
@@ -920,7 +1890,7 @@ export class GpuFixedCommandOwner {
                     domain: commandDomain(command),
                     code: disposition === 'desync'
                         ? 'registry-backend-desync'
-                        : command.type === 'control'
+                        : isControlCommand(command)
                             ? 'stale-handle'
                             : 'stale-source'
                 });
@@ -946,6 +1916,26 @@ export class GpuFixedCommandOwner {
                     continue;
                 }
             }
+            if (command.type === 'priority-target-control'
+                || command.type === 'selected-target-spawn') {
+                const coreDisposition = this.#getExactActiveDisposition(
+                    command.payload.coreTargetHandle
+                );
+                if (coreDisposition !== 'active') {
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        domain: commandDomain(command),
+                        code: coreDisposition === 'desync'
+                            ? 'registry-backend-desync'
+                            : 'core-target-invalid'
+                    });
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    this.recoveryRequired = true;
+                    consumed.add(command.commandId);
+                    continue;
+                }
+            }
             if (command.type === 'control') {
                 if (!this.backend.canControlBody(handle)) {
                     result.rejected.push({
@@ -957,6 +1947,8 @@ export class GpuFixedCommandOwner {
                 } else {
                     controls.push(command);
                 }
+            } else if (command.type === 'priority-target-control') {
+                controls.push(command);
             } else {
                 sourceCommands.push(command);
             }
@@ -967,6 +1959,25 @@ export class GpuFixedCommandOwner {
             result.recoveryRequired = true;
             this.#consume(consumed);
             return this.#saveResult(result);
+        }
+
+        const stagedControlCommandIds = new Set(
+            controls.map((command) => command.commandId)
+        );
+        for (let index = sourceCommands.length - 1; index >= 0; index--) {
+            const command = sourceCommands[index];
+            if (!isSelectedTargetSpawnCommand(command)) {
+                continue;
+            }
+            if (!stagedControlCommandIds.has(command.controlCommandId)) {
+                sourceCommands.splice(index, 1);
+                result.rejected.push({
+                    commandId: command.commandId,
+                    domain: 'spawn',
+                    code: 'matching-priority-control-missing'
+                });
+                consumed.add(command.commandId);
+            }
         }
 
         if (controls.length === 0 && sourceCommands.length === 0) {
@@ -1020,6 +2031,18 @@ export class GpuFixedCommandOwner {
                 modeFlags: command.payload.modeFlags,
                 positionOffset: command.payload.positionOffset,
                 ...(command.payload.modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE
+                        .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET
+                    ? {
+                        coreTargetHandle: command.payload.coreTargetHandle,
+                        towerTargetHandle: command.payload.towerTargetHandle,
+                        targetOffset: command.payload.targetOffset,
+                        launchSpeed: command.payload.launchSpeed,
+                        selectionSequence: command.payload.selectionSequence,
+                        attackFingerprint: command.payload.attackFingerprint,
+                        requestFlags: command.payload.requestFlags
+                    }
+                    : command.payload.modeFlags
                     === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
                     ? {
                         targetHandle: command.payload.targetHandle,
@@ -1146,23 +2169,96 @@ export class GpuFixedCommandOwner {
         }
 
         for (const command of controls) {
-            result.controls.push({ commandId: command.commandId, handle: command.payload });
+            result.controls.push({
+                commandId: command.commandId,
+                handle: command.type === 'control'
+                    ? command.payload
+                    : command.payload.sourceHandle,
+                modeFlags: command.payload.modeFlags
+            });
+            if (command.type === 'priority-target-control') {
+                const bindingKey = priorityControlBindingKey(
+                    tick,
+                    command.payload.sourceHandle
+                );
+                if (this.pendingPriorityControlsByKey.has(bindingKey)
+                    || this.pendingPriorityControlsByCommandId.has(
+                        command.commandId
+                    )) {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.protocolFailure = Object.freeze({
+                        stage: 'fixed-command-control-pending',
+                        code: 'duplicate-priority-control-pending',
+                        message: `priority control pending identity가 중복되었습니다: ${command.commandId}`
+                    });
+                    this.recoveryRequired = true;
+                    break;
+                }
+                const pendingControl = {
+                    bindingKey,
+                    commandId: command.commandId,
+                    targetFixedTick: tick,
+                    payload: command.payload,
+                    protocol: command.protocol
+                };
+                this.pendingPriorityControlsByKey.set(
+                    bindingKey,
+                    pendingControl
+                );
+                this.pendingPriorityControlsByCommandId.set(
+                    command.commandId,
+                    pendingControl
+                );
+            }
             consumed.add(command.commandId);
+        }
+        if (this.recoveryRequired) {
+            this.#consume(consumed);
+            return this.#saveResult(result);
         }
         for (const reservation of reservations) {
             const { command, handle } = reservation;
             this.pendingDestinations.set(handleKey(handle), {
+                type: command.type,
                 commandId: command.commandId,
                 targetFixedTick: tick,
                 payload: command.payload,
-                handle
+                handle,
+                selectionBindingKey: command.selectionBindingKey ?? null
             });
-            result.sourceRelativeSpawns.push({
+            if (command.selectionBindingKey) {
+                const claim = this.selectionBindingClaims.get(
+                    command.selectionBindingKey
+                );
+                if (!claim || claim.commandId !== command.commandId) {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.protocolFailure = Object.freeze({
+                        stage: 'fixed-command-selection-binding',
+                        code: 'selection-binding-claim-missing',
+                        message: `selected spawn binding claim이 없습니다: ${command.commandId}`
+                    });
+                    this.recoveryRequired = true;
+                    break;
+                }
+                claim.state = 'gpu-pending';
+            }
+            const acceptedEntry = {
                 commandId: command.commandId,
                 handle,
                 state: 'gpu-resolve-pending'
-            });
+            };
+            if (isSelectedTargetSpawnCommand(command)) {
+                result.selectedTargetSpawns.push(acceptedEntry);
+            } else {
+                result.sourceRelativeSpawns.push(acceptedEntry);
+            }
             consumed.add(command.commandId);
+        }
+        if (this.recoveryRequired) {
+            this.#consume(consumed);
+            return this.#saveResult(result);
         }
         this.#consume(consumed);
         if (registryRejectedSourceCommands || result.rejected.length > 0) {
@@ -1172,7 +2268,9 @@ export class GpuFixedCommandOwner {
     }
 
     getPendingCount() {
-        return this.pendingCount + this.pendingDestinations.size;
+        return this.pendingCount
+            + this.pendingDestinations.size
+            + this.pendingPriorityControlsByKey.size;
     }
 
     getStatus() {
@@ -1184,9 +2282,15 @@ export class GpuFixedCommandOwner {
             pendingControlCount: this.pendingControlCount,
             pendingSourceRelativeSpawnCount: this.pendingSourceRelativeSpawnCount,
             pendingDestinationCount: this.pendingDestinations.size,
+            pendingPriorityTargetControlCount:
+                this.pendingPriorityControlsByKey.size,
+            pendingSelectionBindingCount: this.selectionBindingClaims.size,
+            priorityTargetControlCompletedThroughTick:
+                this.priorityTargetControlCompletedThroughTick,
             recoveryRequired: this.recoveryRequired,
             ingressOpen: this.ingressOpen,
             ingressCloseReason: this.ingressCloseReason,
+            terminalCancelResult: this.terminalCancelResult,
             lastCommitResult: this.lastCommitResult,
             lastCompletionResult: this.lastCompletionResult,
             telemetry: Object.freeze({ ...this.telemetry }),
@@ -1224,8 +2328,23 @@ export class GpuFixedCommandOwner {
             } else {
                 failedDestinationCount++;
             }
+            this.#releaseSelectionBinding(
+                pending.selectionBindingKey,
+                pending.commandId
+            );
         }
         this.pendingDestinations.clear();
+        for (const pending of this.pendingPriorityControlsByKey.values()) {
+            const known = this.knownCommands.get(pending.commandId);
+            if (known) {
+                known.completed = true;
+            }
+            this.#rememberCompleted(pending.commandId);
+        }
+        this.pendingPriorityControlsByKey.clear();
+        this.pendingPriorityControlsByCommandId.clear();
+        this.selectionBindingClaims.clear();
+        this.bodyControlCompletionScratch.length = 0;
         this.spawnCompletionScratch.length = 0;
         if (failedDestinationCount > 0) {
             this.recoveryRequired = true;
@@ -1237,8 +2356,107 @@ export class GpuFixedCommandOwner {
         });
     }
 
+    /**
+     * 이미 GPU submit된 unresolved fixed program까지 exact identity로 취소합니다.
+     * backend가 전체 exact set을 preflight/arm한 뒤에만 registry와 owner state를
+     * 회수하므로 mismatch 시 CPU 쪽 partial delete가 발생하지 않습니다.
+     */
+    #cancelForTerminal(finalFixedTick) {
+        const tick = requirePositiveSafeInteger(finalFixedTick, 'finalFixedTick');
+        const destinationHandles = [...this.pendingDestinations.values()]
+            .map((pending) => Object.freeze({ ...pending.handle }))
+            .sort((left, right) => left.entityId - right.entityId
+                || left.incarnation - right.incarnation);
+        const priorityControls = [...this.pendingPriorityControlsByKey.values()]
+            .map((pending) => Object.freeze({
+                sourceTick: pending.targetFixedTick,
+                sourceHandle: Object.freeze({ ...pending.payload.sourceHandle })
+            }))
+            .sort((left, right) => left.sourceTick - right.sourceTick
+                || left.sourceHandle.entityId - right.sourceHandle.entityId
+                || left.sourceHandle.incarnation - right.sourceHandle.incarnation);
+
+        const missingReservation = destinationHandles.find(
+            (handle) => !this.registry.hasReservation(handle)
+        );
+        if (missingReservation) {
+            this.recoveryRequired = true;
+            this.terminalCancelResult = Object.freeze({
+                abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+                finalFixedTick: tick,
+                accepted: false,
+                state: 'failed',
+                reason: 'terminal-reservation-exact-set-mismatch',
+                destinationCount: destinationHandles.length,
+                priorityControlCount: priorityControls.length
+            });
+            return this.terminalCancelResult;
+        }
+
+        let backendResult;
+        try {
+            backendResult = this.backend.cancelPendingFixedProgramsForTerminal({
+                abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+                finalFixedTick: tick,
+                reason: this.ingressCloseReason,
+                destinationHandles: Object.freeze(destinationHandles),
+                priorityControls: Object.freeze(priorityControls)
+            });
+        } catch (error) {
+            backendResult = Object.freeze({
+                accepted: false,
+                state: 'failed',
+                reason: 'terminal-fixed-program-cancel-exception',
+                message: String(error?.message ?? error)
+            });
+        }
+        const destinationCount = Number(backendResult?.destinationCount);
+        const priorityControlCount = Number(backendResult?.priorityControlCount);
+        const backendAccepted = backendResult?.accepted === true
+            && backendResult.abiVersion
+                === GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION
+            && backendResult.finalFixedTick === tick
+            && backendResult.state === 'armed'
+            && destinationCount === destinationHandles.length
+            && priorityControlCount === priorityControls.length;
+        if (!backendAccepted) {
+            this.recoveryRequired = true;
+            this.terminalCancelResult = Object.freeze({
+                abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+                finalFixedTick: tick,
+                accepted: false,
+                state: 'failed',
+                reason: backendResult?.reason
+                    ?? 'terminal-fixed-program-exact-set-mismatch',
+                destinationCount: destinationHandles.length,
+                priorityControlCount: priorityControls.length
+            });
+            return this.terminalCancelResult;
+        }
+
+        const cleanup = this.cancelAll();
+        const cpuCleanupAccepted = cleanup.failedDestinationCount === 0
+            && cleanup.releasedDestinationCount === destinationHandles.length;
+        if (!cpuCleanupAccepted) {
+            this.recoveryRequired = true;
+        }
+        this.terminalCancelResult = Object.freeze({
+            abiVersion: GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+            finalFixedTick: tick,
+            accepted: cpuCleanupAccepted,
+            state: cpuCleanupAccepted ? 'armed' : 'failed',
+            reason: cpuCleanupAccepted
+                ? null
+                : 'terminal-registry-cancel-partial',
+            destinationCount: destinationHandles.length,
+            priorityControlCount: priorityControls.length,
+            ...cleanup
+        });
+        return this.terminalCancelResult;
+    }
+
     /** terminal 전이 뒤 raw owner reference까지 영구히 닫고 pending을 회수합니다. */
-    closeIngress(reason = 'gameplay-ingress-closed') {
+    closeIngress(reason = 'gameplay-ingress-closed', finalFixedTick = null) {
         this.#assertUsable();
         let cleanup = Object.freeze({
             cancelledCommandCount: 0,
@@ -1250,13 +2468,22 @@ export class GpuFixedCommandOwner {
             this.ingressCloseReason = typeof reason === 'string' && reason.length > 0
                 ? reason
                 : 'gameplay-ingress-closed';
-            cleanup = this.cancelAll();
+            cleanup = finalFixedTick === null || finalFixedTick === undefined
+                ? this.cancelAll()
+                : this.#cancelForTerminal(finalFixedTick);
+        } else if ((finalFixedTick !== null && finalFixedTick !== undefined)
+            && this.terminalCancelResult === null) {
+            cleanup = this.#cancelForTerminal(finalFixedTick);
         }
-        return Object.freeze({
+        const result = {
             closed: !this.ingressOpen,
             reason: this.ingressCloseReason,
             ...cleanup
-        });
+        };
+        if (this.terminalCancelResult) {
+            result.terminalCancellation = this.terminalCancelResult;
+        }
+        return Object.freeze(result);
     }
 
     destroy() {
@@ -1266,15 +2493,18 @@ export class GpuFixedCommandOwner {
         this.closeIngress('destroyed');
         this.knownCommands.clear();
         this.controlTargetKeys.clear();
+        this.selectionBindingClaims.clear();
+        this.pendingPriorityControlsByKey.clear();
+        this.pendingPriorityControlsByCommandId.clear();
         this.destroyed = true;
     }
 
     #enqueue(command, fingerprint) {
         this.#evictCompletedHistoryForInsert();
-        const domainCount = command.type === 'control'
+        const domainCount = isControlCommand(command)
             ? this.pendingControlCount
             : this.pendingSourceRelativeSpawnCount;
-        const domainCapacity = command.type === 'control'
+        const domainCapacity = isControlCommand(command)
             ? this.controlCommandCapacity
             : this.sourceRelativeSpawnCommandCapacity;
         const commandCapacityExceeded = this.usesSharedCommandCapacity
@@ -1304,7 +2534,7 @@ export class GpuFixedCommandOwner {
         };
         this.pending[slot] = stored;
         this.pendingCount++;
-        if (command.type === 'control') {
+        if (isControlCommand(command)) {
             this.pendingControlCount++;
         } else {
             this.pendingSourceRelativeSpawnCount++;
@@ -1371,7 +2601,7 @@ export class GpuFixedCommandOwner {
             }
             this.pending[index] = null;
             this.pendingCount--;
-            if (command.type === 'control') {
+            if (isControlCommand(command)) {
                 this.pendingControlCount--;
             } else {
                 this.pendingSourceRelativeSpawnCount--;
@@ -1379,12 +2609,41 @@ export class GpuFixedCommandOwner {
             if (command.targetKey) {
                 this.controlTargetKeys.delete(command.targetKey);
             }
+            if (command.selectionBindingKey) {
+                const claim = this.selectionBindingClaims.get(
+                    command.selectionBindingKey
+                );
+                if (claim?.state !== 'gpu-pending') {
+                    this.#releaseSelectionBinding(
+                        command.selectionBindingKey,
+                        command.commandId
+                    );
+                }
+            }
             const known = this.knownCommands.get(command.commandId);
-            if (known) {
+            const awaitsPriorityControlResult =
+                this.pendingPriorityControlsByCommandId.has(
+                    command.commandId
+                );
+            if (known && !awaitsPriorityControlResult) {
                 known.completed = true;
             }
-            this.#rememberCompleted(command.commandId);
+            if (!awaitsPriorityControlResult) {
+                this.#rememberCompleted(command.commandId);
+            }
         }
+    }
+
+    #releaseSelectionBinding(selectionBindingKey, commandId) {
+        if (!selectionBindingKey) {
+            return false;
+        }
+        const claim = this.selectionBindingClaims.get(selectionBindingKey);
+        if (!claim || claim.commandId !== commandId) {
+            return false;
+        }
+        this.selectionBindingClaims.delete(selectionBindingKey);
+        return true;
     }
 
     #rememberCompleted(commandId) {

@@ -7,6 +7,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
+    BASIC_TRIANGLE_ENEMY_DATA,
     INGAME_ENEMY_DEFINITION_BY_ID
 } = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
 const { ARCHER_ENEMY_DATA: ARCHER_DEFINITION } = await loadGameModule(
@@ -64,7 +65,8 @@ const {
 } = await loadGameModule('ingame/object/world_registry.js');
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
-    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 const ENEMY_CAPABILITY_CONTRACT_SOURCE = await readFile(
@@ -133,7 +135,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         'enemy-directional-defense',
         'enemy-projectile-capture',
         'enemy-route-closure',
-        'enemy-core-impact'
+        'enemy-core-impact',
+        'enemy-charge'
     ]);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_ROSTER_PORT_METHOD), true);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_BIT), true);
@@ -148,7 +151,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         0x040,
         0x080,
         0x100,
-        0x200
+        0x200,
+        0x400
     ]);
     const archerCapabilityMask = createEnemyCapabilityMask(
         ARCHER_DEFINITION.capabilityIds
@@ -234,7 +238,7 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
 
 test('모든 production definition은 frozen profile/capability를 해석하고 shape와 behavior는 독립이다', () => {
     const definitions = Object.values(INGAME_ENEMY_DEFINITION_BY_ID);
-    assert.equal(definitions.length, 8);
+    assert.equal(definitions.length, 9);
     for (const definition of definitions) {
         const profiles = resolveEnemyDefinitionProfiles(definition, ENEMY_PROFILE_CATALOG);
         assert.equal(Object.isFrozen(definition), true);
@@ -260,6 +264,28 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
     );
     assert.ok(ARCHER_DEFINITION.capabilityIds.includes(ENEMY_CAPABILITY_ID.TARGETING));
     assert.equal(BASIC_ARROW_ENEMY_DATA.capabilityIds.includes(ENEMY_CAPABILITY_ID.TARGETING), false);
+    assert.ok(BASIC_ARROW_ENEMY_DATA.capabilityIds.includes(ENEMY_CAPABILITY_ID.CHARGE));
+    assert.equal(ARCHER_DEFINITION.capabilityIds.includes(ENEMY_CAPABILITY_ID.CHARGE), false);
+    const arrowBehavior = resolveEnemyDefinitionProfiles(
+        BASIC_ARROW_ENEMY_DATA,
+        ENEMY_PROFILE_CATALOG
+    ).behavior;
+    assert.equal(arrowBehavior.id, 'arrow-tower-charge-01');
+    assert.deepEqual({
+        ...arrowBehavior.charge,
+        telegraphColorRgba: [...arrowBehavior.charge.telegraphColorRgba]
+    }, {
+        windupTicks: 30,
+        windupRangeTiles: 3,
+        chargeSpeedTilesPerSecond: 6,
+        chargeMaxTicks: 60,
+        recoilImpulseTilesPerSecond: 4,
+        recoilTicks: 12,
+        recoverTicks: 30,
+        telegraphStyleCode: 1,
+        telegraphColorRgba: [1, 0.82, 0.2, 1],
+        telegraphRadiusScale: 1.35
+    });
 
     const squareArcherBehavior = normalizeEnemyDefinition({
         id: 'shape-independent-square-archer',
@@ -314,6 +340,57 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
             )
         }
     ), ENEMY_PROFILE_CATALOG), /CORE_IMPACT capability/);
+});
+
+test('Triangle T는 C baseline과 분리된 fast/light profile을 spawn 시 한 번 f32 resolve한다', () => {
+    assert.notEqual(
+        BASIC_TRIANGLE_ENEMY_DATA.physicsProfileId,
+        BASIC_SQUARE_ENEMY_DATA.physicsProfileId
+    );
+    assert.notEqual(
+        BASIC_TRIANGLE_ENEMY_DATA.combatProfileId,
+        BASIC_SQUARE_ENEMY_DATA.combatProfileId
+    );
+    assert.notEqual(
+        BASIC_TRIANGLE_ENEMY_DATA.behaviorProfileId,
+        BASIC_SQUARE_ENEMY_DATA.behaviorProfileId
+    );
+
+    const triangleProfiles = resolveEnemyDefinitionProfiles(
+        BASIC_TRIANGLE_ENEMY_DATA,
+        ENEMY_PROFILE_CATALOG
+    );
+    assert.equal(triangleProfiles.physics.weight, 0.6);
+    assert.equal(triangleProfiles.combat.maxHealth, 0.7);
+    assert.equal(triangleProfiles.behavior.moveSpeedTilesPerSecond, 3.5);
+    assert.equal(
+        triangleProfiles.combat.towerContactDamage,
+        ENEMY_PROFILE_CATALOG.combatById[BASIC_SQUARE_ENEMY_DATA.combatProfileId]
+            .towerContactDamage
+    );
+    assert.equal(
+        triangleProfiles.combat.coreImpactDamage,
+        ENEMY_PROFILE_CATALOG.combatById[BASIC_SQUARE_ENEMY_DATA.combatProfileId]
+            .coreImpactDamage
+    );
+
+    const intent = createGpuEnemySpawnIntent({
+        definition: BASIC_TRIANGLE_ENEMY_DATA,
+        route: FIXTURE_ROUTE,
+        spawnSequence: 0
+    });
+    const resolvedWeight = Math.fround(0.6);
+    assert.equal(intent.health, Math.fround(0.7));
+    assert.equal(intent.flowSpeed, Math.fround(3.5));
+    assert.equal(intent.velocity.x, Math.fround(3.5));
+    assert.equal(intent.velocity.y, 0);
+    assert.equal(intent.weight, resolvedWeight);
+    assert.equal(intent.inverseMass, Math.fround(1 / resolvedWeight));
+    assert.equal(intent.towerContactDamage, Math.fround(0.1));
+    assert.equal(intent.coreImpactDamage, 1);
+    assert.equal(intent.physicsProfileId, 'triangle-fast-light-physics-01');
+    assert.equal(intent.combatProfileId, 'triangle-fast-light-combat-01');
+    assert.equal(intent.behaviorProfileId, 'triangle-core-route-fast-01');
 });
 
 test('resolved stats는 identity, modifier precedence, absolute 마지막 승자와 final-only float32를 보장한다', () => {
@@ -439,18 +516,20 @@ test('modifier source mutation은 resolved 값과 WaveDirector immutable schedul
         waveId: 'queue-time-stats-wave',
         mapId: mapDefinition.id,
         enemyModifiers: modifierSet(modifierScope({ maxHealth: 3 }), {}),
-        phases: [{
-            startTick: 1,
-            durationTicks: 1,
-            spawnGroups: [{
+        timeline: [{
+            timelineEntryId: 'queue-time-stats-entry',
+            type: 'SPAWN_GROUP',
+            spawnGroup: {
+                groupId: 'queue-time-stats-group',
                 enemyDefinitionId: BASIC_SQUARE_ENEMY_DATA.id,
-                gateId: mapDefinition.enemySpawnRoutes[0].gateId,
-                pathChoicePolicy: 'fixed-route',
+                routeBinding: {
+                    gateId: mapDefinition.enemySpawnRoutes[0].gateId,
+                    pathId: mapDefinition.enemySpawnRoutes[0].pathId
+                },
                 count: 1,
-                intervalTicks: 1,
                 policyId: 'corebound',
                 laneOffsetsTiles: [0]
-            }]
+            }
         }]
     };
     const tileMap = new TileMap(mapDefinition);
@@ -462,14 +541,21 @@ test('modifier source mutation은 resolved 값과 WaveDirector immutable schedul
 
     const queued = [];
     assert.equal(director.queueSpawnsForFixedTick(1, {
-        requestSpawn(intent, targetFixedTick, commandId) {
-            queued.push({ intent, targetFixedTick, commandId });
-            return { accepted: true };
+        requestSpawnBatch(requests) {
+            queued.push(...requests);
+            return {
+                accepted: true,
+                requestedCount: requests.length,
+                queuedCount: requests.length
+            };
         }
     }), 1);
     assert.equal(queued.length, 1);
     assert.equal(queued[0].targetFixedTick, 1);
-    assert.equal(queued[0].commandId, 'queue-time-stats-wave:0:0:0');
+    assert.equal(
+        queued[0].commandId,
+        'authored-wave-spawn:queue-time-stats-wave:queue-time-stats-entry:queue-time-stats-group:spawn-0'
+    );
     assert.equal(queued[0].intent.health, Math.fround(6));
     director.destroy();
 });
@@ -563,6 +649,26 @@ test('invalid modifier/profile numbers는 fail-fast하고 intent는 continuous c
         weight: Math.fround(BASIC_SQUARE_ENEMY_DATA.collisionWeight)
     });
     assert.equal('capabilityIds' in metadata, false);
+    const arrowIntent = createGpuEnemySpawnIntent({
+        definition: BASIC_ARROW_ENEMY_DATA,
+        route: FIXTURE_ROUTE,
+        spawnSequence: 10
+    });
+    assert.equal(
+        arrowIntent.enemyBehaviorState.programId,
+        GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE
+    );
+    assert.equal(arrowIntent.enemyBehaviorState.windupTicks, 30);
+    assert.equal(arrowIntent.enemyBehaviorState.chargeMaxTicks, 60);
+    assert.equal(
+        GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY
+            .byCapabilityId[ENEMY_CAPABILITY_ID.CHARGE].implementationId,
+        'gpu-exact-tower-charge'
+    );
+    assert.equal(
+        'enemyBehaviorState' in createGpuRegistryMetadata(arrowIntent),
+        false
+    );
     const registry = new WorldRegistry({ capacity: 1 });
     const handle = registry.reserveEntity({
         kindId: intent.kindId,

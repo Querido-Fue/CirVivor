@@ -192,6 +192,15 @@ export class WorldRegistry {
         return record?.state === 'active';
     }
 
+    /** terminal fixed-program cancel preflight용 exact reservation query입니다. */
+    hasReservation(handle) {
+        if (this.destroyed) {
+            return false;
+        }
+        const record = this.#findExactRecord(handle, 'handle');
+        return record?.state === 'reserved';
+    }
+
     /**
      * 활성 entity의 복제 가능한 view를 caller scratch에 기록합니다.
      * @returns {object|null} 동일 out 또는 null입니다.

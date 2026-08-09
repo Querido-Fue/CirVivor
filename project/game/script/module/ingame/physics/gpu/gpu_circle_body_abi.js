@@ -100,6 +100,33 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         RESERVED_3: 36
     }),
     /**
+     * Enemy behavior 전용 mutable/config side-plane입니다. CombatState reserved와
+     * 분리하며 program 0인 slot은 전체 zero record를 유지합니다.
+     */
+    ENEMY_BEHAVIOR_STATE: Object.freeze({
+        STRIDE: 80,
+        PROGRAM_ID: 0,
+        STATE: 4,
+        STATE_ENTERED_FIXED_TICK: 8,
+        STATE_EXPIRES_AT_FIXED_TICK: 12,
+        TARGET_SLOT: 16,
+        TARGET_ENTITY_ID: 20,
+        TARGET_INCARNATION: 24,
+        FLAGS: 28,
+        CHARGE_DIRECTION_X: 32,
+        CHARGE_DIRECTION_Y: 36,
+        WINDUP_RANGE: 40,
+        CHARGE_SPEED: 44,
+        RECOIL_IMPULSE: 48,
+        WINDUP_TICKS: 52,
+        CHARGE_MAX_TICKS: 56,
+        RECOIL_TICKS: 60,
+        RECOVER_TICKS: 64,
+        TELEGRAPH_STYLE_CODE: 68,
+        TELEGRAPH_COLOR_RGBA8: 72,
+        TELEGRAPH_RADIUS_SCALE: 76
+    }),
+    /**
      * presentation 전용 32-byte storage layout입니다. 물리/시뮬레이션 ABI와
      * 분리되지만 host writer와 render WGSL이 이 offset을 함께 사용합니다.
      */
@@ -135,7 +162,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 5;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 6;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -148,7 +175,8 @@ export const GPU_CIRCLE_BODY_RENDER_SHAPE = Object.freeze({
     ARROW: 3,
     PENTA: 4,
     HEXA: 5,
-    GEN: 6
+    GEN: 6,
+    RHOM: 7
 });
 
 export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
@@ -224,13 +252,18 @@ export const GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG = Object.freeze({
     CLOSEST_ONLY: 1 << 1,
     SLOW: 1 << 2,
     INTERACTION_ENTER_ONLY: 1 << 3,
-    INTERACTION_CONTINUOUS: 1 << 4
+    INTERACTION_CONTINUOUS: 1 << 4,
+    /** Typed CPU Core damage request를 만드는 hostile projectile handler입니다. */
+    CORE_DAMAGE_REQUEST: 1 << 5
 });
 
 export const GPU_CIRCLE_APPLIED_EVENT_TYPE = Object.freeze({
     DAMAGE_APPLIED: 1,
     INTERACTION_ENTER: 2,
-    INTERACTION_CONTINUOUS: 3
+    INTERACTION_CONTINUOUS: 3,
+    ENEMY_CHARGE_WINDUP_STARTED: 4,
+    ENEMY_CHARGE_CONTACT_RECOIL_STARTED: 5,
+    CORE_DAMAGE_REQUEST: 6
 });
 
 export const GPU_CIRCLE_APPLIED_EVENT_META = Object.freeze({
@@ -254,6 +287,56 @@ export const GPU_CIRCLE_BODY_FIXED_POINT = Object.freeze({
 
 export const GPU_CIRCLE_BODY_LIFETIME = Object.freeze({
     IMMORTAL: -1
+});
+
+/** GPU behavior side-plane의 실제 Turn 2 program vocabulary입니다. */
+export const GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM = Object.freeze({
+    NONE: 0,
+    ARROW_TOWER_CHARGE: 1,
+    /** GPU-selected Rhom projectile의 exact target/core damage runtime state입니다. */
+    SELECTED_TARGET_PROJECTILE: 2
+});
+
+export const GPU_CIRCLE_ENEMY_BEHAVIOR_STATE = Object.freeze({
+    NONE: 0,
+    SEEK_TOWER: 1,
+    WINDUP: 2,
+    CHARGE: 3,
+    CONTACT_RECOIL: 4,
+    RECOVER: 5,
+    CORE_FALLBACK: 6
+});
+
+export const GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG = Object.freeze({
+    TARGET_VALID: 1 << 0,
+    TELEGRAPH_PENDING: 1 << 1,
+    RECOIL_PENDING: 1 << 2,
+    SELECTED_TARGET_VALID: 1 << 3,
+    SELECTED_TARGET_CORE: 1 << 4,
+    SELECTED_TARGET_TOWER: 1 << 5
+});
+
+/**
+ * 80-byte side-plane의 program 2 전용 명명입니다. 기존 Arrow layout을 이동하지
+ * 않고 동일 byte를 program-discriminated storage로 사용합니다.
+ */
+export const GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI = Object.freeze({
+    STRIDE: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+    PROGRAM_ID: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.PROGRAM_ID,
+    SELECTED_TARGET_KIND: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE,
+    SELECTION_SOURCE_TICK:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_ENTERED_FIXED_TICK,
+    SELECTION_SEQUENCE:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_EXPIRES_AT_FIXED_TICK,
+    TARGET_SLOT: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_SLOT,
+    TARGET_ENTITY_ID: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_ENTITY_ID,
+    TARGET_INCARNATION:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_INCARNATION,
+    FLAGS: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.FLAGS,
+    ATTACK_FINGERPRINT:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_X,
+    CORE_DAMAGE_FIXED_POINT:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_RANGE
 });
 
 export const GPU_CIRCLE_BODY_FLOW = Object.freeze({
@@ -505,10 +588,10 @@ export function resolveGpuCircleBodyMaximumDamageWindow(options = {}) {
     }
     validCandidates.sort(compareMaximumDamageWindowCandidates);
     const candidate = validCandidates[0];
-    if (fixedTick > UINT32_MAX - duration) {
+    const active = expiresAtFixedTick !== 0 && fixedTick < expiresAtFixedTick;
+    if (!active && fixedTick > UINT32_MAX - duration) {
         throw new RangeError('Maximum Damage Window expiry가 uint32 tick 범위를 초과합니다.');
     }
-    const active = expiresAtFixedTick !== 0 && fixedTick < expiresAtFixedTick;
     if (currentHealthFixedPoint === 0) {
         return Object.freeze({
             appliedDamageFixedPoint: 0,
@@ -549,7 +632,11 @@ export function resolveGpuCircleBodyMaximumDamageWindow(options = {}) {
         appliedDamageFixedPoint,
         remainingHealthFixedPoint: currentHealthFixedPoint,
         peakFinalDamageFixedPoint: candidate.finalDamageFixedPoint,
-        expiresAtFixedTick: fixedTick + duration,
+        // 첫 active tick N이 만든 N+duration expiry는 peak/provenance가 커져도
+        // 연장하지 않습니다. T >= expiry인 새 window만 새 expiry를 계산합니다.
+        expiresAtFixedTick: active
+            ? expiresAtFixedTick
+            : fixedTick + duration,
         peakSourceEntityId: candidate.sourceEntityId,
         peakSourceIncarnation: candidate.sourceIncarnation,
         candidate: Object.freeze({ ...candidate }),
@@ -619,6 +706,7 @@ export function normalizeGpuCircleBodyRenderShapeCode(
         case GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.GEN:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM:
             return shapeCode;
         default:
             throw new RangeError(`${fieldName}에 지원하지 않는 shape code가 있습니다: ${shapeCode}`);
@@ -849,7 +937,7 @@ export function unpackGpuCircleAppliedEventMeta(meta) {
  * collision-only ABI storage를 생성합니다.
  * @param {*} capacity - 최대 body 수입니다.
  * 반환 buffer들은 GPU 업로드 전 CPU 권위 mirror입니다.
- * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer}}
+ * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer,enemyBehaviorStateBuffer:ArrayBuffer}}
  * 생성된 CPU mirror storage입니다.
  */
 export function createGpuCircleBodyAbiStorage(capacity) {
@@ -869,6 +957,9 @@ export function createGpuCircleBodyAbiStorage(capacity) {
         ),
         combatStateBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * safeCapacity
+        ),
+        enemyBehaviorStateBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * safeCapacity
         )
     };
     new DataView(storage.countsBuffer).setUint32(
@@ -904,7 +995,10 @@ function requireStorage(storage) {
             !== GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * capacity
         || !(storage.combatStateBuffer instanceof ArrayBuffer)
         || storage.combatStateBuffer.byteLength
-            !== GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * capacity) {
+            !== GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * capacity
+        || !(storage.enemyBehaviorStateBuffer instanceof ArrayBuffer)
+        || storage.enemyBehaviorStateBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * capacity) {
         throw new TypeError('GPU circle body storage의 buffer 크기 또는 타입이 ABI와 다릅니다.');
     }
     return capacity;
@@ -1082,7 +1176,7 @@ function assertOptionalFlagMatches(spawn, fieldNames, flags, flag, label) {
 }
 
 /**
- * spawn metadata를 V5 physical/interaction/gameplay/simulation word로 검증합니다.
+ * spawn metadata를 V6 physical/interaction/gameplay/simulation word로 검증합니다.
  * @param {*} spawn - spawn 입력입니다.
  * @returns {{physicsMeta:number,interactionMeta:number,simulationMeta:number,metadata:object}} packed meta입니다.
  */
@@ -1316,6 +1410,17 @@ export function writeGpuCircleContactHandler(storage, index, handler = {}) {
         throw new RangeError(
             'contactHandler는 enter-only와 continuous policy를 동시에 가질 수 없습니다.'
         );
+    }
+    if ((flags & GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST) !== 0) {
+        const required = GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+            | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY;
+        if ((flags & required) !== required
+            || (flags
+                & GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS) !== 0) {
+            throw new RangeError(
+                'CORE_DAMAGE_REQUEST handler는 closest enter-only policy여야 합니다.'
+            );
+        }
     }
     const offset = slot * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE;
     const view = new DataView(storage.contactHandlerBuffer);
@@ -1608,6 +1713,319 @@ export function readGpuCircleBodyCombatState(storage, index) {
     };
 }
 
+const ENEMY_BEHAVIOR_INPUT_KEYS = new Set([
+    'programId',
+    'coreDamageFixedPoint',
+    'windupTicks',
+    'windupRangeTiles',
+    'chargeSpeedTilesPerSecond',
+    'chargeMaxTicks',
+    'recoilImpulseTilesPerSecond',
+    'recoilTicks',
+    'recoverTicks',
+    'telegraphStyleCode',
+    'telegraphColorRgba',
+    'telegraphRadiusScale'
+]);
+
+function requirePositiveUint32(value, fieldName) {
+    const number = requireUint32(value, fieldName);
+    if (number === 0) {
+        throw new RangeError(`${fieldName}은(는) 양의 uint32여야 합니다.`);
+    }
+    return number;
+}
+
+function packEnemyBehaviorColorRgba8(source, fieldName) {
+    if ((!Array.isArray(source) && !ArrayBuffer.isView(source))
+        || source.length !== 4) {
+        throw new TypeError(`${fieldName}은(는) 네 성분 배열이어야 합니다.`);
+    }
+    let packed = 0;
+    for (let index = 0; index < 4; index++) {
+        const component = requireFloat32(source[index], `${fieldName}[${index}]`);
+        if (component < 0 || component > 1) {
+            throw new RangeError(`${fieldName}[${index}]는 0~1 범위여야 합니다.`);
+        }
+        packed |= Math.round(component * UINT8_MAX) << (index * 8);
+    }
+    return packed >>> 0;
+}
+
+/**
+ * Enemy behavior side-plane 한 slot을 spawn/replacement 권위로 씁니다. Runtime
+ * target/window/direction은 authored input을 받지 않고 항상 초기 상태로 재설정합니다.
+ */
+export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError('enemyBehaviorState는 객체여야 합니다.');
+    }
+    for (const key of Object.keys(source)) {
+        if (!ENEMY_BEHAVIOR_INPUT_KEYS.has(key)) {
+            throw new RangeError(`enemyBehaviorState에 알 수 없는 필드가 있습니다: ${key}`);
+        }
+    }
+    const abi = GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE;
+    const offset = slot * abi.STRIDE;
+    new Uint8Array(storage.enemyBehaviorStateBuffer, offset, abi.STRIDE).fill(0);
+    const programId = requireUint32(
+        source.programId ?? GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.NONE,
+        'enemyBehaviorState.programId'
+    );
+    if (programId === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.NONE) {
+        if (Object.keys(source).some((key) => key !== 'programId')) {
+            throw new RangeError('NONE enemy behavior에는 config 필드를 사용할 수 없습니다.');
+        }
+        return slot;
+    }
+    const view = new DataView(storage.enemyBehaviorStateBuffer);
+    if (programId
+        === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE) {
+        const allowedKeys = new Set(['programId', 'coreDamageFixedPoint']);
+        for (const key of Object.keys(source)) {
+            if (!allowedKeys.has(key)) {
+                throw new RangeError(
+                    `SELECTED_TARGET_PROJECTILE에 사용할 수 없는 config입니다: ${key}`
+                );
+            }
+        }
+        const selectedAbi = GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI;
+        const coreDamageFixedPoint = requireInt32(
+            source.coreDamageFixedPoint,
+            'enemyBehaviorState.coreDamageFixedPoint'
+        );
+        if (coreDamageFixedPoint <= 0) {
+            throw new RangeError(
+                'enemyBehaviorState.coreDamageFixedPoint는 양의 int32여야 합니다.'
+            );
+        }
+        view.setUint32(offset + selectedAbi.PROGRAM_ID, programId, LITTLE_ENDIAN);
+        view.setUint32(
+            offset + selectedAbi.TARGET_SLOT,
+            GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + selectedAbi.TARGET_ENTITY_ID,
+            GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + selectedAbi.TARGET_INCARNATION,
+            GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        view.setInt32(
+            offset + selectedAbi.CORE_DAMAGE_FIXED_POINT,
+            coreDamageFixedPoint,
+            LITTLE_ENDIAN
+        );
+        return slot;
+    }
+    if (programId !== GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE) {
+        throw new RangeError(`지원하지 않는 enemy behavior program입니다: ${programId}`);
+    }
+    if (Object.prototype.hasOwnProperty.call(source, 'coreDamageFixedPoint')) {
+        throw new RangeError(
+            'ARROW_TOWER_CHARGE에는 coreDamageFixedPoint를 사용할 수 없습니다.'
+        );
+    }
+    view.setUint32(offset + abi.PROGRAM_ID, programId, LITTLE_ENDIAN);
+    view.setUint32(
+        offset + abi.STATE,
+        GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + abi.WINDUP_RANGE,
+        requireNonNegativeFloat32(
+            source.windupRangeTiles,
+            'enemyBehaviorState.windupRangeTiles'
+        ),
+        LITTLE_ENDIAN
+    );
+    if (view.getFloat32(offset + abi.WINDUP_RANGE, LITTLE_ENDIAN) <= 0) {
+        throw new RangeError('enemyBehaviorState.windupRangeTiles는 양수여야 합니다.');
+    }
+    view.setFloat32(
+        offset + abi.CHARGE_SPEED,
+        requireNonNegativeFloat32(
+            source.chargeSpeedTilesPerSecond,
+            'enemyBehaviorState.chargeSpeedTilesPerSecond'
+        ),
+        LITTLE_ENDIAN
+    );
+    if (view.getFloat32(offset + abi.CHARGE_SPEED, LITTLE_ENDIAN) <= 0) {
+        throw new RangeError('enemyBehaviorState.chargeSpeedTilesPerSecond는 양수여야 합니다.');
+    }
+    view.setFloat32(
+        offset + abi.RECOIL_IMPULSE,
+        requireNonNegativeFloat32(
+            source.recoilImpulseTilesPerSecond,
+            'enemyBehaviorState.recoilImpulseTilesPerSecond'
+        ),
+        LITTLE_ENDIAN
+    );
+    if (view.getFloat32(offset + abi.RECOIL_IMPULSE, LITTLE_ENDIAN) <= 0) {
+        throw new RangeError('enemyBehaviorState.recoilImpulseTilesPerSecond는 양수여야 합니다.');
+    }
+    view.setUint32(
+        offset + abi.WINDUP_TICKS,
+        requirePositiveUint32(source.windupTicks, 'enemyBehaviorState.windupTicks'),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + abi.CHARGE_MAX_TICKS,
+        requirePositiveUint32(source.chargeMaxTicks, 'enemyBehaviorState.chargeMaxTicks'),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + abi.RECOIL_TICKS,
+        requirePositiveUint32(source.recoilTicks, 'enemyBehaviorState.recoilTicks'),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + abi.RECOVER_TICKS,
+        requirePositiveUint32(source.recoverTicks, 'enemyBehaviorState.recoverTicks'),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + abi.TELEGRAPH_STYLE_CODE,
+        requirePositiveUint32(
+            source.telegraphStyleCode,
+            'enemyBehaviorState.telegraphStyleCode'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + abi.TELEGRAPH_COLOR_RGBA8,
+        packEnemyBehaviorColorRgba8(
+            source.telegraphColorRgba,
+            'enemyBehaviorState.telegraphColorRgba'
+        ),
+        LITTLE_ENDIAN
+    );
+    const telegraphRadiusScale = requireNonNegativeFloat32(
+        source.telegraphRadiusScale,
+        'enemyBehaviorState.telegraphRadiusScale'
+    );
+    if (telegraphRadiusScale <= 0) {
+        throw new RangeError('enemyBehaviorState.telegraphRadiusScale은 양수여야 합니다.');
+    }
+    view.setFloat32(
+        offset + abi.TELEGRAPH_RADIUS_SCALE,
+        telegraphRadiusScale,
+        LITTLE_ENDIAN
+    );
+    return slot;
+}
+
+/** Enemy behavior side-plane 한 slot의 host snapshot입니다. */
+export function readGpuCircleEnemyBehaviorState(storage, index) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const abi = GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE;
+    const offset = slot * abi.STRIDE;
+    const view = new DataView(storage.enemyBehaviorStateBuffer);
+    const programId = view.getUint32(offset + abi.PROGRAM_ID, LITTLE_ENDIAN);
+    if (programId
+        === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE) {
+        const selectedAbi = GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI;
+        return {
+            programId,
+            selectedTargetKind: view.getUint32(
+                offset + selectedAbi.SELECTED_TARGET_KIND,
+                LITTLE_ENDIAN
+            ),
+            selectionSourceTick: view.getUint32(
+                offset + selectedAbi.SELECTION_SOURCE_TICK,
+                LITTLE_ENDIAN
+            ),
+            selectionSequence: view.getUint32(
+                offset + selectedAbi.SELECTION_SEQUENCE,
+                LITTLE_ENDIAN
+            ),
+            targetSlot: view.getUint32(
+                offset + selectedAbi.TARGET_SLOT,
+                LITTLE_ENDIAN
+            ),
+            targetEntityId: view.getUint32(
+                offset + selectedAbi.TARGET_ENTITY_ID,
+                LITTLE_ENDIAN
+            ),
+            targetIncarnation: view.getUint32(
+                offset + selectedAbi.TARGET_INCARNATION,
+                LITTLE_ENDIAN
+            ),
+            flags: view.getUint32(offset + selectedAbi.FLAGS, LITTLE_ENDIAN),
+            attackFingerprint: view.getUint32(
+                offset + selectedAbi.ATTACK_FINGERPRINT,
+                LITTLE_ENDIAN
+            ),
+            coreDamageFixedPoint: view.getInt32(
+                offset + selectedAbi.CORE_DAMAGE_FIXED_POINT,
+                LITTLE_ENDIAN
+            )
+        };
+    }
+    const packedColor = view.getUint32(
+        offset + abi.TELEGRAPH_COLOR_RGBA8,
+        LITTLE_ENDIAN
+    );
+    return {
+        programId,
+        state: view.getUint32(offset + abi.STATE, LITTLE_ENDIAN),
+        stateEnteredFixedTick: view.getUint32(
+            offset + abi.STATE_ENTERED_FIXED_TICK,
+            LITTLE_ENDIAN
+        ),
+        stateExpiresAtFixedTick: view.getUint32(
+            offset + abi.STATE_EXPIRES_AT_FIXED_TICK,
+            LITTLE_ENDIAN
+        ),
+        targetSlot: view.getUint32(offset + abi.TARGET_SLOT, LITTLE_ENDIAN),
+        targetEntityId: view.getUint32(offset + abi.TARGET_ENTITY_ID, LITTLE_ENDIAN),
+        targetIncarnation: view.getUint32(
+            offset + abi.TARGET_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        flags: view.getUint32(offset + abi.FLAGS, LITTLE_ENDIAN),
+        chargeDirection: {
+            x: view.getFloat32(offset + abi.CHARGE_DIRECTION_X, LITTLE_ENDIAN),
+            y: view.getFloat32(offset + abi.CHARGE_DIRECTION_Y, LITTLE_ENDIAN)
+        },
+        windupRangeTiles: view.getFloat32(offset + abi.WINDUP_RANGE, LITTLE_ENDIAN),
+        chargeSpeedTilesPerSecond: view.getFloat32(
+            offset + abi.CHARGE_SPEED,
+            LITTLE_ENDIAN
+        ),
+        recoilImpulseTilesPerSecond: view.getFloat32(
+            offset + abi.RECOIL_IMPULSE,
+            LITTLE_ENDIAN
+        ),
+        windupTicks: view.getUint32(offset + abi.WINDUP_TICKS, LITTLE_ENDIAN),
+        chargeMaxTicks: view.getUint32(offset + abi.CHARGE_MAX_TICKS, LITTLE_ENDIAN),
+        recoilTicks: view.getUint32(offset + abi.RECOIL_TICKS, LITTLE_ENDIAN),
+        recoverTicks: view.getUint32(offset + abi.RECOVER_TICKS, LITTLE_ENDIAN),
+        telegraphStyleCode: view.getUint32(
+            offset + abi.TELEGRAPH_STYLE_CODE,
+            LITTLE_ENDIAN
+        ),
+        telegraphColorRgba8: packedColor,
+        telegraphColorRgba: Object.freeze([0, 1, 2, 3].map(
+            (component) => ((packedColor >>> (component * 8)) & UINT8_MAX) / UINT8_MAX
+        )),
+        telegraphRadiusScale: view.getFloat32(
+            offset + abi.TELEGRAPH_RADIUS_SCALE,
+            LITTLE_ENDIAN
+        )
+    };
+}
+
 /**
  * spawn을 지정 slot에 완전히 씁니다. 재사용 slot의 임시 상태도 모두 초기화합니다.
  * @param {*} storage - ABI storage입니다.
@@ -1788,6 +2206,11 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
     );
     writeGpuCircleContactHandler(storage, slot, contactHandler);
     writeGpuCircleBodyCombatState(storage, slot, combatState);
+    writeGpuCircleEnemyBehaviorState(
+        storage,
+        slot,
+        spawn.enemyBehaviorState ?? {}
+    );
     return slot;
 }
 
@@ -1944,7 +2367,8 @@ export function readGpuCircleBody(storage, index) {
             LITTLE_ENDIAN
         ),
         contactHandler: readGpuCircleContactHandler(storage, slot),
-        combatState: readGpuCircleBodyCombatState(storage, slot)
+        combatState: readGpuCircleBodyCombatState(storage, slot),
+        enemyBehaviorState: readGpuCircleEnemyBehaviorState(storage, slot)
     };
 }
 

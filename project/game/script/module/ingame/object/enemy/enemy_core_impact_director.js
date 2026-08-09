@@ -8,16 +8,65 @@ import {
     hasEnemyCapability
 } from '../../contract/enemy_capability_contract.js';
 import {
+    GPU_CORE_PROXY_DEFINITION_ID,
     GPU_CORE_PROXY_WORLD_KIND_ID
 } from '../core/gpu_core_proxy_spawn_adapter.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} from '../../contract/gameplay_team_contract.js';
+import {
+    GPU_CIRCLE_BODY_FIXED_POINT,
+    encodeGpuCircleBodyFixedPoint
+} from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    BASIC_RHOM_ATTACK_DATA
+} from 'data/object/enemy/basic_rhom_attack_data.js';
+import {
+    HOSTILE_RHOM_PROJECTILE_DATA
+} from 'data/object/projectile/hostile_rhom_projectile_data.js';
 
 const DEFAULT_HISTORY_CAPACITY = 65536;
 const DEFAULT_FACT_CAPACITY = 2048;
 const ENEMY_WORLD_KIND_ID = 'enemy';
+const PROJECTILE_WORLD_KIND_ID = 'projectile';
 const CORE_IMPACT_DESPAWN_REASON = 'core-impact';
+const CORE_IMPACT_CLEANUP_COMMIT_PROVENANCE = Object.freeze({
+    DIRECT: 'direct-core-impact',
+    AUTHENTIC_EXISTING: 'authentic-existing-despawn'
+});
+export const CORE_DAMAGE_REQUEST_EVENT_TYPE = 'core-damage-request';
+
+const CORE_DAMAGE_REQUEST_KNOWN_NON_APPLIED_DISPOSITION = Object.freeze({
+    DUPLICATE: 'duplicate',
+    REPLAY: 'replay',
+    STALE: 'stale'
+});
+
+const CANONICAL_RHOM_CORE_DAMAGE_REQUEST = Object.freeze({
+    projectileDefinitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+    producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+    sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId,
+    allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
+    damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+    targetPolicyId: BASIC_RHOM_ATTACK_DATA.targetPolicyId,
+    towerTargetPolicyId: BASIC_RHOM_ATTACK_DATA.towerTargetPolicyId,
+    coreTargetPolicyId: BASIC_RHOM_ATTACK_DATA.coreTargetPolicyId,
+    targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+    distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+    attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+    coreDamage: HOSTILE_RHOM_PROJECTILE_DATA.coreDamage,
+    coreDamageFixedPoint: encodeGpuCircleBodyFixedPoint(
+        HOSTILE_RHOM_PROJECTILE_DATA.coreDamage
+    ),
+    coreDamageRequestPolicyId:
+        HOSTILE_RHOM_PROJECTILE_DATA.coreDamageRequestPolicyId
+});
 
 export const CORE_IMPACT_FACT_TYPE = Object.freeze({
     IMPACT: 'CoreImpact',
+    DAMAGE_REQUEST: 'CoreDamageRequest',
     DAMAGED: 'CoreDamaged',
     DEPLETED: 'CoreDepleted'
 });
@@ -38,6 +87,14 @@ function requirePositiveCapacity(value, label) {
     return number;
 }
 
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
 function freezeHandle(source, label) {
     return Object.freeze({
         entityId: requirePositiveSafeInteger(source?.entityId, `${label}.entityId`),
@@ -51,6 +108,10 @@ function freezeHandle(source, label) {
 function sameHandle(left, right) {
     return left?.entityId === right?.entityId
         && left?.incarnation === right?.incarnation;
+}
+
+function handleIdentityKey(handle) {
+    return `${handle?.entityId}:${handle?.incarnation}`;
 }
 
 function optionalId(value) {
@@ -234,6 +295,49 @@ function createSemanticImpactKey(binding, coreHandle, enemyHandle) {
     ].join(':');
 }
 
+function createSemanticCoreDamageRequestKey(
+    binding,
+    coreHandle,
+    projectileHandle
+) {
+    return [
+        binding.sessionGeneration,
+        binding.deviceGeneration,
+        binding.authoritativeEpoch,
+        coreHandle.entityId,
+        coreHandle.incarnation,
+        projectileHandle.entityId,
+        projectileHandle.incarnation,
+        'core-projectile-impact'
+    ].join(':');
+}
+
+function compareEventKey(leftEvent, rightEvent) {
+    const leftKey = eventIdentity(leftEvent);
+    const rightKey = eventIdentity(rightEvent);
+    return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function compareDamageCandidates(left, right) {
+    return left.event.sourceTick - right.event.sourceTick
+        || left.damageSubjectHandle.entityId - right.damageSubjectHandle.entityId
+        || left.damageSubjectHandle.incarnation
+            - right.damageSubjectHandle.incarnation
+        || left.event.sequence - right.event.sequence
+        || compareEventKey(left.event, right.event);
+}
+
+function compareSemanticDuplicateProvenance(left, right) {
+    return left.event.sourceTick - right.event.sourceTick
+        || left.event.sequence - right.event.sequence
+        || compareEventKey(left.event, right.event);
+}
+
+function compareProtocol(left, right) {
+    return left.deviceGeneration - right.deviceGeneration
+        || left.authoritativeEpoch - right.authoritativeEpoch;
+}
+
 function createCleanupCommandId(impactKey) {
     return `core-impact:${impactKey}`;
 }
@@ -252,6 +356,33 @@ function isExactAuthenticatedCleanupDedup(
         && typeof receipt?.commandId === 'string'
         && receipt.commandId.length > 0
         && sameHandle(receipt.handle, cleanup.enemyHandle);
+}
+
+function hasAllowedCommittedCleanupReason(entry, cleanup) {
+    if (cleanup.commitProvenance
+        === CORE_IMPACT_CLEANUP_COMMIT_PROVENANCE.DIRECT) {
+        return entry?.reason === CORE_IMPACT_DESPAWN_REASON;
+    }
+    if (cleanup.commitProvenance
+        !== CORE_IMPACT_CLEANUP_COMMIT_PROVENANCE.AUTHENTIC_EXISTING) {
+        return false;
+    }
+    if (cleanup.commandId.startsWith('gpu-death:')) {
+        // Turn 1 GPU-death command의 lifecycle provenance는 승격 뒤에도 보존됩니다.
+        return entry?.reason === 'gpu-death';
+    }
+    // Opaque cleanup port가 same-handle/current-tick authentic terminal command임을
+    // 이미 증명했습니다. 그 command의 기존 authored reason은 commit에서 보존됩니다.
+    return typeof entry?.reason === 'string' && entry.reason.length > 0;
+}
+
+function isExactCommittedCoreImpactCleanup(entry, cleanup, fixedTick) {
+    return entry?.commandId === cleanup.commandId
+        && cleanup.targetFixedTick === fixedTick
+        && sameHandle(entry?.handle, cleanup.enemyHandle)
+        && hasAllowedCommittedCleanupReason(entry, cleanup)
+        && entry?.disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+        && entry?.bountyEligible === false;
 }
 
 /**
@@ -285,6 +416,9 @@ export class EnemyCoreImpactDirector {
         this.dedupedCount = 0;
         this.cleanupDedupedCount = 0;
         this.cleanupCommittedCount = 0;
+        this.coreDamageRequestCommittedCount = 0;
+        this.coreDamageRequestAppliedCount = 0;
+        this.coreDamageRequestFailure = null;
         this.cleanupFailure = null;
         this.coreDepletedFact = null;
         this.destroyed = false;
@@ -307,6 +441,7 @@ export class EnemyCoreImpactDirector {
         this.coreImpactCleanupPort = nextCleanupPort;
         this.binding = readProtocol(this.endpoint);
         this.pendingCleanupByImpactKey.clear();
+        this.coreDamageRequestFailure = null;
         this.cleanupFailure = null;
         return this.binding !== null;
     }
@@ -317,77 +452,195 @@ export class EnemyCoreImpactDirector {
      */
     observeCompletedEvents(snapshot, registry) {
         this.#assertUsable();
-        this.lastCommittedFacts = Object.freeze([]);
         if (snapshot?.protocolFailure || !Array.isArray(snapshot?.events)) {
             return this.#createObservationResult([]);
         }
         const exactRegistry = assertRegistry(registry);
         const currentBinding = readProtocol(this.endpoint);
-        if (!currentBinding || this.coreIntegrity.isDepleted()) {
+        if (!currentBinding
+            || this.coreIntegrity.isDepleted()
+            || this.coreDamageRequestFailure !== null) {
             this.ignoredCount += Array.isArray(snapshot.events)
                 ? snapshot.events.length
                 : 0;
             return this.#createObservationResult([]);
         }
 
-        const candidates = [];
+        const authenticatedCandidates = [];
+        let ignoredDelta = 0;
+        let dedupedDispositionDelta = 0;
+        let forgedTypedRequest = null;
         for (const event of snapshot.events) {
+            if (event?.eventType === CORE_DAMAGE_REQUEST_EVENT_TYPE) {
+                if (event.disposition !== 'applied') {
+                    const disposition = this.#classifyNonAppliedCoreDamageRequest(
+                        event,
+                        currentBinding
+                    );
+                    if (disposition === 'dedupe') {
+                        dedupedDispositionDelta++;
+                        continue;
+                    }
+                    if (disposition === 'ignore') {
+                        ignoredDelta++;
+                        continue;
+                    }
+                    forgedTypedRequest = Object.freeze({
+                        reason: 'unknown-disposition',
+                        eventKey: eventIdentity(event)
+                    });
+                    break;
+                }
+                const typed = this.#normalizeCoreDamageRequestCandidate(
+                    event,
+                    exactRegistry,
+                    currentBinding
+                );
+                if (typed.failureReason !== null) {
+                    forgedTypedRequest = Object.freeze({
+                        reason: typed.failureReason,
+                        eventKey: eventIdentity(event)
+                    });
+                    break;
+                }
+                authenticatedCandidates.push(typed.candidate);
+                continue;
+            }
             const candidate = this.#normalizeImpactCandidate(
                 event,
                 exactRegistry,
                 currentBinding
             );
             if (!candidate) {
+                ignoredDelta++;
                 continue;
             }
-            if (this.knownImpactKeys.has(candidate.impactKey)) {
-                this.dedupedCount++;
+            authenticatedCandidates.push(candidate);
+        }
+        if (forgedTypedRequest !== null) {
+            // Snapshot 전체 typed request를 임시 구조에서 먼저 인증합니다. 하나라도
+            // forged이면 HP/binding/dedupe/facts/known cleanup state는 그대로 둡니다.
+            this.ignoredCount++;
+            this.coreDamageRequestFailure ??= forgedTypedRequest;
+            return this.#createObservationResult([]);
+        }
+
+        const groupedByImpactKey = new Map();
+        for (const candidate of authenticatedCandidates) {
+            const group = groupedByImpactKey.get(candidate.impactKey);
+            if (group) {
+                group.push(candidate);
+            } else {
+                groupedByImpactKey.set(candidate.impactKey, [candidate]);
+            }
+        }
+        const candidates = [];
+        let dedupedDelta = 0;
+        for (const [impactKey, group] of groupedByImpactKey) {
+            group.sort(compareSemanticDuplicateProvenance);
+            if (this.knownImpactKeys.has(impactKey)) {
+                dedupedDelta += group.length;
                 continue;
             }
+            dedupedDelta += group.length - 1;
+            candidates.push(group[0]);
+        }
+        candidates.sort(compareDamageCandidates);
+
+        // 인증/semantic grouping이 모두 성공한 뒤에만 persistent state를 전진합니다.
+        this.ignoredCount += ignoredDelta;
+        this.dedupedCount += dedupedDelta + dedupedDispositionDelta;
+        if (authenticatedCandidates.length === 0) {
+            // Endpoint가 이미 판정한 replay/stale/duplicate는 telemetry 외의
+            // binding/fact/known/HP state를 바꾸지 않습니다.
+            return this.#createObservationResult([]);
+        }
+        if (authenticatedCandidates.length > 0) {
+            const nextBinding = authenticatedCandidates
+                .map(({ eventProtocol }) => eventProtocol)
+                .sort(compareProtocol)
+                .at(-1);
+            if (nextBinding) {
+                this.binding = nextBinding;
+            }
+        }
+        for (const candidate of candidates) {
             this.#rememberImpactKey(candidate.impactKey);
-            this.pendingCleanupByImpactKey.set(candidate.impactKey, Object.freeze({
-                impactKey: candidate.impactKey,
-                commandId: createCleanupCommandId(candidate.impactKey),
-                coreHandle: candidate.coreHandle,
-                enemyHandle: candidate.enemyHandle,
-                state: 'PENDING'
-            }));
-            candidates.push(candidate);
+            if (candidate.kind === 'enemy-impact') {
+                this.pendingCleanupByImpactKey.set(candidate.impactKey, Object.freeze({
+                    impactKey: candidate.impactKey,
+                    commandId: createCleanupCommandId(candidate.impactKey),
+                    coreHandle: candidate.coreHandle,
+                    enemyHandle: candidate.enemyHandle,
+                    state: 'PENDING'
+                }));
+            }
         }
 
         const facts = [];
         for (const candidate of candidates) {
             const before = this.coreIntegrity.getCurrentIntegrity();
+            const requestedDamage = candidate.kind === 'core-damage-request'
+                ? candidate.requestedDamage
+                : candidate.coreImpactDamage;
             const appliedDamage = this.coreIntegrity.applyIntegrityDamage(
-                candidate.coreImpactDamage
+                requestedDamage
             );
             const after = this.coreIntegrity.getCurrentIntegrity();
-            const impactFact = Object.freeze({
-                type: CORE_IMPACT_FACT_TYPE.IMPACT,
-                disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
-                bountyEligible: isEnemyBountyEligibleForDisposition(
-                    ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
-                ),
-                bountyBudget: candidate.bountyBudget,
-                coreHandle: candidate.coreHandle,
-                enemyHandle: candidate.enemyHandle,
-                coreImpactDamage: candidate.coreImpactDamage,
-                appliedDamage,
-                coreIntegrityBefore: before,
-                coreIntegrityAfter: after,
-                enemyDefinitionId: candidate.enemyDefinitionId,
-                physicsProfileId: candidate.physicsProfileId,
-                combatProfileId: candidate.combatProfileId,
-                behaviorProfileId: candidate.behaviorProfileId,
-                impactKey: candidate.impactKey,
-                ...freezeProtocolFact(candidate.event)
-            });
-            facts.push(impactFact);
+            if (candidate.kind === 'core-damage-request') {
+                facts.push(Object.freeze({
+                    type: CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST,
+                    coreHandle: candidate.coreHandle,
+                    projectileHandle: candidate.projectileHandle,
+                    requestedDamage: candidate.requestedDamage,
+                    requestedDamageFixedPoint:
+                        candidate.requestedDamageFixedPoint,
+                    appliedDamage,
+                    coreIntegrityBefore: before,
+                    coreIntegrityAfter: after,
+                    projectileDefinitionId:
+                        candidate.projectileDefinitionId,
+                    producerId: candidate.producerId,
+                    sourceAbilityId: candidate.sourceAbilityId,
+                    sourceHandle: candidate.sourceHandle,
+                    ownerHandle: candidate.ownerHandle,
+                    spawnSequence: candidate.spawnSequence,
+                    impactKey: candidate.impactKey,
+                    ...freezeProtocolFact(candidate.event)
+                }));
+                this.coreDamageRequestCommittedCount++;
+                if (appliedDamage > 0) {
+                    this.coreDamageRequestAppliedCount++;
+                }
+            } else {
+                facts.push(Object.freeze({
+                    type: CORE_IMPACT_FACT_TYPE.IMPACT,
+                    disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT,
+                    bountyEligible: isEnemyBountyEligibleForDisposition(
+                        ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                    ),
+                    bountyBudget: candidate.bountyBudget,
+                    coreHandle: candidate.coreHandle,
+                    enemyHandle: candidate.enemyHandle,
+                    coreImpactDamage: candidate.coreImpactDamage,
+                    appliedDamage,
+                    coreIntegrityBefore: before,
+                    coreIntegrityAfter: after,
+                    enemyDefinitionId: candidate.enemyDefinitionId,
+                    physicsProfileId: candidate.physicsProfileId,
+                    combatProfileId: candidate.combatProfileId,
+                    behaviorProfileId: candidate.behaviorProfileId,
+                    impactKey: candidate.impactKey,
+                    ...freezeProtocolFact(candidate.event)
+                }));
+            }
             if (appliedDamage > 0) {
                 facts.push(Object.freeze({
                     type: CORE_IMPACT_FACT_TYPE.DAMAGED,
                     coreHandle: candidate.coreHandle,
-                    enemyHandle: candidate.enemyHandle,
+                    ...(candidate.kind === 'core-damage-request'
+                        ? { projectileHandle: candidate.projectileHandle }
+                        : { enemyHandle: candidate.enemyHandle }),
                     damage: appliedDamage,
                     currentIntegrity: after,
                     maxIntegrity: this.coreIntegrity.getMaxIntegrity(),
@@ -399,7 +652,9 @@ export class EnemyCoreImpactDirector {
                 this.coreDepletedFact = Object.freeze({
                     type: CORE_IMPACT_FACT_TYPE.DEPLETED,
                     coreHandle: candidate.coreHandle,
-                    enemyHandle: candidate.enemyHandle,
+                    ...(candidate.kind === 'core-damage-request'
+                        ? { projectileHandle: candidate.projectileHandle }
+                        : { enemyHandle: candidate.enemyHandle }),
                     currentIntegrity: 0,
                     maxIntegrity: this.coreIntegrity.getMaxIntegrity(),
                     impactKey: candidate.impactKey,
@@ -450,6 +705,8 @@ export class EnemyCoreImpactDirector {
                 this.pendingCleanupByImpactKey.set(impactKey, Object.freeze({
                     ...cleanup,
                     commandId: receipt.commandId,
+                    commitProvenance:
+                        CORE_IMPACT_CLEANUP_COMMIT_PROVENANCE.DIRECT,
                     state: 'STAGED',
                     targetFixedTick
                 }));
@@ -466,6 +723,8 @@ export class EnemyCoreImpactDirector {
                 this.pendingCleanupByImpactKey.set(impactKey, Object.freeze({
                     ...cleanup,
                     commandId: receipt.commandId,
+                    commitProvenance:
+                        CORE_IMPACT_CLEANUP_COMMIT_PROVENANCE.AUTHENTIC_EXISTING,
                     state: 'STAGED',
                     targetFixedTick
                 }));
@@ -492,12 +751,68 @@ export class EnemyCoreImpactDirector {
     observeFixedCommit(result, fixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
-        const despawnedByCommandId = new Set(
-            (result?.despawned ?? []).map(({ commandId }) => commandId)
-        );
+        const despawned = Array.isArray(result?.despawned)
+            ? result.despawned
+            : [];
+        const rejected = Array.isArray(result?.rejected)
+            ? result.rejected
+            : [];
+        const despawnedByCommandId = new Map();
+        const duplicateDespawnCommandIds = new Set();
+        const despawnCountByHandleKey = new Map();
+        for (const entry of despawned) {
+            const commandId = entry?.commandId;
+            const exactHandleKey = handleIdentityKey(entry?.handle);
+            despawnCountByHandleKey.set(
+                exactHandleKey,
+                (despawnCountByHandleKey.get(exactHandleKey) ?? 0) + 1
+            );
+            if (despawnedByCommandId.has(commandId)) {
+                duplicateDespawnCommandIds.add(commandId);
+                continue;
+            }
+            despawnedByCommandId.set(commandId, entry);
+        }
         const rejectedByCommandId = new Map(
-            (result?.rejected ?? []).map(({ commandId, code }) => [commandId, code])
+            rejected.map((entry) => [entry?.commandId, entry?.code])
         );
+
+        // lifecycle 결과 전체를 먼저 인증하여 한 malformed/contradictory commit이
+        // 같은 batch의 cleanup counter나 pending state를 부분 전진시키지 못하게 합니다.
+        let provenanceFailure = null;
+        for (const [impactKey, cleanup] of this.pendingCleanupByImpactKey) {
+            if (cleanup.state !== 'STAGED') {
+                continue;
+            }
+            const committed = despawnedByCommandId.get(cleanup.commandId);
+            if (committed !== undefined
+                && (duplicateDespawnCommandIds.has(cleanup.commandId)
+                    || despawnCountByHandleKey.get(
+                        handleIdentityKey(cleanup.enemyHandle)
+                    ) !== 1
+                    || rejectedByCommandId.has(cleanup.commandId)
+                    || !isExactCommittedCoreImpactCleanup(
+                        committed,
+                        cleanup,
+                        tick
+                    ))) {
+                provenanceFailure = Object.freeze({
+                    impactKey,
+                    targetFixedTick: tick,
+                    reason: 'despawn-commit-provenance-contract'
+                });
+                break;
+            }
+        }
+        if (provenanceFailure !== null) {
+            this.pendingCleanupByImpactKey.delete(provenanceFailure.impactKey);
+            this.cleanupFailure = provenanceFailure;
+            return Object.freeze({
+                pendingCleanupCount: this.#getPendingCleanupCount(),
+                recoveryRequired: this.requiresRecovery()
+            });
+        }
+
         for (const [impactKey, cleanup] of this.pendingCleanupByImpactKey) {
             if (cleanup.state !== 'STAGED') {
                 continue;
@@ -539,7 +854,9 @@ export class EnemyCoreImpactDirector {
     }
 
     requiresRecovery() {
-        return !this.destroyed && this.cleanupFailure !== null;
+        return !this.destroyed
+            && (this.cleanupFailure !== null
+                || this.coreDamageRequestFailure !== null);
     }
 
     getStatus() {
@@ -554,6 +871,11 @@ export class EnemyCoreImpactDirector {
             trackedCleanupCount: this.pendingCleanupByImpactKey.size,
             cleanupCommittedCount: this.cleanupCommittedCount,
             cleanupDedupedCount: this.cleanupDedupedCount,
+            coreDamageRequestCommittedCount:
+                this.coreDamageRequestCommittedCount,
+            coreDamageRequestAppliedCount:
+                this.coreDamageRequestAppliedCount,
+            coreDamageRequestFailure: this.coreDamageRequestFailure,
             cleanupFailure: this.cleanupFailure,
             ignoredCount: this.ignoredCount,
             dedupedCount: this.dedupedCount,
@@ -608,7 +930,6 @@ export class EnemyCoreImpactDirector {
         if (event?.type !== 'contact'
             || event?.eventType !== 'interaction-enter'
             || event?.disposition !== 'applied') {
-            this.ignoredCount++;
             return null;
         }
         const eventProtocol = readEventProtocol(event);
@@ -617,7 +938,6 @@ export class EnemyCoreImpactDirector {
             this.binding,
             currentBinding
         )) {
-            this.ignoredCount++;
             return null;
         }
         let subjectHandle;
@@ -626,13 +946,11 @@ export class EnemyCoreImpactDirector {
             subjectHandle = freezeHandle(event, 'event');
             otherHandle = freezeHandle(event.other, 'event.other');
         } catch {
-            this.ignoredCount++;
             return null;
         }
         const subject = readExactView(registry, subjectHandle);
         const other = readExactView(registry, otherHandle);
         if (!subject || !other) {
-            this.ignoredCount++;
             return null;
         }
         const coreIsSubject = subject.kindId === GPU_CORE_PROXY_WORLD_KIND_ID
@@ -640,7 +958,6 @@ export class EnemyCoreImpactDirector {
         const coreIsOther = other.kindId === GPU_CORE_PROXY_WORLD_KIND_ID
             && subject.kindId === ENEMY_WORLD_KIND_ID;
         if (!coreIsSubject && !coreIsOther) {
-            this.ignoredCount++;
             return null;
         }
         const coreHandle = coreIsSubject ? subjectHandle : otherHandle;
@@ -662,21 +979,20 @@ export class EnemyCoreImpactDirector {
         if (!hasCoreImpactCapability
             || coreImpactDamage < 0
             || bountyBudget < 0) {
-            this.ignoredCount++;
             return null;
         }
-        // 모든 entity/metadata 검증 뒤에만 binding을 전진시킵니다. 이 순서로
-        // malformed payload가 valid Core impact의 future epoch를 선점하지 않습니다.
-        this.binding = eventProtocol;
         const impactKey = createSemanticImpactKey(
             eventProtocol,
             coreHandle,
             enemyHandle
         );
         return Object.freeze({
+            kind: 'enemy-impact',
             event,
+            eventProtocol,
             coreHandle,
             enemyHandle,
+            damageSubjectHandle: enemyHandle,
             coreImpactDamage,
             bountyBudget,
             enemyDefinitionId: optionalId(enemy.metadata?.definitionId)
@@ -685,6 +1001,193 @@ export class EnemyCoreImpactDirector {
             combatProfileId: optionalId(metadata?.combatProfileId),
             behaviorProfileId: optionalId(metadata?.behaviorProfileId),
             impactKey
+        });
+    }
+
+    #classifyNonAppliedCoreDamageRequest(event, currentBinding) {
+        const disposition = event?.disposition;
+        const isKnown = disposition
+                === CORE_DAMAGE_REQUEST_KNOWN_NON_APPLIED_DISPOSITION.DUPLICATE
+            || disposition
+                === CORE_DAMAGE_REQUEST_KNOWN_NON_APPLIED_DISPOSITION.REPLAY
+            || disposition
+                === CORE_DAMAGE_REQUEST_KNOWN_NON_APPLIED_DISPOSITION.STALE;
+        if (!isKnown) {
+            return 'unknown';
+        }
+        const eventProtocol = readEventProtocol(event);
+        const admissible = event?.type === 'contact'
+            && event?.eventType === CORE_DAMAGE_REQUEST_EVENT_TYPE
+            && event?.maximumDamageWindow === false
+            && isAdmissibleCommittedProtocol(
+                eventProtocol,
+                this.binding,
+                currentBinding
+            );
+        if (!admissible
+            || disposition
+                === CORE_DAMAGE_REQUEST_KNOWN_NON_APPLIED_DISPOSITION.STALE) {
+            return 'ignore';
+        }
+        return 'dedupe';
+    }
+
+    #normalizeCoreDamageRequestCandidate(event, registry, currentBinding) {
+        if (event?.type !== 'contact'
+            || event?.eventType !== CORE_DAMAGE_REQUEST_EVENT_TYPE
+            || event?.disposition !== 'applied'
+            || event?.maximumDamageWindow !== false) {
+            return Object.freeze({ candidate: null, failureReason: 'event-contract' });
+        }
+        const eventProtocol = readEventProtocol(event);
+        if (!isAdmissibleCommittedProtocol(
+            eventProtocol,
+            this.binding,
+            currentBinding
+        )) {
+            return Object.freeze({ candidate: null, failureReason: 'protocol-binding' });
+        }
+        let projectileHandle;
+        let coreHandle;
+        try {
+            projectileHandle = freezeHandle(event, 'event');
+            coreHandle = freezeHandle(event.other, 'event.other');
+        } catch {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'exact-handle-contract'
+            });
+        }
+        const projectile = readExactView(registry, projectileHandle);
+        const core = readExactView(registry, coreHandle);
+        if (!projectile
+            || projectile.kindId !== PROJECTILE_WORLD_KIND_ID
+            || !core
+            || core.kindId !== GPU_CORE_PROXY_WORLD_KIND_ID
+            || core.definitionId !== GPU_CORE_PROXY_DEFINITION_ID) {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'exact-entity-contract'
+            });
+        }
+        const metadata = projectile.metadata;
+        let sourceHandle;
+        let ownerHandle;
+        let authoredCoreTargetHandle;
+        let selectedTargetHandle;
+        let spawnSequence;
+        let expectedDamageFixedPoint;
+        try {
+            sourceHandle = freezeHandle({
+                entityId: metadata?.sourceEntityId,
+                incarnation: metadata?.sourceIncarnation
+            }, 'projectile.metadata.sourceHandle');
+            ownerHandle = freezeHandle({
+                entityId: metadata?.ownerEntityId,
+                incarnation: metadata?.ownerIncarnation
+            }, 'projectile.metadata.ownerHandle');
+            authoredCoreTargetHandle = freezeHandle({
+                entityId: metadata?.coreTargetEntityId,
+                incarnation: metadata?.coreTargetIncarnation
+            }, 'projectile.metadata.coreTargetHandle');
+            selectedTargetHandle = freezeHandle({
+                entityId: metadata?.selectedTargetEntityId,
+                incarnation: metadata?.selectedTargetIncarnation
+            }, 'projectile.metadata.selectedTargetHandle');
+            spawnSequence = requireNonNegativeSafeInteger(
+                metadata?.spawnSequence,
+                'projectile.metadata.spawnSequence'
+            );
+            requirePositiveSafeInteger(event.sourceTick, 'event.sourceTick');
+            requireNonNegativeSafeInteger(event.sequence, 'event.sequence');
+            expectedDamageFixedPoint = encodeGpuCircleBodyFixedPoint(
+                CANONICAL_RHOM_CORE_DAMAGE_REQUEST.coreDamage
+            );
+        } catch {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'metadata-primitive-contract'
+            });
+        }
+        const eventDamageFixedPoint = event.valueFixedPoint;
+        const metadataDamageFixedPoint = metadata?.coreDamageFixedPoint;
+        const projectileDefinitionId = optionalId(projectile.definitionId);
+        const metadataDefinitionId = optionalId(metadata?.definitionId);
+        const producerId = optionalId(metadata?.producerId);
+        const sourceAbilityId = optionalId(metadata?.sourceAbilityId);
+        const descriptor = CANONICAL_RHOM_CORE_DAMAGE_REQUEST;
+        if (metadata?.teamId !== GAMEPLAY_TEAM_ID.HOSTILE
+            || metadata?.allegiancePolicy !== descriptor.allegiancePolicy
+            || metadata?.damagePolicyId !== descriptor.damagePolicyId
+            || metadata?.targetPolicyId !== descriptor.targetPolicyId
+            || metadata?.towerTargetPolicyId
+                !== descriptor.towerTargetPolicyId
+            || metadata?.coreTargetPolicyId !== descriptor.coreTargetPolicyId
+            || metadata?.coreDamageRequestPolicyId
+                !== descriptor.coreDamageRequestPolicyId
+            || metadata?.targetSelectionPolicyId
+                !== descriptor.targetSelectionPolicyId
+            || metadata?.distancePolicyId !== descriptor.distancePolicyId
+            || metadata?.attackRangeTiles !== descriptor.attackRangeTiles
+            || metadata?.requiresExactSelectedTarget !== true
+            || !sameHandle(authoredCoreTargetHandle, coreHandle)
+            || metadata?.selectedTargetKind !== 'core'
+            || !sameHandle(selectedTargetHandle, coreHandle)
+            || metadata?.selectedTargetPolicyId
+                !== descriptor.coreTargetPolicyId
+            || !sameHandle(sourceHandle, ownerHandle)
+            || projectileDefinitionId !== descriptor.projectileDefinitionId
+            || metadataDefinitionId !== projectileDefinitionId
+            || producerId !== descriptor.producerId
+            || sourceAbilityId !== descriptor.sourceAbilityId
+            || metadata?.coreDamage !== descriptor.coreDamage
+            || metadata?.selectionSequence !== spawnSequence
+            || !Number.isSafeInteger(metadata?.selectionSourceTick)
+            || metadata.selectionSourceTick <= 0
+            || metadata.selectionSourceTick > event.sourceTick
+            || projectile.createdAtTick !== metadata.selectionSourceTick
+            || !Number.isSafeInteger(metadata?.attackFingerprint)
+            || metadata.attackFingerprint <= 0
+            || !Number.isSafeInteger(expectedDamageFixedPoint)
+            || expectedDamageFixedPoint <= 0
+            || expectedDamageFixedPoint !== descriptor.coreDamageFixedPoint
+            || !Number.isSafeInteger(metadataDamageFixedPoint)
+            || !Number.isSafeInteger(eventDamageFixedPoint)
+            || metadataDamageFixedPoint !== expectedDamageFixedPoint
+            || eventDamageFixedPoint !== expectedDamageFixedPoint
+            || event.damageFixedPoint !== 0) {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'metadata-authentication'
+            });
+        }
+        // Projectile의 source Enemy는 이 시점에 active일 필요가 없습니다.
+        // Registry source liveness를 조회하지 않고 spawn-time exact metadata만 인증합니다.
+        const impactKey = createSemanticCoreDamageRequestKey(
+            eventProtocol,
+            coreHandle,
+            projectileHandle
+        );
+        return Object.freeze({
+            failureReason: null,
+            candidate: Object.freeze({
+                kind: 'core-damage-request',
+                event,
+                eventProtocol,
+                coreHandle,
+                projectileHandle,
+                damageSubjectHandle: projectileHandle,
+                requestedDamageFixedPoint: expectedDamageFixedPoint,
+                requestedDamage: expectedDamageFixedPoint
+                    / GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE,
+                projectileDefinitionId,
+                producerId,
+                sourceAbilityId,
+                sourceHandle,
+                ownerHandle,
+                spawnSequence,
+                impactKey
+            })
         });
     }
 

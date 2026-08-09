@@ -36,7 +36,20 @@ const BEHAVIOR_PROFILE_KEYS = new Set([
     'fallback',
     'attackDefinitionId',
     'coreImpactPolicy',
-    'formationPolicy'
+    'formationPolicy',
+    'charge'
+]);
+const CHARGE_PROFILE_KEYS = new Set([
+    'windupTicks',
+    'windupRangeTiles',
+    'chargeSpeedTilesPerSecond',
+    'chargeMaxTicks',
+    'recoilImpulseTilesPerSecond',
+    'recoilTicks',
+    'recoverTicks',
+    'telegraphStyleCode',
+    'telegraphColorRgba',
+    'telegraphRadiusScale'
 ]);
 const ENEMY_DEFINITION_KEYS = new Set([
     'id',
@@ -88,6 +101,14 @@ function requireNonNegativeFinite(value, label) {
     const number = requireFinite(value, label);
     if (number < 0) {
         throw new RangeError(`${label}은 0 이상의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function requirePositiveSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0 || number > 0xffffffff) {
+        throw new RangeError(`${label}은 양의 uint32 정수여야 합니다.`);
     }
     return number;
 }
@@ -157,6 +178,56 @@ function normalizeCombatProfile(source, label) {
     });
 }
 
+function normalizeChargeProfile(source, label) {
+    if (source === undefined || source === null) {
+        return null;
+    }
+    const charge = requirePlainObject(source, label);
+    assertKnownKeys(charge, CHARGE_PROFILE_KEYS, label);
+    return Object.freeze({
+        windupTicks: requirePositiveSafeInteger(
+            charge.windupTicks,
+            `${label}.windupTicks`
+        ),
+        windupRangeTiles: requirePositiveFinite(
+            charge.windupRangeTiles,
+            `${label}.windupRangeTiles`
+        ),
+        chargeSpeedTilesPerSecond: requirePositiveFinite(
+            charge.chargeSpeedTilesPerSecond,
+            `${label}.chargeSpeedTilesPerSecond`
+        ),
+        chargeMaxTicks: requirePositiveSafeInteger(
+            charge.chargeMaxTicks,
+            `${label}.chargeMaxTicks`
+        ),
+        recoilImpulseTilesPerSecond: requirePositiveFinite(
+            charge.recoilImpulseTilesPerSecond,
+            `${label}.recoilImpulseTilesPerSecond`
+        ),
+        recoilTicks: requirePositiveSafeInteger(
+            charge.recoilTicks,
+            `${label}.recoilTicks`
+        ),
+        recoverTicks: requirePositiveSafeInteger(
+            charge.recoverTicks,
+            `${label}.recoverTicks`
+        ),
+        telegraphStyleCode: requirePositiveSafeInteger(
+            charge.telegraphStyleCode,
+            `${label}.telegraphStyleCode`
+        ),
+        telegraphColorRgba: normalizeColorRgba(
+            charge.telegraphColorRgba,
+            `${label}.telegraphColorRgba`
+        ),
+        telegraphRadiusScale: requirePositiveFinite(
+            charge.telegraphRadiusScale,
+            `${label}.telegraphRadiusScale`
+        )
+    });
+}
+
 function normalizeBehaviorProfile(source, label) {
     const profile = requirePlainObject(source, label);
     assertKnownKeys(profile, BEHAVIOR_PROFILE_KEYS, label);
@@ -200,7 +271,8 @@ function normalizeBehaviorProfile(source, label) {
             profile.coreImpactPolicy,
             `${label}.coreImpactPolicy`
         ),
-        formationPolicy
+        formationPolicy,
+        charge: normalizeChargeProfile(profile.charge, `${label}.charge`)
     });
 }
 
@@ -318,6 +390,18 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
     if (hasTargeting !== hasAttackDefinition) {
         throw new RangeError(
             `${label}의 TARGETING capability와 behavior attackDefinitionId가 일치해야 합니다.`
+        );
+    }
+    const hasCharge = capabilityIdSet.has(ENEMY_CAPABILITY_ID.CHARGE);
+    const hasChargeProfile = profiles.behavior.charge !== null;
+    if (hasCharge !== hasChargeProfile) {
+        throw new RangeError(
+            `${label}의 CHARGE capability와 behavior charge profile이 일치해야 합니다.`
+        );
+    }
+    if (hasCharge && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)) {
+        throw new RangeError(
+            `${label}의 CHARGE capability에는 CONTACT_COMBAT capability가 필요합니다.`
         );
     }
     if (profiles.combat.towerContactDamage > 0
