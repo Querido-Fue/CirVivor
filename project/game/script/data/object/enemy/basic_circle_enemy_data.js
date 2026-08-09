@@ -10,6 +10,7 @@ import {
     ENEMY_CAPABILITY_ID
 } from 'ingame/contract/enemy_capability_contract.js';
 import {
+    ENEMY_SPAWN_POLICY,
     normalizeEnemyDefinition
 } from 'ingame/contract/enemy_profile_contract.js';
 import {
@@ -25,6 +26,9 @@ import {
 import {
     BASIC_PENTA_ENEMY_DATA
 } from './basic_penta_enemy_data.js';
+import {
+    BASIC_HEXA_ENEMY_DATA
+} from './basic_hexa_enemy_data.js';
 
 export {
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
@@ -32,8 +36,9 @@ export {
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
 } from './main_gpu_enemy_definition_data.js';
 export { BASIC_PENTA_ENEMY_DATA } from './basic_penta_enemy_data.js';
+export { BASIC_HEXA_ENEMY_DATA } from './basic_hexa_enemy_data.js';
 
-/** main GPU wave에서 사용하는 시각 archetype 6종의 불변 선언입니다. */
+/** main GPU wave에서 사용하는 시각 archetype 7종의 불변 선언입니다. */
 export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_square_01',
     'square'
@@ -41,10 +46,12 @@ export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
 export const BASIC_TRIANGLE_ENEMY_DATA = normalizeEnemyDefinition(
     Object.freeze({
         id: 'basic_triangle_01',
+        spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
         shapeDefinitionId: 'triangle',
         physicsProfileId: TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID,
         combatProfileId: TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
         behaviorProfileId: TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
+        formationDefinitionId: null,
         capabilityIds: MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render: Object.freeze({
             colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
@@ -65,10 +72,6 @@ export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
             ENEMY_CAPABILITY_ID.CHARGE
         ])
     }
-);
-export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
-    'basic_hexa_01',
-    'hexa'
 );
 export const BASIC_GEN_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_gen_01',

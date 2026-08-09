@@ -21,8 +21,15 @@ const DEFAULT_COMPLETION_BATCH_CAPACITY = 256;
 const NORMAL_COMPLETION_RESULTS = new Set([
     GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED,
     GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
-    GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+    GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
+    GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
 ]);
+const RETRYABLE_CAPACITY_STATUS_MASK = (
+    GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED
+    | GPU_EFFECT_RUNTIME_STATUS.INSTANCE_CAPACITY_EXCEEDED
+    | GPU_EFFECT_RUNTIME_STATUS.EVENT_CAPACITY_EXCEEDED
+    | GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW
+) >>> 0;
 const VALID_EFFECT_EVENT_TYPES = new Set(Object.values(GPU_EFFECT_EVENT_TYPE));
 
 function requirePositiveSafeInteger(value, label) {
@@ -747,6 +754,9 @@ export class GpuEffectCommandOwner {
         const results = [];
         const events = [];
         let acceptedBatchCount = 0;
+        let zeroTargetCount = 0;
+        let sourceInvalidCount = 0;
+        let capacityRejectedCount = 0;
         try {
             for (const batch of eligible) {
                 const key = [
@@ -784,8 +794,12 @@ export class GpuEffectCommandOwner {
                 if (!pending || !sameProtocol(pending.protocol, batch)) {
                     throw new RangeError(`등록되지 않은 Effect completion입니다: ${batch.sourceTick}`);
                 }
+                const capacityStatus = batch.status >>> 0;
+                const capacityRejected = capacityStatus !== GPU_EFFECT_RUNTIME_STATUS.OK;
                 if (batch.abiVersion !== GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION
-                    || batch.status !== GPU_EFFECT_RUNTIME_STATUS.OK
+                    || (capacityRejected
+                        && ((capacityStatus & ~RETRYABLE_CAPACITY_STATUS_MASK) !== 0
+                            || (capacityStatus & RETRYABLE_CAPACITY_STATUS_MASK) === 0))
                     || batch.pulseResults.length !== pending.commands.length
                     || batch.eventCount !== batch.events.length) {
                     throw new RangeError('Effect completion whole-tick count/status가 일치하지 않습니다.');
@@ -803,26 +817,37 @@ export class GpuEffectCommandOwner {
                     if (result.programIndex !== index
                         || result.pulseSequence !== command.pulseSequence
                         || !NORMAL_COMPLETION_RESULTS.has(result.resultCode)
-                        || ((result.resultCode
-                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID)
-                            !== sourceInvalidAuthorized)
                         || result.appliedCount > result.candidateCount
+                        || ((result.resultCode
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED)
+                            !== capacityRejected)
+                        || (!capacityRejected
+                            && ((result.resultCode
+                                === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID)
+                                !== sourceInvalidAuthorized))
                         || (result.resultCode
                             === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
                             ? result.appliedCount <= 0
                                 || result.appliedCount !== result.candidateCount
-                            : result.candidateCount !== 0
-                                || result.appliedCount !== 0)) {
+                            : result.resultCode
+                                === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
+                                ? result.candidateCount !== 0
+                                    || result.appliedCount !== 0
+                                : result.candidateCount !== 0
+                                    || result.appliedCount !== 0)) {
                         throw new RangeError(`Effect pulse result가 command와 다릅니다: ${index}`);
                     }
                     candidateCount += result.candidateCount;
                     appliedInstanceCount += result.appliedCount;
                     pulseResultByCommandId.set(command.commandId, result);
                     if (result.resultCode === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET) {
-                        this.telemetry.zeroTargetCount++;
+                        zeroTargetCount++;
                     } else if (result.resultCode
                         === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID) {
-                        this.telemetry.sourceInvalidCount++;
+                        sourceInvalidCount++;
+                    } else if (result.resultCode
+                        === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED) {
+                        capacityRejectedCount++;
                     }
                     results.push(Object.freeze({
                         commandId: command.commandId,
@@ -839,7 +864,10 @@ export class GpuEffectCommandOwner {
                     }));
                 }
                 if (candidateCount !== batch.candidateCount
-                    || appliedInstanceCount !== batch.appliedInstanceCount) {
+                    || appliedInstanceCount !== batch.appliedInstanceCount
+                    || (capacityRejected
+                        && (appliedInstanceCount !== 0
+                            || batch.eventCount !== 0))) {
                     throw new RangeError('Effect completion aggregate count가 pulse result와 다릅니다.');
                 }
                 const eventCountsByCommandId = new Map(
@@ -850,8 +878,12 @@ export class GpuEffectCommandOwner {
                 );
                 const validPulseCommandIds = pending.commands
                     .filter((command) => (
-                        pulseResultByCommandId.get(command.commandId)?.resultCode
-                            !== GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                        ![
+                            GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
+                            GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
+                        ].includes(
+                            pulseResultByCommandId.get(command.commandId)?.resultCode
+                        )
                     ))
                     .map(({ commandId }) => commandId);
                 let nextPulseEventIndex = 0;
@@ -912,6 +944,8 @@ export class GpuEffectCommandOwner {
                     const counts = eventCountsByCommandId.get(command.commandId);
                     const expectedPulseCount = result.resultCode
                             === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                        || result.resultCode
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
                         ? 0
                         : 1;
                     if (counts.pulse !== expectedPulseCount
@@ -941,6 +975,9 @@ export class GpuEffectCommandOwner {
             );
         }
         this.deferredCompletionBatches = future;
+        this.telemetry.zeroTargetCount += zeroTargetCount;
+        this.telemetry.sourceInvalidCount += sourceInvalidCount;
+        this.telemetry.capacityRejectedCount += capacityRejectedCount;
         this.telemetry.staleBatchCount += staleBatchCount;
         this.lastCompletionResult = Object.freeze({
             fixedTick: tick,

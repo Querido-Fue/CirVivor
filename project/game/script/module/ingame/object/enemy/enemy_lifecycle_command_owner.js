@@ -1,5 +1,6 @@
 import {
     createGpuRegistryMetadata,
+    materializeGpuPlainDataSnapshot,
     normalizeGpuSpawnIntent
 } from '../gpu_spawn_intent.js';
 import {
@@ -7,12 +8,27 @@ import {
     assertEnemyLifecycleDisposition,
     isEnemyDispositionBountyEligible
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
+import {
+    createFormationLineageHash
+} from '../../contract/enemy_formation_contract.js';
+import {
+    createGpuPrivateHexaTransformDestinationIntent,
+    materializeNaturalHexaFormationActivation,
+    normalizeGpuPrivateHexaTransformDestinationIntent
+} from './gpu_enemy_spawn_adapter.js';
+import {
+    BASIC_HEXA_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_hexa_enemy_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
 // 외부 options/reason이나 reflection으로 재현할 수 없는 command identity marker입니다.
 // fixed commit payload에는 노출하지 않고 terminal close의 보존 여부만 지배합니다.
 const AUTHENTIC_TERMINAL_CLEANUP_COMMANDS = new WeakSet();
+const PRIVILEGED_TRANSFORM_DISPOSITIONS = new Set([
+    ENEMY_LIFECYCLE_DISPOSITION_ID.MERGE_CONSUMED,
+    ENEMY_LIFECYCLE_DISPOSITION_ID.TRANSFORM_CONSUMED
+]);
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -41,6 +57,28 @@ function normalizeHandle(source, label) {
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
+}
+
+function compareHandles(left, right) {
+    return left.entityId - right.entityId
+        || left.incarnation - right.incarnation;
+}
+
+function assertAtomicTransformTransactionPort(source) {
+    const methods = [
+        'armPreparedFormationTransformBatch',
+        'commitArmedFormationTransformBatch',
+        'cancelArmedFormationTransformBatch'
+    ];
+    if (!source || typeof source !== 'object') {
+        throw new TypeError('atomic transform transaction port가 필요합니다.');
+    }
+    for (const method of methods) {
+        if (typeof source[method] !== 'function') {
+            throw new TypeError(`atomic transform transaction port.${method}()가 필요합니다.`);
+        }
+    }
+    return source;
 }
 
 function isRetryableSpawnRejection(reason) {
@@ -111,11 +149,15 @@ function assertRegistry(registry) {
  */
 export class EnemyLifecycleCommandOwner {
     #terminalCleanupAuthority;
+    #atomicTransformAuthority;
+    #atomicTransformRegistryAuthority;
+    #atomicTransformTransactionPort;
+    #authoredFormationProvenanceLedger;
 
     /**
      * @param {object} backend - EnemySimulationBackend public port입니다.
      * @param {object} registry - WorldRegistry입니다.
-     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 terminal cleanup authority입니다.
+     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null,atomicTransformAuthority?:object|null,atomicTransformRegistryAuthority?:object|null,atomicTransformTransactionPort?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 privileged authority입니다.
      */
     constructor(backend, registry, options = {}) {
         this.backend = assertBackend(backend);
@@ -132,11 +174,64 @@ export class EnemyLifecycleCommandOwner {
             );
         }
         this.#terminalCleanupAuthority = terminalCleanupAuthority;
+        const atomicTransformAuthority = options.atomicTransformAuthority ?? null;
+        if (atomicTransformAuthority !== null
+            && typeof atomicTransformAuthority?.consumePermit !== 'function') {
+            throw new TypeError(
+                'atomicTransformAuthority.consumePermit()가 필요합니다.'
+            );
+        }
+        this.#atomicTransformAuthority = atomicTransformAuthority;
+        const atomicTransformRegistryAuthority
+            = options.atomicTransformRegistryAuthority ?? null;
+        if (atomicTransformRegistryAuthority !== null
+            && typeof atomicTransformRegistryAuthority !== 'object') {
+            throw new TypeError(
+                'atomicTransformRegistryAuthority는 opaque object여야 합니다.'
+            );
+        }
+        this.#atomicTransformRegistryAuthority
+            = atomicTransformRegistryAuthority;
+        const atomicTransformTransactionPort
+            = options.atomicTransformTransactionPort ?? null;
+        const configuredAtomicOptionCount = [
+            atomicTransformAuthority,
+            atomicTransformRegistryAuthority,
+            atomicTransformTransactionPort
+        ].filter((value) => value !== null).length;
+        if (configuredAtomicOptionCount !== 0
+            && configuredAtomicOptionCount !== 3) {
+            throw new TypeError(
+                'atomic transform authority/registry authority/transaction port는 함께 필요합니다.'
+            );
+        }
+        if (configuredAtomicOptionCount === 3) {
+            const atomicRegistryMethods = [
+                'preflightAtomicTransformBatch',
+                'commitAtomicTransformBatch',
+                'cancelAtomicTransformBatch'
+            ];
+            for (const method of atomicRegistryMethods) {
+                if (typeof this.registry?.[method] !== 'function') {
+                    throw new TypeError(
+                        `EnemyLifecycle atomic registry.${method}()가 필요합니다.`
+                    );
+                }
+            }
+            this.#atomicTransformTransactionPort
+                = assertAtomicTransformTransactionPort(
+                    atomicTransformTransactionPort
+                );
+        } else {
+            this.#atomicTransformTransactionPort = null;
+        }
         this.pendingCommands = [];
         this.knownCommandIds = new Set();
         this.completedCommandIds = [];
         this.completedCommandHead = 0;
         this.pendingDespawnKeys = new Set();
+        this.pendingAtomicTransformSourceKeys = new Set();
+        this.#authoredFormationProvenanceLedger = new Map();
         this.nextCommandSequence = 1;
         this.nextTerminalCleanupCommandSequence = 1;
         this.lastCommitResult = null;
@@ -155,6 +250,9 @@ export class EnemyLifecycleCommandOwner {
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const normalizedIntent = normalizeSpawnIntent(intent);
+        const provenancePlan = this.#preflightAuthoredFormationProvenance([
+            normalizedIntent
+        ]);
         const normalizedCommandId = this.#claimCommandId(commandId);
         if (!normalizedCommandId) {
             return Object.freeze({ accepted: false, reason: 'duplicate-command' });
@@ -167,6 +265,7 @@ export class EnemyLifecycleCommandOwner {
             sequence,
             intent: normalizedIntent
         }));
+        this.#commitAuthoredFormationProvenance(provenancePlan);
         return Object.freeze({
             accepted: true,
             commandId: normalizedCommandId,
@@ -232,11 +331,16 @@ export class EnemyLifecycleCommandOwner {
             });
         }
 
+        const provenancePlan = this.#preflightAuthoredFormationProvenance(
+            commands.map(({ intent }) => intent)
+        );
+
         for (const command of commands) {
             this.knownCommandIds.add(command.commandId);
         }
         this.pendingCommands.push(...commands);
         this.nextCommandSequence += commands.length;
+        this.#commitAuthoredFormationProvenance(provenancePlan);
         return Object.freeze({
             accepted: true,
             requestedCount: commands.length,
@@ -289,6 +393,13 @@ export class EnemyLifecycleCommandOwner {
             || options?.disposition === null
             ? null
             : assertEnemyLifecycleDisposition(options.disposition);
+        if (disposition !== null
+            && PRIVILEGED_TRANSFORM_DISPOSITIONS.has(disposition)) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'privileged-transform-disposition-required'
+            });
+        }
         const pendingDespawnIndex = this.#findPendingDespawnIndex(key);
         if (pendingDespawnIndex >= 0) {
             const existing = this.pendingCommands[pendingDespawnIndex];
@@ -399,6 +510,186 @@ export class EnemyLifecycleCommandOwner {
     }
 
     /**
+     * Formation owner만 사용할 수 있는 whole-tick atomic transform ingress입니다.
+     * public lifecycle caller가 permit/transaction port를 위조할 수 없으며, source slot은
+     * 이 경계에 노출되지 않습니다.
+     */
+    requestAtomicTransformBatch(
+        request,
+        targetFixedTick,
+        commandId,
+        atomicTransformPermit
+    ) {
+        this.#assertUsable();
+        if (!this.ingressOpen) {
+            return this.#rejectClosedIngress();
+        }
+        if (this.#atomicTransformAuthority?.consumePermit(
+            atomicTransformPermit
+        ) !== true) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-permit-invalid'
+            });
+        }
+        if (this.#atomicTransformTransactionPort === null) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-runtime-unconfigured'
+            });
+        }
+        const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const prepareSourceTick = requirePositiveSafeInteger(
+            request?.prepareSourceTick,
+            'prepareSourceTick'
+        );
+        const batchIdFingerprint = requirePositiveSafeInteger(
+            request?.batchIdFingerprint,
+            'batchIdFingerprint'
+        );
+        if (tick !== prepareSourceTick + 1) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-publication-deadline'
+            });
+        }
+        if (!request || typeof request !== 'object'
+            || !Array.isArray(request.records)
+            || request.records.length === 0) {
+            throw new TypeError('atomic transform batch records가 필요합니다.');
+        }
+        const batchSourceKeys = new Set();
+        const records = request.records.map((record, index) => {
+            if (!record || typeof record !== 'object'
+                || !Array.isArray(record.sourceHandles)
+                || record.sourceHandles.length !== 2) {
+                throw new TypeError(
+                    `atomic transform records[${index}] sourceHandles가 필요합니다.`
+                );
+            }
+            const sourceHandles = record.sourceHandles.map((handle, sourceIndex) => (
+                normalizeHandle(
+                    handle,
+                    `records[${index}].sourceHandles[${sourceIndex}]`
+                )
+            ));
+            if (compareHandles(sourceHandles[0], sourceHandles[1]) >= 0) {
+                throw new RangeError('atomic transform sourceHandles는 exact ASC여야 합니다.');
+            }
+            if (!Array.isArray(record.sourceLineages)
+                || record.sourceLineages.length !== 2) {
+                throw new TypeError(
+                    `atomic transform records[${index}] sourceLineages가 필요합니다.`
+                );
+            }
+            const sourceLineages = record.sourceLineages.map((lineage, sourceIndex) => {
+                if (!Array.isArray(lineage)
+                    || lineage.length === 0
+                    || lineage.length > 6) {
+                    throw new TypeError(
+                        `records[${index}].sourceLineages[${sourceIndex}]가 bounded exact 배열이어야 합니다.`
+                    );
+                }
+                const normalized = lineage.map((handle, memberIndex) => normalizeHandle(
+                    handle,
+                    `records[${index}].sourceLineages[${sourceIndex}][${memberIndex}]`
+                )).sort(compareHandles);
+                for (let memberIndex = 1;
+                    memberIndex < normalized.length;
+                    memberIndex++) {
+                    if (handleKey(normalized[memberIndex - 1])
+                        === handleKey(normalized[memberIndex])) {
+                        throw new RangeError('atomic transform source lineage가 중복되었습니다.');
+                    }
+                }
+                return Object.freeze(normalized);
+            });
+            if (sourceHandles[0].entityId === sourceHandles[1].entityId) {
+                throw new RangeError('atomic transform source는 서로 달라야 합니다.');
+            }
+            for (const handle of sourceHandles) {
+                const key = handleKey(handle);
+                if (batchSourceKeys.has(key)
+                    || this.pendingAtomicTransformSourceKeys.has(key)) {
+                    throw new RangeError('atomic transform source가 중복되었습니다.');
+                }
+                batchSourceKeys.add(key);
+            }
+            const destinationDescriptor
+                = normalizeGpuPrivateHexaTransformDestinationIntent(
+                    materializeGpuPlainDataSnapshot(
+                        record.destinationDescriptor,
+                        `records[${index}].destinationDescriptor`
+                    )
+                );
+            const disposition = assertEnemyLifecycleDisposition(
+                record.disposition
+            );
+            if (!PRIVILEGED_TRANSFORM_DISPOSITIONS.has(disposition)) {
+                throw new RangeError(
+                    `records[${index}].disposition은 transform 전용 값이어야 합니다.`
+                );
+            }
+            return {
+                sourceHandles: Object.freeze(sourceHandles),
+                sourceLineages: Object.freeze(sourceLineages),
+                destinationDescriptor,
+                disposition,
+                childCommandIds: null
+            };
+        });
+        const sequence = this.nextCommandSequence;
+        if (!Number.isSafeInteger(sequence) || sequence <= 0) {
+            throw new RangeError('atomic transform command sequence 공간이 고갈되었습니다.');
+        }
+        const normalizedCommandId = this.#normalizeCommandId(commandId, sequence);
+        const ownedCommandIds = [normalizedCommandId];
+        for (let index = 0; index < records.length; index++) {
+            const childCommandIds = Object.freeze({
+                spawn: `${normalizedCommandId}:transform:${index}:spawn`,
+                sourceA: `${normalizedCommandId}:transform:${index}:source:0`,
+                sourceB: `${normalizedCommandId}:transform:${index}:source:1`
+            });
+            records[index].childCommandIds = childCommandIds;
+            ownedCommandIds.push(
+                childCommandIds.spawn,
+                childCommandIds.sourceA,
+                childCommandIds.sourceB
+            );
+        }
+        const batchCommandIds = new Set(ownedCommandIds);
+        if (batchCommandIds.size !== ownedCommandIds.length
+            || ownedCommandIds.some((id) => this.knownCommandIds.has(id))) {
+            return Object.freeze({ accepted: false, reason: 'duplicate-command' });
+        }
+        for (const id of ownedCommandIds) {
+            this.knownCommandIds.add(id);
+        }
+        this.nextCommandSequence++;
+        const command = Object.freeze({
+            type: 'atomic-transform-batch',
+            commandId: normalizedCommandId,
+            ownedCommandIds: Object.freeze(ownedCommandIds),
+            targetFixedTick: tick,
+            sequence,
+            prepareSourceTick,
+            batchIdFingerprint,
+            records: Object.freeze(records.map(Object.freeze)),
+            transactionPort: this.#atomicTransformTransactionPort
+        });
+        this.pendingCommands.push(command);
+        for (const key of batchSourceKeys) {
+            this.pendingAtomicTransformSourceKeys.add(key);
+        }
+        return Object.freeze({
+            accepted: true,
+            commandId: normalizedCommandId,
+            targetFixedTick: tick,
+            transformCount: records.length
+        });
+    }
+
+    /**
      * terminal 전이에서 새 lifecycle ingress를 영구히 닫습니다. 아직 commit되지 않은
      * spawn/일반 despawn은 즉시 취소하고, committed-event cleanup만 마지막 경계까지
      * 잠시 보존합니다.
@@ -447,6 +738,7 @@ export class EnemyLifecycleCommandOwner {
             backendState: this.backend.getRuntimeState(),
             registryRevision: this.registry.getRevision()
         };
+        const consumedCommandIds = new Set();
 
         if (this.recoveryRequired) {
             baseResult.state = 'failed';
@@ -457,6 +749,14 @@ export class EnemyLifecycleCommandOwner {
         const dueCommands = [];
         for (const command of this.pendingCommands) {
             if (command.targetFixedTick < tick) {
+                if (command.type === 'atomic-transform-batch') {
+                    baseResult.rejected.push({
+                        commandId: command.commandId,
+                        code: 'atomic-transform-publication-deadline'
+                    });
+                    consumedCommandIds.add(command.commandId);
+                    continue;
+                }
                 baseResult.state = 'failed';
                 baseResult.recoveryRequired = true;
                 baseResult.rejected.push({
@@ -467,6 +767,7 @@ export class EnemyLifecycleCommandOwner {
                 dueCommands.push(command);
             }
         }
+        this.#consumeCommands(consumedCommandIds);
         if (baseResult.recoveryRequired) {
             return this.#saveResult(baseResult);
         }
@@ -481,9 +782,11 @@ export class EnemyLifecycleCommandOwner {
             return this.#saveResult(baseResult);
         }
 
-        const consumedCommandIds = new Set();
         const despawnCommands = dueCommands.filter((command) => command.type === 'despawn');
         const spawnCommands = dueCommands.filter((command) => command.type === 'spawn');
+        const atomicTransformCommands = dueCommands.filter(
+            (command) => command.type === 'atomic-transform-batch'
+        );
 
         const despawnOutcome = this.#commitDespawns(
             despawnCommands,
@@ -491,6 +794,16 @@ export class EnemyLifecycleCommandOwner {
             consumedCommandIds
         );
         if (despawnOutcome === 'recovery') {
+            this.#consumeCommands(consumedCommandIds);
+            return this.#saveResult(baseResult);
+        }
+
+        const transformOutcome = this.#commitAtomicTransforms(
+            atomicTransformCommands,
+            baseResult,
+            consumedCommandIds
+        );
+        if (transformOutcome === 'recovery') {
             this.#consumeCommands(consumedCommandIds);
             return this.#saveResult(baseResult);
         }
@@ -534,8 +847,9 @@ export class EnemyLifecycleCommandOwner {
         const commands = this.pendingCommands;
         this.pendingCommands = [];
         this.pendingDespawnKeys.clear();
+        this.pendingAtomicTransformSourceKeys.clear();
         for (const command of commands) {
-            this.#rememberCompletedCommandId(command.commandId);
+            this.#rememberCompletedCommandIds(command);
         }
         return commands.length;
     }
@@ -549,7 +863,127 @@ export class EnemyLifecycleCommandOwner {
         this.backend = null;
         this.registry = null;
         this.#terminalCleanupAuthority = null;
+        this.#atomicTransformAuthority = null;
+        this.#atomicTransformRegistryAuthority = null;
+        this.#atomicTransformTransactionPort = null;
+        this.#authoredFormationProvenanceLedger.clear();
         this.lastCommitResult = null;
+    }
+
+    #preflightAuthoredFormationProvenance(intents) {
+        const plans = new Map();
+        for (let index = 0; index < intents.length; index++) {
+            const intent = intents[index];
+            if (intent?.formationGroupId === undefined
+                || intent.formationGroupId === null) {
+                continue;
+            }
+            const waveId = requireNonEmptyString(
+                intent.waveId,
+                `intents[${index}].waveId`
+            );
+            const formationGroupId = requireNonEmptyString(
+                intent.formationGroupId,
+                `intents[${index}].formationGroupId`
+            );
+            const key = JSON.stringify([waveId, formationGroupId]);
+            let plan = plans.get(key);
+            if (!plan) {
+                const existing = this.#authoredFormationProvenanceLedger.get(key);
+                plan = existing
+                    ? {
+                        key,
+                        waveId: existing.waveId,
+                        formationGroupId: existing.formationGroupId,
+                        formationAuthoredCoordinateSystemId:
+                            existing.formationAuthoredCoordinateSystemId,
+                        formationAuthoredMemberCount:
+                            existing.formationAuthoredMemberCount,
+                        formationRows: existing.formationRows,
+                        formationColumns: existing.formationColumns,
+                        formationAuthoredOccupiedSlotMask:
+                            existing.formationAuthoredOccupiedSlotMask,
+                        memberIndices: new Set(existing.memberIndices),
+                        memberSlotIndices: new Set(existing.memberSlotIndices),
+                        coordinateKeys: new Set(existing.coordinateKeys)
+                    }
+                    : {
+                        key,
+                        waveId,
+                        formationGroupId,
+                        formationAuthoredCoordinateSystemId:
+                            intent.formationAuthoredCoordinateSystemId,
+                        formationAuthoredMemberCount:
+                            intent.formationAuthoredMemberCount,
+                        formationRows: intent.formationRows,
+                        formationColumns: intent.formationColumns,
+                        formationAuthoredOccupiedSlotMask:
+                            intent.formationAuthoredOccupiedSlotMask,
+                        memberIndices: new Set(),
+                        memberSlotIndices: new Set(),
+                        coordinateKeys: new Set()
+                    };
+                plans.set(key, plan);
+            }
+            for (const field of [
+                'waveId',
+                'formationGroupId',
+                'formationAuthoredCoordinateSystemId',
+                'formationAuthoredMemberCount',
+                'formationRows',
+                'formationColumns',
+                'formationAuthoredOccupiedSlotMask'
+            ]) {
+                if (plan[field] !== intent[field]) {
+                    throw new RangeError(
+                        `authored Formation group ${key}의 ${field}가 기존 provenance와 다릅니다.`
+                    );
+                }
+            }
+            const memberIndex = Number(intent.formationMemberIndex);
+            const memberSlotIndex = Number(intent.formationMemberSlotIndex);
+            const rowIndex = Number(intent.formationRowIndex);
+            const columnIndex = Number(intent.formationColumnIndex);
+            const coordinateKey = `${rowIndex}:${columnIndex}`;
+            if (plan.memberIndices.has(memberIndex)
+                || plan.memberSlotIndices.has(memberSlotIndex)
+                || plan.coordinateKeys.has(coordinateKey)) {
+                throw new RangeError(
+                    `authored Formation group ${key}에 member/slot/coordinate 중복이 있습니다.`
+                );
+            }
+            plan.memberIndices.add(memberIndex);
+            plan.memberSlotIndices.add(memberSlotIndex);
+            plan.coordinateKeys.add(coordinateKey);
+        }
+        const resultingKeyCount = new Set([
+            ...this.#authoredFormationProvenanceLedger.keys(),
+            ...plans.keys()
+        ]).size;
+        if (resultingKeyCount > this.commandHistoryCapacity) {
+            throw new RangeError('authored Formation provenance ledger capacity를 초과했습니다.');
+        }
+        return plans;
+    }
+
+    #commitAuthoredFormationProvenance(plans) {
+        for (const [key, plan] of plans) {
+            this.#authoredFormationProvenanceLedger.set(key, Object.freeze({
+                key,
+                waveId: plan.waveId,
+                formationGroupId: plan.formationGroupId,
+                formationAuthoredCoordinateSystemId:
+                    plan.formationAuthoredCoordinateSystemId,
+                formationAuthoredMemberCount: plan.formationAuthoredMemberCount,
+                formationRows: plan.formationRows,
+                formationColumns: plan.formationColumns,
+                formationAuthoredOccupiedSlotMask:
+                    plan.formationAuthoredOccupiedSlotMask,
+                memberIndices: Object.freeze([...plan.memberIndices]),
+                memberSlotIndices: Object.freeze([...plan.memberSlotIndices]),
+                coordinateKeys: Object.freeze([...plan.coordinateKeys])
+            }));
+        }
     }
 
     #findPendingDespawnIndex(key) {
@@ -663,6 +1097,327 @@ export class EnemyLifecycleCommandOwner {
         return 'complete';
     }
 
+    #commitAtomicTransforms(commands, result, consumedCommandIds) {
+        if (commands.length === 0) {
+            return 'complete';
+        }
+        if (commands.length !== 1) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: commands[0].commandId,
+                code: 'multiple-atomic-transform-batches'
+            });
+            return 'recovery';
+        }
+        const command = commands[0];
+        if (command.targetFixedTick !== command.prepareSourceTick + 1) {
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-publication-deadline'
+            });
+            consumedCommandIds.add(command.commandId);
+            return 'complete';
+        }
+        for (const record of command.records) {
+            for (const handle of record.sourceHandles) {
+                const registryHas = this.registry.has(handle);
+                const backendHas = this.backend.hasBody(handle);
+                if (!registryHas && !backendHas) {
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        code: 'atomic-transform-source-consumed'
+                    });
+                    consumedCommandIds.add(command.commandId);
+                    return 'complete';
+                }
+                if (registryHas !== backendHas) {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        code: 'atomic-transform-registry-backend-desync'
+                    });
+                    return 'recovery';
+                }
+            }
+        }
+        const materializedRecords = [];
+        let transforms;
+        try {
+            transforms = command.records.map((record, index) => {
+                const rootHandle = record.sourceHandles[0];
+                const sourceViews = record.sourceHandles.map((handle) => (
+                    this.registry.copyEntityView(handle, {})
+                ));
+                const sourceRootView = sourceViews[0];
+                if (sourceViews.some((view) => !view)) {
+                    throw new Error(
+                        `atomic transform source view가 없습니다: ${index}`
+                    );
+                }
+                const sourceMemberCount = sourceViews.reduce((sum, view) => (
+                    sum + Number(view.metadata?.formationMemberCount)
+                ), 0);
+                const sourceGeneration = Math.max(...sourceViews.map((view) => (
+                    Number(view.metadata?.formationGeneration)
+                )));
+                for (let sourceIndex = 0;
+                    sourceIndex < sourceViews.length;
+                    sourceIndex++) {
+                    const metadata = sourceViews[sourceIndex].metadata;
+                    const lineage = record.sourceLineages[sourceIndex];
+                    if (Number(metadata?.formationMemberCount) !== lineage.length
+                        || Number(metadata?.formationLineageHash)
+                            !== createFormationLineageHash(lineage)) {
+                        throw new RangeError(
+                            `atomic transform source lineage가 registry metadata와 다릅니다: ${index}/${sourceIndex}`
+                        );
+                    }
+                }
+                const combinedLineage = record.sourceLineages
+                    .flat()
+                    .sort(compareHandles);
+                for (let memberIndex = 1;
+                    memberIndex < combinedLineage.length;
+                    memberIndex++) {
+                    if (handleKey(combinedLineage[memberIndex - 1])
+                        === handleKey(combinedLineage[memberIndex])) {
+                        throw new RangeError(
+                            `atomic transform combined lineage가 중복되었습니다: ${index}`
+                        );
+                    }
+                }
+                if (sourceMemberCount !== record.destinationDescriptor.memberCount
+                    || combinedLineage.length !== sourceMemberCount
+                    || createFormationLineageHash(combinedLineage)
+                        !== record.destinationDescriptor.formationLineageHash
+                    || sourceGeneration + 1
+                        !== record.destinationDescriptor.formationGeneration
+                    || record.disposition !== (
+                        sourceMemberCount === 6
+                            ? ENEMY_LIFECYCLE_DISPOSITION_ID.TRANSFORM_CONSUMED
+                            : ENEMY_LIFECYCLE_DISPOSITION_ID.MERGE_CONSUMED
+                    )) {
+                    throw new RangeError(
+                        `atomic transform source/destination Formation facts가 다릅니다: ${index}`
+                    );
+                }
+                // Both sources must independently satisfy the canonical n-table and
+                // immutable Core/bounty/Tower-contact metadata contract. The helper
+                // is also the single private transform catalog validator.
+                for (let sourceIndex = 0;
+                    sourceIndex < sourceViews.length;
+                    sourceIndex++) {
+                    const sourceHandle = record.sourceHandles[sourceIndex];
+                    createGpuPrivateHexaTransformDestinationIntent({
+                        ...record.destinationDescriptor,
+                        sourceRootView: sourceViews[sourceIndex],
+                        destinationHandle: {
+                            entityId: sourceHandle.entityId,
+                            incarnation: sourceHandle.incarnation + 1
+                        }
+                    });
+                }
+                const destinationHandle = Object.freeze({
+                    entityId: rootHandle.entityId,
+                    incarnation: rootHandle.incarnation + 1
+                });
+                const destinationIntent
+                    = createGpuPrivateHexaTransformDestinationIntent({
+                        ...record.destinationDescriptor,
+                        sourceRootView,
+                        destinationHandle
+                    });
+                materializedRecords.push(Object.freeze({
+                    ...record,
+                    destinationHandle,
+                    destinationIntent
+                }));
+                return {
+                    sourceHandles: record.sourceHandles,
+                    destination: {
+                        kindId: destinationIntent.kindId,
+                        definitionId: destinationIntent.definitionId,
+                        createdAtTick: command.targetFixedTick,
+                        metadata: createRegistryMetadata(destinationIntent)
+                    }
+                };
+            });
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-destination-materialization',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        let preflight;
+        try {
+            preflight = this.registry.preflightAtomicTransformBatch({
+                transforms
+            }, this.#atomicTransformRegistryAuthority);
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-registry-preflight-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (!preflight) {
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-preflight-stale'
+            });
+            consumedCommandIds.add(command.commandId);
+            return 'complete';
+        }
+        const armRecords = materializedRecords.map((record, index) => Object.freeze({
+            sourceHandles: record.sourceHandles,
+            destinationHandle: preflight.transforms[index].destinationHandle,
+            destinationIntent: record.destinationIntent,
+            disposition: record.disposition
+        }));
+        if (armRecords.some((record) => (
+            record.destinationHandle.entityId
+                !== record.destinationIntent.destinationEntityId
+            || record.destinationHandle.incarnation
+                !== record.destinationIntent.destinationIncarnation
+        ))) {
+            this.registry.cancelAtomicTransformBatch(
+                preflight.token,
+                this.#atomicTransformRegistryAuthority
+            );
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-destination-identity-mismatch'
+            });
+            return 'recovery';
+        }
+        let armed;
+        try {
+            armed = command.transactionPort.armPreparedFormationTransformBatch(
+                Object.freeze({
+                    commandId: command.commandId,
+                    batchIdFingerprint: command.batchIdFingerprint,
+                    prepareSourceTick: command.prepareSourceTick,
+                    targetFixedTick: command.targetFixedTick,
+                    registryRevision: preflight.registryRevision,
+                    records: Object.freeze(armRecords)
+                })
+            );
+        } catch (error) {
+            this.registry.cancelAtomicTransformBatch(
+                preflight.token,
+                this.#atomicTransformRegistryAuthority
+            );
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-arm-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (armed?.accepted !== true || !armed.receipt) {
+            this.registry.cancelAtomicTransformBatch(
+                preflight.token,
+                this.#atomicTransformRegistryAuthority
+            );
+            result.state = armed?.requiresRecovery === true ? 'failed' : result.state;
+            result.recoveryRequired = armed?.requiresRecovery === true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: armed?.reason ?? 'atomic-transform-arm-rejected'
+            });
+            consumedCommandIds.add(command.commandId);
+            return result.recoveryRequired ? 'recovery' : 'complete';
+        }
+        const registryCommit = this.registry.commitAtomicTransformBatch(
+            preflight.token,
+            this.#atomicTransformRegistryAuthority
+        );
+        if (!registryCommit) {
+            try {
+                command.transactionPort.cancelArmedFormationTransformBatch(
+                    armed.receipt,
+                    'registry-commit-failed'
+                );
+            } catch {
+                // owner/backend recovery evidence가 아래 hard failure에 포함됩니다.
+            }
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-registry-commit-failed'
+            });
+            return 'recovery';
+        }
+        let committed;
+        try {
+            committed = command.transactionPort.commitArmedFormationTransformBatch(
+                armed.receipt
+            );
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'atomic-transform-backend-commit-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (committed?.accepted !== true) {
+            // CPU publication 뒤에는 rollback하지 않습니다. replacement recovery만 허용합니다.
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: committed?.reason ?? 'atomic-transform-backend-commit-failed'
+            });
+            return 'recovery';
+        }
+        for (let index = 0; index < command.records.length; index++) {
+            const record = command.records[index];
+            const destinationHandle
+                = registryCommit.transforms[index].destinationHandle;
+            result.spawned.push({
+                commandId: record.childCommandIds.spawn,
+                parentCommandId: command.commandId,
+                handle: destinationHandle,
+                transform: true
+            });
+            for (let sourceIndex = 0;
+                sourceIndex < record.sourceHandles.length;
+                sourceIndex++) {
+                const sourceHandle = record.sourceHandles[sourceIndex];
+                result.despawned.push({
+                    commandId: sourceIndex === 0
+                        ? record.childCommandIds.sourceA
+                        : record.childCommandIds.sourceB,
+                    parentCommandId: command.commandId,
+                    handle: sourceHandle,
+                    reason: 'formation-transform',
+                    disposition: record.disposition,
+                    bountyEligible: false,
+                    transformedInto: destinationHandle
+                });
+            }
+        }
+        consumedCommandIds.add(command.commandId);
+        return 'complete';
+    }
+
     #commitSpawns(commands, result, consumedCommandIds) {
         if (commands.length === 0 || result.recoveryRequired) {
             return;
@@ -688,11 +1443,35 @@ export class EnemyLifecycleCommandOwner {
                 result.recoveryRequired = true;
                 return;
             }
-            reservations.push({ command, handle });
+            let activationIntent = command.intent;
+            try {
+                if (command.intent.kindId === 'enemy'
+                    && command.intent.definitionId
+                        === BASIC_HEXA_ENEMY_DEFINITION_ID) {
+                    activationIntent = materializeNaturalHexaFormationActivation(
+                        command.intent,
+                        handle
+                    );
+                }
+            } catch (error) {
+                this.registry.cancelReservation(handle);
+                for (const reservation of reservations) {
+                    this.registry.cancelReservation(reservation.handle);
+                }
+                result.rejected.push({
+                    commandId: command.commandId,
+                    code: 'formation-activation-materialization',
+                    message: String(error?.message ?? error)
+                });
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                return;
+            }
+            reservations.push({ command, handle, activationIntent });
         }
 
-        const bodies = reservations.map(({ command, handle }) => ({
-            ...command.intent,
+        const bodies = reservations.map(({ activationIntent, handle }) => ({
+            ...activationIntent,
             entityId: handle.entityId,
             incarnation: handle.incarnation
         }));
@@ -797,10 +1576,10 @@ export class EnemyLifecycleCommandOwner {
     }
 
     #activateReservation(reservation, result, consumedCommandIds) {
-        const { command, handle } = reservation;
+        const { command, handle, activationIntent = command.intent } = reservation;
         const activated = this.registry.activateReserved(
             handle,
-            createRegistryMetadata(command.intent)
+            createRegistryMetadata(activationIntent)
         );
         if (!activated) {
             result.state = 'failed';
@@ -857,8 +1636,16 @@ export class EnemyLifecycleCommandOwner {
             }
             if (command.type === 'despawn') {
                 this.pendingDespawnKeys.delete(handleKey(command.handle));
+            } else if (command.type === 'atomic-transform-batch') {
+                for (const record of command.records) {
+                    for (const handle of record.sourceHandles) {
+                        this.pendingAtomicTransformSourceKeys.delete(
+                            handleKey(handle)
+                        );
+                    }
+                }
             }
-            this.#rememberCompletedCommandId(command.commandId);
+            this.#rememberCompletedCommandIds(command);
         }
         this.pendingCommands = remaining;
     }
@@ -873,6 +1660,13 @@ export class EnemyLifecycleCommandOwner {
         if (this.completedCommandHead >= this.commandHistoryCapacity) {
             this.completedCommandIds = this.completedCommandIds.slice(this.completedCommandHead);
             this.completedCommandHead = 0;
+        }
+    }
+
+    #rememberCompletedCommandIds(command) {
+        const ids = command.ownedCommandIds ?? [command.commandId];
+        for (const commandId of ids) {
+            this.#rememberCompletedCommandId(commandId);
         }
     }
 

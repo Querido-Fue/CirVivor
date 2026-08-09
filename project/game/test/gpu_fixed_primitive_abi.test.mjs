@@ -16,6 +16,7 @@ const {
     GPU_SPAWN_PROGRAM_MODE,
     GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_RESULT,
+    GPU_TOWER_GAMEPLAY_TARGET_CONFIG_ABI_VERSION,
     createGpuBodyControlProgramStorage,
     createGpuSpawnProgramStorage,
     readGpuBodyControlProgramHeader,
@@ -36,9 +37,10 @@ function toHex(buffer) {
     )).join('');
 }
 
-test('fixed primitive ABI의 header, control, spawn, tracked-pose stride와 offset을 고정한다', () => {
+test('fixed primitive ABI의 control/spawn과 독립 Tower/tracked config offset을 고정한다', () => {
     assert.equal(GPU_BODY_CONTROL_PROGRAM_ABI_VERSION, 2);
     assert.equal(GPU_SPAWN_PROGRAM_ABI_VERSION, 4);
+    assert.equal(GPU_TOWER_GAMEPLAY_TARGET_CONFIG_ABI_VERSION, 1);
     assert.equal(
         GPU_BODY_CONTROL_SELECTION_POLICY.CORE_FIRST_IN_RANGE_THEN_TOWER,
         1
@@ -135,6 +137,15 @@ test('fixed primitive ABI의 header, control, spawn, tracked-pose stride와 offs
     assert.equal(trackedConfig.ENTITY_ID, 4);
     assert.equal(trackedConfig.INCARNATION, 8);
     assert.equal(trackedConfig.ENABLED, 12);
+
+    const towerGameplayTarget
+        = GPU_FIXED_PRIMITIVE_ABI.TOWER_GAMEPLAY_TARGET_CONFIG;
+    assert.equal(towerGameplayTarget.STRIDE, 16);
+    assert.equal(towerGameplayTarget.TARGET_SLOT, 0);
+    assert.equal(towerGameplayTarget.ENTITY_ID, 4);
+    assert.equal(towerGameplayTarget.INCARNATION, 8);
+    assert.equal(towerGameplayTarget.ENABLED, 12);
+    assert.notStrictEqual(towerGameplayTarget, trackedConfig);
 
     const trackedPose = GPU_FIXED_PRIMITIVE_ABI.TRACKED_POSE_RECORD;
     assert.equal(trackedPose.STRIDE, 32);

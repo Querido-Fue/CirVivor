@@ -2,6 +2,7 @@ import {
     ENEMY_CAPABILITY_ID
 } from 'ingame/contract/enemy_capability_contract.js';
 import {
+    ENEMY_SPAWN_POLICY,
     normalizeEnemyDefinition
 } from 'ingame/contract/enemy_profile_contract.js';
 import {
@@ -37,7 +38,9 @@ export function createMainGpuEnemyDefinition(
     options = {}
 ) {
     const allowedOptionKeys = new Set([
+        'spawnPolicy',
         'behaviorProfileId',
+        'formationDefinitionId',
         'capabilityIds',
         'render'
     ]);
@@ -57,11 +60,13 @@ export function createMainGpuEnemyDefinition(
     };
     return normalizeEnemyDefinition({
         id,
+        spawnPolicy: options.spawnPolicy ?? ENEMY_SPAWN_POLICY.NATURAL,
         shapeDefinitionId,
         physicsProfileId: MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID,
         combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
         behaviorProfileId: options.behaviorProfileId
             ?? CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
+        formationDefinitionId: options.formationDefinitionId ?? null,
         capabilityIds: options.capabilityIds
             ?? MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render

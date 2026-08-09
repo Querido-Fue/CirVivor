@@ -7,6 +7,9 @@ export const GPU_BODY_CONTROL_PROGRAM_ABI_VERSION = 2;
 /** Source-relative destination materialization 전용 SpawnProgram ABI version입니다. */
 export const GPU_SPAWN_PROGRAM_ABI_VERSION = 4;
 
+/** Arrow gameplay의 exact Tower target을 presentation tracking과 분리하는 config ABI입니다. */
+export const GPU_TOWER_GAMEPLAY_TARGET_CONFIG_ABI_VERSION = 1;
+
 /**
  * Core depletion terminal boundary에서 unresolved fixed programs를 exact set으로
  * 취소하는 host/backend seam version입니다. Body/SpawnProgram byte ABI와 독립입니다.
@@ -109,6 +112,13 @@ export const GPU_FIXED_PRIMITIVE_ABI = Object.freeze({
     TRACKED_POSE_CONFIG: Object.freeze({
         STRIDE: 16,
         SOURCE_SLOT: 0,
+        ENTITY_ID: 4,
+        INCARNATION: 8,
+        ENABLED: 12
+    }),
+    TOWER_GAMEPLAY_TARGET_CONFIG: Object.freeze({
+        STRIDE: 16,
+        TARGET_SLOT: 0,
         ENTITY_ID: 4,
         INCARNATION: 8,
         ENABLED: 12

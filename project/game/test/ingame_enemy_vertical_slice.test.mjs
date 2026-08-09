@@ -176,6 +176,18 @@ class FakeEnemySimulationBackend {
         };
     }
 
+    configureTowerGameplayTarget(handle = null) {
+        if (handle === null) {
+            return { accepted: true, configured: false };
+        }
+        const accepted = this.canControlBody(handle);
+        return {
+            accepted,
+            configured: accepted,
+            reason: accepted ? undefined : 'stale-handle'
+        };
+    }
+
     configureTrackedBody(handle = null) {
         if (handle === null) {
             return { accepted: true, tracked: null };

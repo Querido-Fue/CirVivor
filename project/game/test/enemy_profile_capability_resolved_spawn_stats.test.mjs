@@ -6,6 +6,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
     BASIC_ARROW_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
     INGAME_ENEMY_DEFINITION_BY_ID
@@ -113,10 +114,13 @@ function resolve(definition, mapEnemyModifiers, waveEnemyModifiers) {
 function canonicalSource(definition, overrides = {}) {
     return {
         id: definition.id,
+        spawnPolicy: definition.spawnPolicy,
         shapeDefinitionId: definition.shapeDefinitionId,
         physicsProfileId: definition.physicsProfileId,
         combatProfileId: definition.combatProfileId,
         behaviorProfileId: definition.behaviorProfileId,
+        effectEmitterProfileId: definition.effectEmitterProfileId,
+        formationDefinitionId: definition.formationDefinitionId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides
@@ -248,6 +252,7 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
         assert.equal(Object.isFrozen(profiles.physics), true);
         assert.equal(Object.isFrozen(profiles.combat), true);
         assert.equal(Object.isFrozen(profiles.behavior), true);
+        assert.equal(definition.spawnPolicy, 'natural');
         assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.NAVIGATION));
         assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.CONTACT_COMBAT));
         assert.ok(definition.capabilityIds.includes(ENEMY_CAPABILITY_ID.CORE_IMPACT));
@@ -289,10 +294,12 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
 
     const squareArcherBehavior = normalizeEnemyDefinition({
         id: 'shape-independent-square-archer',
+        spawnPolicy: ARCHER_DEFINITION.spawnPolicy,
         shapeDefinitionId: 'square',
         physicsProfileId: ARCHER_DEFINITION.physicsProfileId,
         combatProfileId: ARCHER_DEFINITION.combatProfileId,
         behaviorProfileId: ARCHER_DEFINITION.behaviorProfileId,
+        formationDefinitionId: null,
         capabilityIds: ARCHER_DEFINITION.capabilityIds,
         render: ARCHER_DEFINITION.render
     }, ENEMY_PROFILE_CATALOG);
@@ -340,6 +347,29 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
             )
         }
     ), ENEMY_PROFILE_CATALOG), /CORE_IMPACT capability/);
+    assert.throws(() => normalizeEnemyDefinition(canonicalSource(
+        BASIC_HEXA_ENEMY_DATA,
+        {
+            id: 'hexa-missing-formation-capability',
+            capabilityIds: BASIC_HEXA_ENEMY_DATA.capabilityIds.filter(
+                (id) => id !== ENEMY_CAPABILITY_ID.FORMATION
+            )
+        }
+    ), ENEMY_PROFILE_CATALOG), /FORMATION capability/);
+    assert.throws(() => normalizeEnemyDefinition(canonicalSource(
+        BASIC_HEXA_ENEMY_DATA,
+        {
+            id: 'hexa-missing-formation-definition',
+            formationDefinitionId: null
+        }
+    ), ENEMY_PROFILE_CATALOG), /FORMATION capability/);
+    assert.throws(() => normalizeEnemyDefinition(canonicalSource(
+        BASIC_SQUARE_ENEMY_DATA,
+        {
+            id: 'square-forged-formation-definition',
+            formationDefinitionId: BASIC_HEXA_ENEMY_DATA.formationDefinitionId
+        }
+    ), ENEMY_PROFILE_CATALOG), /FORMATION capability/);
 });
 
 test('Triangle T는 C baseline과 분리된 fast/light profile을 spawn 시 한 번 f32 resolve한다', () => {

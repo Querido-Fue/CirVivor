@@ -1082,6 +1082,7 @@ test('Pentagon director는 lifecycle spawn+120 tick cadence와 zero-target compl
         }
     }, 121);
     director.observeCompletedEvents({
+        fixedTick: 122,
         protocolFailure: null,
         results: [{
             commandId: command.commandId,
@@ -1121,6 +1122,7 @@ test('Pentagon director는 lifecycle spawn+120 tick cadence와 zero-target compl
         spawned: []
     }, 241);
     director.observeCompletedEvents({
+        fixedTick: 242,
         protocolFailure: null,
         results: [{
             commandId: secondCommand.commandId,
@@ -1192,6 +1194,7 @@ test('Pentagon director는 live roster SOURCE_INVALID completion을 recovery로 
     }, 121);
 
     director.observeCompletedEvents({
+        fixedTick: 122,
         protocolFailure: null,
         results: [{
             commandId: leftCommand.commandId,
@@ -1220,4 +1223,318 @@ test('Pentagon director는 live roster SOURCE_INVALID completion을 recovery로 
     assert.equal(director.getStatus().telemetry.completedPulseCount, 0);
     assert.equal(director.getStatus().telemetry.zeroTargetCompletionCount, 0);
     director.destroy();
+});
+
+for (const [label, status] of [
+    ['candidate', GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED],
+    ['instance', GPU_EFFECT_RUNTIME_STATUS.INSTANCE_CAPACITY_EXCEEDED],
+    ['event', GPU_EFFECT_RUNTIME_STATUS.EVENT_CAPACITY_EXCEEDED],
+    ['grid', GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW],
+    ['combined', GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED
+        | GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW]
+]) {
+    test(`Effect ${label} capacity completion은 normal zero-partial로 watermark만 전진한다`, () => {
+        const sessionGeneration = 60 + status;
+        const registry = new WorldRegistry({ capacity: 2 });
+        const backend = createEffectBackend(sessionGeneration);
+        const handle = activateEmitter(registry, backend);
+        const owner = new GpuEffectCommandOwner(backend, registry, {
+            sessionGeneration,
+            effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
+            effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
+            commandCapacity: 2
+        });
+        const commands = [createPulseCommand(sessionGeneration, 5, handle)];
+        const batchId = createGpuEffectPulseBatchId(sessionGeneration, 5, commands);
+        assert.equal(owner.getCommandPort().requestPulseBatch({
+            batchId,
+            targetFixedTick: 5,
+            commands
+        }).accepted, true);
+        assert.equal(owner.commitAtFixedBoundary(5).programs.length, 1);
+        backend.completed.push(Object.freeze({
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            ...backend.getEventProtocolState(),
+            previousSourceTick: 0,
+            previousSubmittedTick: 0,
+            sourceTick: 5,
+            submittedTick: 5,
+            completedThroughTick: 5,
+            status,
+            candidateCount: 0,
+            appliedInstanceCount: 0,
+            eventCount: 0,
+            pulseResults: Object.freeze([Object.freeze({
+                programIndex: 0,
+                pulseSequence: 0,
+                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
+                candidateCount: 0,
+                appliedCount: 0
+            })]),
+            events: Object.freeze([])
+        }));
+        const completion = owner.commitCompletedAtFixedBoundary(6);
+        assert.equal(completion.protocolFailure, null);
+        assert.equal(completion.results.length, 1);
+        assert.equal(
+            completion.results[0].resultCode,
+            GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
+        );
+        const statusSnapshot = owner.getStatus();
+        assert.equal(statusSnapshot.recoveryRequired, false);
+        assert.equal(statusSnapshot.pendingPulseProgramCount, 0);
+        assert.equal(statusSnapshot.completedThroughTick, 5);
+        assert.equal(statusSnapshot.telemetry.capacityRejectedCount, 1);
+    });
+}
+
+for (const forged of ['fatal-status-mix', 'forged-event']) {
+    test(`Effect capacity ${forged}는 telemetry mutation 전 recovery로 봉인한다`, () => {
+        const sessionGeneration = forged === 'fatal-status-mix' ? 80 : 81;
+        const registry = new WorldRegistry({ capacity: 2 });
+        const backend = createEffectBackend(sessionGeneration);
+        const handle = activateEmitter(registry, backend);
+        const owner = new GpuEffectCommandOwner(backend, registry, {
+            sessionGeneration,
+            effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
+            effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
+            commandCapacity: 2
+        });
+        const commands = [createPulseCommand(sessionGeneration, 5, handle)];
+        assert.equal(owner.getCommandPort().requestPulseBatch({
+            batchId: createGpuEffectPulseBatchId(sessionGeneration, 5, commands),
+            targetFixedTick: 5,
+            commands
+        }).accepted, true);
+        assert.equal(owner.commitAtFixedBoundary(5).programs.length, 1);
+        const events = forged === 'forged-event'
+            ? [Object.freeze({
+                type: GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED,
+                flags: 0,
+                effectInstanceId: backend.staged[0].records[0].fingerprint,
+                instanceIncarnation: 7,
+                sourceEntityId: handle.entityId,
+                sourceIncarnation: handle.incarnation,
+                targetEntityId: handle.entityId,
+                targetIncarnation: handle.incarnation,
+                effectDefinitionCode: DEFINITION.effectDefinitionCode,
+                valueFixedPoint: 0,
+                position: Object.freeze({ x: 0, y: 0 })
+            })]
+            : [];
+        backend.completed.push(Object.freeze({
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            ...backend.getEventProtocolState(),
+            previousSourceTick: 0,
+            previousSubmittedTick: 0,
+            sourceTick: 5,
+            submittedTick: 5,
+            completedThroughTick: 5,
+            status: forged === 'fatal-status-mix'
+                ? GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW
+                    | GPU_EFFECT_RUNTIME_STATUS.PROGRAM_CAPACITY_EXCEEDED
+                : GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW,
+            candidateCount: 0,
+            appliedInstanceCount: 0,
+            eventCount: events.length,
+            pulseResults: Object.freeze([Object.freeze({
+                programIndex: 0,
+                pulseSequence: 0,
+                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
+                candidateCount: 0,
+                appliedCount: 0
+            })]),
+            events: Object.freeze(events)
+        }));
+        const completion = owner.commitCompletedAtFixedBoundary(6);
+        assert.equal(completion.protocolFailure.code, 'effect-completion-protocol');
+        const statusSnapshot = owner.getStatus();
+        assert.equal(statusSnapshot.recoveryRequired, true);
+        assert.equal(statusSnapshot.pendingPulseProgramCount, 1);
+        assert.equal(statusSnapshot.completedThroughTick, 0);
+        assert.equal(statusSnapshot.telemetry.capacityRejectedCount, 0);
+    });
+}
+
+for (const reason of [
+    'effect-command-capacity',
+    'effect-command-history-capacity'
+]) {
+    test(`Pentagon director는 ${reason} receipt를 sequence 미소비 N+1 retry로 처리한다`, () => {
+        const sessionGeneration = reason === 'effect-command-capacity' ? 90 : 91;
+        const registry = new WorldRegistry({ capacity: 2 });
+        const backend = createEffectBackend(sessionGeneration);
+        const handle = activateEmitter(registry, backend, 1);
+        const requests = [];
+        const director = new PentagonEffectDirector({
+            endpoint: {
+                hasBody: (candidate) => backend.hasBody(candidate),
+                getCapacity: () => 2,
+                getStatus: () => Object.freeze({ sessionGeneration })
+            },
+            registry,
+            effectCommandPort: Object.freeze({
+                requestPulseBatch(batch) {
+                    requests.push(batch);
+                    if (requests.length === 1) {
+                        return Object.freeze({
+                            accepted: false,
+                            batchId: batch.batchId,
+                            targetFixedTick: batch.targetFixedTick,
+                            queuedCount: 0,
+                            reason
+                        });
+                    }
+                    return Object.freeze({
+                        accepted: true,
+                        batchId: batch.batchId,
+                        targetFixedTick: batch.targetFixedTick,
+                        queuedCount: batch.commands.length,
+                        replayed: false
+                    });
+                }
+            }),
+            sessionGeneration,
+            capacity: 2
+        });
+        director.observeLifecycle({
+            recoveryRequired: false,
+            despawned: [],
+            spawned: [{ handle }]
+        }, 1);
+        const rejected = director.stageForFixedTick({ targetFixedTick: 121 });
+        assert.equal(rejected.accepted, false);
+        assert.equal(rejected.reason, reason);
+        assert.equal(rejected.recoveryRequired, false);
+        assert.equal(director.getStatus().pendingPulseCount, 0);
+        assert.equal(director.getStatus().telemetry.capacityRejectedStageCount, 1);
+        assert.equal(
+            director.stageForFixedTick({ targetFixedTick: 121 }).replayed,
+            true
+        );
+        assert.equal(requests.length, 1);
+        const retried = director.stageForFixedTick({ targetFixedTick: 122 });
+        assert.equal(retried.accepted, true);
+        assert.equal(retried.stagedCount, 1);
+        assert.equal(requests[0].commands[0].pulseSequence, 0);
+        assert.equal(requests[1].commands[0].pulseSequence, 0);
+        assert.notEqual(requests[0].commands[0].commandId, requests[1].commands[0].commandId);
+        assert.equal(director.requiresRecovery(), false);
+    });
+}
+
+for (const forged of ['batch-id', 'queued-count', 'extra-field', 'replayed']) {
+    test(`Pentagon director는 forged ${forged} capacity receipt를 fail-close한다`, () => {
+        const sessionGeneration = 100 + [
+            'batch-id', 'queued-count', 'extra-field', 'replayed'
+        ].indexOf(forged);
+        const registry = new WorldRegistry({ capacity: 2 });
+        const backend = createEffectBackend(sessionGeneration);
+        const handle = activateEmitter(registry, backend, 1);
+        const director = new PentagonEffectDirector({
+            endpoint: {
+                hasBody: (candidate) => backend.hasBody(candidate),
+                getCapacity: () => 2,
+                getStatus: () => Object.freeze({ sessionGeneration })
+            },
+            registry,
+            effectCommandPort: Object.freeze({
+                requestPulseBatch(batch) {
+                    return Object.freeze({
+                        accepted: false,
+                        batchId: forged === 'batch-id'
+                            ? `${batch.batchId}:forged`
+                            : batch.batchId,
+                        targetFixedTick: batch.targetFixedTick,
+                        queuedCount: forged === 'queued-count' ? 1 : 0,
+                        reason: 'effect-command-capacity',
+                        ...(forged === 'extra-field' ? { extra: true } : {}),
+                        ...(forged === 'replayed' ? { replayed: false } : {})
+                    });
+                }
+            }),
+            sessionGeneration,
+            capacity: 2
+        });
+        director.observeLifecycle({
+            recoveryRequired: false,
+            despawned: [],
+            spawned: [{ handle }]
+        }, 1);
+        const receipt = director.stageForFixedTick({ targetFixedTick: 121 });
+        assert.equal(receipt.accepted, false);
+        assert.equal(receipt.recoveryRequired, true);
+        assert.equal(director.requiresRecovery(), true);
+        assert.equal(director.getStatus().pendingPulseCount, 0);
+        assert.equal(director.getStatus().telemetry.capacityRejectedStageCount, 0);
+    });
+}
+
+test('Pentagon delayed CAPACITY_REJECTED completion은 관찰 boundary에서 같은 sequence로 재시도한다', () => {
+    const sessionGeneration = 110;
+    const registry = new WorldRegistry({ capacity: 2 });
+    const backend = createEffectBackend(sessionGeneration);
+    const handle = activateEmitter(registry, backend, 1);
+    const requests = [];
+    const director = new PentagonEffectDirector({
+        endpoint: {
+            hasBody: (candidate) => backend.hasBody(candidate),
+            getCapacity: () => 2,
+            getStatus: () => Object.freeze({ sessionGeneration })
+        },
+        registry,
+        effectCommandPort: Object.freeze({
+            requestPulseBatch(batch) {
+                requests.push(batch);
+                return Object.freeze({
+                    accepted: true,
+                    batchId: batch.batchId,
+                    targetFixedTick: batch.targetFixedTick,
+                    queuedCount: batch.commands.length,
+                    replayed: false
+                });
+            }
+        }),
+        sessionGeneration,
+        capacity: 2
+    });
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [],
+        spawned: [{ handle }]
+    }, 1);
+    const stage = director.stageForFixedTick({ targetFixedTick: 121 });
+    const command = requests[0].commands[0];
+    director.observeFixedCommit({
+        recoveryRequired: false,
+        effectPrograms: {
+            state: 'committed',
+            recoveryRequired: false,
+            batchId: stage.batchId,
+            programs: [{
+                commandId: command.commandId,
+                sourceHandle: command.sourceHandle,
+                pulseSequence: 0
+            }]
+        }
+    }, 121);
+    director.observeCompletedEvents({
+        fixedTick: 130,
+        protocolFailure: null,
+        results: [{
+            commandId: command.commandId,
+            sourceTick: 121,
+            sourceHandle: command.sourceHandle,
+            pulseSequence: 0,
+            resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
+            candidateCount: 0,
+            appliedCount: 0
+        }]
+    });
+    assert.equal(director.requiresRecovery(), false);
+    const retry = director.stageForFixedTick({ targetFixedTick: 130 });
+    assert.equal(retry.accepted, true);
+    assert.equal(retry.stagedCount, 1);
+    assert.equal(requests[1].commands[0].pulseSequence, 0);
+    assert.notEqual(requests[1].commands[0].commandId, command.commandId);
 });

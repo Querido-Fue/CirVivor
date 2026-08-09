@@ -35,6 +35,9 @@ import {
     GPU_EFFECT_SUMMARY_FLAG
 } from './gpu_effect_runtime_abi.js';
 import {
+    GPU_FORMATION_BODY_STATE_FLAG
+} from './gpu_formation_runtime_abi.js';
+import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
 import {
@@ -335,7 +338,31 @@ struct EffectSummary {
     flags: atomic<u32>,
 }
 
+struct FormationState {
+    entity_id: u32,
+    incarnation: u32,
+    definition_code: u32,
+    coordinate_system_code: u32,
+    policy_code: u32,
+    member_count: u32,
+    occupied_slot_mask: u32,
+    rotation_step: u32,
+    generation: u32,
+    flags: u32,
+    lineage_hash: u32,
+    route_first_field_index: u32,
+    route_field_count: u32,
+    last_merge_tick: u32,
+    presentation_flags: u32,
+    presentation_tick: u32,
+    partner_entity_id: u32,
+    partner_incarnation: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+}
+
 struct EffectSummaryBuffer { values: array<EffectSummary> }
+struct FormationStateBuffer { values: array<FormationState> }
 
 struct ContactState {
     contact_count: atomic<u32>,
@@ -478,6 +505,13 @@ struct TrackedPoseConfig {
     enabled: u32,
 }
 
+struct TowerGameplayTargetConfig {
+    target_slot: u32,
+    entity_id: u32,
+    incarnation: u32,
+    enabled: u32,
+}
+
 struct TrackedPoseRecord {
     position: vec2f,
     velocity: vec2f,
@@ -541,6 +575,7 @@ struct SimulationParams {
 @group(0) @binding(10) var<storage, read_write> combat_states: CombatStateBuffer;
 @group(0) @binding(11) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(12) var<storage, read_write> effect_summaries: EffectSummaryBuffer;
+@group(0) @binding(13) var<storage, read> tower_gameplay_target: TowerGameplayTargetConfig;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -1860,37 +1895,43 @@ fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3
         = SPAWN_PROGRAM_RESULT_RESOLVED;
 }
 
-fn tracked_tower_target_is_valid() -> bool {
-    if (tracked_pose_config.enabled == 0u
-        || tracked_pose_config.source_slot >= counts.body_count) {
+fn tower_gameplay_target_is_valid() -> bool {
+    if (tower_gameplay_target.enabled == 0u
+        || tower_gameplay_target.target_slot >= counts.body_count) {
         return false;
     }
-    let target_slot = tracked_pose_config.source_slot;
-    return simulations.values[target_slot].entity_id == tracked_pose_config.entity_id
+    let target_slot = tower_gameplay_target.target_slot;
+    return simulations.values[target_slot].entity_id
+            == tower_gameplay_target.entity_id
         && simulations.values[target_slot].incarnation
-            == tracked_pose_config.incarnation
-        && body_id_is_alive(target_slot);
+            == tower_gameplay_target.incarnation
+        && body_id_is_alive(target_slot)
+        && body_interaction_layer(physics.values[target_slot].interaction_meta)
+            == BODY_LAYER_PLAYER_DAMAGEABLE
+        && gameplay_meta_is_valid(simulations.values[target_slot].gameplay_meta)
+        && gameplay_team_id(simulations.values[target_slot].gameplay_meta)
+            == GAMEPLAY_TEAM_PLAYER;
 }
 
-fn behavior_target_matches_tracked(body_id: u32) -> bool {
+fn behavior_target_matches_gameplay_tower(body_id: u32) -> bool {
     let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
     return (flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
-        && tracked_tower_target_is_valid()
+        && tower_gameplay_target_is_valid()
         && enemy_behavior_states.values[body_id].target_slot
-            == tracked_pose_config.source_slot
+            == tower_gameplay_target.target_slot
         && enemy_behavior_states.values[body_id].target_entity_id
-            == tracked_pose_config.entity_id
+            == tower_gameplay_target.entity_id
         && enemy_behavior_states.values[body_id].target_incarnation
-            == tracked_pose_config.incarnation;
+            == tower_gameplay_target.incarnation;
 }
 
-fn bind_behavior_target_to_tracked(body_id: u32) {
+fn bind_behavior_target_to_gameplay_tower(body_id: u32) {
     enemy_behavior_states.values[body_id].target_slot
-        = tracked_pose_config.source_slot;
+        = tower_gameplay_target.target_slot;
     enemy_behavior_states.values[body_id].target_entity_id
-        = tracked_pose_config.entity_id;
+        = tower_gameplay_target.entity_id;
     enemy_behavior_states.values[body_id].target_incarnation
-        = tracked_pose_config.incarnation;
+        = tower_gameplay_target.incarnation;
     atomicOr(
         &enemy_behavior_states.values[body_id].flags,
         ENEMY_BEHAVIOR_FLAG_TARGET_VALID
@@ -1943,12 +1984,12 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
-    if (!tracked_tower_target_is_valid()) {
+    if (!tower_gameplay_target_is_valid()) {
         enter_enemy_core_fallback(body_id);
         return;
     }
     if (state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
-        bind_behavior_target_to_tracked(body_id);
+        bind_behavior_target_to_gameplay_tower(body_id);
         disable_enemy_flow(body_id);
         physics.values[body_id].velocity = vec2f(0.0);
         set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
@@ -1957,13 +1998,13 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
     if (state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER) {
         let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
         if ((flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
-            && !behavior_target_matches_tracked(body_id)) {
+            && !behavior_target_matches_gameplay_tower(body_id)) {
             enter_enemy_core_fallback(body_id);
             return;
         }
-        bind_behavior_target_to_tracked(body_id);
+        bind_behavior_target_to_gameplay_tower(body_id);
         disable_enemy_flow(body_id);
-        let target_slot = tracked_pose_config.source_slot;
+        let target_slot = tower_gameplay_target.target_slot;
         let to_target = physics.values[target_slot].position
             - physics.values[body_id].position;
         let distance_squared = dot(to_target, to_target);
@@ -1992,7 +2033,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         }
         return;
     }
-    if (!behavior_target_matches_tracked(body_id)) {
+    if (!behavior_target_matches_gameplay_tower(body_id)) {
         enter_enemy_core_fallback(body_id);
         return;
     }
@@ -3741,7 +3782,7 @@ fn emit_enemy_charge_telegraphs(@builtin(global_invocation_id) global_id: vec3u)
     if ((previous_flags & ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING) == 0u
         || atomicLoad(&enemy_behavior_states.values[body_id].state)
             != ENEMY_BEHAVIOR_STATE_WINDUP
-        || !behavior_target_matches_tracked(body_id)) {
+        || !behavior_target_matches_gameplay_tower(body_id)) {
         return;
     }
     append_applied_event(AppliedEvent(
@@ -3785,7 +3826,7 @@ fn resolve_enemy_charge_contacts(@builtin(global_invocation_id) global_id: vec3u
             != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
         || simulations.values[body_id].incarnation != contact.self_incarnation
         || simulations.values[target_slot].incarnation != contact.other_incarnation
-        || !behavior_target_matches_tracked(body_id)
+        || !behavior_target_matches_gameplay_tower(body_id)
         || target_slot != enemy_behavior_states.values[body_id].target_slot
         || simulations.values[target_slot].entity_id
             != enemy_behavior_states.values[body_id].target_entity_id
@@ -4352,6 +4393,29 @@ struct EffectSummary {
     flags: u32,
 }
 
+struct FormationState {
+    entity_id: u32,
+    incarnation: u32,
+    definition_code: u32,
+    coordinate_system_code: u32,
+    policy_code: u32,
+    member_count: u32,
+    occupied_slot_mask: u32,
+    rotation_step: u32,
+    generation: u32,
+    flags: u32,
+    lineage_hash: u32,
+    route_first_field_index: u32,
+    route_field_count: u32,
+    last_merge_tick: u32,
+    presentation_flags: u32,
+    presentation_tick: u32,
+    partner_entity_id: u32,
+    partner_incarnation: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+}
+
 struct BodyTemporary {
     previous_position: vec2f,
     predicted_position: vec2f,
@@ -4374,6 +4438,7 @@ struct RenderStyleBuffer { values: array<BodyRenderStyle> }
 struct SimulationBuffer { values: array<BodySimulation> }
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
 struct EffectSummaryBuffer { values: array<EffectSummary> }
+struct FormationStateBuffer { values: array<FormationState> }
 
 struct RenderParams {
     viewport_origin: vec2f,
@@ -4390,6 +4455,10 @@ struct VertexOutput {
     @location(1) color: vec4f,
     @location(2) @interpolate(flat) shape_code: u32,
     @location(3) velocity: vec2f,
+    @location(4) @interpolate(flat) formation_member_count: u32,
+    @location(5) @interpolate(flat) formation_occupied_mask: u32,
+    @location(6) @interpolate(flat) formation_presentation_flags: u32,
+    @location(7) @interpolate(flat) health_ratio: f32,
 }
 
 @group(0) @binding(0) var<storage, read> counts: BodyCounts;
@@ -4399,6 +4468,7 @@ struct VertexOutput {
 @group(0) @binding(4) var<storage, read> simulations: SimulationBuffer;
 @group(0) @binding(5) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(6) var<storage, read> effect_summaries: EffectSummaryBuffer;
+@group(0) @binding(7) var<storage, read> formation_states: FormationStateBuffer;
 @group(1) @binding(0) var<uniform> params: RenderParams;
 
 const QUAD_VERTICES = array<vec2f, 6>(
@@ -4418,6 +4488,20 @@ const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDU
 const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
 const EFFECT_PRESENTATION_TAG_BOOST: u32 = 1u;
 const EFFECT_PRESENTATION_TAG_PULSE: u32 = 2u;
+const FORMATION_FLAG_ACTIVE: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.ACTIVE}u;
+const FORMATION_FLAG_MERGE_PULSE: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.PRESENTATION_MERGE_PULSE}u;
+const FORMATION_FLAG_RESERVATION: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.PRESENTATION_RESERVATION}u;
+const FORMATION_OCCUPIED_MASK: u32 = 63u;
+const FORMATION_HEX_CELL_RADIUS: f32 = 0.285;
+const FORMATION_RING_RADIUS: f32 = 0.54;
+const FORMATION_HEX_DIRECTIONS = array<vec2f, 6>(
+    vec2f(1.0, 0.0),
+    vec2f(0.5, -0.8660254037844386),
+    vec2f(-0.5, -0.8660254037844386),
+    vec2f(-1.0, 0.0),
+    vec2f(-0.5, 0.8660254037844386),
+    vec2f(0.5, 0.8660254037844386)
+);
 const SHAPE_DIRECTION_EPSILON: f32 = 0.000001;
 const SQUARE_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.center)};
 const SQUARE_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.halfSize)};
@@ -4545,6 +4629,64 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     return length(point) - 1.0;
 }
 
+fn formation_cell_distance(point: vec2f, slot: u32) -> f32 {
+    let center = FORMATION_HEX_DIRECTIONS[slot] * FORMATION_RING_RADIUS;
+    return polygon_distance(
+        (point - center) / FORMATION_HEX_CELL_RADIUS,
+        HEXA_POINTS,
+        6u
+    ) * FORMATION_HEX_CELL_RADIUS;
+}
+
+fn formation_mask_distance(point: vec2f, mask: u32) -> f32 {
+    var distance = 3.402823466e+38;
+    for (var slot = 0u; slot < 6u; slot += 1u) {
+        if ((mask & (1u << slot)) != 0u) {
+            distance = min(distance, formation_cell_distance(point, slot));
+        }
+    }
+    return distance;
+}
+
+fn formation_empty_boundary_distance(point: vec2f, mask: u32) -> f32 {
+    var distance = 3.402823466e+38;
+    for (var slot = 0u; slot < 6u; slot += 1u) {
+        if ((mask & (1u << slot)) == 0u) {
+            distance = min(
+                distance,
+                abs(formation_cell_distance(point, slot))
+            );
+        }
+    }
+    return distance;
+}
+
+fn segment_distance(point: vec2f, start: vec2f, end: vec2f) -> f32 {
+    let edge = end - start;
+    let length_squared = max(dot(edge, edge), 0.000001);
+    return length(point - (start + edge * clamp(
+        dot(point - start, edge) / length_squared,
+        0.0,
+        1.0
+    )));
+}
+
+fn formation_member_link_distance(point: vec2f, mask: u32) -> f32 {
+    var distance = 3.402823466e+38;
+    for (var slot = 0u; slot < 6u; slot += 1u) {
+        let next = (slot + 1u) % 6u;
+        if ((mask & (1u << slot)) != 0u
+            && (mask & (1u << next)) != 0u) {
+            distance = min(distance, segment_distance(
+                point,
+                FORMATION_HEX_DIRECTIONS[slot] * FORMATION_RING_RADIUS,
+                FORMATION_HEX_DIRECTIONS[next] * FORMATION_RING_RADIUS
+            ));
+        }
+    }
+    return distance;
+}
+
 fn unpack_rgba8(packed: u32) -> vec4f {
     return vec4f(
         f32(packed & 255u),
@@ -4566,6 +4708,10 @@ fn vertex_main(
         output.color = vec4f(0.0);
         output.shape_code = RENDER_SHAPE_CIRCLE;
         output.velocity = vec2f(0.0);
+        output.formation_member_count = 0u;
+        output.formation_occupied_mask = 0u;
+        output.formation_presentation_flags = 0u;
+        output.health_ratio = 0.0;
         return output;
     }
     let simulation_flags = simulations.values[instance_index].flags;
@@ -4575,6 +4721,10 @@ fn vertex_main(
         output.color = vec4f(0.0);
         output.shape_code = RENDER_SHAPE_CIRCLE;
         output.velocity = vec2f(0.0);
+        output.formation_member_count = 0u;
+        output.formation_occupied_mask = 0u;
+        output.formation_presentation_flags = 0u;
+        output.health_ratio = 0.0;
         return output;
     }
     let body = physics.values[instance_index];
@@ -4582,6 +4732,7 @@ fn vertex_main(
     let style = styles.values[instance_index];
     let behavior = enemy_behavior_states.values[instance_index];
     let effect_summary = effect_summaries.values[instance_index];
+    let formation = formation_states.values[instance_index];
     var body_position = mix(
         temporary.previous_position,
         body.position,
@@ -4646,6 +4797,39 @@ fn vertex_main(
     output.color = presentation_color * f32(style.visible != 0u);
     output.shape_code = style.shape_code;
     output.velocity = presentation_velocity;
+    let formation_identity_matches = formation.entity_id
+            == simulations.values[instance_index].entity_id
+        && formation.incarnation
+            == simulations.values[instance_index].incarnation
+        && (formation.flags & FORMATION_FLAG_ACTIVE) != 0u
+        && formation.member_count >= 1u
+        && formation.member_count <= 6u
+        && (formation.occupied_slot_mask & ~FORMATION_OCCUPIED_MASK) == 0u;
+    output.formation_member_count = select(
+        0u,
+        formation.member_count,
+        formation_identity_matches
+    );
+    output.formation_occupied_mask = select(
+        0u,
+        formation.occupied_slot_mask,
+        formation_identity_matches
+    );
+    output.formation_presentation_flags = select(
+        0u,
+        formation.presentation_flags,
+        formation_identity_matches
+    );
+    output.health_ratio = select(
+        0.0,
+        clamp(
+            f32(max(simulations.values[instance_index].health, 0))
+                / f32(max(effect_summary.max_health_fixed_point, 1)),
+            0.0,
+            1.0
+        ),
+        formation_identity_matches && effect_identity_matches
+    );
     return output;
 }
 
@@ -4653,6 +4837,118 @@ fn vertex_main(
 fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     if (length(input.local_position) > 1.0) {
         discard;
+    }
+    if (input.shape_code == RENDER_SHAPE_HEXA
+        && input.formation_member_count > 0u) {
+        let occupied_distance = formation_mask_distance(
+            input.local_position,
+            input.formation_occupied_mask
+        );
+        let occupied_aa = max(fwidth(occupied_distance), 0.002);
+        let occupied_coverage = 1.0 - smoothstep(
+            -occupied_aa,
+            occupied_aa,
+            occupied_distance
+        );
+        let progress = f32(input.formation_member_count) / 6.0;
+        var rgb = mix(
+            input.color.rgb,
+            vec3f(1.0, 0.72, 0.22),
+            progress * 0.28
+        );
+        var alpha = input.color.a * occupied_coverage;
+
+        let link_distance = formation_member_link_distance(
+            input.local_position,
+            input.formation_occupied_mask
+        );
+        let link_aa = max(fwidth(link_distance), 0.002);
+        let link = 1.0 - smoothstep(
+            0.032 - link_aa,
+            0.032 + link_aa,
+            link_distance
+        );
+        if (link > alpha) {
+            rgb = mix(rgb, vec3f(1.0, 0.78, 0.32), 0.46);
+        }
+        alpha = max(alpha, link * input.color.a * 0.78);
+
+        let empty_distance = formation_empty_boundary_distance(
+            input.local_position,
+            input.formation_occupied_mask
+        );
+        let empty_aa = max(fwidth(empty_distance), 0.002);
+        let empty_outline = 1.0 - smoothstep(
+            0.018 - empty_aa,
+            0.018 + empty_aa,
+            empty_distance
+        );
+        let reservation_active = (input.formation_presentation_flags
+            & FORMATION_FLAG_RESERVATION) != 0u;
+        let empty_alpha_scale = select(0.2, 0.72, reservation_active);
+        if (empty_outline * empty_alpha_scale > alpha) {
+            rgb = mix(
+                rgb,
+                vec3f(0.25, 0.95, 1.0),
+                select(0.28, 0.72, reservation_active)
+            );
+        }
+        alpha = max(
+            alpha,
+            empty_outline * input.color.a * empty_alpha_scale
+        );
+
+        if ((input.formation_presentation_flags
+                & FORMATION_FLAG_MERGE_PULSE) != 0u) {
+            let pulse_distance = abs(length(input.local_position) - 0.92);
+            let pulse_aa = max(fwidth(pulse_distance), 0.002);
+            let pulse = 1.0 - smoothstep(
+                0.025 - pulse_aa,
+                0.025 + pulse_aa,
+                pulse_distance
+            );
+            if (pulse > alpha) {
+                rgb = mix(rgb, vec3f(1.0, 0.92, 0.48), 0.8);
+            }
+            alpha = max(alpha, pulse * input.color.a);
+        }
+
+        if (input.formation_member_count == 6u) {
+            let bar_center = vec2f(0.0, 0.86);
+            let bar_half = vec2f(0.68, 0.065);
+            let outer_distance = box_distance(
+                input.local_position,
+                bar_center,
+                bar_half
+            );
+            let bar_aa = max(fwidth(outer_distance), 0.002);
+            let outer = 1.0 - smoothstep(-bar_aa, bar_aa, outer_distance);
+            let fill_half_x = max(0.0, bar_half.x * input.health_ratio);
+            let fill_center = vec2f(
+                bar_center.x - bar_half.x + fill_half_x,
+                bar_center.y
+            );
+            let fill_distance = box_distance(
+                input.local_position,
+                fill_center,
+                vec2f(fill_half_x, bar_half.y * 0.62)
+            );
+            let fill = select(
+                0.0,
+                1.0 - smoothstep(-bar_aa, bar_aa, fill_distance),
+                input.health_ratio > 0.0
+            );
+            if (outer > 0.0) {
+                rgb = mix(
+                    vec3f(0.08, 0.055, 0.04),
+                    vec3f(0.3, 1.0, 0.38),
+                    fill
+                );
+                alpha = max(alpha, outer * input.color.a);
+            }
+        }
+        if (alpha <= 0.0) { discard; }
+        return vec4f(rgb * alpha, alpha);
     }
     let distance = shape_distance(input.local_position, input.velocity, input.shape_code);
     let anti_alias_width = max(fwidth(distance), 0.002);

@@ -72,11 +72,13 @@ const FIXTURE_ROUTE = Object.freeze({
 function definitionSource(definition, overrides = {}) {
     return {
         id: definition.id,
+        spawnPolicy: definition.spawnPolicy,
         shapeDefinitionId: definition.shapeDefinitionId,
         physicsProfileId: definition.physicsProfileId,
         combatProfileId: definition.combatProfileId,
         behaviorProfileId: definition.behaviorProfileId,
         effectEmitterProfileId: definition.effectEmitterProfileId,
+        formationDefinitionId: definition.formationDefinitionId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

@@ -47,6 +47,8 @@ class PrimitiveGpuBackend {
         this.completedEventBatches = [];
         this.eventProtocol = null;
         this.trackedPose = null;
+        this.gameplayTargetAccepted = true;
+        this.gameplayTargetClearAccepted = true;
         this.trackingAccepted = true;
         this.recoveryRequired = false;
         this.destroyed = false;
@@ -135,6 +137,20 @@ class PrimitiveGpuBackend {
 
     hasPendingSpawnProgramThroughTick() {
         return false;
+    }
+
+    configureTowerGameplayTarget(handle) {
+        this.calls.push({ type: 'configureTowerGameplayTarget', handle });
+        const accepted = handle === null
+            ? this.gameplayTargetClearAccepted
+            : this.gameplayTargetAccepted;
+        return Object.freeze({
+            accepted,
+            reason: accepted ? null : 'fixture-gameplay-target-rejected',
+            configured: accepted && handle !== null
+                ? Object.freeze({ ...handle })
+                : null
+        });
     }
 
     configureTrackedBody(handle) {
@@ -476,7 +492,16 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
     const actorStatus = objectSystem.getGpuWorldActorStatus();
     assert.ok(actorStatus.towerHandle);
     assert.ok(actorStatus.coreProxyHandle);
+    assert.equal(actorStatus.towerGameplayTargetConfigured, true);
     assert.equal(actorStatus.trackedTowerConfigured, true);
+    const gameplayTargetCalls = backend.calls.filter(
+        ({ type }) => type === 'configureTowerGameplayTarget'
+    );
+    assert.equal(gameplayTargetCalls.length, 1);
+    assert.deepEqual(
+        { ...gameplayTargetCalls[0].handle },
+        { ...actorStatus.towerHandle }
+    );
     const trackingCalls = backend.calls.filter(
         ({ type }) => type === 'configureTrackedBody'
     );
@@ -670,7 +695,7 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
     gameSystem.destroy();
 });
 
-test('GPU Tower tracking reject는 actor commit 뒤 partial submit 없이 recovery로 승격한다', () => {
+test('GPU Tower tracking reject는 gameplay/fixed 진행을 막지 않는 presentation diagnostic이다', () => {
     const fixture = createRuntimeFixture({
         ready: true,
         enemyWaveEnabled: false
@@ -679,12 +704,111 @@ test('GPU Tower tracking reject는 actor commit 뒤 partial submit 없이 recove
     backend.trackingAccepted = false;
     assert.equal(gameSystem.enter(), true);
 
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(countCalls(backend, 'spawnBodies'), 1);
+    assert.equal(countCalls(backend, 'configureTowerGameplayTarget'), 1);
+    assert.equal(countCalls(backend, 'configureTrackedBody'), 1);
+    assert.equal(countCalls(backend, 'fixedUpdate'), 1);
+    assert.equal(
+        gameSystem.getObjectSystem().getGpuWorldActorStatus()
+            .towerGameplayTargetConfigured,
+        true
+    );
+    assert.equal(
+        gameSystem.getObjectSystem().getGpuWorldActorStatus()
+            .trackedTowerConfigured,
+        false
+    );
+
+    gameSystem.destroy();
+});
+
+test('GPU Tower gameplay target reject는 actor commit 뒤 submit 전 recovery hard gate다', () => {
+    const fixture = createRuntimeFixture({
+        ready: true,
+        enemyWaveEnabled: false
+    });
+    const { backend, gameSystem } = fixture;
+    backend.gameplayTargetAccepted = false;
+    assert.equal(gameSystem.enter(), true);
+
     assert.equal(gameSystem.fixedUpdate(), false);
     assert.equal(gameSystem.getFixedTick(), 0);
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
     assert.equal(countCalls(backend, 'spawnBodies'), 1);
-    assert.equal(countCalls(backend, 'configureTrackedBody'), 1);
+    assert.equal(countCalls(backend, 'configureTowerGameplayTarget'), 1);
+    assert.equal(countCalls(backend, 'configureTrackedBody'), 0);
     assert.equal(countCalls(backend, 'fixedUpdate'), 0);
+
+    gameSystem.destroy();
+});
+
+test('committed Tower death의 gameplay target clear reject는 다음 submit 전 recovery hard gate다', () => {
+    const fixture = createRuntimeFixture({
+        ready: true,
+        enemyWaveEnabled: false
+    });
+    const { backend, gameSystem } = fixture;
+    assert.equal(gameSystem.enter(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const protocol = createProtocol(endpoint);
+    backend.setEventProtocol(protocol);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const actorStatus = objectSystem.getGpuWorldActorStatus();
+    assert.ok(actorStatus.towerHandle);
+    assert.ok(actorStatus.coreProxyHandle);
+    backend.gameplayTargetClearAccepted = false;
+    backend.completedEventBatches.push(Object.freeze({
+        ...protocol,
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 1,
+        submittedTick: 1,
+        completedThroughTick: 1,
+        events: Object.freeze([
+            Object.freeze({
+                type: 'contact',
+                eventType: 'damage-applied',
+                sequence: 0,
+                entityId: actorStatus.coreProxyHandle.entityId,
+                incarnation: actorStatus.coreProxyHandle.incarnation,
+                otherEntityId: actorStatus.towerHandle.entityId,
+                otherIncarnation: actorStatus.towerHandle.incarnation,
+                valueFixedPoint: 3000,
+                damage: 30,
+                reason: 'target-died'
+            }),
+            Object.freeze({
+                type: 'death',
+                sequence: 1,
+                entityId: actorStatus.towerHandle.entityId,
+                incarnation: actorStatus.towerHandle.incarnation,
+                flags: 1,
+                reason: 'health-depleted'
+            })
+        ])
+    }));
+
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    assert.equal(countCalls(backend, 'fixedUpdate'), 1);
+    const clearCalls = backend.calls.filter(({ type, handle }) => (
+        type === 'configureTowerGameplayTarget' && handle === null
+    ));
+    assert.equal(clearCalls.length, 1);
+    assert.equal(
+        endpoint.getStatus().events.protocolFailure.stage,
+        'tower-gameplay-target-config'
+    );
+    const afterDeath = objectSystem.getGpuWorldActorStatus();
+    assert.equal(afterDeath.towerHandle, null);
+    assert.equal(afterDeath.towerGameplayTargetConfigured, false);
+    assert.equal(afterDeath.trackedTowerConfigured, false);
 
     gameSystem.destroy();
 });

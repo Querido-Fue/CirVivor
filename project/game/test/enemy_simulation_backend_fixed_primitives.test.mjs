@@ -54,6 +54,10 @@ function createSimulation() {
             calls.push({ type: 'hasPendingSpawnProgramThroughTick', sourceTick });
             return sourceTick <= 16;
         },
+        configureTowerGameplayTarget(handle) {
+            calls.push({ type: 'configureTowerGameplayTarget', handle });
+            return Object.freeze({ accepted: true, configured: handle });
+        },
         configureTrackedBody(handle) {
             calls.push({ type: 'configureTrackedBody', handle });
             return Object.freeze({ accepted: true, tracked: handle });
@@ -180,6 +184,10 @@ test('backend tracked pose canonical getter와 legacy getter는 같은 immutable
     backend.simulation = simulation;
     const handle = Object.freeze({ entityId: 11, incarnation: 4 });
 
+    const gameplayTarget = backend.configureTowerGameplayTarget(handle);
+    assert.equal(gameplayTarget.accepted, true);
+    assert.deepEqual({ ...gameplayTarget.configured }, { ...handle });
+
     const configured = backend.configureTrackedBody(handle);
     assert.equal(configured.accepted, true);
     assert.deepEqual({ ...configured.tracked }, { ...handle });
@@ -207,6 +215,10 @@ test('새 simulation optional API가 없는 backend fallback은 기존 fake를 �
 
     assert.equal(backend.canControlBody({ entityId: 1, incarnation: 1 }), false);
     assert.deepEqual({ ...backend.configureTrackedBody(null) }, {
+        accepted: false,
+        reason: 'gpu-unavailable'
+    });
+    assert.deepEqual({ ...backend.configureTowerGameplayTarget(null) }, {
         accepted: false,
         reason: 'gpu-unavailable'
     });

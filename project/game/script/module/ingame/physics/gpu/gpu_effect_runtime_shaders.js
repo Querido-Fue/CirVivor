@@ -775,13 +775,17 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
     atomicStore(&pool_state.batch_accepted, accepted);
     if (accepted == 0u) {
         for (var index = 0u; index < safe_program_count; index += 1u) {
-            let result = pulse_program.records[index].result;
-            if (result == EFFECT_RESULT_PENDING) {
-                pulse_program.records[index].result = EFFECT_RESULT_CAPACITY_REJECTED;
-                pulse_program.records[index].applied_count = 0u;
-                atomicAdd(&pool_state.pulse_result_count, 1u);
-            }
+            // A whole-tick preflight failure is represented as one atomic
+            // zero-partial batch.  Source/order-specific intermediate results
+            // are deliberately erased so the host cannot mistake a prefix for
+            // consumed cadence.
+            pulse_program.records[index].result = EFFECT_RESULT_CAPACITY_REJECTED;
+            pulse_program.records[index].candidate_count = 0u;
+            pulse_program.records[index].applied_count = 0u;
         }
+        atomicStore(&pool_state.pulse_result_count, safe_program_count);
+        atomicStore(&pool_state.candidate_count, 0u);
+        atomicStore(&pool_state.materialized_count, 0u);
         atomicStore(&pool_state.event_count, 0u);
         atomicOr(&pulse_program.header.status, atomicLoad(&pool_state.status));
     }

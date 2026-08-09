@@ -219,6 +219,22 @@ function createPrimitiveBackend(options = {}) {
             out.push(...completedEventBatches.splice(0));
             return out;
         },
+        configureTowerGameplayTarget(handle) {
+            calls.push({ type: 'configureTowerGameplayTarget', handle });
+            if (handle === null && options.throwTowerGameplayTargetClear === true) {
+                throw new Error('fixture-gameplay-target-clear-threw');
+            }
+            if (handle === null && options.rejectTowerGameplayTargetClear === true) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'fixture-gameplay-target-clear-rejected'
+                });
+            }
+            return Object.freeze({
+                accepted: true,
+                configured: handle === null ? null : Object.freeze({ ...handle })
+            });
+        },
         configureTrackedBody(handle) {
             calls.push({ type: 'configureTrackedBody', handle });
             return Object.freeze({
@@ -281,6 +297,7 @@ function createLegacyBackend() {
     delete backend.stageFixedPrograms;
     delete backend.drainCompletedSpawnProgramBatches;
     delete backend.hasPendingSpawnProgramThroughTick;
+    delete backend.configureTowerGameplayTarget;
     delete backend.configureTrackedBody;
     delete backend.getObservedTrackedPose;
     delete backend.getLatestTrackedPose;
@@ -458,6 +475,7 @@ test('generic endpoint는 fixed primitive public seam을 제공하고 private GP
 
     assert.equal(typeof endpoint.requestBodyControl, 'function');
     assert.equal(typeof endpoint.requestSourceRelativeSpawn, 'function');
+    assert.equal(typeof endpoint.configureTowerGameplayTarget, 'function');
     assert.equal(typeof endpoint.configureTrackedBody, 'function');
     assert.equal(typeof endpoint.getObservedTrackedPose, 'function');
     assert.equal('getBodySlot' in endpoint, false);
@@ -641,6 +659,145 @@ test('tracked body observation은 exact handle만 구성하고 immutable observe
     });
     endpoint.destroy();
 });
+
+test('Tower gameplay target은 exact Tower만 hard gate하고 tracked pose desync는 diagnostic-only다', () => {
+    const backend = createPrimitiveBackend();
+    const endpoint = createEndpoint(backend);
+    assert.equal(endpoint.requestSpawn(
+        createGpuTowerSpawnIntent({ position: { x: 4, y: 2 } }),
+        1,
+        'gameplay-target:tower'
+    ).accepted, true);
+    assert.equal(endpoint.requestSpawn(
+        createCanonicalSpawnIntent('gameplay-target:decoy'),
+        1,
+        'gameplay-target:decoy'
+    ).accepted, true);
+    const spawned = new Map(endpoint.commitAtFixedBoundary(1).spawned.map(
+        ({ commandId, handle }) => [commandId, handle]
+    ));
+    const tower = spawned.get('gameplay-target:tower');
+    const decoy = spawned.get('gameplay-target:decoy');
+
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(tower) }, {
+        accepted: true,
+        configured: tower
+    });
+    const gameplayCall = backend.calls.findLast(
+        ({ type }) => type === 'configureTowerGameplayTarget'
+    );
+    assert.deepEqual({ ...gameplayCall.handle }, { ...tower });
+    assert.equal('slot' in gameplayCall.handle, false);
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(decoy) }, {
+        accepted: false,
+        reason: 'tower-kind-definition-invalid'
+    });
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget({
+        entityId: tower.entityId,
+        incarnation: tower.incarnation + 1
+    }) }, {
+        accepted: false,
+        reason: 'stale-handle'
+    });
+
+    const decoyKey = handleKey(decoy);
+    const decoyBody = backend.bodies.get(decoyKey);
+    backend.bodies.delete(decoyKey);
+    assert.deepEqual({ ...endpoint.configureTrackedBody(decoy) }, {
+        accepted: false,
+        reason: 'registry-backend-desync'
+    });
+    assert.equal(endpoint.requiresRecovery(), false);
+    assert.equal(endpoint.getStatus().trackedPoseDiagnostic.reason,
+        'registry-backend-desync');
+    backend.bodies.set(decoyKey, decoyBody);
+    assert.deepEqual({ ...endpoint.configureTrackedBody(tower) }, {
+        accepted: true,
+        tracked: tower
+    });
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(null) }, {
+        accepted: true,
+        configured: null
+    });
+    assert.equal(endpoint.configureTowerGameplayTarget(tower).accepted, true);
+    assert.equal(endpoint.closeGameplayIngress('fixture-terminal').closed, true);
+    const gameplayCallsBeforeClosedReenable = backend.calls.filter(
+        ({ type }) => type === 'configureTowerGameplayTarget'
+    ).length;
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(tower) }, {
+        accepted: false,
+        reason: 'gameplay-ingress-closed'
+    });
+    assert.equal(
+        backend.calls.filter(
+            ({ type }) => type === 'configureTowerGameplayTarget'
+        ).length,
+        gameplayCallsBeforeClosedReenable
+    );
+    assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(null) }, {
+        accepted: true,
+        configured: null
+    });
+    endpoint.destroy();
+
+    const desyncBackend = createPrimitiveBackend();
+    const desyncEndpoint = createEndpoint(desyncBackend);
+    assert.equal(desyncEndpoint.requestSpawn(
+        createGpuTowerSpawnIntent({ position: { x: 4, y: 2 } }),
+        1,
+        'gameplay-target:desync-tower'
+    ).accepted, true);
+    const desyncTower = desyncEndpoint.commitAtFixedBoundary(1).spawned[0].handle;
+    desyncBackend.bodies.delete(handleKey(desyncTower));
+    assert.deepEqual({
+        ...desyncEndpoint.configureTowerGameplayTarget(desyncTower)
+    }, {
+        accepted: false,
+        reason: 'registry-backend-desync'
+    });
+    assert.equal(desyncEndpoint.requiresRecovery(), true);
+    assert.equal(
+        desyncEndpoint.getStatus().events.protocolFailure.stage,
+        'tower-gameplay-target-config'
+    );
+    desyncEndpoint.destroy();
+});
+
+for (const clearFailure of Object.freeze([
+    Object.freeze({
+        name: 'reject',
+        options: Object.freeze({ rejectTowerGameplayTargetClear: true }),
+        reason: 'fixture-gameplay-target-clear-rejected'
+    }),
+    Object.freeze({
+        name: 'throw',
+        options: Object.freeze({ throwTowerGameplayTargetClear: true }),
+        reason: 'tower-gameplay-target-clear-threw'
+    })
+])) {
+    test(`Tower gameplay target clear backend ${clearFailure.name}는 protocol recovery를 hard gate한다`, () => {
+        const backend = createPrimitiveBackend(clearFailure.options);
+        const endpoint = createEndpoint(backend);
+        assert.equal(endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: { x: 4, y: 2 } }),
+            1,
+            `gameplay-target:clear-${clearFailure.name}`
+        ).accepted, true);
+        const tower = endpoint.commitAtFixedBoundary(1).spawned[0].handle;
+        assert.equal(endpoint.configureTowerGameplayTarget(tower).accepted, true);
+
+        assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(null) }, {
+            accepted: false,
+            reason: clearFailure.reason
+        });
+        assert.equal(endpoint.requiresRecovery(), true);
+        assert.equal(
+            endpoint.getStatus().events.protocolFailure.stage,
+            'tower-gameplay-target-config'
+        );
+        endpoint.destroy();
+    });
+}
 
 test('SpawnProgram completion은 event drain 전에 destination을 활성화하며 public 결과에는 slot이 없다', () => {
     const backend = createPrimitiveBackend();

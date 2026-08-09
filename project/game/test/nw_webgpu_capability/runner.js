@@ -8650,7 +8650,8 @@ async function runProductionMaximumDamageWindowCapacityAtomicityHardwareSmoke(de
 
 /**
  * Arrow A의 production adapter/side-plane/compute pass를 실제 WebGPU에서 bounded하게
- * 검증합니다. Arrow에는 CPU pose/control을 쓰지 않고 exact tracked Tower만 제공합니다.
+ * 검증합니다. Arrow gameplay은 dedicated exact Tower config만 읽고 tracked pose는
+ * presentation-only로 독립 교체해도 gameplay state가 변하지 않아야 합니다.
  */
 async function runProductionEnemyArrowChargeHardwareSmoke(device) {
     const navigationSource = createPhase5ProjectileNavigationSource();
@@ -8805,8 +8806,12 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             `Arrow charge 초기 commit 실패: ${JSON.stringify(initialCommit)}`
         );
         assert(
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Arrow charge exact Tower gameplay target 구성 실패'
+        );
+        assert(
             endpoint.configureTrackedBody(towerHandle).accepted,
-            'Arrow charge exact Tower tracking 구성 실패'
+            'Arrow charge presentation tracking 구성 실패'
         );
 
         const tickOne = await submitTick(1, 'Arrow charge tick 1 WINDUP', {
@@ -8834,19 +8839,57 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             `Arrow charge 첫 typed telegraph event 불일치: ${JSON.stringify(tickOne.completed)}`
         );
 
+        const unrelatedTracking = endpoint.configureTrackedBody(arrowHandle);
+        assert(
+            unrelatedTracking.accepted,
+            `Arrow charge unrelated presentation tracking 구성 실패: ${JSON.stringify(unrelatedTracking)}`
+        );
+        const tickTwo = await submitTick(
+            2,
+            'Arrow charge tick 2 tracked pose independence'
+        );
+        towerBody = findBody(tickTwo.bodies, towerHandle, 'independent Tower');
+        arrowBody = findBody(tickTwo.bodies, arrowHandle, 'independent Arrow');
+        behavior = assertState(
+            arrowBody,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+            1,
+            31,
+            'Arrow charge tracked pose independence'
+        );
+        assertExactTowerTarget(
+            behavior,
+            towerBody,
+            'Arrow charge tracked pose independence'
+        );
+        assert(
+            !tickTwo.completed.contactEvents.some((event) => (
+                event.eventType === 'enemy-charge-windup-started'
+            )),
+            `Arrow charge presentation retarget이 gameplay telegraph를 재발행했습니다: ${JSON.stringify(tickTwo.completed)}`
+        );
+
         const trackingDisabled = endpoint.configureTrackedBody(null);
         assert(
             trackingDisabled.accepted && trackingDisabled.tracked === false,
-            `Arrow charge Tower absence 구성 실패: ${JSON.stringify(trackingDisabled)}`
+            `Arrow charge presentation tracking 해제 실패: ${JSON.stringify(trackingDisabled)}`
         );
-        const tickTwo = await submitTick(2, 'Arrow charge tick 2 CORE_FALLBACK');
-        arrowBody = findBody(tickTwo.bodies, arrowHandle, 'fallback Arrow');
+        const gameplayDisabled = endpoint.configureTowerGameplayTarget(null);
+        assert(
+            gameplayDisabled.accepted && gameplayDisabled.configured === null,
+            `Arrow charge gameplay Tower target 해제 실패: ${JSON.stringify(gameplayDisabled)}`
+        );
+        const tickThree = await submitTick(
+            3,
+            'Arrow charge tick 3 CORE_FALLBACK'
+        );
+        arrowBody = findBody(tickThree.bodies, arrowHandle, 'fallback Arrow');
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK,
-            2,
+            3,
             0,
-            'Arrow charge target loss fallback'
+            'Arrow charge gameplay target loss fallback'
         );
         assert(
             behavior.targetSlot === 0
@@ -8859,45 +8902,45 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         );
 
         assert(
-            endpoint.configureTrackedBody(towerHandle).accepted,
-            'Arrow charge Tower reacquire tracking 구성 실패'
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Arrow charge Tower gameplay target 재구성 실패'
         );
-        const tickThree = await submitTick(3, 'Arrow charge tick 3 SEEK only');
-        towerBody = findBody(tickThree.bodies, towerHandle, 'reacquire Tower');
-        arrowBody = findBody(tickThree.bodies, arrowHandle, 'reacquire Arrow');
+        const tickFour = await submitTick(4, 'Arrow charge tick 4 SEEK only');
+        towerBody = findBody(tickFour.bodies, towerHandle, 'reacquire Tower');
+        arrowBody = findBody(tickFour.bodies, arrowHandle, 'reacquire Arrow');
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
-            3,
+            4,
             0,
             'Arrow charge fallback→SEEK'
         );
         assertExactTowerTarget(behavior, towerBody, 'Arrow charge fallback→SEEK');
 
-        const tickFour = await submitTick(4, 'Arrow charge tick 4 reacquired WINDUP');
-        arrowBody = findBody(tickFour.bodies, arrowHandle, 'reacquired WINDUP Arrow');
+        const tickFive = await submitTick(5, 'Arrow charge tick 5 reacquired WINDUP');
+        arrowBody = findBody(tickFive.bodies, arrowHandle, 'reacquired WINDUP Arrow');
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
-            4,
-            34,
+            5,
+            35,
             'Arrow charge reacquired WINDUP'
         );
         assert(
-            tickFour.completed.contactEvents.some((event) => (
+            tickFive.completed.contactEvents.some((event) => (
                 event.eventType === 'enemy-charge-windup-started'
                 && exactHandleMatches(event, arrowHandle)
                 && event.otherEntityId === towerHandle.entityId
                 && event.otherIncarnation === towerHandle.incarnation
                 && event.valueFixedPoint === 0
             )),
-            `Arrow charge reacquired telegraph event 불일치: ${JSON.stringify(tickFour.completed)}`
+            `Arrow charge reacquired telegraph event 불일치: ${JSON.stringify(tickFive.completed)}`
         );
 
         let beforeWindupExpiry = null;
-        for (let tick = 5; tick < 34; tick++) {
+        for (let tick = 6; tick < 35; tick++) {
             const step = await submitTick(tick, `Arrow charge WINDUP boundary ${tick}`);
-            if (tick === 33) beforeWindupExpiry = step;
+            if (tick === 34) beforeWindupExpiry = step;
         }
         arrowBody = findBody(
             beforeWindupExpiry.bodies,
@@ -8907,19 +8950,19 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
-            4,
-            34,
+            5,
+            35,
             'Arrow charge WINDUP expires 직전'
         );
 
-        const chargeStart = await submitTick(34, 'Arrow charge exact CHARGE boundary');
+        const chargeStart = await submitTick(35, 'Arrow charge exact CHARGE boundary');
         towerBody = findBody(chargeStart.bodies, towerHandle, 'CHARGE Tower');
         arrowBody = findBody(chargeStart.bodies, arrowHandle, 'CHARGE Arrow');
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE,
-            34,
-            94,
+            35,
+            95,
             'Arrow charge CHARGE start'
         );
         assertExactTowerTarget(behavior, towerBody, 'Arrow charge CHARGE start');
@@ -8931,17 +8974,17 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             handle: towerHandle,
             moveIntentX: 0,
             moveIntentY: 1
-        }, 35, 'arrow-charge:tower-perpendicular-probe');
+        }, 36, 'arrow-charge:tower-perpendicular-probe');
         assert(moveTower.accepted,
             `Arrow charge Tower perpendicular control 실패: ${JSON.stringify(moveTower)}`);
-        const movedTarget = await submitTick(35, 'Arrow charge non-homing probe');
+        const movedTarget = await submitTick(36, 'Arrow charge non-homing probe');
         towerBody = findBody(movedTarget.bodies, towerHandle, 'moved Tower');
         arrowBody = findBody(movedTarget.bodies, arrowHandle, 'non-homing Arrow');
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE,
-            34,
-            94,
+            35,
+            95,
             'Arrow charge non-homing state'
         );
         assertNear(behavior.chargeDirection.x, snapshotDirection.x, 0.000001,
@@ -8962,15 +9005,15 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             handle: towerHandle,
             moveIntentX: 0,
             moveIntentY: 0
-        }, 36, 'arrow-charge:tower-stop');
+        }, 37, 'arrow-charge:tower-stop');
         assert(stopTower.accepted,
             `Arrow charge Tower stop control 실패: ${JSON.stringify(stopTower)}`);
-        let latest = await submitTick(36, 'Arrow charge Tower stop');
+        let latest = await submitTick(37, 'Arrow charge Tower stop');
         let primedMaximumCandidate = false;
         let contactTick = null;
         let contactSnapshot = null;
         let towerHealthBeforeContact = null;
-        for (let tick = 37; tick < 94 && contactTick === null; tick++) {
+        for (let tick = 38; tick < 95 && contactTick === null; tick++) {
             const previousArrow = findBody(latest.bodies, arrowHandle, 'pre-contact Arrow');
             const previousTower = findBody(latest.bodies, towerHandle, 'pre-contact Tower');
             const previousBehavior = previousArrow.enemyBehaviorState;
@@ -9194,6 +9237,8 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
 
         assert(endpoint.configureTrackedBody(null).accepted,
             'Arrow charge reuse reset tracking 해제 실패');
+        assert(endpoint.configureTowerGameplayTarget(null).accepted,
+            'Arrow charge reuse reset gameplay target 해제 실패');
         const oldArrowIndex = arrowBody.index;
         const resetDespawnTick = repeatChargeTick + 1;
         const despawnRequest = endpoint.requestDespawn(
@@ -9256,10 +9301,120 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const finalTower = findBody(resetSpawn.bodies, towerHandle, 'final Tower');
         assertNear(finalTower.health, initialTowerHealth - 1, 0.000001,
             'Arrow charge reuse 중 Tower HP preservation');
+        const preservedTowerHealth = finalTower.health;
+        const oldTowerHandle = Object.freeze({ ...towerHandle });
+        const oldTowerIndex = finalTower.index;
+
+        assert(
+            endpoint.configureTowerGameplayTarget(oldTowerHandle).accepted,
+            'Arrow charge Tower lifecycle reset 사전 gameplay target 구성 실패'
+        );
+        const towerDespawnTick = resetSpawnTick + 1;
+        const towerDespawnRequest = endpoint.requestDespawn(
+            oldTowerHandle,
+            'arrow-charge-tower-replacement',
+            towerDespawnTick,
+            'arrow-charge:reuse-old-tower'
+        );
+        assert(towerDespawnRequest.accepted,
+            `Arrow charge Tower replacement despawn 요청 실패: ${JSON.stringify(towerDespawnRequest)}`);
+        const towerDespawned = await submitTick(
+            towerDespawnTick,
+            'Arrow charge Tower exact despawn target reset'
+        );
+        const towerDespawnStatus = endpoint.getStatus();
+        const towerDespawnGpuStatus = towerDespawnStatus.backend?.gpu
+            ?? towerDespawnStatus.backend;
+        assert(
+            !towerDespawned.bodies.some((body) => (
+                exactHandleMatches(body.handle, oldTowerHandle)
+            ))
+                && towerDespawnGpuStatus.fixedPrimitives
+                    .towerGameplayTarget.configured === false,
+            `Arrow charge Tower despawn gameplay config reset 실패: ${JSON.stringify(towerDespawned.bodies)}`
+        );
+
+        const towerReplacementTick = towerDespawnTick + 1;
+        const replacementTowerRequest = endpoint.requestSpawn(
+            createGpuTowerSpawnIntent({ position: towerPosition }),
+            towerReplacementTick,
+            'arrow-charge:reuse-new-tower'
+        );
+        assert(replacementTowerRequest.accepted,
+            `Arrow charge Tower replacement spawn 요청 실패: ${JSON.stringify(replacementTowerRequest)}`);
+        const towerReplacement = await submitTick(
+            towerReplacementTick,
+            'Arrow charge Tower slot ABA replacement'
+        );
+        const replacementTowerHandle = towerReplacement.commit?.spawned.find(
+            ({ commandId }) => commandId === 'arrow-charge:reuse-new-tower'
+        )?.handle;
+        assert(replacementTowerHandle,
+            `Arrow charge replacement Tower handle 누락: ${JSON.stringify(towerReplacement.commit)}`);
+        const replacementTower = findBody(
+            towerReplacement.bodies,
+            replacementTowerHandle,
+            'replacement Tower'
+        );
+        const fallbackAfterTowerReuse = findBody(
+            towerReplacement.bodies,
+            replacementHandle,
+            'Tower reuse fallback Arrow'
+        );
+        const towerReplacementStatus = endpoint.getStatus();
+        const towerReplacementGpuStatus = towerReplacementStatus.backend?.gpu
+            ?? towerReplacementStatus.backend;
+        assert(
+            replacementTower.index === oldTowerIndex
+                && !exactHandleMatches(replacementTowerHandle, oldTowerHandle)
+                && fallbackAfterTowerReuse.enemyBehaviorState.state
+                    === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK
+                && towerReplacementGpuStatus.fixedPrimitives
+                    .towerGameplayTarget.configured === false,
+            `Arrow charge Tower slot ABA가 stale gameplay target을 재사용했습니다: ${JSON.stringify({ oldTowerHandle, replacementTowerHandle, replacementTower, fallbackAfterTowerReuse })}`
+        );
+
+        towerHandle = replacementTowerHandle;
+        assert(
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Arrow charge replacement Tower exact gameplay target 구성 실패'
+        );
+        const replacementReacquireTick = towerReplacementTick + 1;
+        const replacementReacquire = await submitTick(
+            replacementReacquireTick,
+            'Arrow charge replacement Tower exact reacquire'
+        );
+        const reacquiredTower = findBody(
+            replacementReacquire.bodies,
+            towerHandle,
+            'replacement reacquire Tower'
+        );
+        const reacquiredArrow = findBody(
+            replacementReacquire.bodies,
+            replacementHandle,
+            'replacement reacquire Arrow'
+        );
+        const reacquiredBehavior = assertState(
+            reacquiredArrow,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+            replacementReacquireTick,
+            0,
+            'Arrow charge replacement Tower reacquire'
+        );
+        assertExactTowerTarget(
+            reacquiredBehavior,
+            reacquiredTower,
+            'Arrow charge replacement Tower reacquire'
+        );
+        assert(endpoint.configureTowerGameplayTarget(null).accepted,
+            'Arrow charge final gameplay target clear 실패');
 
         const finalStatus = endpoint.getStatus();
         const gpuStatus = finalStatus.backend?.gpu ?? finalStatus.backend;
         const storageProfile = gpuStatus.fixedPrimitives.storageProfile;
+        const gameplayTargetStatus = gpuStatus.fixedPrimitives
+            .towerGameplayTarget;
+        const trackedPoseStatus = gpuStatus.fixedPrimitives.trackedPose;
         const recoilEvents = chargeEvents.filter((event) => (
             event.eventType === 'enemy-charge-contact-recoil-started'
         ));
@@ -9274,7 +9429,13 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 && gpuStatus.submittedTickCount === submittedTicks.length
                 && recoilEvents.length === 1
                 && storageProfile.enemyBehavior === 8
+                && storageProfile.trackedPose === 6
                 && storageProfile.contactHandling === 9
+                && gameplayTargetStatus.abiVersion === 1
+                && gameplayTargetStatus.recordByteSize === 16
+                && gameplayTargetStatus.storageBuffersPerStage === 8
+                && gameplayTargetStatus.configured === false
+                && trackedPoseStatus.configured === false
                 && storageProfile.requiredMaximum
                     === REQUIRED_MAX_STORAGE_BUFFERS_PER_SHADER_STAGE
                 && Object.values(storageProfile).every((count) => (
@@ -9289,9 +9450,10 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         return Object.freeze({
             states: Object.freeze({
                 firstWindup: Object.freeze({ entered: 1, expires: 31 }),
-                fallback: Object.freeze({ entered: 2, expires: 0 }),
-                reacquiredSeek: Object.freeze({ entered: 3, expires: 0 }),
-                charge: Object.freeze({ entered: 34, expires: 94 }),
+                trackedPoseIndependent: Object.freeze({ entered: 1, expires: 31 }),
+                fallback: Object.freeze({ entered: 3, expires: 0 }),
+                reacquiredSeek: Object.freeze({ entered: 4, expires: 0 }),
+                charge: Object.freeze({ entered: 35, expires: 95 }),
                 contactRecoil: Object.freeze({
                     entered: contactTick,
                     expires: contactTick + 12
@@ -9314,13 +9476,23 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 recoilDot
             }),
             typedEventCount: chargeEvents.length,
+            targetingPorts: Object.freeze({
+                gameplayTarget: Object.freeze({ ...gameplayTargetStatus }),
+                trackedPoseConfigured: trackedPoseStatus.configured
+            }),
             submittedTickCount: submittedTicks.length,
             singleSubmitPerTick: true,
             reuseReset: Object.freeze({
                 slot: oldArrowIndex,
                 replacement: Object.freeze({ ...replacementHandle }),
                 state: replacementBehavior.state,
-                towerHealth: finalTower.health
+                towerHealth: preservedTowerHealth,
+                towerSlotAba: Object.freeze({
+                    old: oldTowerHandle,
+                    replacement: Object.freeze({ ...towerHandle }),
+                    slot: oldTowerIndex,
+                    reacquiredAtFixedTick: replacementReacquireTick
+                })
             }),
             errors,
             storageProfile

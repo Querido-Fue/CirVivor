@@ -13,6 +13,12 @@ import {
     GPU_EFFECT_RUNTIME_ABI_VERSION,
     GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
 } from '../../physics/gpu/gpu_effect_runtime_abi.js';
+import {
+    GPU_FORMATION_PREPARE_PROGRAM_ABI_VERSION,
+    GPU_FORMATION_RUNTIME_ABI_VERSION,
+    GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION
+} from '../../physics/gpu/gpu_formation_runtime_abi.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -73,6 +79,9 @@ export class EnemySimulationBackend {
         this.effectInstanceCapacity = options.effectInstanceCapacity;
         this.effectCandidateCapacity = options.effectCandidateCapacity;
         this.effectEventCapacity = options.effectEventCapacity;
+        this.formationPrepareCapacity = options.formationPrepareCapacity
+            ?? options.formationCommandCapacity;
+        this.formationTransformCapacity = options.formationTransformCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -141,6 +150,8 @@ export class EnemySimulationBackend {
             effectInstanceCapacity: this.effectInstanceCapacity,
             effectCandidateCapacity: this.effectCandidateCapacity,
             effectEventCapacity: this.effectEventCapacity,
+            formationPrepareCapacity: this.formationPrepareCapacity,
+            formationTransformCapacity: this.formationTransformCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -341,6 +352,138 @@ export class EnemySimulationBackend {
         });
     }
 
+    stageFormationPrepareBatch(batch) {
+        if (!this.simulation?.stageFormationPrepareBatch) {
+            return Object.freeze({
+                abiVersion: GPU_FORMATION_PREPARE_PROGRAM_ABI_VERSION,
+                accepted: false,
+                targetFixedTick: readDiagnosticPositiveInteger(
+                    batch?.targetFixedTick
+                ),
+                stagedCount: 0,
+                replayed: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        }
+        const result = this.simulation.stageFormationPrepareBatch(batch);
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedFormationPrepareBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('Formation prepare 완료 출력은 배열이어야 합니다.');
+        }
+        return this.simulation?.drainCompletedFormationPrepareBatches?.(out)
+            ?? out;
+    }
+
+    armPreparedFormationTransformBatch(batch) {
+        if (!this.simulation?.armPreparedFormationTransformBatch) {
+            return Object.freeze({
+                abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                preparedSourceTick: readDiagnosticPositiveInteger(
+                    batch?.preparedSourceTick
+                ),
+                targetFixedTick: readDiagnosticPositiveInteger(
+                    batch?.targetFixedTick
+                ),
+                armedCount: 0,
+                replayed: false,
+                receipt: null,
+                evidence: null,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        }
+        const result = this.simulation.armPreparedFormationTransformBatch(batch);
+        this.#syncState();
+        return result;
+    }
+
+    commitArmedFormationTransformBatch(receipt) {
+        const result = this.simulation?.commitArmedFormationTransformBatch?.(
+            receipt
+        ) ?? Object.freeze({
+            abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+            accepted: false,
+            targetFixedTick: 0,
+            armedCount: 0,
+            commitRequested: false,
+            reason: 'gpu-unavailable'
+        });
+        this.#syncState();
+        return result;
+    }
+
+    cancelArmedFormationTransformBatch(receipt) {
+        const result = this.simulation?.cancelArmedFormationTransformBatch?.(
+            receipt
+        ) ?? Object.freeze({
+            abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+            accepted: false,
+            targetFixedTick: 0,
+            cancelledCount: 0,
+            canceled: false,
+            reason: 'gpu-unavailable'
+        });
+        this.#syncState();
+        return result;
+    }
+
+    cancelPendingFormationProgramsForTerminal(request = {}) {
+        const result = this.simulation
+            ?.cancelPendingFormationProgramsForTerminal?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: readDiagnosticPositiveInteger(
+                    request?.finalFixedTick
+                ),
+                submittedTick: 0,
+                prepareProgramCount: 0,
+                armedTransformCount: 0,
+                pendingPrepareProgramCount: 0,
+                pendingPrepareReadbackCount: 0,
+                failure: 'gpu-unavailable'
+            });
+        this.#syncState();
+        return result;
+    }
+
+    getFormationRuntimeStatus() {
+        return this.simulation?.getFormationRuntimeStatus?.() ?? Object.freeze({
+            abiVersion: GPU_FORMATION_RUNTIME_ABI_VERSION,
+            state: 'gpu-unavailable',
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: -1,
+            authoritativeEpoch: 0,
+            ingressOpen: false,
+            prepareCapacity: this.formationPrepareCapacity ?? 0,
+            transformCapacity: this.formationTransformCapacity ?? 0,
+            stagedPrepareProgramCount: 0,
+            pendingPrepareProgramCount: 0,
+            pendingPrepareReadbackCount: 0,
+            pendingTransformReadbackCount: 0,
+            lastPrepareSourceTick: 0,
+            lastPrepareSubmittedTick: 0,
+            lastPrepareCompletedTick: 0,
+            armedTransformCount: 0,
+            commitRequested: false,
+            targetFixedTick: 0,
+            lastCommittedTransformCount: 0,
+            lastCommittedSourceTick: 0,
+            lastEffectRekeyCount: 0,
+            lastTransformCompletion: null,
+            runtimeStatus: 0,
+            requiresRecovery: false,
+            failure: null,
+            terminal: null
+        });
+    }
+
     /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */
     cancelPendingFixedProgramsForTerminal(request) {
         if (!this.simulation
@@ -368,6 +511,11 @@ export class EnemySimulationBackend {
 
     hasPendingSpawnProgramThroughTick(sourceTick) {
         return this.simulation?.hasPendingSpawnProgramThroughTick?.(sourceTick) ?? false;
+    }
+
+    configureTowerGameplayTarget(handle = null) {
+        return this.simulation?.configureTowerGameplayTarget?.(handle)
+            ?? Object.freeze({ accepted: false, reason: 'gpu-unavailable' });
     }
 
     configureTrackedBody(handle = null) {
@@ -590,7 +738,11 @@ export class EnemySimulationBackend {
             flowSpeed: body.flowSpeed ?? body.maxSpeed,
             // Independent PEmitter navigation plane용 route span입니다.
             effectRouteFirstFieldIndex: route.firstFieldIndex,
-            effectRouteFieldCount: route.fieldCount
+            effectRouteFieldCount: route.fieldCount,
+            formationRouteFirstFieldIndex: route.firstFieldIndex,
+            formationRouteFieldCount: route.fieldCount,
+            routeFirstFieldIndex: route.firstFieldIndex,
+            routeFieldCount: route.fieldCount
         };
     }
 }

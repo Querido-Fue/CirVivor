@@ -137,6 +137,7 @@ class ArcherIntegrationBackend {
         this.fixedUpdateCount = 0;
         this.destroyCount = 0;
         this.drawSnapshots = [];
+        this.towerGameplayTargetHandle = null;
         this.trackedHandle = null;
         this.runtimeState = configuration.runtimeState ?? 'gpu-ready';
     }
@@ -413,6 +414,21 @@ class ArcherIntegrationBackend {
         return out;
     }
 
+    configureTowerGameplayTarget(handle = null) {
+        if (handle === null) {
+            this.towerGameplayTargetHandle = null;
+            return { accepted: true, configured: null };
+        }
+        if (!this.canControlBody(handle)) {
+            return { accepted: false, reason: 'stale-handle' };
+        }
+        this.towerGameplayTargetHandle = exactHandle(handle);
+        return {
+            accepted: true,
+            configured: this.towerGameplayTargetHandle
+        };
+    }
+
     configureTrackedBody(handle = null) {
         if (handle === null) {
             this.trackedHandle = null;
@@ -496,6 +512,7 @@ class ArcherIntegrationBackend {
         this.spawnCompletionBatches.length = 0;
         this.completedEventBatches.length = 0;
         this.pendingFixedPlan = null;
+        this.towerGameplayTargetHandle = null;
         this.trackedHandle = null;
         this.runtimeState = 'destroyed';
     }

@@ -39,6 +39,8 @@ export const TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID = (
 );
 export const ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'archer-core-route-01';
 export const ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID = 'arrow-tower-charge-01';
+export const HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-seek-formation-01';
+export const HEXA_KEEP_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-keep-formation-01';
 export const ARCHER_ATTACK_DEFINITION_ID = 'archer_basic_shot_01';
 
 const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
@@ -120,7 +122,7 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             navigationMode: 'gpu-exact-tower-charge',
             moveSpeedTilesPerSecond: 2.5,
             towerEngagement: 'charge-contact',
-            towerTargetSelection: 'tracked-exact-single-living-tower',
+            towerTargetSelection: 'dedicated-exact-single-living-tower',
             towerPhysicalResponse: 'opposite-contact-recoil',
             fallback: 'route-stage-goal',
             attackDefinitionId: null,
@@ -138,6 +140,32 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
                 telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
                 telegraphRadiusScale: 1.35
             })
+        }),
+        Object.freeze({
+            id: HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'formation-merge-with-core-route-fallback',
+            navigationMode: 'gpu-hexa-formation-route',
+            moveSpeedTilesPerSecond: 2.5,
+            towerEngagement: 'continuous-contact',
+            towerTargetSelection: 'none',
+            towerPhysicalResponse: 'weight-based-pushable',
+            fallback: 'route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.SEEK_FORMATION
+        }),
+        Object.freeze({
+            id: HEXA_KEEP_FORMATION_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'core-route-keep-formation',
+            navigationMode: 'gpu-hexa-formation-route',
+            moveSpeedTilesPerSecond: 2.5,
+            towerEngagement: 'continuous-contact',
+            towerTargetSelection: 'none',
+            towerPhysicalResponse: 'weight-based-pushable',
+            fallback: 'route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.KEEP_FORMATION
         }),
         BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE
     ])

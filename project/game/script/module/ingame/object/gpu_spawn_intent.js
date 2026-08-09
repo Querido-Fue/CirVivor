@@ -25,19 +25,42 @@ import {
     resolveGameplayAllegianceTeam
 } from '../contract/gameplay_team_contract.js';
 import {
+    createEnemyCapabilityMask,
     ENEMY_CAPABILITY_ID,
     hasEnemyCapability,
     normalizeEnemyCapabilityMask
 } from '../contract/enemy_capability_contract.js';
+import {
+    ENEMY_SPAWN_POLICY
+} from '../contract/enemy_profile_contract.js';
+import {
+    ENEMY_FORMATION_POLICY,
+    ENEMY_FORMATION_POLICY_CODE_BY_ID,
+    FORMATION_COORDINATE_SYSTEM_CODE_BY_ID,
+    FORMATION_RUNTIME_FLAG,
+    isConnectedFormationOccupancyMask
+} from '../contract/enemy_formation_contract.js';
+import {
+    ENEMY_FORMATION_DEFINITION_BY_ID
+} from 'data/object/enemy/enemy_formation_catalog_data.js';
+import {
+    BASIC_HEXA_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DEFINITION_ID,
+    BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID,
+    BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID,
+    resolveBasicHexaFormationStats,
+    resolveBasicHexaTransformPrivateDefinition
+} from 'data/object/enemy/basic_hexa_enemy_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
 function requireNonNegativeSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number < 0) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value < 0) {
         throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
     }
-    return number;
+    return value;
 }
 
 function requirePositiveFinite(value, label) {
@@ -109,6 +132,547 @@ function copyOptionalEnemyCapabilityMetadata(intent) {
             intent.capabilityMask,
             'spawnIntent.capabilityMask'
         )
+    };
+}
+
+function requireUint32(value, label, allowZero = true) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value < (allowZero ? 0 : 1)
+        || value > 0xffffffff) {
+        throw new RangeError(`${label}은 ${allowZero ? '' : 'nonzero '}uint32여야 합니다.`);
+    }
+    return value >>> 0;
+}
+
+function requireSignedInt32Positive(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0 || number > 0x7fffffff) {
+        throw new RangeError(`${label}은 positive signed-int32여야 합니다.`);
+    }
+    return number;
+}
+
+function popcountUint32(value) {
+    let bits = value >>> 0;
+    let count = 0;
+    while (bits !== 0) {
+        bits = (bits & (bits - 1)) >>> 0;
+        count++;
+    }
+    return count;
+}
+
+export const GPU_PRIVATE_HEXA_TRANSFORM_DESTINATION_FIELDS = Object.freeze([
+    'memberCount',
+    'currentHealthCenti',
+    'maxHealthCenti',
+    'formationOccupiedSlotMask',
+    'formationRotationStep',
+    'formationGeneration',
+    'formationLineageHash'
+]);
+const PRIVATE_HEXA_TRANSFORM_INTENT_KEYS = new Set(
+    GPU_PRIVATE_HEXA_TRANSFORM_DESTINATION_FIELDS
+);
+
+/**
+ * Lifecycle request-time private transform facts를 identity 없이 정확히 한 번 읽어
+ * deep immutable snapshot으로 만듭니다. 이 cycle-free ingress는 Formation director와
+ * public adapter가 함께 사용하지만 public `normalizeGpuSpawnIntent()` 경로는 아닙니다.
+ */
+export function normalizeGpuPrivateHexaTransformDestinationIntent(source) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError('private Hexa transform destination facts가 필요합니다.');
+    }
+    const ownKeys = Reflect.ownKeys(source);
+    if (ownKeys.some((key) => typeof key === 'symbol')) {
+        throw new TypeError('private Hexa transform intent에는 symbol이 금지됩니다.');
+    }
+    const snapshot = Object.create(null);
+    for (const key of ownKeys) {
+        if (!PRIVATE_HEXA_TRANSFORM_INTENT_KEYS.has(key)) {
+            throw new RangeError(
+                `private Hexa transform intent에 금지/unknown field가 있습니다: ${key}`
+            );
+        }
+        const descriptor = Object.getOwnPropertyDescriptor(source, key);
+        if (!descriptor) {
+            throw new TypeError(
+                `private Hexa transform intent descriptor가 변경되었습니다: ${key}`
+            );
+        }
+        if (descriptor.enumerable) {
+            snapshot[key] = Reflect.get(source, key);
+        }
+    }
+    for (const key of PRIVATE_HEXA_TRANSFORM_INTENT_KEYS) {
+        if (snapshot[key] === undefined || snapshot[key] === null) {
+            throw new TypeError(`private Hexa transform intent field가 필요합니다: ${key}`);
+        }
+        if (typeof snapshot[key] !== 'number') {
+            throw new TypeError(`private Hexa transform intent.${key}는 number여야 합니다.`);
+        }
+    }
+    const memberCount = snapshot.memberCount;
+    const privateDefinition = resolveBasicHexaTransformPrivateDefinition(memberCount);
+    const currentHealthCenti = requireSignedInt32Positive(
+        snapshot.currentHealthCenti,
+        'currentHealthCenti'
+    );
+    const maxHealthCenti = requireSignedInt32Positive(
+        snapshot.maxHealthCenti,
+        'maxHealthCenti'
+    );
+    if (currentHealthCenti > maxHealthCenti) {
+        throw new RangeError('destination current centi-HP는 max를 넘을 수 없습니다.');
+    }
+    const formationDefinition = ENEMY_FORMATION_DEFINITION_BY_ID[
+        privateDefinition.formationDefinitionId
+    ];
+    const formationOccupiedSlotMask = requireUint32(
+        snapshot.formationOccupiedSlotMask,
+        'formationOccupiedSlotMask',
+        false
+    );
+    const formationRotationStep = requireNonNegativeSafeInteger(
+        snapshot.formationRotationStep,
+        'formationRotationStep'
+    );
+    const formationGeneration = requireUint32(
+        snapshot.formationGeneration,
+        'formationGeneration',
+        false
+    );
+    const formationLineageHash = requireUint32(
+        snapshot.formationLineageHash,
+        'formationLineageHash',
+        false
+    );
+    const validMask = (1 << formationDefinition.slotCount) - 1;
+    if (formationGeneration <= 1
+        || formationGeneration === INVALID_HANDLE_COMPONENT
+        || formationLineageHash === INVALID_HANDLE_COMPONENT
+        || formationRotationStep >= formationDefinition.slotCount
+        || (formationOccupiedSlotMask & ~validMask) !== 0
+        || popcountUint32(formationOccupiedSlotMask) !== memberCount
+        || !isConnectedFormationOccupancyMask(
+            formationDefinition.neighborMasks,
+            formationOccupiedSlotMask,
+            formationDefinition.slotCount
+        )) {
+        throw new RangeError('private Hexa transform Formation facts가 올바르지 않습니다.');
+    }
+    return Object.freeze({
+        memberCount,
+        currentHealthCenti,
+        maxHealthCenti,
+        formationOccupiedSlotMask,
+        formationRotationStep,
+        formationGeneration,
+        formationLineageHash
+    });
+}
+
+const ENEMY_FORMATION_BASE_METADATA_FIELDS = Object.freeze([
+    'formationDefinitionId',
+    'formationDefinitionCode',
+    'formationCoordinateSystemId',
+    'formationCoordinateSystemCode',
+    'formationPolicyId',
+    'formationPolicyCode',
+    'formationMemberCount'
+]);
+const ENEMY_FORMATION_RUNTIME_METADATA_FIELDS = Object.freeze([
+    'formationId',
+    'formationOccupiedSlotMask',
+    'formationRotationStep',
+    'formationGeneration',
+    'formationFlags',
+    'formationLineageHash',
+    'formationState'
+]);
+const ENEMY_FORMATION_PROVENANCE_FIELDS = Object.freeze([
+    'formationGroupId',
+    'formationAuthoredCoordinateSystemId',
+    'formationAuthoredMemberCount',
+    'formationRows',
+    'formationColumns',
+    'formationMemberIndex',
+    'formationMemberSlotIndex',
+    'formationRowIndex',
+    'formationColumnIndex',
+    'formationAuthoredOccupiedSlotMask'
+]);
+const EMPTY_ENEMY_FORMATION_PROVENANCE_METADATA = Object.freeze(
+    Object.fromEntries(ENEMY_FORMATION_PROVENANCE_FIELDS.map((field) => [
+        field,
+        null
+    ]))
+);
+
+function hasAnyField(source, fields) {
+    return fields.some((field) => (
+        source[field] !== undefined && source[field] !== null
+    ));
+}
+
+function requireAllFields(source, fields, label) {
+    for (const field of fields) {
+        if (source[field] === undefined || source[field] === null) {
+            throw new TypeError(`${label} field는 모두 함께 제공해야 합니다: ${field}`);
+        }
+    }
+}
+
+function validateFormationBaseMetadata(intent, capabilityMask) {
+    const hasFormationCapability = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.FORMATION,
+            'spawnIntent.capabilityMask'
+        );
+    const hasBaseMetadata = hasAnyField(intent, ENEMY_FORMATION_BASE_METADATA_FIELDS);
+    if (hasFormationCapability !== hasBaseMetadata) {
+        throw new RangeError(
+            'FORMATION capability와 formation base metadata가 일치해야 합니다.'
+        );
+    }
+    if (!hasFormationCapability) {
+        return null;
+    }
+    requireAllFields(intent, ENEMY_FORMATION_BASE_METADATA_FIELDS, 'formation base metadata');
+    const formationDefinitionId = requireNonEmptyString(
+        intent.formationDefinitionId,
+        'spawnIntent.formationDefinitionId'
+    );
+    const formationDefinition = ENEMY_FORMATION_DEFINITION_BY_ID[
+        formationDefinitionId
+    ];
+    const formationDefinitionCode = requireUint32(
+        intent.formationDefinitionCode,
+        'spawnIntent.formationDefinitionCode',
+        false
+    );
+    const formationCoordinateSystemId = requireNonEmptyString(
+        intent.formationCoordinateSystemId,
+        'spawnIntent.formationCoordinateSystemId'
+    );
+    const formationCoordinateSystemCode = requireUint32(
+        intent.formationCoordinateSystemCode,
+        'spawnIntent.formationCoordinateSystemCode',
+        false
+    );
+    const formationPolicyId = requireNonEmptyString(
+        intent.formationPolicyId,
+        'spawnIntent.formationPolicyId'
+    );
+    const formationPolicyCode = requireUint32(
+        intent.formationPolicyCode,
+        'spawnIntent.formationPolicyCode',
+        false
+    );
+    const formationMemberCount = requireUint32(
+        intent.formationMemberCount,
+        'spawnIntent.formationMemberCount',
+        false
+    );
+    if (!formationDefinition
+        || formationDefinition.definitionCode !== formationDefinitionCode
+        || formationDefinition.coordinateSystemId !== formationCoordinateSystemId
+        || formationDefinition.coordinateSystemCode !== formationCoordinateSystemCode
+        || FORMATION_COORDINATE_SYSTEM_CODE_BY_ID[formationCoordinateSystemId]
+            !== formationCoordinateSystemCode
+        || ENEMY_FORMATION_POLICY_CODE_BY_ID[formationPolicyId]
+            !== formationPolicyCode
+        || formationMemberCount > formationDefinition.maximumMemberCount) {
+        throw new RangeError('formation base metadata가 exact catalog/policy와 일치해야 합니다.');
+    }
+    return Object.freeze({
+        formationDefinition,
+        formationDefinitionId,
+        formationDefinitionCode,
+        formationCoordinateSystemId,
+        formationCoordinateSystemCode,
+        formationPolicyId,
+        formationPolicyCode,
+        formationMemberCount
+    });
+}
+
+function validateOptionalFormationProvenance(intent, base) {
+    const hasProvenance = hasAnyField(intent, ENEMY_FORMATION_PROVENANCE_FIELDS);
+    if (!hasProvenance) {
+        return {};
+    }
+    if (base === null) {
+        throw new RangeError('Formation provenance에는 FORMATION capability가 필요합니다.');
+    }
+    requireAllFields(intent, ENEMY_FORMATION_PROVENANCE_FIELDS, 'formation provenance');
+    const formationGroupId = requireNonEmptyString(
+        intent.formationGroupId,
+        'spawnIntent.formationGroupId'
+    );
+    const formationAuthoredCoordinateSystemId = requireNonEmptyString(
+        intent.formationAuthoredCoordinateSystemId,
+        'spawnIntent.formationAuthoredCoordinateSystemId'
+    );
+    const formationAuthoredMemberCount = requireUint32(
+        intent.formationAuthoredMemberCount,
+        'spawnIntent.formationAuthoredMemberCount',
+        false
+    );
+    const formationRows = requireUint32(intent.formationRows, 'spawnIntent.formationRows', false);
+    const formationColumns = requireUint32(
+        intent.formationColumns,
+        'spawnIntent.formationColumns',
+        false
+    );
+    const formationMemberIndex = requireNonNegativeSafeInteger(
+        intent.formationMemberIndex,
+        'spawnIntent.formationMemberIndex'
+    );
+    const formationMemberSlotIndex = requireNonNegativeSafeInteger(
+        intent.formationMemberSlotIndex,
+        'spawnIntent.formationMemberSlotIndex'
+    );
+    const formationRowIndex = requireNonNegativeSafeInteger(
+        intent.formationRowIndex,
+        'spawnIntent.formationRowIndex'
+    );
+    const formationColumnIndex = requireNonNegativeSafeInteger(
+        intent.formationColumnIndex,
+        'spawnIntent.formationColumnIndex'
+    );
+    const formationAuthoredOccupiedSlotMask = requireUint32(
+        intent.formationAuthoredOccupiedSlotMask,
+        'spawnIntent.formationAuthoredOccupiedSlotMask',
+        false
+    );
+    const definition = base.formationDefinition;
+    const validMask = (1 << definition.slotCount) - 1;
+    const centerRow = (formationRows - 1) * 0.5;
+    const centerColumn = (formationColumns - 1) * 0.5;
+    const q = formationColumnIndex - centerColumn;
+    const r = formationRowIndex - centerRow;
+    const resolvedSlotIndex = definition.slotCoordinates.findIndex(
+        (coordinate) => coordinate.q === q && coordinate.r === r
+    );
+    if (formationAuthoredCoordinateSystemId !== base.formationCoordinateSystemId
+        || (formationRows & 1) === 0
+        || (formationColumns & 1) === 0
+        || formationAuthoredMemberCount > definition.maximumMemberCount
+        || formationMemberIndex >= formationAuthoredMemberCount
+        || formationRowIndex >= formationRows
+        || formationColumnIndex >= formationColumns
+        || resolvedSlotIndex !== formationMemberSlotIndex
+        || (formationAuthoredOccupiedSlotMask & ~validMask) !== 0
+        || (formationAuthoredOccupiedSlotMask & (1 << formationMemberSlotIndex)) === 0
+        || popcountUint32(formationAuthoredOccupiedSlotMask)
+            !== formationAuthoredMemberCount
+        || !isConnectedFormationOccupancyMask(
+            definition.neighborMasks,
+            formationAuthoredOccupiedSlotMask,
+            definition.slotCount
+        )) {
+        throw new RangeError('authored Formation provenance가 exact six-ring layout과 다릅니다.');
+    }
+    return {
+        formationGroupId,
+        formationAuthoredCoordinateSystemId,
+        formationAuthoredMemberCount,
+        formationRows,
+        formationColumns,
+        formationMemberIndex,
+        formationMemberSlotIndex,
+        formationRowIndex,
+        formationColumnIndex,
+        formationAuthoredOccupiedSlotMask
+    };
+}
+
+function assertRawEnemyFormationIngress(intent, capabilityMask) {
+    const base = validateFormationBaseMetadata(intent, capabilityMask);
+    const provenance = validateOptionalFormationProvenance(intent, base);
+    if (Object.keys(provenance).length > 0) {
+        requireNonEmptyString(intent.waveId, 'spawnIntent.waveId');
+    }
+    if (hasAnyField(intent, ENEMY_FORMATION_RUNTIME_METADATA_FIELDS)) {
+        throw new RangeError(
+            'raw Enemy spawn은 runtime formationId/hash/state를 제공할 수 없습니다.'
+        );
+    }
+    if (base !== null && base.formationMemberCount !== 1) {
+        throw new RangeError('public natural Formation spawn은 n1 member만 허용합니다.');
+    }
+    return Object.freeze({ base, provenance: Object.freeze(provenance) });
+}
+
+function assertNaturalHexaRawIntent(
+    intent,
+    capabilityMask,
+    formationIngress,
+    contactHandler
+) {
+    const expectedCapabilityMask = createEnemyCapabilityMask(
+        BASIC_HEXA_ENEMY_DATA.capabilityIds,
+        'natural H capabilityIds'
+    );
+    const expectedFormation = ENEMY_FORMATION_DEFINITION_BY_ID[
+        BASIC_HEXA_ENEMY_DATA.formationDefinitionId
+    ];
+    const expectedStats = resolveBasicHexaFormationStats(1);
+    const base = formationIngress.base;
+    if (capabilityMask !== expectedCapabilityMask
+        || base === null
+        || base.formationDefinitionId !== expectedFormation.id
+        || base.formationDefinitionCode !== expectedFormation.definitionCode
+        || base.formationCoordinateSystemId
+            !== expectedFormation.coordinateSystemId
+        || base.formationCoordinateSystemCode
+            !== expectedFormation.coordinateSystemCode
+        || base.formationPolicyId !== ENEMY_FORMATION_POLICY.SEEK_FORMATION
+        || base.formationPolicyCode
+            !== ENEMY_FORMATION_POLICY_CODE_BY_ID[
+                ENEMY_FORMATION_POLICY.SEEK_FORMATION
+            ]
+        || base.formationMemberCount !== 1
+        || intent.physicsProfileId !== BASIC_HEXA_ENEMY_DATA.physicsProfileId
+        || intent.combatProfileId !== BASIC_HEXA_ENEMY_DATA.combatProfileId
+        || intent.behaviorProfileId !== BASIC_HEXA_ENEMY_DATA.behaviorProfileId
+        || intent.enemyBehaviorState !== undefined) {
+        throw new RangeError('natural H raw intent가 exact public catalog와 다릅니다.');
+    }
+    for (const [field, expected] of [
+        ['flowSpeed', expectedStats.moveSpeedTilesPerSecond],
+        ['weight', expectedStats.weight],
+        ['inverseMass', expectedStats.inverseMass],
+        ['towerContactDamage', expectedStats.towerContactDamage],
+        ['coreImpactDamage', expectedStats.coreImpactDamage],
+        ['bountyBudget', expectedStats.bountyBudget]
+    ]) {
+        if (intent[field] !== expected) {
+            throw new RangeError(
+                `natural H raw intent.${field}는 fixed n1 table과 같아야 합니다.`
+            );
+        }
+    }
+    if (contactHandler?.damageOther !== expectedStats.towerContactDamage) {
+        throw new RangeError(
+            'natural H contact damage는 fixed n1 table과 같아야 합니다.'
+        );
+    }
+}
+
+function copyOptionalEnemyFormationMetadata(intent) {
+    const capabilityMask = intent.capabilityMask === undefined
+        || intent.capabilityMask === null
+        ? null
+        : normalizeEnemyCapabilityMask(
+            intent.capabilityMask,
+            'spawnIntent.capabilityMask'
+        );
+    const base = validateFormationBaseMetadata(intent, capabilityMask);
+    const provenance = validateOptionalFormationProvenance(intent, base);
+    // Non-authored natural H/private composite는 authored group과 runtime
+    // formationId를 alias하지 않습니다. Registry에는 explicit null sentinel로
+    // provenance shape만 고정하고 runtime occupancy/state는 별도 scalar가 소유합니다.
+    const registryProvenance = Object.keys(provenance).length === 0
+        ? EMPTY_ENEMY_FORMATION_PROVENANCE_METADATA
+        : provenance;
+    if (base === null) {
+        if (hasAnyField(intent, ENEMY_FORMATION_RUNTIME_METADATA_FIELDS)) {
+            throw new RangeError('non-Formation Enemy에는 formation runtime metadata가 금지됩니다.');
+        }
+        return {};
+    }
+    requireAllFields(intent, ENEMY_FORMATION_RUNTIME_METADATA_FIELDS, 'formation runtime metadata');
+    const formationId = requireNonEmptyString(intent.formationId, 'spawnIntent.formationId');
+    const formationOccupiedSlotMask = requireUint32(
+        intent.formationOccupiedSlotMask,
+        'spawnIntent.formationOccupiedSlotMask',
+        false
+    );
+    const formationRotationStep = requireNonNegativeSafeInteger(
+        intent.formationRotationStep,
+        'spawnIntent.formationRotationStep'
+    );
+    const formationGeneration = requireUint32(
+        intent.formationGeneration,
+        'spawnIntent.formationGeneration',
+        false
+    );
+    const formationFlags = requireUint32(
+        intent.formationFlags,
+        'spawnIntent.formationFlags',
+        false
+    );
+    const formationLineageHash = requireUint32(
+        intent.formationLineageHash,
+        'spawnIntent.formationLineageHash',
+        false
+    );
+    const validMask = (1 << base.formationDefinition.slotCount) - 1;
+    if (formationGeneration === 0xffffffff
+        || formationLineageHash === 0xffffffff
+        || formationRotationStep >= base.formationDefinition.slotCount
+        || formationFlags !== FORMATION_RUNTIME_FLAG.ACTIVE
+        || (formationOccupiedSlotMask & ~validMask) !== 0
+        || popcountUint32(formationOccupiedSlotMask) !== base.formationMemberCount
+        || !isConnectedFormationOccupancyMask(
+            base.formationDefinition.neighborMasks,
+            formationOccupiedSlotMask,
+            base.formationDefinition.slotCount
+        )) {
+        throw new RangeError('formation runtime scalar metadata가 올바르지 않습니다.');
+    }
+    const state = intent.formationState;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        throw new TypeError('spawnIntent.formationState object가 필요합니다.');
+    }
+    const stateKeys = new Set([
+        'definitionCode',
+        'coordinateSystemCode',
+        'policyCode',
+        'memberCount',
+        'occupiedSlotMask',
+        'rotationStep',
+        'generation',
+        'flags',
+        'lineageHash'
+    ]);
+    for (const key of Object.keys(state)) {
+        if (!stateKeys.has(key)) {
+            throw new RangeError(`spawnIntent.formationState unknown field: ${key}`);
+        }
+    }
+    requireAllFields(state, [...stateKeys], 'formationState');
+    if (state.definitionCode !== base.formationDefinitionCode
+        || state.coordinateSystemCode !== base.formationCoordinateSystemCode
+        || state.policyCode !== base.formationPolicyCode
+        || state.memberCount !== base.formationMemberCount
+        || state.occupiedSlotMask !== formationOccupiedSlotMask
+        || state.rotationStep !== formationRotationStep
+        || state.generation !== formationGeneration
+        || state.flags !== formationFlags
+        || state.lineageHash !== formationLineageHash) {
+        throw new RangeError('formationState와 top-level exact facts가 일치해야 합니다.');
+    }
+    return {
+        formationDefinitionId: base.formationDefinitionId,
+        formationDefinitionCode: base.formationDefinitionCode,
+        formationCoordinateSystemId: base.formationCoordinateSystemId,
+        formationCoordinateSystemCode: base.formationCoordinateSystemCode,
+        formationPolicyId: base.formationPolicyId,
+        formationPolicyCode: base.formationPolicyCode,
+        formationId,
+        formationMemberCount: base.formationMemberCount,
+        formationOccupiedSlotMask,
+        formationRotationStep,
+        formationGeneration,
+        formationFlags,
+        formationLineageHash,
+        ...registryProvenance
     };
 }
 
@@ -598,6 +1162,19 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     }
     let normalizedEffectEmitterState = null;
     if (kindId === 'enemy') {
+        const spawnPolicy = requireNonEmptyString(
+            snapshot.spawnPolicy,
+            'spawnIntent.spawnPolicy'
+        );
+        if (spawnPolicy !== ENEMY_SPAWN_POLICY.NATURAL) {
+            throw new RangeError('raw Enemy spawn ingress는 natural spawnPolicy만 허용합니다.');
+        }
+        if (definitionId === BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID
+            || definitionId === BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID) {
+            throw new RangeError(
+                'transform-private H/HX definition은 privileged atomic-transform path만 허용합니다.'
+            );
+        }
         requireNonEmptyString(snapshot.gateId, 'spawnIntent.gateId');
         requireNonEmptyString(snapshot.pathId, 'spawnIntent.pathId');
         requireNonNegativeSafeInteger(snapshot.waypointIndex, 'spawnIntent.waypointIndex');
@@ -613,6 +1190,18 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
             snapshot,
             capabilityMask
         );
+        const formationIngress = assertRawEnemyFormationIngress(
+            snapshot,
+            capabilityMask
+        );
+        if (definitionId === BASIC_HEXA_ENEMY_DEFINITION_ID) {
+            assertNaturalHexaRawIntent(
+                snapshot,
+                capabilityMask,
+                formationIngress,
+                contactHandler
+            );
+        }
     } else if (hasAnyEnemyEffectMetadata(snapshot)
         || snapshot.effectEmitterState !== undefined) {
         throw new TypeError('Effect emitter metadata/state는 Enemy spawn에만 허용됩니다.');
@@ -669,6 +1258,7 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             ...copyOptionalEnemyCapabilityMetadata(intent),
             ...copyOptionalEnemyProfileMetadata(intent),
             ...copyOptionalEnemyEffectMetadata(intent),
+            ...copyOptionalEnemyFormationMetadata(intent),
             ...copyOptionalResolvedEnemyStatMetadata(intent)
         };
     }

@@ -38,6 +38,18 @@ function normalizeHandle(source, label) {
     };
 }
 
+function compareHandles(left, right) {
+    return left.entityId - right.entityId
+        || left.incarnation - right.incarnation;
+}
+
+function freezeHandle(source) {
+    return Object.freeze({
+        entityId: source.entityId,
+        incarnation: source.incarnation
+    });
+}
+
 /**
  * registry 밖으로 엔진 객체나 가변 컬렉션을 누출하지 않도록 작은 metadata만 복제합니다.
  * @param {*} source - 복제할 metadata입니다.
@@ -72,7 +84,11 @@ function normalizeMetadata(source) {
  * 현재 수직 슬라이스에서는 GPU 적만 등록하며 위치·속도·flow stage는 GPU 권위입니다.
  */
 export class WorldRegistry {
-    /** @param {{capacity?:number}} [options={}] */
+    #atomicTransformAuthority;
+    #atomicTransformGeneration;
+    #atomicTransformBatchPlans;
+
+    /** @param {{capacity?:number,atomicTransformAuthority?:object|null}} [options={}] */
     constructor(options = {}) {
         this.capacity = requirePositiveSafeInteger(options.capacity ?? 16384, 'capacity');
         this.recordsByEntityId = new Map();
@@ -83,6 +99,17 @@ export class WorldRegistry {
         this.reservedCount = 0;
         this.activeCountByKind = new Map();
         this.revision = 0;
+        const atomicTransformAuthority = options.atomicTransformAuthority ?? null;
+        if (atomicTransformAuthority !== null
+            && (typeof atomicTransformAuthority !== 'object'
+                || Array.isArray(atomicTransformAuthority))) {
+            throw new TypeError('atomicTransformAuthority는 opaque object여야 합니다.');
+        }
+        this.#atomicTransformAuthority = atomicTransformAuthority;
+        // Atomic transform token의 내용은 registry private WeakMap에만 둡니다.
+        // token 자체는 opaque/single-use이며 clear/replacement generation을 넘을 수 없습니다.
+        this.#atomicTransformGeneration = 1;
+        this.#atomicTransformBatchPlans = new WeakMap();
         this.destroyed = false;
     }
 
@@ -181,6 +208,202 @@ export class WorldRegistry {
         }
         this.revision++;
         return true;
+    }
+
+    /**
+     * 같은 fixed boundary의 disjoint transform 전부를 0-mutation으로 preflight합니다.
+     * 하나라도 stale/overlap/overflow이면 전체 batch를 거절합니다.
+     */
+    preflightAtomicTransformBatch(request, authority = null) {
+        this.#assertUsable();
+        this.#assertAtomicTransformAuthority(authority);
+        if (!Array.isArray(request?.transforms)
+            || request.transforms.length === 0
+            || request.transforms.length > this.capacity) {
+            throw new TypeError('atomic transform batch에는 bounded transform 배열이 필요합니다.');
+        }
+        const claimedEntityIds = new Set();
+        const plans = [];
+        for (let transformIndex = 0;
+            transformIndex < request.transforms.length;
+            transformIndex++) {
+            const transform = request.transforms[transformIndex];
+            if (!Array.isArray(transform?.sourceHandles)
+                || transform.sourceHandles.length !== 2) {
+                throw new TypeError(
+                    `transforms[${transformIndex}].sourceHandles는 정확히 두 개여야 합니다.`
+                );
+            }
+            const sourceHandles = transform.sourceHandles.map((handle, index) => (
+                normalizeHandle(
+                    handle,
+                    `transforms[${transformIndex}].sourceHandles[${index}]`
+                )
+            )).sort(compareHandles);
+            if (sourceHandles[0].entityId === sourceHandles[1].entityId
+                || claimedEntityIds.has(sourceHandles[0].entityId)
+                || claimedEntityIds.has(sourceHandles[1].entityId)) {
+                return null;
+            }
+            const sourceRecords = sourceHandles.map((handle) => (
+                this.#findExactRecord(handle, 'atomicTransformSource')
+            ));
+            if (sourceRecords.some((record) => record?.state !== 'active')) {
+                return null;
+            }
+            claimedEntityIds.add(sourceHandles[0].entityId);
+            claimedEntityIds.add(sourceHandles[1].entityId);
+            const destination = transform.destination;
+            const kindId = requireNonEmptyString(
+                destination?.kindId,
+                `transforms[${transformIndex}].destination.kindId`
+            );
+            const definitionId = destination?.definitionId === undefined
+                || destination.definitionId === null
+                ? null
+                : requireNonEmptyString(
+                    destination.definitionId,
+                    `transforms[${transformIndex}].destination.definitionId`
+                );
+            const createdAtTick = requireNonNegativeSafeInteger(
+                destination?.createdAtTick,
+                `transforms[${transformIndex}].destination.createdAtTick`
+            );
+            const metadata = normalizeMetadata(destination?.metadata ?? null);
+            const root = sourceHandles[0];
+            if ((this.lastIncarnationByEntityId.get(root.entityId) ?? 0)
+                    !== root.incarnation
+                || root.incarnation >= (INVALID_HANDLE_COMPONENT - 1)
+                || this.recordsByEntityId.get(root.entityId)
+                    !== sourceRecords[0]) {
+                return null;
+            }
+            plans.push(Object.freeze({
+                sourceHandles: Object.freeze(sourceHandles.map(freezeHandle)),
+                sourceRecords: Object.freeze([...sourceRecords]),
+                destinationHandle: freezeHandle({
+                    entityId: root.entityId,
+                    incarnation: root.incarnation + 1
+                }),
+                destination: Object.freeze({
+                    kindId,
+                    definitionId,
+                    createdAtTick,
+                    metadata
+                })
+            }));
+        }
+        const token = Object.freeze({});
+        const plan = Object.freeze({
+            generation: this.#atomicTransformGeneration,
+            revision: this.revision,
+            transforms: Object.freeze(plans)
+        });
+        this.#atomicTransformBatchPlans.set(token, plan);
+        return Object.freeze({
+            token,
+            registryRevision: this.revision,
+            transforms: Object.freeze(plans.map((entry) => Object.freeze({
+                sourceHandles: entry.sourceHandles,
+                destinationHandle: entry.destinationHandle
+            })))
+        });
+    }
+
+    cancelAtomicTransformBatch(token, authority = null) {
+        this.#assertUsable();
+        this.#assertAtomicTransformAuthority(authority);
+        if (!token || typeof token !== 'object'
+            || !this.#atomicTransformBatchPlans.has(token)) {
+            return false;
+        }
+        this.#atomicTransformBatchPlans.delete(token);
+        return true;
+    }
+
+    /** all-preflight batch를 sources remove + destinations activate 1회로 publish합니다. */
+    commitAtomicTransformBatch(token, authority = null) {
+        this.#assertUsable();
+        this.#assertAtomicTransformAuthority(authority);
+        const plan = token && typeof token === 'object'
+            ? this.#atomicTransformBatchPlans.get(token)
+            : null;
+        // 첫 commit 시도 자체가 token을 소비합니다. stale/forged/revision 실패를
+        // 고친 뒤 같은 token으로 재시도할 수 없습니다.
+        if (plan) {
+            this.#atomicTransformBatchPlans.delete(token);
+        }
+        if (!plan
+            || plan.generation !== this.#atomicTransformGeneration
+            || plan.revision !== this.revision) {
+            return null;
+        }
+        for (const transform of plan.transforms) {
+            for (let index = 0; index < 2; index++) {
+                const record = this.#findExactRecord(
+                    transform.sourceHandles[index],
+                    'atomicTransformSource'
+                );
+                if (record !== transform.sourceRecords[index]
+                    || record.state !== 'active') {
+                    return null;
+                }
+            }
+            const root = transform.sourceHandles[0];
+            if ((this.lastIncarnationByEntityId.get(root.entityId) ?? 0)
+                    !== root.incarnation
+                || this.recordsByEntityId.get(root.entityId)
+                    !== transform.sourceRecords[0]) {
+                return null;
+            }
+        }
+        if (this.activeCount < (plan.transforms.length * 2)) {
+            return null;
+        }
+
+        for (const transform of plan.transforms) {
+            const root = transform.sourceHandles[0];
+            const other = transform.sourceHandles[1];
+            for (const record of transform.sourceRecords) {
+                const nextKindCount
+                    = (this.activeCountByKind.get(record.kindId) ?? 1) - 1;
+                if (nextKindCount > 0) {
+                    this.activeCountByKind.set(record.kindId, nextKindCount);
+                } else {
+                    this.activeCountByKind.delete(record.kindId);
+                }
+            }
+            this.recordsByEntityId.delete(other.entityId);
+            this.freeEntityIds.push(other.entityId);
+            this.recordsByEntityId.set(root.entityId, {
+                handle: transform.destinationHandle,
+                kindId: transform.destination.kindId,
+                definitionId: transform.destination.definitionId,
+                createdAtTick: transform.destination.createdAtTick,
+                metadata: transform.destination.metadata,
+                state: 'active'
+            });
+            this.lastIncarnationByEntityId.set(
+                root.entityId,
+                transform.destinationHandle.incarnation
+            );
+            this.activeCountByKind.set(
+                transform.destination.kindId,
+                (this.activeCountByKind.get(transform.destination.kindId) ?? 0) + 1
+            );
+        }
+        this.activeCount -= plan.transforms.length;
+        this.revision++;
+        return Object.freeze({
+            committed: true,
+            registryRevision: this.revision,
+            transforms: Object.freeze(plan.transforms.map((transform) => (
+                Object.freeze({
+                    sourceHandles: transform.sourceHandles,
+                    destinationHandle: transform.destinationHandle
+                })
+            )))
+        });
     }
 
     /** @returns {boolean} incarnation까지 일치하는 활성 entity인지 여부입니다. */
@@ -282,6 +505,8 @@ export class WorldRegistry {
         this.activeCount = 0;
         this.reservedCount = 0;
         this.activeCountByKind.clear();
+        this.#atomicTransformGeneration++;
+        this.#atomicTransformBatchPlans = new WeakMap();
         this.revision++;
     }
 
@@ -297,6 +522,13 @@ export class WorldRegistry {
         const normalized = normalizeHandle(handle, label);
         const record = this.recordsByEntityId.get(normalized.entityId);
         return record?.handle.incarnation === normalized.incarnation ? record : null;
+    }
+
+    #assertAtomicTransformAuthority(authority) {
+        if (this.#atomicTransformAuthority === null
+            || authority !== this.#atomicTransformAuthority) {
+            throw new Error('atomic transform registry authority가 필요합니다.');
+        }
     }
 
     #assertUsable() {

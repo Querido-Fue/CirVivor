@@ -1,6 +1,21 @@
 import {
-    ENEMY_CAPABILITY_ID
+    ENEMY_CAPABILITY_ID,
+    createEnemyCapabilityMask,
+    hasEnemyCapability
 } from '../contract/enemy_capability_contract.js';
+import {
+    FORMATION_COORDINATE_SYSTEM,
+    isConnectedFormationOccupancyMask
+} from '../contract/enemy_formation_contract.js';
+import {
+    ENEMY_SPAWN_POLICY
+} from '../contract/enemy_profile_contract.js';
+import {
+    ENEMY_FORMATION_DEFINITION_BY_ID
+} from 'data/object/enemy/enemy_formation_catalog_data.js';
+import {
+    BASIC_HEXA_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_hexa_enemy_data.js';
 
 export const AUTHORED_WAVE_FIXED_TICKS_PER_SECOND = 60;
 
@@ -11,13 +26,8 @@ export const AUTHORED_WAVE_TIMELINE_COMMAND_TYPE = Object.freeze({
     SPAWN_FORMATION: 'SPAWN_FORMATION'
 });
 
-export const AUTHORED_FORMATION_COORDINATE_SYSTEM = Object.freeze({
-    LINEAR_GRID: 'LINEAR_GRID',
-    HEX_AXIAL: 'HEX_AXIAL',
-    HEX_OFFSET: 'HEX_OFFSET',
-    RING_SLOTS: 'RING_SLOTS',
-    PATH_RELATIVE: 'PATH_RELATIVE'
-});
+/** Authored/runtime coordinate vocabulary는 exact frozen identity를 공유합니다. */
+export const AUTHORED_FORMATION_COORDINATE_SYSTEM = FORMATION_COORDINATE_SYSTEM;
 
 export const AUTHORED_FORMATION_SPAWN_MODE = Object.freeze({
     ALL_AT_ONCE: 'ALL_AT_ONCE',
@@ -25,8 +35,9 @@ export const AUTHORED_FORMATION_SPAWN_MODE = Object.freeze({
 });
 
 export const AUTHORED_WAVE_COMPILE_ERROR_CODE = Object.freeze({
-    PENDING_FORMATION_CAPABILITY:
-        `pending-capability:${ENEMY_CAPABILITY_ID.FORMATION}`,
+    FORMATION_CAPABILITY_REQUIRED: 'formation-capability-required',
+    INVALID_PERSISTENT_FORMATION: 'invalid-persistent-formation',
+    TRANSFORM_PRIVATE_SPAWN_FORBIDDEN: 'transform-private-spawn-forbidden',
     UNSUPPORTED_COORDINATE_SYSTEM: 'unsupported-coordinate-system',
     TOTAL_SPAWN_CAPACITY_EXCEEDED: 'total-spawn-capacity-exceeded',
     FIXED_TICK_SPAWN_CAPACITY_EXCEEDED: 'fixed-tick-spawn-capacity-exceeded',
@@ -50,6 +61,7 @@ const VALID_FORMATION_SPAWN_MODES = new Set(
 );
 const IMPLEMENTED_FORMATION_COORDINATE_SYSTEMS = new Set([
     AUTHORED_FORMATION_COORDINATE_SYSTEM.LINEAR_GRID,
+    AUTHORED_FORMATION_COORDINATE_SYSTEM.HEX_AXIAL,
     AUTHORED_FORMATION_COORDINATE_SYSTEM.PATH_RELATIVE
 ]);
 const WAIT_ENTRY_KEYS = new Set([
@@ -89,7 +101,9 @@ const DURATION_GROUP_KEYS = new Set([
 const ROUTE_BINDING_KEYS = new Set(['gateId', 'pathId']);
 const FORMATION_KEYS = new Set([
     'groupId',
-    'size',
+    'memberCount',
+    'rows',
+    'columns',
     'coordinateSystem',
     'spawnMode',
     'rowDelayTicks',
@@ -329,13 +343,27 @@ function assertWalkablePosition(tileMap, route, offset, label) {
     return Object.freeze({ x, y });
 }
 
+function assertNaturalAuthoredSpawnDefinition(definition, label) {
+    if (!definition || typeof definition !== 'object') {
+        throw new TypeError(`${label} enemy definition이 필요합니다.`);
+    }
+    if (definition.spawnPolicy !== ENEMY_SPAWN_POLICY.NATURAL) {
+        throw createCompileError(
+            AUTHORED_WAVE_COMPILE_ERROR_CODE.TRANSFORM_PRIVATE_SPAWN_FORBIDDEN,
+            `${label}는 natural spawn definition이어야 합니다.`,
+            { definitionId: definition.id ?? null }
+        );
+    }
+    return definition;
+}
+
 function resolveDefinitionCycle(group, resolveEnemyDefinition, label) {
     const fallbackId = requireNonEmptyString(
         group.enemyDefinitionId,
         `${label}.enemyDefinitionId`
     );
-    const fallbackDefinition = resolveEnemyDefinition(
-        fallbackId,
+    const fallbackDefinition = assertNaturalAuthoredSpawnDefinition(
+        resolveEnemyDefinition(fallbackId, `${label}.enemyDefinitionId`),
         `${label}.enemyDefinitionId`
     );
     const source = group.enemyDefinitionIds;
@@ -351,8 +379,11 @@ function resolveDefinitionCycle(group, resolveEnemyDefinition, label) {
             value,
             `${label}.enemyDefinitionIds[${index}]`
         );
-        return resolveEnemyDefinition(
-            definitionId,
+        return assertNaturalAuthoredSpawnDefinition(
+            resolveEnemyDefinition(
+                definitionId,
+                `${label}.enemyDefinitionIds[${index}]`
+            ),
             `${label}.enemyDefinitionIds[${index}]`
         );
     }));
@@ -404,7 +435,10 @@ function normalizeFormation(
     const formation = requirePlainObject(source, label);
     assertKnownKeys(formation, FORMATION_KEYS, label);
     const groupIdentity = encodeIdentity(formation.groupId, `${label}.groupId`);
-    const size = requirePositiveSafeInteger(formation.size, `${label}.size`);
+    const memberCount = requirePositiveSafeInteger(
+        formation.memberCount,
+        `${label}.memberCount`
+    );
     const coordinateSystem = requireNonEmptyString(
         formation.coordinateSystem,
         `${label}.coordinateSystem`
@@ -444,15 +478,43 @@ function normalizeFormation(
         }
         return row;
     }));
-    const columnCount = layout[0].length;
+    const derivedRows = layout.length;
+    const derivedColumns = layout[0].length;
+    for (let rowIndex = 1; rowIndex < derivedRows; rowIndex++) {
+        if (layout[rowIndex].length !== derivedColumns) {
+            throw new RangeError(`${label}.layout은 rectangular이어야 합니다.`);
+        }
+    }
+    const hasRows = Object.prototype.hasOwnProperty.call(formation, 'rows');
+    const hasColumns = Object.prototype.hasOwnProperty.call(formation, 'columns');
+    if (hasRows !== hasColumns) {
+        throw new RangeError(
+            `${label}.rows와 ${label}.columns는 둘 다 제공하거나 둘 다 생략해야 합니다.`
+        );
+    }
+    const rows = hasRows
+        ? requirePositiveSafeInteger(formation.rows, `${label}.rows`)
+        : derivedRows;
+    const columns = hasColumns
+        ? requirePositiveSafeInteger(formation.columns, `${label}.columns`)
+        : derivedColumns;
+    if (rows !== derivedRows || columns !== derivedColumns) {
+        throw new RangeError(
+            `${label}.rows/columns가 raw rectangular layout extent와 다릅니다: `
+                + `${rows}x${columns}/${derivedRows}x${derivedColumns}`
+        );
+    }
     const symbolMapSource = requirePlainObject(formation.symbolMap, `${label}.symbolMap`);
     const symbolDefinitions = Object.create(null);
     for (const [symbol, definitionId] of Object.entries(symbolMapSource)) {
         if (symbol.length !== 1 || symbol === '.') {
             throw new RangeError(`${label}.symbolMap key는 dot이 아닌 한 글자여야 합니다.`);
         }
-        symbolDefinitions[symbol] = resolveEnemyDefinition(
-            requireNonEmptyString(definitionId, `${label}.symbolMap.${symbol}`),
+        symbolDefinitions[symbol] = assertNaturalAuthoredSpawnDefinition(
+            resolveEnemyDefinition(
+                requireNonEmptyString(definitionId, `${label}.symbolMap.${symbol}`),
+                `${label}.symbolMap.${symbol}`
+            ),
             `${label}.symbolMap.${symbol}`
         );
     }
@@ -460,13 +522,9 @@ function normalizeFormation(
         throw new TypeError(`${label}.symbolMap에는 하나 이상의 symbol이 필요합니다.`);
     }
     const usedSymbols = new Set();
-    let memberCount = 0;
-    for (let rowIndex = 0; rowIndex < layout.length; rowIndex++) {
+    let layoutMemberCount = 0;
+    for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
         const row = layout[rowIndex];
-        if (row.length !== columnCount) {
-            throw new RangeError(`${label}.layout은 rectangular이어야 합니다.`);
-        }
-        let rowMemberCount = 0;
         for (let columnIndex = 0; columnIndex < row.length; columnIndex++) {
             const symbol = row[columnIndex];
             if (symbol === '.') {
@@ -478,16 +536,16 @@ function normalizeFormation(
                 );
             }
             usedSymbols.add(symbol);
-            memberCount++;
-            rowMemberCount++;
-        }
-        if (rowMemberCount === 0) {
-            throw new RangeError(`${label}.layout[${rowIndex}]에는 하나 이상의 member가 필요합니다.`);
+            layoutMemberCount++;
         }
     }
-    if (memberCount !== size) {
+    if (layoutMemberCount === 0) {
+        throw new RangeError(`${label}.layout에는 하나 이상의 member가 필요합니다.`);
+    }
+    if (layoutMemberCount !== memberCount) {
         throw new RangeError(
-            `${label}.size가 layout의 non-dot member count와 다릅니다: ${size}/${memberCount}`
+            `${label}.memberCount가 layout의 non-dot member count와 다릅니다: `
+                + `${memberCount}/${layoutMemberCount}`
         );
     }
     for (const symbol of Object.keys(symbolDefinitions)) {
@@ -495,16 +553,115 @@ function normalizeFormation(
             throw new RangeError(`${label}.symbolMap에 사용되지 않은 symbol이 있습니다: ${symbol}`);
         }
     }
+    let persistentFormationDefinition = null;
+    let occupiedSlotMask = 0;
+    let memberIndex = 0;
+    const memberIndexByGridIndex = new Array(rows * columns).fill(-1);
+    const memberSlotIndexByGridIndex = new Array(rows * columns).fill(-1);
+    if (keepFormation) {
+        if (coordinateSystem !== AUTHORED_FORMATION_COORDINATE_SYSTEM.HEX_AXIAL) {
+            throw createCompileError(
+                AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                `${label}.keepFormation layout은 HEX_AXIAL이어야 합니다.`
+            );
+        }
+        if ((rows & 1) === 0 || (columns & 1) === 0) {
+            throw createCompileError(
+                AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                `${label}.keepFormation HEX layout rows/columns는 odd extent여야 합니다.`
+            );
+        }
+        const centerRow = (rows - 1) / 2;
+        const centerColumn = (columns - 1) / 2;
+        if (layout[centerRow][centerColumn] !== '.') {
+            throw createCompileError(
+                AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                `${label}.keepFormation HEX layout center (0,0)는 비어 있어야 합니다.`
+            );
+        }
+        for (const [symbol, definition] of Object.entries(symbolDefinitions)) {
+            const capabilityMask = createEnemyCapabilityMask(
+                definition.capabilityIds,
+                `${label}.symbolMap.${symbol}.capabilityIds`
+            );
+            const hasFormation = hasEnemyCapability(
+                capabilityMask,
+                ENEMY_CAPABILITY_ID.FORMATION,
+                `${label}.symbolMap.${symbol}.capabilityMask`
+            );
+            const formationDefinition = definition.formationDefinitionId
+                ? ENEMY_FORMATION_DEFINITION_BY_ID[definition.formationDefinitionId]
+                : null;
+            if (!hasFormation
+                || definition.id !== BASIC_HEXA_ENEMY_DEFINITION_ID
+                || !formationDefinition) {
+                throw createCompileError(
+                    AUTHORED_WAVE_COMPILE_ERROR_CODE.FORMATION_CAPABILITY_REQUIRED,
+                    `${label}.keepFormation member는 natural H Formation definition이어야 합니다.`,
+                    { definitionId: definition.id ?? null }
+                );
+            }
+            if (persistentFormationDefinition !== null
+                && persistentFormationDefinition.id !== formationDefinition.id) {
+                throw createCompileError(
+                    AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                    `${label}.keepFormation member는 같은 formationDefinitionId를 사용해야 합니다.`
+                );
+            }
+            persistentFormationDefinition = formationDefinition;
+        }
+        for (let rowIndex = 0; rowIndex < rows; rowIndex++) {
+            const r = rowIndex - centerRow;
+            for (let columnIndex = 0; columnIndex < columns; columnIndex++) {
+                if (layout[rowIndex][columnIndex] === '.') {
+                    continue;
+                }
+                const q = columnIndex - centerColumn;
+                const slotIndex = persistentFormationDefinition.slotCoordinates.findIndex(
+                    (coordinate) => coordinate.q === q && coordinate.r === r
+                );
+                if (slotIndex < 0) {
+                    throw createCompileError(
+                        AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                        `${label}.keepFormation member가 six-ring slot 밖에 있습니다.`,
+                        { rowIndex, columnIndex, q, r }
+                    );
+                }
+                const gridIndex = (rowIndex * columns) + columnIndex;
+                memberIndexByGridIndex[gridIndex] = memberIndex;
+                memberSlotIndexByGridIndex[gridIndex] = slotIndex;
+                occupiedSlotMask |= 1 << slotIndex;
+                memberIndex++;
+            }
+        }
+        if (memberIndex !== memberCount
+            || !isConnectedFormationOccupancyMask(
+                persistentFormationDefinition.neighborMasks,
+                occupiedSlotMask,
+                persistentFormationDefinition.slotCount
+            )) {
+            throw createCompileError(
+                AUTHORED_WAVE_COMPILE_ERROR_CODE.INVALID_PERSISTENT_FORMATION,
+                `${label}.keepFormation occupied six-ring subset은 connected여야 합니다.`
+            );
+        }
+    }
     return Object.freeze({
         groupId: groupIdentity.value,
         encodedGroupId: groupIdentity.encoded,
-        size,
+        memberCount,
+        rows,
+        columns,
         coordinateSystem,
         spawnMode,
         rowDelayTicks,
         keepFormation,
         layout,
         symbolDefinitions: Object.freeze(symbolDefinitions),
+        persistentFormationDefinition,
+        occupiedSlotMask,
+        memberIndexByGridIndex: Object.freeze(memberIndexByGridIndex),
+        memberSlotIndexByGridIndex: Object.freeze(memberSlotIndexByGridIndex),
         route: resolveRouteBinding(
             formation.routeBinding,
             routeByGateId,
@@ -523,9 +680,7 @@ function normalizeFormation(
             formation.anchorOffsetTiles,
             `${label}.anchorOffsetTiles`,
             Object.freeze({ x: 0, y: 0 })
-        ),
-        rowCount: layout.length,
-        columnCount
+        )
     });
 }
 
@@ -537,8 +692,19 @@ function resolveLaneWorldOffset(route, laneOffsetTiles) {
 }
 
 function resolveFormationWorldOffset(formation, rowIndex, columnIndex) {
+    if (formation.coordinateSystem
+        === AUTHORED_FORMATION_COORDINATE_SYSTEM.HEX_AXIAL) {
+        const q = columnIndex - ((formation.columns - 1) * 0.5);
+        const r = rowIndex - ((formation.rows - 1) * 0.5);
+        return Object.freeze({
+            x: formation.anchorOffsetTiles.x
+                + ((q + (r * 0.5)) * formation.columnSpacingTiles),
+            y: formation.anchorOffsetTiles.y
+                + (r * formation.rowSpacingTiles)
+        });
+    }
     const localX = formation.anchorOffsetTiles.x
-        + ((columnIndex - ((formation.columnCount - 1) * 0.5))
+        + ((columnIndex - ((formation.columns - 1) * 0.5))
             * formation.columnSpacingTiles);
     const localY = formation.anchorOffsetTiles.y
         + (rowIndex * formation.rowSpacingTiles);
@@ -597,6 +763,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
         policyId,
         laneOffsetTiles,
         initialWorldOffsetTiles,
+        formationProvenance = null,
         commandTail
     }) => {
         const targetFixedTick = checkedTickSum(
@@ -638,7 +805,8 @@ export function compileAuthoredWaveTimeline(options = {}) {
             waveId: waveIdentity.value,
             policyId,
             timelineEntryId: timelineIdentity.value,
-            groupId
+            groupId,
+            formationProvenance
         }));
         spawnSequence++;
     };
@@ -732,6 +900,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                         policyId: group.policyId,
                         laneOffsetTiles,
                         initialWorldOffsetTiles: null,
+                        formationProvenance: null,
                         commandTail: `spawn-${spawnIndex}`
                     });
                 }
@@ -778,6 +947,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                     policyId: group.policyId,
                     laneOffsetTiles,
                     initialWorldOffsetTiles: null,
+                    formationProvenance: null,
                     commandTail: `spawn-${spawnIndex}`
                 });
             }
@@ -797,12 +967,6 @@ export function compileAuthoredWaveTimeline(options = {}) {
             `${label}.formation`
         );
         registerGroupId(formation.groupId, `${label}.formation.groupId`);
-        if (formation.keepFormation) {
-            throw createCompileError(
-                AUTHORED_WAVE_COMPILE_ERROR_CODE.PENDING_FORMATION_CAPABILITY,
-                'keepFormation runtime은 R2 Turn 4 capability가 필요합니다.'
-            );
-        }
         if (!IMPLEMENTED_FORMATION_COORDINATE_SYSTEMS.has(
             formation.coordinateSystem
         )) {
@@ -812,12 +976,12 @@ export function compileAuthoredWaveTimeline(options = {}) {
                 { coordinateSystem: formation.coordinateSystem }
             );
         }
-        for (let rowIndex = 0; rowIndex < formation.rowCount; rowIndex++) {
+        for (let rowIndex = 0; rowIndex < formation.rows; rowIndex++) {
             const rowTickOffset = formation.spawnMode
                 === AUTHORED_FORMATION_SPAWN_MODE.SEQUENTIAL_ROWS
                 ? rowIndex * formation.rowDelayTicks
                 : 0;
-            for (let columnIndex = 0; columnIndex < formation.columnCount; columnIndex++) {
+            for (let columnIndex = 0; columnIndex < formation.columns; columnIndex++) {
                 const symbol = formation.layout[rowIndex][columnIndex];
                 if (symbol === '.') {
                     continue;
@@ -847,13 +1011,37 @@ export function compileAuthoredWaveTimeline(options = {}) {
                     policyId: formation.policyId,
                     laneOffsetTiles: 0,
                     initialWorldOffsetTiles,
+                    formationProvenance: formation.keepFormation
+                        ? Object.freeze({
+                            formationGroupId: formation.groupId,
+                            formationAuthoredCoordinateSystemId:
+                                formation.coordinateSystem,
+                            formationAuthoredMemberCount: formation.memberCount,
+                            formationRows: formation.rows,
+                            formationColumns: formation.columns,
+                            formationMemberIndex:
+                                formation.memberIndexByGridIndex[
+                                    (rowIndex * formation.columns) + columnIndex
+                                ],
+                            // Authored six-ring slot provenance입니다. Runtime composite
+                            // occupancy authority는 별도 occupiedSlotMask/state가 소유합니다.
+                            formationMemberSlotIndex:
+                                formation.memberSlotIndexByGridIndex[
+                                    (rowIndex * formation.columns) + columnIndex
+                                ],
+                            formationRowIndex: rowIndex,
+                            formationColumnIndex: columnIndex,
+                            formationAuthoredOccupiedSlotMask:
+                                formation.occupiedSlotMask
+                        })
+                        : null,
                     commandTail: `member-${rowIndex}-${columnIndex}`
                 });
             }
         }
         const lastRowOffset = formation.spawnMode
             === AUTHORED_FORMATION_SPAWN_MODE.SEQUENTIAL_ROWS
-            ? (formation.rowCount - 1) * formation.rowDelayTicks
+            ? (formation.rows - 1) * formation.rowDelayTicks
             : 0;
         localCursorTick = checkedTickSum(
             localCursorTick,

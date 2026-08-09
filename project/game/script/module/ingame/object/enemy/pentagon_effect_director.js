@@ -149,6 +149,8 @@ export class PentagonEffectDirector {
             stagedPulseCount: 0,
             completedPulseCount: 0,
             zeroTargetCompletionCount: 0,
+            capacityRejectedStageCount: 0,
+            capacityRejectedCompletionCount: 0,
             staleCompletionCount: 0,
             replayedStageCount: 0
         };
@@ -207,6 +209,19 @@ export class PentagonEffectDirector {
         if (!this.ingressOpen || this.recoveryRequired) {
             return this.getStatus();
         }
+        let observationTick;
+        try {
+            observationTick = requirePositiveSafeInteger(
+                snapshot.fixedTick,
+                'effectCompletion.fixedTick'
+            );
+        } catch (error) {
+            this.#fail(
+                'effect-completion-cadence',
+                String(error?.message ?? error)
+            );
+            return this.getStatus();
+        }
         if (snapshot.protocolFailure) {
             this.#fail(
                 snapshot.protocolFailure.code ?? 'effect-completion-protocol',
@@ -228,6 +243,11 @@ export class PentagonEffectDirector {
                     result.sourceTick,
                     'effectCompletion.sourceTick'
                 );
+                if (sourceTick >= observationTick) {
+                    throw new RangeError(
+                        'Effect completion sourceTick은 관찰 fixedTick보다 과거여야 합니다.'
+                    );
+                }
                 const pulseSequence = requireNonNegativeSafeInteger(
                     result.pulseSequence,
                     'effectCompletion.pulseSequence'
@@ -256,9 +276,14 @@ export class PentagonEffectDirector {
                     === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET;
                 const sourceInvalid = resultCode
                     === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID;
+                const capacityRejected = resultCode
+                    === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED;
                 if (result.commandId !== expectedCommandId
                     || observedCommandIds.has(expectedCommandId)
-                    || (!applied && !zeroTarget && !sourceInvalid)
+                    || (!applied
+                        && !zeroTarget
+                        && !sourceInvalid
+                        && !capacityRejected)
                     || (applied
                         ? appliedCount <= 0 || candidateCount !== appliedCount
                         : candidateCount !== 0 || appliedCount !== 0)) {
@@ -272,7 +297,7 @@ export class PentagonEffectDirector {
                     const staleProof = this.staleSubmittedCommandById.get(
                         expectedCommandId
                     );
-                    if (!sourceInvalid
+                    if ((!sourceInvalid && !capacityRejected)
                         || !staleProof
                         || staleProof.sourceTick !== sourceTick
                         || staleProof.pulseSequence !== pulseSequence
@@ -285,7 +310,8 @@ export class PentagonEffectDirector {
                     completionPlans.push(Object.freeze({
                         kind: 'stale',
                         commandId: expectedCommandId,
-                        sourceTick
+                        sourceTick,
+                        capacityRejected
                     }));
                     continue;
                 }
@@ -298,8 +324,12 @@ export class PentagonEffectDirector {
                     );
                 }
                 const profile = this.#readProfileAt(index);
-                const nextSequence = pulseSequence + 1;
-                const nextPulseTick = sourceTick + profile.pulseIntervalTicks;
+                const nextSequence = capacityRejected
+                    ? pulseSequence
+                    : pulseSequence + 1;
+                const nextPulseTick = capacityRejected
+                    ? observationTick
+                    : sourceTick + profile.pulseIntervalTicks;
                 if (!Number.isSafeInteger(nextSequence)
                     || !Number.isSafeInteger(nextPulseTick)) {
                     throw new RangeError('Effect pulse cadence 정수 공간이 고갈되었습니다.');
@@ -310,7 +340,8 @@ export class PentagonEffectDirector {
                     sourceTick,
                     nextSequence,
                     nextPulseTick,
-                    zeroTarget
+                    zeroTarget,
+                    capacityRejected
                 }));
             }
             for (const plan of completionPlans) {
@@ -321,6 +352,9 @@ export class PentagonEffectDirector {
                         plan.sourceTick
                     );
                     this.telemetry.staleCompletionCount++;
+                    if (plan.capacityRejected) {
+                        this.telemetry.capacityRejectedCompletionCount++;
+                    }
                     continue;
                 }
                 this.pulseSequences[plan.index] = plan.nextSequence;
@@ -334,6 +368,9 @@ export class PentagonEffectDirector {
                 this.telemetry.completedPulseCount++;
                 if (plan.zeroTarget) {
                     this.telemetry.zeroTargetCompletionCount++;
+                }
+                if (plan.capacityRejected) {
+                    this.telemetry.capacityRejectedCompletionCount++;
                 }
             }
         } catch (error) {
@@ -370,6 +407,18 @@ export class PentagonEffectDirector {
                 stagedCount: 0,
                 reason: this.failure?.code ?? 'effect-runtime-recovery-required',
                 recoveryRequired: true
+            });
+        }
+        if (this.lastStageResult.accepted === false
+            && this.lastStageResult.targetFixedTick === tick
+            && [
+                'effect-command-capacity',
+                'effect-command-history-capacity'
+            ].includes(this.lastStageResult.reason)) {
+            this.telemetry.replayedStageCount++;
+            return Object.freeze({
+                ...this.lastStageResult,
+                replayed: true
             });
         }
 
@@ -459,25 +508,46 @@ export class PentagonEffectDirector {
             || receipt.batchId !== batchId
             || receipt.targetFixedTick !== tick
             || receipt.queuedCount !== commands.length) {
-            if (receipt?.reason === 'effect-command-capacity') {
-                this.#fail(
+            const retryableCapacity = receipt !== null
+                && typeof receipt === 'object'
+                && receipt.accepted === false
+                && receipt.batchId === batchId
+                && receipt.targetFixedTick === tick
+                && receipt.queuedCount === 0
+                && receipt.replayed === undefined
+                && [
+                    'accepted',
+                    'batchId',
+                    'queuedCount',
+                    'reason',
+                    'targetFixedTick'
+                ].every((key) => Object.hasOwn(receipt, key))
+                && Object.keys(receipt).length === 5
+                && [
                     'effect-command-capacity',
-                    'Authored whole-tick Effect batch가 owner capacity를 초과했습니다.'
-                );
+                    'effect-command-history-capacity'
+                ].includes(receipt.reason);
+            if (retryableCapacity) {
+                for (const index of dueIndexes) {
+                    this.nextPulseTicks[index] = tick + 1;
+                }
+                this.telemetry.capacityRejectedStageCount++;
             } else if (receipt?.reason !== 'effect-command-port-revoked') {
                 this.#fail(
                     receipt?.reason ?? 'effect-command-rejected',
                     'Effect owner가 whole-tick pulse batch를 거절했습니다.'
                 );
             }
-            return Object.freeze({
+            this.lastStageResult = Object.freeze({
                 accepted: false,
                 targetFixedTick: tick,
                 batchId,
                 stagedCount: 0,
                 reason: receipt?.reason ?? 'effect-command-rejected',
+                replayed: false,
                 recoveryRequired: this.recoveryRequired
             });
+            return this.lastStageResult;
         }
         for (const index of dueIndexes) {
             this.pendingTicks[index] = tick;

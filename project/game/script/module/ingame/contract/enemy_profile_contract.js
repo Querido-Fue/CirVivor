@@ -2,15 +2,19 @@ import {
     ENEMY_CAPABILITY_ID,
     normalizeEnemyCapabilityIds
 } from './enemy_capability_contract.js';
+import {
+    ENEMY_FORMATION_POLICY,
+    normalizeEnemyFormationPolicyId
+} from './enemy_formation_contract.js';
 
-/** Turn 1에서 vocabulary만 고정하는 formation policy입니다. */
-export const ENEMY_FORMATION_POLICY = Object.freeze({
-    NONE: 'none',
-    KEEP_FORMATION: 'keep-formation',
-    SEEK_FORMATION: 'seek-formation'
+export { ENEMY_FORMATION_POLICY } from './enemy_formation_contract.js';
+
+export const ENEMY_SPAWN_POLICY = Object.freeze({
+    NATURAL: 'natural',
+    TRANSFORM_PRIVATE: 'transform-private'
 });
 
-const VALID_FORMATION_POLICIES = new Set(Object.values(ENEMY_FORMATION_POLICY));
+const VALID_SPAWN_POLICIES = new Set(Object.values(ENEMY_SPAWN_POLICY));
 const PHYSICS_PROFILE_KEYS = new Set([
     'id',
     'collisionRadiusTiles',
@@ -53,11 +57,13 @@ const CHARGE_PROFILE_KEYS = new Set([
 ]);
 const ENEMY_DEFINITION_KEYS = new Set([
     'id',
+    'spawnPolicy',
     'shapeDefinitionId',
     'physicsProfileId',
     'combatProfileId',
     'behaviorProfileId',
     'effectEmitterProfileId',
+    'formationDefinitionId',
     'capabilityIds',
     'render'
 ]);
@@ -232,13 +238,10 @@ function normalizeChargeProfile(source, label) {
 function normalizeBehaviorProfile(source, label) {
     const profile = requirePlainObject(source, label);
     assertKnownKeys(profile, BEHAVIOR_PROFILE_KEYS, label);
-    const formationPolicy = requireNonEmptyString(
+    const formationPolicy = normalizeEnemyFormationPolicyId(
         profile.formationPolicy,
         `${label}.formationPolicy`
     );
-    if (!VALID_FORMATION_POLICIES.has(formationPolicy)) {
-        throw new RangeError(`${label}.formationPolicy는 알려진 formation policy여야 합니다.`);
-    }
     const attackDefinitionId = profile.attackDefinitionId === undefined
         || profile.attackDefinitionId === null
         ? null
@@ -419,6 +422,31 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
                 + '양방향으로 일치해야 합니다.'
         );
     }
+    if (!Object.prototype.hasOwnProperty.call(source, 'formationDefinitionId')) {
+        throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
+    }
+    const formationDefinitionId = source.formationDefinitionId === null
+        ? null
+        : requireNonEmptyString(
+            source.formationDefinitionId,
+            `${label}.formationDefinitionId`
+        );
+    const hasFormationCapability = capabilityIdSet.has(
+        ENEMY_CAPABILITY_ID.FORMATION
+    );
+    const hasFormationDefinition = formationDefinitionId !== null;
+    // 이 scalar는 author-time capability/definition compatibility assertion에만
+    // 사용합니다. GPU EnemyBehaviorState/program에는 materialize하지 않으며 runtime
+    // policy authority는 독립 Formation definition/state의 policy code입니다.
+    const hasFormationPolicy = profiles.behavior.formationPolicy
+        !== ENEMY_FORMATION_POLICY.NONE;
+    if (hasFormationCapability !== hasFormationDefinition
+        || hasFormationCapability !== hasFormationPolicy) {
+        throw new RangeError(
+            `${label}의 FORMATION capability, formationDefinitionId, `
+                + 'behavior formationPolicy가 양방향으로 일치해야 합니다.'
+        );
+    }
     if (profiles.combat.towerContactDamage > 0
         && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)) {
         throw new RangeError(
@@ -456,6 +484,13 @@ export function normalizeEnemyDefinition(
     const definition = requirePlainObject(source, label);
     assertKnownKeys(definition, ENEMY_DEFINITION_KEYS, label);
     const id = requireNonEmptyString(definition.id, `${label}.id`);
+    const spawnPolicy = requireNonEmptyString(
+        definition.spawnPolicy,
+        `${label}.spawnPolicy`
+    );
+    if (!VALID_SPAWN_POLICIES.has(spawnPolicy)) {
+        throw new RangeError(`${label}.spawnPolicy는 알려진 spawn policy여야 합니다.`);
+    }
     const shapeDefinitionId = requireNonEmptyString(
         definition.shapeDefinitionId,
         `${label}.shapeDefinitionId`
@@ -479,6 +514,15 @@ export function normalizeEnemyDefinition(
             definition.effectEmitterProfileId,
             `${label}.effectEmitterProfileId`
         );
+    if (!Object.prototype.hasOwnProperty.call(definition, 'formationDefinitionId')) {
+        throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
+    }
+    const formationDefinitionId = definition.formationDefinitionId === null
+        ? null
+        : requireNonEmptyString(
+            definition.formationDefinitionId,
+            `${label}.formationDefinitionId`
+        );
     const capabilityIds = normalizeEnemyCapabilityIds(
         definition.capabilityIds,
         `${label}.capabilityIds`
@@ -494,11 +538,13 @@ export function normalizeEnemyDefinition(
     });
     const canonical = {
         id,
+        spawnPolicy,
         shapeDefinitionId,
         physicsProfileId,
         combatProfileId,
         behaviorProfileId,
         effectEmitterProfileId,
+        formationDefinitionId,
         capabilityIds,
         render
     };

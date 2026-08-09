@@ -149,6 +149,22 @@ function createPentagonEffectDiagnosticStatus(status) {
     });
 }
 
+function createFormationDiagnosticStatus(status) {
+    return Object.freeze({
+        available: status !== null && status !== undefined,
+        activeGroupCount: normalizeDiagnosticCount(status?.activeGroupCount),
+        activeHiveCount: normalizeDiagnosticCount(status?.activeHiveCount),
+        totalOriginalMemberCount: normalizeDiagnosticCount(
+            status?.totalOriginalMemberCount
+        ),
+        pendingTransformBatchCount: normalizeDiagnosticCount(
+            status?.pendingTransformBatchCount
+        ),
+        hiveHealthBarPolicy: status?.hiveHealthBarPolicy ?? null,
+        recoveryRequired: status?.recoveryRequired === true
+    });
+}
+
 /**
  * @class GameSystem
  * @description 한 인게임 세션의 현재 최소 구현을 소유하고 입력·오브젝트 실행 순서를 조정합니다.
@@ -443,6 +459,11 @@ export class GameSystem {
         return this.objectSystem?.getPentagonEffectStatus() ?? null;
     }
 
+    /** GPU_WORLD H/HX Formation capability의 bounded scalar 상태입니다. */
+    getFormationRuntimeStatus() {
+        return this.objectSystem?.getFormationRuntimeStatus() ?? null;
+    }
+
     /**
      * HUD·manual QA가 raw GPU readback 없이 읽는 bounded scalar snapshot입니다.
      * Tower는 committed roster mirror, Core는 run-domain CoreIntegrity가 authority입니다.
@@ -463,6 +484,9 @@ export class GameSystem {
             ),
             pentagonEffect: createPentagonEffectDiagnosticStatus(
                 this.getPentagonEffectStatus()
+            ),
+            formation: createFormationDiagnosticStatus(
+                this.getFormationRuntimeStatus()
             ),
             wave: createWaveDiagnosticStatus(
                 this.objectSystem?.getEnemyWaveStatus?.() ?? null

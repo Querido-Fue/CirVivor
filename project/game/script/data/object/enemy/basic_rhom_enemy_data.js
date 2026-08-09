@@ -2,6 +2,9 @@ import {
     ENEMY_CAPABILITY_ID
 } from 'ingame/contract/enemy_capability_contract.js';
 import {
+    ENEMY_SPAWN_POLICY
+} from 'ingame/contract/enemy_profile_contract.js';
+import {
     MAIN_GPU_ENEMY_COLOR_RGBA,
     MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
     MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID
@@ -34,10 +37,12 @@ export const BASIC_RHOM_CAPABILITY_IDS = Object.freeze([
  */
 export const BASIC_RHOM_ENEMY_DEFINITION_SOURCE = Object.freeze({
     id: BASIC_RHOM_ENEMY_DEFINITION_ID,
+    spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
     shapeDefinitionId: 'rhom',
     physicsProfileId: BASIC_RHOM_PHYSICS_PROFILE_ID,
     combatProfileId: BASIC_RHOM_COMBAT_PROFILE_ID,
     behaviorProfileId: BASIC_RHOM_BEHAVIOR_PROFILE_ID,
+    formationDefinitionId: null,
     capabilityIds: BASIC_RHOM_CAPABILITY_IDS,
     render: Object.freeze({
         colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,

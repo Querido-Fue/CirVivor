@@ -126,6 +126,7 @@ class RecoveryBackend {
         this.hardFailNextFixed = false;
         this.initCount = 0;
         this.destroyCount = 0;
+        this.towerGameplayTargetHandle = null;
         this.trackedHandle = null;
     }
 
@@ -224,6 +225,21 @@ class RecoveryBackend {
         };
     }
 
+    configureTowerGameplayTarget(handle = null) {
+        if (handle === null) {
+            this.towerGameplayTargetHandle = null;
+            return { accepted: true, configured: false };
+        }
+        if (!this.hasBody(handle)) {
+            return { accepted: false, reason: 'stale-handle' };
+        }
+        this.towerGameplayTargetHandle = Object.freeze({
+            entityId: handle.entityId,
+            incarnation: handle.incarnation
+        });
+        return { accepted: true, configured: true };
+    }
+
     configureTrackedBody(handle = null) {
         if (handle === null) {
             this.trackedHandle = null;
@@ -271,6 +287,7 @@ class RecoveryBackend {
         }
         this.destroyCount++;
         this.bodies.clear();
+        this.towerGameplayTargetHandle = null;
         this.trackedHandle = null;
         this.runtimeState = 'destroyed';
     }
@@ -702,6 +719,12 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
     const initialRegistry = initialObjectSystem.getWorldRegistry();
     const initialSessionGeneration = initialEndpoint.getStatus().sessionGeneration;
     const initialHostileDirector = initialObjectSystem.hostileAttackDirector;
+    const initialPentagonEffectDirector
+        = initialObjectSystem.pentagonEffectDirector;
+    const initialFormationRuntimeDirector
+        = initialObjectSystem.formationRuntimeDirector;
+    const staleEffectCommandPort = initialEndpoint.getEffectCommandPort();
+    const staleFormationCommandPort = initialEndpoint.getFormationCommandPort();
     const maxIntegrity = initialCoreIntegrity.getMaxIntegrity();
     const appliedDamage = initialCoreIntegrity.applyIntegrityDamage(37);
     const damagedIntegrity = initialCoreIntegrity.getCurrentIntegrity();
@@ -760,6 +783,79 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
             > initialSessionGeneration
     );
     assert.equal(initialEndpoint.getStatus().destroyed, true);
+    assert.equal(initialPentagonEffectDirector.getStatus().destroyed, true);
+    assert.equal(initialPentagonEffectDirector.getStatus().activeEmitterCount, 0);
+    assert.equal(initialPentagonEffectDirector.getStatus().pendingPulseCount, 0);
+    assert.equal(initialPentagonEffectDirector.getStatus().pendingBatchCount, 0);
+    assert.equal(
+        initialPentagonEffectDirector.getStatus().pendingStaleCompletionCount,
+        0
+    );
+    assert.equal(initialFormationRuntimeDirector.getStatus().destroyed, true);
+    assert.equal(initialFormationRuntimeDirector.getStatus().activeGroupCount, 0);
+    assert.equal(initialFormationRuntimeDirector.getStatus().activeHiveCount, 0);
+    assert.equal(
+        initialFormationRuntimeDirector.getStatus().totalOriginalMemberCount,
+        0
+    );
+    assert.equal(
+        initialFormationRuntimeDirector.getStatus().pendingTransformBatchCount,
+        0
+    );
+    assert.deepEqual(staleEffectCommandPort.requestPulseBatch({}), {
+        accepted: false,
+        reason: 'effect-command-port-revoked'
+    });
+    assert.throws(() => staleFormationCommandPort.requestPrepareBatch({}));
+    assert.notStrictEqual(
+        firstReplacementEndpoint.getEffectCommandPort(),
+        staleEffectCommandPort
+    );
+    assert.notStrictEqual(
+        firstReplacementEndpoint.getFormationCommandPort(),
+        staleFormationCommandPort
+    );
+    const replacementEffectStatus = initialGameSystem.getPentagonEffectStatus();
+    assert.equal(replacementEffectStatus.destroyed, false);
+    assert.equal(replacementEffectStatus.activeEmitterCount, 0);
+    assert.equal(replacementEffectStatus.pendingPulseCount, 0);
+    assert.equal(replacementEffectStatus.pendingBatchCount, 0);
+    assert.equal(replacementEffectStatus.pendingStaleCompletionCount, 0);
+    const replacementFormationStatus
+        = initialGameSystem.getFormationRuntimeStatus();
+    assert.equal(replacementFormationStatus.destroyed, false);
+    assert.equal(replacementFormationStatus.activeGroupCount, 0);
+    assert.equal(replacementFormationStatus.activeHiveCount, 0);
+    assert.equal(replacementFormationStatus.totalOriginalMemberCount, 0);
+    assert.equal(replacementFormationStatus.pendingTransformBatchCount, 0);
+    const replacementEndpointStatus = firstReplacementEndpoint.getStatus();
+    assert.equal(replacementEndpointStatus.effectCommands.pendingBatchCount, 0);
+    assert.equal(replacementEndpointStatus.effectCommands.inFlightBatchCount, 0);
+    assert.equal(
+        replacementEndpointStatus.effectCommands.pendingPulseProgramCount,
+        0
+    );
+    assert.equal(
+        replacementEndpointStatus.formationCommands.pendingPrepareBatchCount,
+        0
+    );
+    assert.equal(
+        replacementEndpointStatus.formationCommands.inFlightPrepareBatchCount,
+        0
+    );
+    assert.equal(
+        replacementEndpointStatus.formationCommands.preparedTransformBatchCount,
+        0
+    );
+    assert.equal(
+        replacementEndpointStatus.formationCommands.armedTransformBatchCount,
+        0
+    );
+    assert.equal(
+        replacementEndpointStatus.formationCommands
+            .pendingTransformCompletionCount,
+        0
+    );
     assert.equal(scene.getEnemyRecoveryStatus().restartCount, 1);
     assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, 1);
     assert.equal(initialGameSystem.getFixedTick(), 0);
@@ -781,6 +877,11 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
     assert.equal(firstReplacementRegistry.getActiveCount('core-proxy'), 1);
     assert.ok(initialObjectSystem.getGpuWorldActorStatus().towerHandle);
     assert.ok(initialObjectSystem.getGpuWorldActorStatus().coreProxyHandle);
+    assert.equal(
+        initialObjectSystem.getGpuWorldActorStatus()
+            .towerGameplayTargetConfigured,
+        true
+    );
     assert.equal(scene.getEnemyRecoveryStatus().restartGeneration, null);
     assert.equal(initialCoreIntegrity.getCurrentIntegrity(), damagedIntegrity);
     assert.equal(legacyClearCount, 1);
@@ -1321,11 +1422,16 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
     );
     assert.equal(objectSystem.getGpuWorldActorStatus().towerHandle, null);
     assert.ok(objectSystem.getGpuWorldActorStatus().coreProxyHandle);
+    assert.equal(
+        objectSystem.getGpuWorldActorStatus().towerGameplayTargetConfigured,
+        false
+    );
     assert.equal(objectSystem.getGpuWorldActorStatus().trackedTowerConfigured, false);
     assert.equal(towerFacade.getStatus().active, false);
     assert.equal(towerFacade.getStatus().lastPoseRejection, 'tower-dead');
     assert.equal(primaryController.getStatus().enabled, false);
     assert.equal(backends[2].trackedHandle, null);
+    assert.equal(backends[2].towerGameplayTargetHandle, null);
     assert.equal(backends[2].fixedProgramPlans.length, fixedPlanCountBeforeDeath);
     assert.equal(aliveReplacementHostileDirector.stageCalls.at(-1).targetHandle, null);
     assert.equal(gameSystem.getHostileAttackStatus().lastTargetHandle, null);
@@ -1395,6 +1501,7 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
         1
     );
     assert.equal(primaryController.getStatus().enabled, false);
+    assert.equal(backends[3].towerGameplayTargetHandle, null);
     assert.equal(backends[3].trackedHandle, null);
     assert.equal(deadReplacementHostileDirector.stageCalls.at(-1).targetHandle, null);
     assert.equal(gameSystem.getHostileAttackStatus().activeArcherCount, 0);

@@ -5,6 +5,7 @@ import {
     CORRIDOR_EIGHT_WAVE_01_DATA
 } from 'data/scene/game/corridor_eight_wave_01_data.js';
 import {
+    ENEMY_SPAWN_POLICY,
     normalizeEnemyDefinition
 } from '../contract/enemy_profile_contract.js';
 import {
@@ -51,14 +52,19 @@ function snapshotEnemyDefinition(source, label) {
     }
     const definition = normalizeEnemyDefinition({
         id: source.id,
+        spawnPolicy: source.spawnPolicy,
         shapeDefinitionId: source.shapeDefinitionId,
         physicsProfileId: source.physicsProfileId,
         combatProfileId: source.combatProfileId,
         behaviorProfileId: source.behaviorProfileId,
+        effectEmitterProfileId: source.effectEmitterProfileId,
+        formationDefinitionId: source.formationDefinitionId,
         capabilityIds: source.capabilityIds,
         render: source.render
     }, ENEMY_PROFILE_CATALOG, label);
-    assertGpuEnemyDefinitionCapabilities(definition);
+    if (definition.spawnPolicy === ENEMY_SPAWN_POLICY.NATURAL) {
+        assertGpuEnemyDefinitionCapabilities(definition);
+    }
     return definition;
 }
 
@@ -195,6 +201,7 @@ export class WaveDirector {
                 initialWorldOffsetTiles: entry.initialWorldOffsetTiles,
                 waveId: entry.waveId,
                 policyId: entry.policyId,
+                formationProvenance: entry.formationProvenance,
                 resolvedStats
             });
             return Object.freeze({

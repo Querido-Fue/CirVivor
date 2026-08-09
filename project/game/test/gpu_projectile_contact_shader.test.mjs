@@ -201,7 +201,8 @@ assert.match(compute, /fn gameplay_damage_resolution_policy_id\(gameplay_meta: u
 assert.match(compute, /fn gameplay_meta_is_valid\(gameplay_meta: u32\)[\s\S]*?GAMEPLAY_META_RESERVED_MASK[\s\S]*?GAMEPLAY_DAMAGE_POLICY_DEFAULT_TEAM_MATRIX/);
 assert.match(compute, /fn gameplay_damage_is_allowed\(source_meta: u32, target_meta: u32\)[\s\S]*?GAMEPLAY_TEAM_PLAYER[\s\S]*?GAMEPLAY_TEAM_HOSTILE/);
 
-// Team은 기존 simulation word에서 decode하므로 storage binding을 하나도 늘리지 않습니다.
+// Team은 기존 simulation word에서 decode하며 Tower gameplay target은 tracked pose와
+// 별도 16-byte config binding으로 유지합니다.
 const storageBindingBlock = compute.slice(
     compute.indexOf('@group(0) @binding(0)'),
     compute.indexOf('fn abi_is_current()')
@@ -214,13 +215,22 @@ assert.deepEqual(storageBindings, [
     '0:4:contact_handlers', '0:5:body_control_states',
     '0:6:body_control_program', '0:7:spawn_program',
     '0:8:tracked_pose_config', '0:9:tracked_pose_output', '0:10:combat_states',
-    '0:11:enemy_behavior_states',
+    '0:11:enemy_behavior_states', '0:12:effect_summaries',
+    '0:13:tower_gameplay_target',
     '1:0:grid_counts', '1:1:grid_bodies', '1:2:sdf_values',
     '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
     '3:2:applied_events', '3:3:death_events'
 ]);
-assert.equal(storageBindings.length, 20);
-assert.doesNotMatch(storageBindingBlock, /gameplay|team|damage_policy/i);
+assert.equal(storageBindings.length, 22);
+assert.doesNotMatch(storageBindingBlock, /gameplay_team|damage_policy/i);
+assert.match(
+    compute,
+    /struct TowerGameplayTargetConfig \{\s*target_slot: u32,\s*entity_id: u32,\s*incarnation: u32,\s*enabled: u32,\s*\}/
+);
+assert.match(
+    compute,
+    /fn tower_gameplay_target_is_valid\(\)[\s\S]*?tower_gameplay_target\.target_slot[\s\S]*?tower_gameplay_target\.entity_id[\s\S]*?tower_gameplay_target\.incarnation[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?GAMEPLAY_TEAM_PLAYER/
+);
 
 // BodyControl v2/SpawnProgram v4는 exact priority selection과 96-byte records를 고정합니다.
 assert.match(compute, /const BODY_CONTROL_PROGRAM_ABI_VERSION: u32 = 2u;/);
@@ -270,7 +280,10 @@ const legacyValidateStart = compute.indexOf('fn validate_source_relative_spawns(
 const selectedValidateStart = compute.indexOf('fn validate_selected_target_spawns(');
 const legacyResolveStart = compute.indexOf('fn resolve_source_relative_spawns(');
 const selectedResolveStart = compute.indexOf('fn resolve_selected_target_spawns(');
-const selectedResolveEnd = compute.indexOf('fn tracked_tower_target_is_valid(', selectedResolveStart);
+const selectedResolveEnd = compute.indexOf(
+    'fn tower_gameplay_target_is_valid(',
+    selectedResolveStart
+);
 assert.ok(
     legacyValidateStart >= 0
         && selectedValidateStart > legacyValidateStart

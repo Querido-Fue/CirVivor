@@ -139,10 +139,28 @@ test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정
     );
 });
 
-test('exact tracked Tower, non-homing snapshot, valid marker recoil와 single-submit pass order를 고정한다', () => {
+test('exact gameplay Tower config는 tracked pose와 독립이고 single-submit pass order를 유지한다', () => {
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /tracked_pose_config\.source_slot[\s\S]*?tracked_pose_config\.entity_id[\s\S]*?tracked_pose_config\.incarnation[\s\S]*?body_id_is_alive/u
+        /tower_gameplay_target\.target_slot[\s\S]*?tower_gameplay_target\.entity_id[\s\S]*?tower_gameplay_target\.incarnation[\s\S]*?body_id_is_alive[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?GAMEPLAY_TEAM_PLAYER/u
+    );
+    const arrowGameplayStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'fn tower_gameplay_target_is_valid()'
+    );
+    const trackedPackStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'fn pack_tracked_pose()'
+    );
+    assert.ok(arrowGameplayStart >= 0 && trackedPackStart > arrowGameplayStart);
+    assert.doesNotMatch(
+        GPU_COLLISION_COMPUTE_WGSL.slice(
+            arrowGameplayStart,
+            trackedPackStart
+        ),
+        /tracked_pose_config/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL.slice(trackedPackStart),
+        /tracked_pose_config\.source_slot[\s\S]*?tracked_pose_config\.entity_id[\s\S]*?tracked_pose_config\.incarnation/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
@@ -167,8 +185,39 @@ test('exact tracked Tower, non-homing snapshot, valid marker recoil와 single-su
     assert.ok(recoilContact > handle && window > recoilContact);
     assert.ok(rebuild > window && recoil > rebuild);
     assert.match(SIMULATION_SOURCE, /enemyBehavior: 8/u);
+    assert.match(
+        SIMULATION_SOURCE,
+        /compute-enemy-behavior-bodies-layout[\s\S]*?storageLayoutEntry\(0\)[\s\S]*?storageLayoutEntry\(1\)[\s\S]*?storageLayoutEntry\(2\)[\s\S]*?storageLayoutEntry\(11\)[\s\S]*?storageLayoutEntry\(13, 'read-only-storage'\)/u
+    );
+    assert.match(
+        SIMULATION_SOURCE,
+        /compute-tracked-pose-layout[\s\S]*?storageLayoutEntry\(8, 'read-only-storage'\)[\s\S]*?storageLayoutEntry\(9\)/u
+    );
     assert.match(SIMULATION_SOURCE, /contactHandling: 9/u);
     assert.match(SIMULATION_SOURCE, /device\.queue\.submit\(\[encoder\.finish\(\)\]\)/u);
+    const fixedGameplayStart = SIMULATION_SOURCE.indexOf(
+        "this.#dispatchBodies(pass, 'apply_controlled_motion')"
+    );
+    const fixedGameplayEnd = SIMULATION_SOURCE.indexOf(
+        'pass.end();',
+        fixedGameplayStart
+    );
+    const fixedGameplayBlock = SIMULATION_SOURCE.slice(
+        fixedGameplayStart,
+        fixedGameplayEnd
+    );
+    assert.match(
+        fixedGameplayBlock,
+        /if \(!terminalFinalSubmit\) \{[\s\S]*?advance_enemy_charge/u
+    );
+    assert.match(
+        fixedGameplayBlock,
+        /clear_contact_state[\s\S]*?if \(!terminalFinalSubmit\) \{[\s\S]*?emit_enemy_charge_telegraphs[\s\S]*?handle_contacts[\s\S]*?resolve_enemy_charge_contacts[\s\S]*?resolve_maximum_damage_window[\s\S]*?mark_dead/u
+    );
+    assert.match(
+        fixedGameplayBlock,
+        /if \(!terminalFinalSubmit\) \{[\s\S]*?apply_enemy_charge_recoil/u
+    );
 });
 
 console.log('GPU enemy Arrow charge contract: ok');

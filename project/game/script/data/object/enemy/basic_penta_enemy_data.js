@@ -2,6 +2,7 @@ import {
     ENEMY_CAPABILITY_ID
 } from 'ingame/contract/enemy_capability_contract.js';
 import {
+    ENEMY_SPAWN_POLICY,
     normalizeEnemyDefinition
 } from 'ingame/contract/enemy_profile_contract.js';
 import {
@@ -21,11 +22,13 @@ import {
 /** Pentagon P는 Core-route fallback과 독립 Effect Emitter capability를 함께 선언합니다. */
 export const BASIC_PENTA_ENEMY_DATA = normalizeEnemyDefinition(Object.freeze({
     id: 'basic_penta_01',
+    spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
     shapeDefinitionId: 'penta',
     physicsProfileId: MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID,
     combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
     behaviorProfileId: CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
     effectEmitterProfileId: PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE_ID,
+    formationDefinitionId: null,
     capabilityIds: Object.freeze([
         ...MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         ENEMY_CAPABILITY_ID.EFFECT_EMITTER

@@ -1,6 +1,7 @@
 import { WorldRegistry } from '../world_registry.js';
 import { GpuFixedCommandOwner } from '../gpu_fixed_command_owner.js';
 import { GpuEffectCommandOwner } from './gpu_effect_command_owner.js';
+import { GpuFormationCommandOwner } from './gpu_formation_command_owner.js';
 import {
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
@@ -60,9 +61,16 @@ import {
     GPU_EFFECT_RUNTIME_ABI_VERSION,
     GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
 } from '../../physics/gpu/gpu_effect_runtime_abi.js';
+import {
+    GPU_FORMATION_PREPARE_PROGRAM_ABI_VERSION,
+    GPU_FORMATION_RUNTIME_ABI_VERSION,
+    GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION
+} from '../../physics/gpu/gpu_formation_runtime_abi.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
 const DEFAULT_EFFECT_COMMAND_CAPACITY = 256;
+const DEFAULT_FORMATION_COMMAND_CAPACITY = 256;
 const DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY = 2048;
 const DEFAULT_COMPLETED_EVENT_KEY_HISTORY_CAPACITY = 65536;
 let nextGpuSimulationSessionGeneration = 1;
@@ -290,6 +298,118 @@ function createEffectBackendPort(backend, sessionGeneration) {
     });
 }
 
+function createFormationBackendPort(backend, sessionGeneration) {
+    const supportsRuntime = [
+        'stageFormationPrepareBatch',
+        'drainCompletedFormationPrepareBatches',
+        'armPreparedFormationTransformBatch',
+        'commitArmedFormationTransformBatch',
+        'cancelArmedFormationTransformBatch',
+        'cancelPendingFormationProgramsForTerminal',
+        'getFormationRuntimeStatus'
+    ].every((methodName) => typeof backend?.[methodName] === 'function');
+    let fallbackTerminal = null;
+    return Object.freeze({
+        hasBody: (handle) => backend.hasBody(handle),
+        stageFormationPrepareBatch: (batch) => supportsRuntime
+            ? backend.stageFormationPrepareBatch(batch)
+            : Object.freeze({
+                abiVersion: GPU_FORMATION_PREPARE_PROGRAM_ABI_VERSION,
+                accepted: false,
+                targetFixedTick: batch?.targetFixedTick ?? 0,
+                stagedCount: 0,
+                replayed: false,
+                reason: 'formation-runtime-unsupported',
+                requiresRecovery: true
+            }),
+        drainCompletedFormationPrepareBatches: (out = []) => supportsRuntime
+            ? backend.drainCompletedFormationPrepareBatches(out)
+            : out,
+        armPreparedFormationTransformBatch: (request) => supportsRuntime
+            ? backend.armPreparedFormationTransformBatch(request)
+            : Object.freeze({
+                abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'formation-runtime-unsupported',
+                requiresRecovery: true
+            }),
+        commitArmedFormationTransformBatch: (receipt) => supportsRuntime
+            ? backend.commitArmedFormationTransformBatch(receipt)
+            : Object.freeze({
+                abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'formation-runtime-unsupported',
+                requiresRecovery: true
+            }),
+        cancelArmedFormationTransformBatch: (receipt) => supportsRuntime
+            ? backend.cancelArmedFormationTransformBatch(receipt)
+            : Object.freeze({
+                abiVersion: GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'formation-runtime-unsupported',
+                requiresRecovery: true
+            }),
+        cancelPendingFormationProgramsForTerminal: (request) => {
+            if (supportsRuntime) {
+                return backend.cancelPendingFormationProgramsForTerminal(request);
+            }
+            fallbackTerminal = Object.freeze({
+                abiVersion: GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'armed',
+                finalFixedTick: request?.finalFixedTick ?? 0,
+                submittedTick: 0,
+                prepareProgramCount: 0,
+                armedTransformCount: 0,
+                pendingPrepareProgramCount: 0,
+                pendingPrepareReadbackCount: 0,
+                failure: null
+            });
+            return fallbackTerminal;
+        },
+        getFormationRuntimeStatus: () => supportsRuntime
+            ? backend.getFormationRuntimeStatus()
+            : Object.freeze({
+                abiVersion: GPU_FORMATION_RUNTIME_ABI_VERSION,
+                state: 'idle',
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                ingressOpen: fallbackTerminal === null,
+                prepareCapacity: 0,
+                transformCapacity: 0,
+                stagedPrepareProgramCount: 0,
+                pendingPrepareProgramCount: 0,
+                pendingPrepareReadbackCount: 0,
+                armedTransformCount: 0,
+                commitRequested: false,
+                runtimeStatus: 0,
+                requiresRecovery: false,
+                failure: null,
+                terminal: fallbackTerminal
+            }),
+        getEventProtocolState: () => backend.getEventProtocolState?.()
+            ?? Object.freeze({
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                submittedTick: 0
+            }),
+        noteFixedSubmit(sourceTick, submitted) {
+            if (!supportsRuntime
+                && submitted === true
+                && fallbackTerminal?.state === 'armed'
+                && fallbackTerminal.finalFixedTick === sourceTick) {
+                fallbackTerminal = Object.freeze({
+                    ...fallbackTerminal,
+                    state: 'submitted',
+                    submittedTick: sourceTick
+                });
+            }
+        },
+        isSupported: () => supportsRuntime
+    });
+}
+
 function createTerminalCleanupAuthority() {
     const issuedPermits = new WeakSet();
     let revoked = false;
@@ -326,6 +446,11 @@ function createTerminalCleanupAuthority() {
  */
 export class GpuEnemySimulationEndpoint {
     #terminalCleanupAuthority;
+    #atomicTransformIngressAuthority;
+    #atomicTransformRegistryAuthority;
+    #formationTransactionPort;
+    #formationCommandOwner;
+    #formationBackendPort;
     #coreImpactCleanupPortState;
     #authenticEffectLifecycleCommits;
     #effectLifecycleCommitProofTick;
@@ -333,7 +458,7 @@ export class GpuEnemySimulationEndpoint {
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         if (dependencies.coreImpactCleanupPortReceiver !== undefined
@@ -367,6 +492,19 @@ export class GpuEnemySimulationEndpoint {
                 'effectCommandCapacity는 GPU enemy composition capacity를 초과할 수 없습니다.'
             );
         }
+        const configuredFormationCommandCapacity = requirePositiveSafeInteger(
+            options.formationCommandCapacity
+                ?? Math.min(
+                    compositionBodyCapacity,
+                    DEFAULT_FORMATION_COMMAND_CAPACITY
+                ),
+            'formationCommandCapacity'
+        );
+        if (configuredFormationCommandCapacity > compositionBodyCapacity) {
+            throw new RangeError(
+                'formationCommandCapacity는 GPU enemy composition capacity를 초과할 수 없습니다.'
+            );
+        }
         const backendDependencies = {
             webGpuPlatformPort: dependencies.webGpuPlatformPort ?? null
         };
@@ -376,6 +514,7 @@ export class GpuEnemySimulationEndpoint {
             controlCommandCapacity: options.controlCommandCapacity,
             spawnProgramCapacity: options.spawnProgramCapacity,
             effectCommandCapacity: configuredEffectCommandCapacity,
+            formationCommandCapacity: configuredFormationCommandCapacity,
             sessionGeneration: this.sessionGeneration
         };
         const injectedBackend = typeof backendFactory
@@ -398,12 +537,62 @@ export class GpuEnemySimulationEndpoint {
                 'effectCommandCapacity는 resolved GPU enemy capacity를 초과할 수 없습니다.'
             );
         }
-        this.registry = new WorldRegistry({ capacity: this.capacity });
+        this.formationCommandCapacity
+            = options.formationCommandCapacity === undefined
+                ? Math.min(this.capacity, configuredFormationCommandCapacity)
+                : configuredFormationCommandCapacity;
+        if (this.formationCommandCapacity > this.capacity) {
+            throw new RangeError(
+                'formationCommandCapacity는 resolved GPU enemy capacity를 초과할 수 없습니다.'
+            );
+        }
+        this.#atomicTransformRegistryAuthority = Object.freeze({});
+        this.registry = new WorldRegistry({
+            capacity: this.capacity,
+            atomicTransformAuthority: this.#atomicTransformRegistryAuthority
+        });
         this.#terminalCleanupAuthority = createTerminalCleanupAuthority();
+        this.#atomicTransformIngressAuthority = createTerminalCleanupAuthority();
+        this.#formationCommandOwner = null;
+        this.#formationTransactionPort = Object.freeze({
+            armPreparedFormationTransformBatch: (request) => (
+                this.#formationCommandOwner
+                    ?.armPreparedFormationTransformBatch(request)
+                ?? Object.freeze({
+                    accepted: false,
+                    reason: 'formation-runtime-unconfigured',
+                    requiresRecovery: true
+                })
+            ),
+            commitArmedFormationTransformBatch: (receipt) => (
+                this.#formationCommandOwner
+                    ?.commitArmedFormationTransformBatch(receipt)
+                ?? Object.freeze({
+                    accepted: false,
+                    reason: 'formation-runtime-unconfigured',
+                    requiresRecovery: true
+                })
+            ),
+            cancelArmedFormationTransformBatch: (receipt) => (
+                this.#formationCommandOwner
+                    ?.cancelArmedFormationTransformBatch(receipt)
+                ?? Object.freeze({
+                    accepted: false,
+                    reason: 'formation-runtime-unconfigured',
+                    requiresRecovery: true
+                })
+            )
+        });
         this.lifecycleCommandOwner = new EnemyLifecycleCommandOwner(
             this.backend,
             this.registry,
-            { terminalCleanupAuthority: this.#terminalCleanupAuthority }
+            {
+                terminalCleanupAuthority: this.#terminalCleanupAuthority,
+                atomicTransformAuthority: this.#atomicTransformIngressAuthority,
+                atomicTransformRegistryAuthority:
+                    this.#atomicTransformRegistryAuthority,
+                atomicTransformTransactionPort: this.#formationTransactionPort
+            }
         );
         this.#authenticEffectLifecycleCommits = new WeakSet();
         this.#effectLifecycleCommitProofTick = 0;
@@ -472,6 +661,47 @@ export class GpuEnemySimulationEndpoint {
                 })
             }
         );
+        this.#formationBackendPort = createFormationBackendPort(
+            this.backend,
+            this.sessionGeneration
+        );
+        const formationLifecyclePort = Object.freeze({
+            requestAtomicTransformBatch: (
+                request,
+                targetFixedTick,
+                commandId
+            ) => {
+                const permit = this.#atomicTransformIngressAuthority.issuePermit();
+                if (!permit) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'atomic-transform-ingress-revoked'
+                    });
+                }
+                return this.lifecycleCommandOwner.requestAtomicTransformBatch(
+                    request,
+                    targetFixedTick,
+                    commandId,
+                    permit
+                );
+            }
+        });
+        this.#formationCommandOwner = new GpuFormationCommandOwner(
+            this.#formationBackendPort,
+            this.registry,
+            formationLifecyclePort,
+            {
+                sessionGeneration: this.sessionGeneration,
+                commandCapacity: this.formationCommandCapacity,
+                historyCapacity: options.formationCommandHistoryCapacity,
+                lifecycleCommitProofPort: Object.freeze({
+                    isAuthenticCommit: (commit, fixedTick) => (
+                        this.#authenticEffectLifecycleCommits.has(commit)
+                        && commit?.fixedTick === fixedTick
+                    )
+                })
+            }
+        );
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
             options.completedEventSnapshotCapacity
                 ?? Math.min(this.capacity * 2, DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY),
@@ -502,6 +732,8 @@ export class GpuEnemySimulationEndpoint {
         this.lastAcceptedEventProtocolKey = null;
         this.completedEventRecoveryRequired = false;
         this.completedEventProtocolFailure = null;
+        this.towerGameplayTargetDiagnostic = null;
+        this.trackedPoseDiagnostic = null;
         this.deferredCompletedEventBatches = [];
         this.lastCompletedSimulationEvents = createEmptyCompletedEventSnapshot();
         this.gameplayIngressOpen = true;
@@ -663,6 +895,140 @@ export class GpuEnemySimulationEndpoint {
         return this.effectCommandOwner.getCommandPort();
     }
 
+    /** GameObject-owned Formation director에 주입하는 bounded command port입니다. */
+    getFormationCommandPort() {
+        this.#assertUsable();
+        return this.#formationCommandOwner.getCommandPort();
+    }
+
+    /** Arrow gameplay용 exact Tower target을 registry/backend parity 뒤에 설정합니다. */
+    configureTowerGameplayTarget(handle = null) {
+        this.#assertUsable();
+        if (handle === null || handle === undefined) {
+            let cleared;
+            try {
+                cleared = this.backend.configureTowerGameplayTarget?.(null)
+                    ?? Object.freeze({
+                        accepted: false,
+                        reason: 'tower-gameplay-target-unsupported'
+                    });
+            } catch (error) {
+                return this.#failTowerGameplayTargetBackend(
+                    'tower-gameplay-target-clear-threw',
+                    error
+                );
+            }
+            if (cleared?.accepted !== true) {
+                return this.#failTowerGameplayTargetBackend(
+                    cleared?.reason ?? 'tower-gameplay-target-clear-rejected'
+                );
+            }
+            this.towerGameplayTargetDiagnostic = null;
+            return Object.freeze({ accepted: true, configured: null });
+        }
+        if (!this.gameplayIngressOpen) {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'gameplay-ingress-closed'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        const entityId = Number(handle?.entityId);
+        const incarnation = Number(handle?.incarnation);
+        if (!Number.isSafeInteger(entityId) || entityId <= 0
+            || !Number.isSafeInteger(incarnation) || incarnation <= 0) {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'tower-gameplay-target-handle-invalid'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        const exactHandle = { entityId, incarnation };
+        let registryHas;
+        let backendHas;
+        try {
+            registryHas = this.registry.has(exactHandle);
+            backendHas = this.backend.hasBody(exactHandle);
+        } catch {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'tower-gameplay-target-handle-invalid'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        if (registryHas !== backendHas) {
+            this.completedEventRecoveryRequired = true;
+            this.completedEventProtocolFailure = Object.freeze({
+                stage: 'tower-gameplay-target-config',
+                code: 'registry-backend-desync',
+                name: 'TowerGameplayTargetIdentityMismatch',
+                message: 'Tower gameplay target identity가 registry/backend에서 일치하지 않습니다.'
+            });
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'registry-backend-desync'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        if (!registryHas) {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'stale-handle'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        let view;
+        try {
+            view = this.registry.copyEntityView(exactHandle, {});
+        } catch (error) {
+            return this.#failTowerGameplayTargetBackend(
+                'tower-gameplay-target-registry-view-failed',
+                error
+            );
+        }
+        if (!view
+            || view.entityId !== entityId
+            || view.incarnation !== incarnation
+            || view.kindId !== GPU_TOWER_WORLD_KIND_ID
+            || view.definitionId !== GPU_TOWER_DEFINITION_ID) {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'tower-kind-definition-invalid'
+            });
+            this.towerGameplayTargetDiagnostic = rejected;
+            return rejected;
+        }
+        let configured;
+        try {
+            configured = this.backend.configureTowerGameplayTarget?.(
+                exactHandle
+            ) ?? Object.freeze({
+                accepted: false,
+                reason: 'tower-gameplay-target-unsupported'
+            });
+        } catch (error) {
+            return this.#failTowerGameplayTargetBackend(
+                'tower-gameplay-target-config-threw',
+                error
+            );
+        }
+        if (configured?.accepted !== true) {
+            return this.#failTowerGameplayTargetBackend(
+                configured?.reason ?? 'tower-gameplay-target-config-rejected'
+            );
+        }
+        this.towerGameplayTargetDiagnostic = null;
+        return Object.freeze({
+            accepted: true,
+            configured: Object.freeze({ ...exactHandle })
+        });
+    }
+
     /** 완료된 Effect pulse program을 다음 cadence 관찰용 bounded snapshot으로 확정합니다. */
     commitCompletedEffectProgramsAtFixedBoundary(targetFixedTick) {
         this.#assertUsable();
@@ -671,31 +1037,68 @@ export class GpuEnemySimulationEndpoint {
         );
     }
 
+    /** 완료된 GPU Formation prepare를 N+1 publication boundary에 확정합니다. */
+    commitCompletedFormationProgramsAtFixedBoundary(targetFixedTick) {
+        this.#assertUsable();
+        return this.#formationCommandOwner.commitCompletedAtFixedBoundary(
+            targetFixedTick
+        );
+    }
+
     /** Session당 exact GPU body 하나의 lossy observed-pose tracking을 설정합니다. */
     configureTrackedBody(handle = null) {
         this.#assertUsable();
-        if (handle !== null) {
-            const registryHas = this.registry.has(handle);
-            const backendHas = this.backend.hasBody(handle);
+        if (handle !== null && handle !== undefined) {
+            let registryHas;
+            let backendHas;
+            try {
+                registryHas = this.registry.has(handle);
+                backendHas = this.backend.hasBody(handle);
+            } catch {
+                const rejected = Object.freeze({
+                    accepted: false,
+                    reason: 'tracked-pose-handle-invalid'
+                });
+                this.trackedPoseDiagnostic = rejected;
+                return rejected;
+            }
             if (!registryHas && !backendHas) {
-                return Object.freeze({ accepted: false, reason: 'stale-handle' });
+                const rejected = Object.freeze({
+                    accepted: false,
+                    reason: 'stale-handle'
+                });
+                this.trackedPoseDiagnostic = rejected;
+                return rejected;
             }
             if (registryHas !== backendHas) {
-                this.completedEventRecoveryRequired = true;
-                this.completedEventProtocolFailure = Object.freeze({
-                    stage: 'tracked-pose-config',
-                    code: 'registry-backend-desync',
-                    name: 'TrackedPoseIdentityMismatch',
-                    message: 'tracked body identity가 registry/backend에서 일치하지 않습니다.'
-                });
-                return Object.freeze({
+                const rejected = Object.freeze({
                     accepted: false,
                     reason: 'registry-backend-desync'
                 });
+                this.trackedPoseDiagnostic = rejected;
+                return rejected;
             }
         }
-        return this.backend.configureTrackedBody?.(handle)
-            ?? Object.freeze({ accepted: false, reason: 'fixed-primitives-unsupported' });
+        try {
+            const configured = this.backend.configureTrackedBody?.(handle)
+                ?? Object.freeze({
+                    accepted: false,
+                    reason: 'fixed-primitives-unsupported'
+                });
+            this.trackedPoseDiagnostic = configured.accepted === true
+                ? null
+                : Object.freeze({
+                    reason: configured.reason ?? 'backend-rejected'
+                });
+            return configured;
+        } catch {
+            const rejected = Object.freeze({
+                accepted: false,
+                reason: 'tracked-pose-unavailable'
+            });
+            this.trackedPoseDiagnostic = rejected;
+            return rejected;
+        }
     }
 
     /**
@@ -721,10 +1124,15 @@ export class GpuEnemySimulationEndpoint {
                 this.gameplayIngressCloseReason,
                 finalFixedTick
             );
+            const formationCommands = this.#formationCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason,
+                finalFixedTick
+            );
             this.gameplayIngressCloseCleanup = Object.freeze({
                 lifecycle,
                 fixedCommands,
-                effectCommands
+                effectCommands,
+                formationCommands
             });
         }
         return Object.freeze({
@@ -748,6 +1156,11 @@ export class GpuEnemySimulationEndpoint {
         return this.effectCommandOwner.getTerminalCancelStatus();
     }
 
+    /** Terminal Formation cancel owner/backend의 ABI/tick/pending 증거입니다. */
+    getTerminalFormationProgramCancelStatus() {
+        return this.#formationCommandOwner.getTerminalCancelStatus();
+    }
+
     /** @returns {boolean} public spawn/control/source-relative ingress가 열려 있는지 여부입니다. */
     isGameplayIngressOpen() {
         return !this.destroyed && this.gameplayIngressOpen;
@@ -761,11 +1174,13 @@ export class GpuEnemySimulationEndpoint {
                 lifecycleCancelledCount: 0,
                 fixedCommands: null,
                 effectCommands: null
+                ,formationCommands: null
             });
         }
         let lifecycleCancelledCount = 0;
         let fixedCommands = null;
         let effectCommands = null;
+        let formationCommands = null;
         try {
             lifecycleCancelledCount
                 = this.lifecycleCommandOwner.finalizeClosedIngress();
@@ -775,15 +1190,25 @@ export class GpuEnemySimulationEndpoint {
             effectCommands = this.effectCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason
             );
+            formationCommands = this.#formationCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason,
+                this.gameplayIngressCloseCleanup?.formationCommands
+                    ?.finalFixedTick
+                    ?? this.gameplayIngressCloseCleanup?.effectCommands
+                        ?.finalFixedTick
+                    ?? 1
+            );
         } finally {
             // SEALED/SEALED_FAILED 뒤 stale stored port가 새 authentic cleanup을
             // 만들지 못하도록 permit authority까지 terminal finalizer가 닫습니다.
             this.#revokeCoreImpactCleanupPort();
+            this.#atomicTransformIngressAuthority.revoke();
         }
         return Object.freeze({
             lifecycleCancelledCount,
             fixedCommands,
             effectCommands
+            ,formationCommands
         });
     }
 
@@ -807,6 +1232,7 @@ export class GpuEnemySimulationEndpoint {
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
         if (this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
+            || this.#formationCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             this.#finalizeClosedLifecycleIngress();
@@ -820,16 +1246,19 @@ export class GpuEnemySimulationEndpoint {
                 backendState: this.backend.getRuntimeState(),
                 registryRevision: this.registry.getRevision(),
                 fixedCommands: null,
-                effectPrograms: null
+                effectPrograms: null,
+                formationPrograms: null
             });
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
+        this.#formationCommandOwner.observeLifecycleCommit(lifecycle);
         if (lifecycle.recoveryRequired) {
             this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 ...lifecycle,
                 fixedCommands: null,
-                effectPrograms: null
+                effectPrograms: null,
+                formationPrograms: null
             });
         }
         this.#rememberEffectLifecycleCommit(lifecycle, tick);
@@ -842,17 +1271,29 @@ export class GpuEnemySimulationEndpoint {
                     ? Object.freeze([...this.#effectLifecycleCommitProofs])
                     : null
             );
+        const formationPrograms = fixedCommands.recoveryRequired === true
+            || effectPrograms?.recoveryRequired === true
+            ? null
+            : this.#formationCommandOwner.commitAtFixedBoundary(
+                tick,
+                this.#effectLifecycleCommitProofs.length > 0
+                    ? Object.freeze([...this.#effectLifecycleCommitProofs])
+                    : null
+            );
         this.#finalizeClosedLifecycleIngress();
         const recoveryRequired = fixedCommands.recoveryRequired === true
-            || effectPrograms?.recoveryRequired === true;
+            || effectPrograms?.recoveryRequired === true
+            || formationPrograms?.recoveryRequired === true;
         const state = recoveryRequired
             ? fixedCommands.state === 'stalled'
                 && effectPrograms?.recoveryRequired !== true
+                && formationPrograms?.recoveryRequired !== true
                 ? 'stalled'
                 : 'failed'
             : lifecycle.state === 'committed-with-rejections'
                 || fixedCommands.state === 'committed-with-rejections'
                 || effectPrograms?.state === 'committed-with-rejections'
+                || formationPrograms?.state === 'committed-with-rejections'
                 ? 'committed-with-rejections'
                 : lifecycle.state;
         return Object.freeze({
@@ -860,7 +1301,8 @@ export class GpuEnemySimulationEndpoint {
             state,
             recoveryRequired,
             fixedCommands,
-            effectPrograms
+            effectPrograms,
+            formationPrograms
         });
     }
 
@@ -1013,12 +1455,17 @@ export class GpuEnemySimulationEndpoint {
         this.#assertUsable();
         if (this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
+            || this.#formationCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             return false;
         }
         const submitted = this.backend.fixedUpdate(delta, sourceTick);
         this.effectBackendPort.noteFixedSubmit(sourceTick, submitted === true);
+        this.#formationBackendPort.noteFixedSubmit(
+            sourceTick,
+            submitted === true
+        );
         return submitted;
     }
 
@@ -1058,6 +1505,7 @@ export class GpuEnemySimulationEndpoint {
         return !this.destroyed && (
             this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
+            || this.#formationCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
             || this.backend.requiresRecovery()
@@ -1073,7 +1521,8 @@ export class GpuEnemySimulationEndpoint {
             ? 0
             : this.lifecycleCommandOwner.getPendingCount()
                 + this.fixedCommandOwner.getPendingCount()
-                + this.effectCommandOwner.getPendingCount();
+                + this.effectCommandOwner.getPendingCount()
+                + this.#formationCommandOwner.getPendingCount();
     }
 
     getCapacity() {
@@ -1101,6 +1550,7 @@ export class GpuEnemySimulationEndpoint {
         const lifecycle = this.lifecycleCommandOwner.getStatus();
         const fixedCommands = this.fixedCommandOwner.getStatus();
         const effectCommands = this.effectCommandOwner.getStatus();
+        const formationCommands = this.#formationCommandOwner.getStatus();
         const backend = typeof this.backend.getStatus === 'function'
             ? this.backend.getStatus()
             : Object.freeze({ state: this.getRuntimeState() });
@@ -1123,6 +1573,7 @@ export class GpuEnemySimulationEndpoint {
             destroyed: this.destroyed,
             capacity: this.capacity,
             effectCommandCapacity: this.effectCommandCapacity,
+            formationCommandCapacity: this.formationCommandCapacity,
             sessionGeneration: this.sessionGeneration,
             activeCount: registry.activeCount,
             activeEnemyCount: this.registry.getActiveCount('enemy'),
@@ -1132,7 +1583,8 @@ export class GpuEnemySimulationEndpoint {
                 + fixedCommands.pendingCommandCount
                 + fixedCommands.pendingDestinationCount
                 + (fixedCommands.pendingPriorityTargetControlCount ?? 0)
-                + effectCommands.pendingPulseProgramCount,
+                + effectCommands.pendingPulseProgramCount
+                + this.#formationCommandOwner.getPendingCount(),
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
@@ -1141,15 +1593,20 @@ export class GpuEnemySimulationEndpoint {
             pendingEffectPulseProgramCount:
                 effectCommands.pendingPulseProgramCount,
             effectRuntimeSupported: this.effectBackendPort.isSupported(),
+            formationRuntimeSupported: this.#formationBackendPort.isSupported(),
             priorityTargetControlCompletedThroughTick:
                 fixedCommands.priorityTargetControlCompletedThroughTick ?? 0,
             gameplayIngressOpen: this.gameplayIngressOpen,
             gameplayIngressCloseReason: this.gameplayIngressCloseReason,
             gameplayIngressCloseCleanup: this.gameplayIngressCloseCleanup,
+            towerGameplayTargetDiagnostic:
+                this.towerGameplayTargetDiagnostic,
+            trackedPoseDiagnostic: this.trackedPoseDiagnostic,
             completedThroughTick: this.completedThroughTick,
             recoveryRequired: !this.destroyed && (
                 this.completedEventRecoveryRequired
                 || effectCommands.recoveryRequired
+                || formationCommands.recoveryRequired
                 || fixedCommands.recoveryRequired
                 || lifecycle.recoveryRequired
                 || this.backend.requiresRecovery()
@@ -1157,6 +1614,7 @@ export class GpuEnemySimulationEndpoint {
             events,
             backend,
             effectCommands,
+            formationCommands,
             fixedCommands,
             lifecycle,
             registry
@@ -1170,6 +1628,8 @@ export class GpuEnemySimulationEndpoint {
         }
         this.destroyed = true;
         this.#revokeCoreImpactCleanupPort();
+        this.#atomicTransformIngressAuthority.revoke();
+        this.#formationCommandOwner.destroy();
         this.effectCommandOwner.destroy();
         this.fixedCommandOwner.destroy();
         this.lifecycleCommandOwner.destroy();
@@ -2057,6 +2517,26 @@ export class GpuEnemySimulationEndpoint {
 
     #fixedTargetRejection(reason) {
         return Object.freeze({ accepted: false, reason });
+    }
+
+    #failTowerGameplayTargetBackend(reason, error = null) {
+        const code = typeof reason === 'string' && reason.length > 0
+            ? reason
+            : 'tower-gameplay-target-backend-failure';
+        this.completedEventRecoveryRequired = true;
+        this.completedEventProtocolFailure = Object.freeze({
+            stage: 'tower-gameplay-target-config',
+            code,
+            name: typeof error?.name === 'string'
+                ? error.name
+                : 'TowerGameplayTargetBackendFailure',
+            message: typeof error?.message === 'string'
+                ? error.message
+                : 'Tower gameplay target backend mutation이 실패했습니다.'
+        });
+        const rejected = Object.freeze({ accepted: false, reason: code });
+        this.towerGameplayTargetDiagnostic = rejected;
+        return rejected;
     }
 
     #assertUsable() {

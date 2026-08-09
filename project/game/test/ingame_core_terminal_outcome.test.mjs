@@ -26,7 +26,11 @@ function handleKey(handle) {
 }
 
 class TerminalBackend {
-    constructor({ fixedResult = true, sessionGeneration = 1 } = {}) {
+    constructor({
+        fixedResult = true,
+        sessionGeneration = 1,
+        gameplayTargetClearAccepted = true
+    } = {}) {
         this.fixedResult = fixedResult;
         this.calls = [];
         this.presentationFrames = [];
@@ -35,6 +39,8 @@ class TerminalBackend {
         this.destroyed = false;
         this.terminalCancelStatus = null;
         this.effectTerminalCancelStatus = null;
+        this.gameplayTargetClearAccepted = gameplayTargetClearAccepted;
+        this.towerGameplayTargetConfigured = false;
         this.protocol = Object.freeze({
             sessionGeneration,
             deviceGeneration: 0,
@@ -126,6 +132,25 @@ class TerminalBackend {
         });
     }
     hasPendingSpawnProgramThroughTick() { return false; }
+    configureTowerGameplayTarget(handle = null) {
+        this.calls.push(handle === null
+            ? 'tower-gameplay-target-clear'
+            : 'tower-gameplay-target-set');
+        if (handle === null && !this.gameplayTargetClearAccepted) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'fixture-gameplay-target-clear-rejected'
+            });
+        }
+        if (handle !== null && !this.hasBody(handle)) {
+            return Object.freeze({ accepted: false, reason: 'stale-handle' });
+        }
+        this.towerGameplayTargetConfigured = handle !== null;
+        return Object.freeze({
+            accepted: true,
+            configured: handle !== null
+        });
+    }
     getEventProtocolState() { return this.protocol; }
     drainCompletedEventBatches(out) { return out; }
     fixedUpdate(_delta, sourceTick) {
@@ -167,7 +192,15 @@ class TerminalBackend {
     getStatus() {
         return Object.freeze({
             state: this.getRuntimeState(),
-            ...this.protocol
+            ...this.protocol,
+            fixedPrimitives: Object.freeze({
+                towerGameplayTarget: Object.freeze({
+                    abiVersion: 1,
+                    configured: this.towerGameplayTargetConfigured,
+                    recordByteSize: 16,
+                    storageBuffersPerStage: 8
+                })
+            })
         });
     }
     destroy() { this.destroyed = true; }
@@ -341,7 +374,7 @@ function createTrackingCoreDirectorFactory() {
     });
 }
 
-function createDirectorFactory({ depleteOnFirstObserve }) {
+function createDirectorFactory({ depleteOnObservation }) {
     const state = {
         observations: 0,
         stages: 0,
@@ -353,7 +386,7 @@ function createDirectorFactory({ depleteOnFirstObserve }) {
         return ({
             observeCompletedEvents() {
                 state.observations++;
-                if (depleteOnFirstObserve && state.observations === 1) {
+                if (state.observations === depleteOnObservation) {
                     options.coreIntegrity.applyIntegrityDamage(
                         options.coreIntegrity.getCurrentIntegrity()
                     );
@@ -419,6 +452,7 @@ function createTrackingPentagonEffectDirectorFactory() {
 function createGameSystem({
     fixedResult = true,
     depleteOnFirstObserve = true,
+    depleteOnObservation = null,
     gameplayWorldActorsEnabled = false,
     backendFactory = null,
     pentagonEffectDirectorFactory = null,
@@ -430,7 +464,13 @@ function createGameSystem({
         : new TerminalBackend({ fixedResult });
     const directorFactory = useRealCoreImpactDirector
         ? null
-        : createDirectorFactory({ depleteOnFirstObserve });
+        : createDirectorFactory({
+            depleteOnObservation: Number.isSafeInteger(depleteOnObservation)
+                ? depleteOnObservation
+                : depleteOnFirstObserve
+                    ? 1
+                    : -1
+        });
     const dependencies = {
         inputActionSource: {
             isPressed: () => false,
@@ -568,6 +608,21 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     assert.equal(gameplayStatus.outcome.state, RUN_OUTCOME_STATE.DEFEATED);
     assert.equal(gameplayStatus.outcome.runFailedFact.type, 'RunFailed');
     assert.equal(gameplayStatus.terminal.state, 'SEALED');
+    assert.equal(
+        backend.calls.indexOf('tower-gameplay-target-clear')
+            < backend.calls.indexOf('fixed'),
+        true
+    );
+    assert.equal(
+        endpoint.getStatus().backend.fixedPrimitives
+            .towerGameplayTarget.configured,
+        false
+    );
+    assert.equal(
+        gameSystem.getObjectSystem().getGpuWorldActorStatus()
+            .towerGameplayTargetConfigured,
+        false
+    );
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
 
@@ -592,8 +647,11 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     assert.equal(gameSystem.fixedUpdate(), true);
     const objectSystem = gameSystem.getObjectSystem();
     const endpoint = gameSystem.getGpuSimulationEndpoint();
-    const coreHandle = objectSystem.getGpuWorldActorStatus().coreProxyHandle;
+    const initialActorStatus = objectSystem.getGpuWorldActorStatus();
+    const coreHandle = initialActorStatus.coreProxyHandle;
+    const towerHandle = initialActorStatus.towerHandle;
     assert.ok(coreHandle);
+    assert.ok(towerHandle);
     gameSystem.update();
     assert.equal(objectSystem.getTower().getStatus().followEnabled, true);
 
@@ -661,6 +719,25 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     assert.equal(gameSystem.getRunOutcome().getState(), RUN_OUTCOME_STATE.DEFEATED);
     const gameplayStatus = gameSystem.getGameplayStatus();
     assert.equal(gameplayStatus.terminal.state, 'SEALED');
+    const finalClearIndex = backend.calls.lastIndexOf(
+        'tower-gameplay-target-clear'
+    );
+    const finalSubmitIndex = backend.calls.lastIndexOf('fixed');
+    assert.equal(finalClearIndex >= 0 && finalClearIndex < finalSubmitIndex, true);
+    assert.equal(
+        endpoint.getStatus().backend.fixedPrimitives
+            .towerGameplayTarget.configured,
+        false
+    );
+    assert.equal(
+        objectSystem.getGpuWorldActorStatus().towerGameplayTargetConfigured,
+        false
+    );
+    assert.equal(
+        objectSystem.getGpuWorldActorStatus().trackedTowerConfigured,
+        true
+    );
+    assert.deepEqual({ ...backend.trackedHandle }, { ...towerHandle });
     assert.equal(gameplayStatus.pentagonEffect.terminalFinalFixedTick,
         terminalFixedTick);
     assert.equal(gameplayStatus.pentagonEffect.terminalFixedCommitObserved, true);
@@ -735,6 +812,89 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
     }, cameraAtSeal);
     assert.deepEqual(gameSystem.getGameplayStatus(), gameplayStatusAtSeal);
     assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+});
+
+test('Tower death clear 실패와 같은 completed batch의 Core depletion도 관찰 후 RunFailed로 seal한다', () => {
+    const { backend, directorFactory, gameSystem } = createGameSystem({
+        gameplayWorldActorsEnabled: true,
+        depleteOnFirstObserve: false,
+        depleteOnObservation: 2,
+        backendFactory: (endpointOptions) => new CoreImpactBackend({
+            sessionGeneration: endpointOptions.sessionGeneration,
+            gameplayTargetClearAccepted: false
+        })
+    });
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const actorStatus = objectSystem.getGpuWorldActorStatus();
+    assert.ok(actorStatus.towerHandle);
+    assert.ok(actorStatus.coreProxyHandle);
+    assert.equal(directorFactory.state.observations, 1);
+
+    backend.completedEventBatches.push(Object.freeze({
+        ...backend.protocol,
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 1,
+        submittedTick: 1,
+        completedThroughTick: 1,
+        events: Object.freeze([
+            Object.freeze({
+                type: 'contact',
+                eventType: 'damage-applied',
+                sequence: 0,
+                entityId: actorStatus.coreProxyHandle.entityId,
+                incarnation: actorStatus.coreProxyHandle.incarnation,
+                otherEntityId: actorStatus.towerHandle.entityId,
+                otherIncarnation: actorStatus.towerHandle.incarnation,
+                valueFixedPoint: 3000,
+                damage: 30,
+                reason: 'target-died'
+            }),
+            Object.freeze({
+                type: 'death',
+                sequence: 1,
+                entityId: actorStatus.towerHandle.entityId,
+                incarnation: actorStatus.towerHandle.incarnation,
+                flags: 1,
+                reason: 'health-depleted'
+            })
+        ])
+    }));
+
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(directorFactory.state.observations, 2);
+    assert.equal(gameSystem.getCoreIntegrity().isDepleted(), true);
+    assert.equal(gameSystem.getRunOutcome().getState(), RUN_OUTCOME_STATE.DEFEATED);
+    assert.equal(gameSystem.getRunOutcome().getRunFailedFact().type, 'RunFailed');
+    assert.equal(
+        gameSystem.getGameplayStatus().terminal.state,
+        'SEALED_FAILED'
+    );
+    assert.equal(
+        gameSystem.getGameplayStatus().terminal.diagnostic.stage,
+        'terminal-tower-gameplay-target-clear'
+    );
+    assert.equal(
+        backend.calls.filter((call) => call === 'fixed').length,
+        1
+    );
+    assert.equal(objectSystem.getLastCompletedGpuEvents().deathEvents.length, 1);
+    assert.equal(
+        objectSystem.getTerminalStatus().lastCoreImpactFacts.some(
+            ({ type }) => type === 'CoreDepleted'
+        ),
+        true
+    );
+    assert.equal(endpoint.getStatus().gameplayIngressOpen, false);
+    assert.equal(endpoint.getPendingCommandCount(), 0);
+    assert.equal(
+        objectSystem.getGpuWorldActorStatus().towerGameplayTargetConfigured,
+        false
+    );
+
+    gameSystem.destroy();
 });
 
 test('마지막 terminal fixed submit 실패는 retry/recovery 없이 SEALED_FAILED diagnostic을 남기고 이후 true no-op이다', () => {
