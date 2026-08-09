@@ -5,8 +5,15 @@ import {
     encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_MODE
 } from '../../physics/gpu/gpu_fixed_primitive_abi.js';
+import {
+    ARCHER_ATTACK_DATA
+} from 'data/object/enemy/archer_attack_data.js';
+import {
+    HOSTILE_BASIC_BULLET_DATA
+} from 'data/object/projectile/hostile_basic_bullet_data.js';
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -213,6 +220,26 @@ function resolveProjectileTargetPolicy(options, definition) {
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN;
     }
     return Object.freeze({ targetPolicyId, interactionMask });
+}
+
+function isCanonicalArcherTowerDamageChannel(options, destinationSpawn) {
+    const definition = options.definition;
+    return options.mode
+            === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+        && destinationSpawn.definitionId === HOSTILE_BASIC_BULLET_DATA.id
+        && destinationSpawn.producerId === ARCHER_ATTACK_DATA.producerId
+        && destinationSpawn.sourceAbilityId === ARCHER_ATTACK_DATA.sourceAbilityId
+        && destinationSpawn.targetPolicyId === ARCHER_ATTACK_DATA.targetPolicyId
+        && destinationSpawn.allegiancePolicy === ARCHER_ATTACK_DATA.allegiancePolicy
+        && destinationSpawn.damagePolicyId
+            === GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+        && definition?.id === HOSTILE_BASIC_BULLET_DATA.id
+        && definition?.producerId === HOSTILE_BASIC_BULLET_DATA.producerId
+        && definition?.targetPolicyId === HOSTILE_BASIC_BULLET_DATA.targetPolicyId
+        && Number(definition?.damage) === HOSTILE_BASIC_BULLET_DATA.damage
+        && Number(definition?.damageSelf ?? 1)
+            === HOSTILE_BASIC_BULLET_DATA.damageSelf
+        && Number(definition?.penetration) === HOSTILE_BASIC_BULLET_DATA.penetration;
 }
 
 function resolveOptionalCoreDamageMetadata(definition) {
@@ -707,6 +734,11 @@ export function requestGpuProjectile(options = {}) {
     if (!Object.values(GPU_PROJECTILE_SPAWN_MODE).includes(mode)) {
         throw new RangeError(`지원하지 않는 GPU projectile spawn mode입니다: ${mode}`);
     }
+    rejectPresentProperties(
+        options,
+        ['requestFlags'],
+        'GPU projectile public request'
+    );
     if (mode === GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE) {
         rejectPresentProperties(options, [
             'positionOffset',
@@ -843,6 +875,12 @@ export function requestGpuProjectile(options = {}) {
             launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed')
         });
     } else {
+        const requestFlags = isCanonicalArcherTowerDamageChannel(
+            options,
+            destinationSpawn
+        )
+            ? GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+            : 0;
         sourceRelativeIntent = Object.freeze({
             modeFlags: GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
             sourceHandle,
@@ -850,7 +888,8 @@ export function requestGpuProjectile(options = {}) {
             destinationSpawn,
             positionOffset,
             targetOffset,
-            launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed')
+            launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed'),
+            ...(requestFlags === 0 ? {} : { requestFlags })
         });
     }
     return endpoint.requestSourceRelativeSpawn(

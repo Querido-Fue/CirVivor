@@ -57,6 +57,7 @@ const ENEMY_DEFINITION_KEYS = new Set([
     'physicsProfileId',
     'combatProfileId',
     'behaviorProfileId',
+    'effectEmitterProfileId',
     'capabilityIds',
     'render'
 ]);
@@ -404,6 +405,20 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
             `${label}의 CHARGE capability에는 CONTACT_COMBAT capability가 필요합니다.`
         );
     }
+    const effectEmitterProfileId = source.effectEmitterProfileId === undefined
+        || source.effectEmitterProfileId === null
+        ? null
+        : requireNonEmptyString(
+            source.effectEmitterProfileId,
+            `${label}.effectEmitterProfileId`
+        );
+    const hasEffectEmitter = capabilityIdSet.has(ENEMY_CAPABILITY_ID.EFFECT_EMITTER);
+    if (hasEffectEmitter !== (effectEmitterProfileId !== null)) {
+        throw new RangeError(
+            `${label}의 EFFECT_EMITTER capability와 effectEmitterProfileId가 `
+                + '양방향으로 일치해야 합니다.'
+        );
+    }
     if (profiles.combat.towerContactDamage > 0
         && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)) {
         throw new RangeError(
@@ -457,6 +472,13 @@ export function normalizeEnemyDefinition(
         definition.behaviorProfileId,
         `${label}.behaviorProfileId`
     );
+    const effectEmitterProfileId = definition.effectEmitterProfileId === undefined
+        || definition.effectEmitterProfileId === null
+        ? null
+        : requireNonEmptyString(
+            definition.effectEmitterProfileId,
+            `${label}.effectEmitterProfileId`
+        );
     const capabilityIds = normalizeEnemyCapabilityIds(
         definition.capabilityIds,
         `${label}.capabilityIds`
@@ -476,6 +498,7 @@ export function normalizeEnemyDefinition(
         physicsProfileId,
         combatProfileId,
         behaviorProfileId,
+        effectEmitterProfileId,
         capabilityIds,
         render
     };

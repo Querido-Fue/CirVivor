@@ -4,6 +4,14 @@ import {
     encodeGpuCircleBodyFixedPoint
 } from '../physics/gpu/gpu_circle_body_abi.js';
 import {
+    GPU_EFFECT_LAST_PULSE_TICK_INVALID,
+    normalizeGpuEffectEmitterState
+} from '../physics/gpu/gpu_effect_runtime_abi.js';
+import {
+    ENEMY_EFFECT_DEFINITION_BY_ID,
+    ENEMY_EFFECT_EMITTER_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_effect_catalog_data.js';
+import {
     PROJECTILE_CORE_DAMAGE_REQUEST_POLICY_ID,
     PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
     PROJECTILE_SELECTED_TARGET_POLICY_ID,
@@ -17,6 +25,8 @@ import {
     resolveGameplayAllegianceTeam
 } from '../contract/gameplay_team_contract.js';
 import {
+    ENEMY_CAPABILITY_ID,
+    hasEnemyCapability,
     normalizeEnemyCapabilityMask
 } from '../contract/enemy_capability_contract.js';
 
@@ -51,6 +61,13 @@ function requireExactIdentityComponent(value, label) {
 function requireNonEmptyString(value, label) {
     if (typeof value !== 'string' || value.length === 0) {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
+    }
+    return value;
+}
+
+function requireBoolean(value, label) {
+    if (typeof value !== 'boolean') {
+        throw new TypeError(`${label}은 boolean이어야 합니다.`);
     }
     return value;
 }
@@ -93,6 +110,150 @@ function copyOptionalEnemyCapabilityMetadata(intent) {
             'spawnIntent.capabilityMask'
         )
     };
+}
+
+const ENEMY_EFFECT_METADATA_FIELDS = Object.freeze([
+    'effectEmitterProfileId',
+    'effectEmitterDefinitionCode',
+    'effectDefinitionId',
+    'effectDefinitionCode',
+    'effectSelfTargetAllowed',
+    'effectPentaTargetAllowed',
+    'effectTowerContactDamageModifiable',
+    'effectProjectileTowerDamageModifiable',
+    'effectDirectCoreImpactDamageModifiable',
+    'effectProjectileCoreDamageModifiable',
+    'effectClusterRetargetIntervalTicks'
+]);
+
+function hasAnyEnemyEffectMetadata(intent) {
+    return ENEMY_EFFECT_METADATA_FIELDS.some(
+        (field) => intent[field] !== undefined && intent[field] !== null
+    );
+}
+
+function copyOptionalEnemyEffectMetadata(intent) {
+    if (!hasAnyEnemyEffectMetadata(intent)) {
+        return {};
+    }
+    for (const field of ENEMY_EFFECT_METADATA_FIELDS) {
+        if (intent[field] === undefined || intent[field] === null) {
+            throw new TypeError('enemy effect metadata field는 모두 함께 제공해야 합니다.');
+        }
+    }
+    const metadata = {
+        effectEmitterProfileId: requireNonEmptyString(
+            intent.effectEmitterProfileId,
+            'spawnIntent.effectEmitterProfileId'
+        ),
+        effectEmitterDefinitionCode: requireExactIdentityComponent(
+            intent.effectEmitterDefinitionCode,
+            'spawnIntent.effectEmitterDefinitionCode'
+        ),
+        effectDefinitionId: requireNonEmptyString(
+            intent.effectDefinitionId,
+            'spawnIntent.effectDefinitionId'
+        ),
+        effectDefinitionCode: requireExactIdentityComponent(
+            intent.effectDefinitionCode,
+            'spawnIntent.effectDefinitionCode'
+        ),
+        effectSelfTargetAllowed: requireBoolean(
+            intent.effectSelfTargetAllowed,
+            'spawnIntent.effectSelfTargetAllowed'
+        ),
+        effectPentaTargetAllowed: requireBoolean(
+            intent.effectPentaTargetAllowed,
+            'spawnIntent.effectPentaTargetAllowed'
+        ),
+        effectTowerContactDamageModifiable: requireBoolean(
+            intent.effectTowerContactDamageModifiable,
+            'spawnIntent.effectTowerContactDamageModifiable'
+        ),
+        effectProjectileTowerDamageModifiable: requireBoolean(
+            intent.effectProjectileTowerDamageModifiable,
+            'spawnIntent.effectProjectileTowerDamageModifiable'
+        ),
+        effectDirectCoreImpactDamageModifiable: requireBoolean(
+            intent.effectDirectCoreImpactDamageModifiable,
+            'spawnIntent.effectDirectCoreImpactDamageModifiable'
+        ),
+        effectProjectileCoreDamageModifiable: requireBoolean(
+            intent.effectProjectileCoreDamageModifiable,
+            'spawnIntent.effectProjectileCoreDamageModifiable'
+        ),
+        effectClusterRetargetIntervalTicks: requireExactIdentityComponent(
+            intent.effectClusterRetargetIntervalTicks,
+            'spawnIntent.effectClusterRetargetIntervalTicks'
+        )
+    };
+    const emitterProfile = ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[
+        metadata.effectEmitterProfileId
+    ];
+    const effectDefinition = ENEMY_EFFECT_DEFINITION_BY_ID[
+        metadata.effectDefinitionId
+    ];
+    if (!emitterProfile
+        || !effectDefinition
+        || emitterProfile.emitterDefinitionCode
+            !== metadata.effectEmitterDefinitionCode
+        || emitterProfile.effectDefinitionId !== effectDefinition.id
+        || emitterProfile.effectDefinitionCode !== effectDefinition.effectDefinitionCode
+        || effectDefinition.effectDefinitionCode !== metadata.effectDefinitionCode
+        || emitterProfile.selfTargetAllowed !== metadata.effectSelfTargetAllowed
+        || emitterProfile.pentaTargetAllowed !== metadata.effectPentaTargetAllowed
+        || effectDefinition.towerContactDamageEffectModifiable
+            !== metadata.effectTowerContactDamageModifiable
+        || effectDefinition.projectileTowerDamageEffectModifiable
+            !== metadata.effectProjectileTowerDamageModifiable
+        || effectDefinition.directCoreImpactDamageEffectModifiable
+            !== metadata.effectDirectCoreImpactDamageModifiable
+        || effectDefinition.typedProjectileCoreDamageEffectModifiable
+            !== metadata.effectProjectileCoreDamageModifiable
+        || emitterProfile.retargetIntervalTicks
+            !== metadata.effectClusterRetargetIntervalTicks) {
+        throw new RangeError(
+            'enemy effect metadata가 exact catalog profile/definition과 일치해야 합니다.'
+        );
+    }
+    return metadata;
+}
+
+function normalizeOptionalEnemyEffectEmitterState(intent, capabilityMask) {
+    const hasEffectCapability = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
+            'spawnIntent.capabilityMask'
+        );
+    const hasEffectMetadata = hasAnyEnemyEffectMetadata(intent);
+    const hasEmitterState = intent.effectEmitterState !== undefined
+        && intent.effectEmitterState !== null;
+    if (hasEffectCapability !== hasEffectMetadata
+        || hasEffectCapability !== hasEmitterState) {
+        throw new RangeError(
+            'EFFECT_EMITTER capability, effect metadata, effectEmitterState가 일치해야 합니다.'
+        );
+    }
+    if (!hasEffectCapability) {
+        return null;
+    }
+    const metadata = copyOptionalEnemyEffectMetadata(intent);
+    const emitterState = normalizeGpuEffectEmitterState(
+        intent.effectEmitterState,
+        'spawnIntent.effectEmitterState'
+    );
+    if (emitterState.emitterDefinitionCode
+            !== metadata.effectEmitterDefinitionCode
+        || emitterState.effectDefinitionCode !== metadata.effectDefinitionCode) {
+        throw new RangeError('effectEmitterState code가 effect metadata와 일치해야 합니다.');
+    }
+    if (emitterState.lastPulseTick !== GPU_EFFECT_LAST_PULSE_TICK_INVALID) {
+        throw new RangeError(
+            '신규 Effect emitter spawn의 lastPulseTick은 canonical sentinel이어야 합니다.'
+        );
+    }
+    return emitterState;
 }
 
 function copyOptionalResolvedEnemyStatMetadata(intent) {
@@ -435,18 +596,26 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     if (snapshot.spawnSequence !== undefined && snapshot.spawnSequence !== null) {
         requireNonNegativeSafeInteger(snapshot.spawnSequence, 'spawnIntent.spawnSequence');
     }
+    let normalizedEffectEmitterState = null;
     if (kindId === 'enemy') {
         requireNonEmptyString(snapshot.gateId, 'spawnIntent.gateId');
         requireNonEmptyString(snapshot.pathId, 'spawnIntent.pathId');
         requireNonNegativeSafeInteger(snapshot.waypointIndex, 'spawnIntent.waypointIndex');
         requirePositiveFinite(snapshot.flowSpeed, 'spawnIntent.flowSpeed');
-        if (snapshot.capabilityMask !== undefined
-            && snapshot.capabilityMask !== null) {
-            normalizeEnemyCapabilityMask(
+        const capabilityMask = snapshot.capabilityMask !== undefined
+            && snapshot.capabilityMask !== null
+            ? normalizeEnemyCapabilityMask(
                 snapshot.capabilityMask,
                 'spawnIntent.capabilityMask'
-            );
-        }
+            )
+            : null;
+        normalizedEffectEmitterState = normalizeOptionalEnemyEffectEmitterState(
+            snapshot,
+            capabilityMask
+        );
+    } else if (hasAnyEnemyEffectMetadata(snapshot)
+        || snapshot.effectEmitterState !== undefined) {
+        throw new TypeError('Effect emitter metadata/state는 Enemy spawn에만 허용됩니다.');
     }
     const {
         layerMask: _legacyLayerMask,
@@ -461,6 +630,9 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
         damagePolicyId,
         allegiancePolicy,
         ...metadata,
+        ...(normalizedEffectEmitterState === null ? {} : {
+            effectEmitterState: normalizedEffectEmitterState
+        }),
         contactHandler
     });
 }
@@ -496,6 +668,7 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             // capability ID 배열이나 content object는 registry에 직렬화하지 않습니다.
             ...copyOptionalEnemyCapabilityMetadata(intent),
             ...copyOptionalEnemyProfileMetadata(intent),
+            ...copyOptionalEnemyEffectMetadata(intent),
             ...copyOptionalResolvedEnemyStatMetadata(intent)
         };
     }

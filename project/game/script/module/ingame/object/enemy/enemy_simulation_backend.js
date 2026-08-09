@@ -8,6 +8,11 @@ import {
 import {
     createRouteFlowFieldAtlas
 } from '../../navigation/route_flow_field_atlas.js';
+import {
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_RUNTIME_ABI_VERSION,
+    GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
+} from '../../physics/gpu/gpu_effect_runtime_abi.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -39,6 +44,15 @@ function requirePositiveSafeInteger(value, label) {
     return number;
 }
 
+function readDiagnosticPositiveInteger(value) {
+    try {
+        const number = Number(value);
+        return Number.isSafeInteger(number) && number > 0 ? number : 0;
+    } catch {
+        return 0;
+    }
+}
+
 /**
  * @class EnemySimulationBackend
  * @description 현재 TileMap/flow-field 좌표계를 보존하며 GPU collision/presentation 세션을 소유합니다.
@@ -55,6 +69,10 @@ export class EnemySimulationBackend {
             ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION;
         this.controlCommandCapacity = options.controlCommandCapacity;
         this.spawnProgramCapacity = options.spawnProgramCapacity;
+        this.effectCommandCapacity = options.effectCommandCapacity;
+        this.effectInstanceCapacity = options.effectInstanceCapacity;
+        this.effectCandidateCapacity = options.effectCandidateCapacity;
+        this.effectEventCapacity = options.effectEventCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -119,6 +137,10 @@ export class EnemySimulationBackend {
             presentationProfile: this.presentationProfile,
             controlCommandCapacity: this.controlCommandCapacity,
             spawnProgramCapacity: this.spawnProgramCapacity,
+            effectPulseProgramCapacity: this.effectCommandCapacity,
+            effectInstanceCapacity: this.effectInstanceCapacity,
+            effectCandidateCapacity: this.effectCandidateCapacity,
+            effectEventCapacity: this.effectEventCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -246,6 +268,77 @@ export class EnemySimulationBackend {
             throw new TypeError('SpawnProgram 완료 출력은 배열이어야 합니다.');
         }
         return this.simulation?.drainCompletedSpawnProgramBatches?.(out) ?? out;
+    }
+
+    /** same-tick due Effect 전체를 하나의 backend atomic batch로 stage합니다. */
+    stageEffectPulseProgramBatch(batch) {
+        if (!this.simulation
+            || typeof this.simulation.stageEffectPulseProgramBatch !== 'function') {
+            return Object.freeze({
+                abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                accepted: false,
+                sourceTick: readDiagnosticPositiveInteger(batch?.sourceTick),
+                stagedCount: 0,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        }
+        const result = this.simulation.stageEffectPulseProgramBatch(batch);
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedEffectProgramBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('Effect 완료 batch 출력은 배열이어야 합니다.');
+        }
+        return this.simulation?.drainCompletedEffectProgramBatches?.(out) ?? out;
+    }
+
+    cancelPendingEffectProgramsForTerminal(request = {}) {
+        if (!this.simulation
+            || typeof this.simulation.cancelPendingEffectProgramsForTerminal
+                !== 'function') {
+            return Object.freeze({
+                abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: readDiagnosticPositiveInteger(
+                    request?.finalFixedTick
+                ),
+                submittedTick: 0,
+                pulseProgramCount: 0,
+                pendingPulseProgramCount: 0,
+                pendingEffectReadbackCount: 0,
+                failure: 'gpu-unavailable'
+            });
+        }
+        const result = this.simulation.cancelPendingEffectProgramsForTerminal(
+            request
+        );
+        this.#syncState();
+        return result;
+    }
+
+    getEffectRuntimeStatus() {
+        return this.simulation?.getEffectRuntimeStatus?.() ?? Object.freeze({
+            abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
+            state: 'gpu-unavailable',
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: -1,
+            authoritativeEpoch: 0,
+            ingressOpen: false,
+            stagedProgramCount: 0,
+            pendingPulseProgramCount: 0,
+            pendingEffectReadbackCount: 0,
+            completedThroughTick: 0,
+            activePoolIndex: 0,
+            sourceTick: 0,
+            lastSubmittedTick: 0,
+            runtimeStatus: 0,
+            requiresRecovery: false,
+            failure: null,
+            terminal: null
+        });
     }
 
     /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */
@@ -478,11 +571,26 @@ export class EnemySimulationBackend {
                 `enemy waypointIndex가 route field 범위를 벗어났습니다: ${route.pathId}/${waypointIndex}`
             );
         }
+        if (!Number.isInteger(route.firstFieldIndex)
+            || route.firstFieldIndex < 0
+            || route.firstFieldIndex > 0xff
+            || !Number.isInteger(route.fieldCount)
+            || route.fieldCount <= 0
+            || route.fieldCount > 0x1ff
+            || route.firstFieldIndex + route.fieldCount
+                > (this.flowFieldAtlas?.fieldCount ?? 0)) {
+            throw new RangeError(
+                `enemy route Effect span이 atlas/packed 범위를 벗어났습니다: ${route.pathId}`
+            );
+        }
         return {
             ...body,
             useFlow: true,
             flowFieldIndex: route.firstFieldIndex + routeFieldOffset,
-            flowSpeed: body.flowSpeed ?? body.maxSpeed
+            flowSpeed: body.flowSpeed ?? body.maxSpeed,
+            // Independent PEmitter navigation plane용 route span입니다.
+            effectRouteFirstFieldIndex: route.firstFieldIndex,
+            effectRouteFieldCount: route.fieldCount
         };
     }
 }

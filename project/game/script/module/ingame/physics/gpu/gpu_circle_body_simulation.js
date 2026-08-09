@@ -55,6 +55,30 @@ import {
     GPU_COLLISION_RENDER_WGSL
 } from './gpu_collision_shaders.js';
 import {
+    GPU_EFFECT_EVENT_TYPE,
+    GPU_EFFECT_PULSE_PROGRAM_FLAG,
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_PULSE_PROGRAM_RESULT,
+    GPU_EFFECT_RUNTIME_ABI,
+    GPU_EFFECT_RUNTIME_ABI_VERSION,
+    GPU_EFFECT_RUNTIME_STATUS,
+    GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+    createGpuEffectBodyStateStorage,
+    createGpuEffectPoolStateStorage,
+    createGpuEffectPulseProgramStorage,
+    readGpuEffectEvent,
+    readGpuEffectPoolState,
+    readGpuEffectPulseProgramHeader,
+    readGpuEffectPulseProgramRecord,
+    writeGpuEffectBodyStateSpawn,
+    writeGpuEffectPulseProgramHeader,
+    writeGpuEffectPulseProgramRecord
+} from './gpu_effect_runtime_abi.js';
+import {
+    GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
+    GPU_EFFECT_RUNTIME_ENTRY_POINT
+} from './gpu_effect_runtime_shaders.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -69,11 +93,16 @@ const OVERFLOW_READBACK_SLOT_COUNT = 4;
 const EVENT_READBACK_SLOT_COUNT = 8;
 const SPAWN_PROGRAM_READBACK_SLOT_COUNT = 4;
 const TRACKED_POSE_READBACK_SLOT_COUNT = 4;
+const EFFECT_PROGRAM_READBACK_SLOT_COUNT = 4;
 const OVERFLOW_READBACK_INTERVAL_TICKS = 4;
 const OVERFLOW_TELEMETRY_MAX_AGE_TICKS = 60;
 const DEFAULT_MIN_CONTACT_CAPACITY = 1024;
 const DEFAULT_MAX_CONTACT_CAPACITY = 65536;
 const DEFAULT_MAX_EVENT_CAPACITY = 8192;
+const DEFAULT_MAX_EFFECT_INSTANCE_CAPACITY = 65536;
+const DEFAULT_MAX_EFFECT_CANDIDATE_CAPACITY = 8192;
+const DEFAULT_MAX_EFFECT_EVENT_CAPACITY = 8192;
+const FLOW_INTEGRATION_UNREACHABLE_COST = Math.fround(1e20);
 const COMPUTE_PARAMS_FLOW_STAGE_OFFSET = 96;
 const COMPUTE_PARAMS_FLOW_STAGE_STRIDE = 16;
 const COMPUTE_PARAMS_MAX_CONTACTS_OFFSET = COMPUTE_PARAMS_FLOW_STAGE_OFFSET
@@ -123,6 +152,12 @@ const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW;
 
+const EFFECT_READBACK_POOL_STATE_OFFSET = 0;
+const EFFECT_READBACK_PROGRAM_OFFSET = GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE;
+const EFFECT_PULSE_PROGRAM_KNOWN_FLAGS = Object.values(
+    GPU_EFFECT_PULSE_PROGRAM_FLAG
+).reduce((mask, flag) => mask | flag, 0) >>> 0;
+
 const COMPUTE_ENTRY_POINTS = Object.freeze([
     'validate_source_relative_spawns',
     'resolve_source_relative_spawns',
@@ -135,6 +170,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'advance_enemy_charge',
     'prepare_bodies',
     'clear_grid',
+    'build_tick_start_grid',
     'build_grid',
     'clear_contact_state',
     'emit_enemy_charge_telegraphs',
@@ -183,6 +219,7 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     advance_enemy_charge: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     prepare_bodies: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
+    build_tick_start_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     build_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_contact_state: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
     emit_enemy_charge_telegraphs: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
@@ -219,6 +256,17 @@ function eventReadbackControlProgramOffset(eventCapacity, deathEventCapacity) {
         + (deathEventCapacity * DEATH_EVENT_BYTE_SIZE);
 }
 
+function effectReadbackEventOffset(pulseCapacity) {
+    return EFFECT_READBACK_PROGRAM_OFFSET
+        + GPU_EFFECT_RUNTIME_ABI.PROGRAM_HEADER.STRIDE
+        + (pulseCapacity * GPU_EFFECT_RUNTIME_ABI.PULSE_PROGRAM_RECORD.STRIDE);
+}
+
+function effectReadbackByteSize(pulseCapacity, eventCapacity) {
+    return effectReadbackEventOffset(pulseCapacity)
+        + (eventCapacity * GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE);
+}
+
 function requirePositiveInteger(value, label) {
     const number = Number(value);
     if (!Number.isSafeInteger(number) || number <= 0) {
@@ -233,6 +281,16 @@ function requireNonNegativeInteger(value, label) {
         throw new RangeError(`${label}은(는) 0 이상의 안전한 정수여야 합니다.`);
     }
     return number;
+}
+
+function requireEffectUint32(value, label, { positive = false } = {}) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number)
+        || number < (positive ? 1 : 0)
+        || number >= UINT32_MAX) {
+        throw new RangeError(`${label}은 reserved sentinel보다 작은 uint32여야 합니다.`);
+    }
+    return number >>> 0;
 }
 
 function resolveCapacityOption(options, names, fallback, maximum, label) {
@@ -515,6 +573,9 @@ function normalizeFlowFieldAtlas(atlas) {
             origin: Object.freeze({ x: 0, y: 0 }),
             cellSize: Object.freeze({ x: 1, y: 1 }),
             directions: new Float32Array([0, 0]),
+            integrationCosts: new Float32Array([
+                FLOW_INTEGRATION_UNREACHABLE_COST
+            ]),
             stages: Object.freeze([])
         });
     }
@@ -538,6 +599,29 @@ function normalizeFlowFieldAtlas(atlas) {
     for (let index = 0; index < directions.length; index++) {
         if (!Number.isFinite(directions[index])) {
             throw new TypeError(`flow field 방향은 모두 유한해야 합니다: index=${index}`);
+        }
+    }
+    const sourceIntegrationCosts = atlas.integrationCosts;
+    let integrationCosts;
+    if (sourceIntegrationCosts === undefined) {
+        // Legacy/test atlases can still drive ordinary flow. Pentagon steering
+        // sees unreachable costs and therefore falls back to prepared flow.
+        integrationCosts = new Float32Array(cols * rows * fieldCount);
+        integrationCosts.fill(FLOW_INTEGRATION_UNREACHABLE_COST);
+    } else {
+        if (!(sourceIntegrationCosts instanceof Float32Array)
+            || sourceIntegrationCosts.length !== cols * rows * fieldCount) {
+            throw new TypeError(
+                'flow field integrationCosts는 cols*rows*fieldCount 길이여야 합니다.'
+            );
+        }
+        integrationCosts = sourceIntegrationCosts.slice();
+        for (let index = 0; index < integrationCosts.length; index++) {
+            if (!Number.isFinite(integrationCosts[index])) {
+                throw new TypeError(
+                    `flow field integration cost는 모두 유한해야 합니다: index=${index}`
+                );
+            }
         }
     }
     if (!Array.isArray(atlas.stages) || atlas.stages.length !== fieldCount) {
@@ -605,6 +689,7 @@ function normalizeFlowFieldAtlas(atlas) {
         origin: Object.freeze({ x: originX, y: originY }),
         cellSize,
         directions,
+        integrationCosts,
         stages: Object.freeze(stages)
     });
 }
@@ -711,6 +796,17 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
             'enemyBehaviorStateBuffer',
             GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
         ]
+    ]) {
+        new Uint8Array(targetStorage[bufferName], targetIndex * stride, stride).set(
+            new Uint8Array(sourceStorage[bufferName], sourceIndex * stride, stride)
+        );
+    }
+}
+
+function copyEffectBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
+    for (const [bufferName, stride] of [
+        ['summaryBuffer', GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE],
+        ['emitterStateBuffer', GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE]
     ]) {
         new Uint8Array(targetStorage[bufferName], targetIndex * stride, stride).set(
             new Uint8Array(sourceStorage[bufferName], sourceIndex * stride, stride)
@@ -890,6 +986,37 @@ export class GpuCircleBodySimulation {
             this.capacity,
             'spawnProgramCapacity'
         );
+        this.effectPulseProgramCapacity = resolveCapacityOption(
+            options,
+            ['effectPulseProgramCapacity'],
+            Math.min(this.capacity, 256),
+            this.capacity,
+            'effectPulseProgramCapacity'
+        );
+        this.effectInstanceCapacity = resolveCapacityOption(
+            options,
+            ['effectInstanceCapacity'],
+            Math.min(this.capacity * 4, DEFAULT_MAX_EFFECT_INSTANCE_CAPACITY),
+            DEFAULT_MAX_EFFECT_INSTANCE_CAPACITY,
+            'effectInstanceCapacity'
+        );
+        this.effectCandidateCapacity = resolveCapacityOption(
+            options,
+            ['effectCandidateCapacity'],
+            Math.min(this.capacity * 2, DEFAULT_MAX_EFFECT_CANDIDATE_CAPACITY),
+            DEFAULT_MAX_EFFECT_CANDIDATE_CAPACITY,
+            'effectCandidateCapacity'
+        );
+        this.effectEventCapacity = resolveCapacityOption(
+            options,
+            ['effectEventCapacity'],
+            Math.min(
+                this.effectCandidateCapacity + this.effectPulseProgramCapacity,
+                DEFAULT_MAX_EFFECT_EVENT_CAPACITY
+            ),
+            DEFAULT_MAX_EFFECT_EVENT_CAPACITY,
+            'effectEventCapacity'
+        );
         this.worldSize = normalizeSize2(options.worldSize, 'worldSize');
         this.gridCellSize = normalizeSize2(options.gridCellSize ?? 1, 'gridCellSize');
         this.maxBodiesPerCell = requirePositiveInteger(
@@ -933,6 +1060,13 @@ export class GpuCircleBodySimulation {
                 ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION
         });
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
+        this.hostEffectBodyState = createGpuEffectBodyStateStorage(this.capacity);
+        this.hostEffectPoolState = createGpuEffectPoolStateStorage(
+            this.sessionGeneration
+        );
+        this.hostEffectPulseProgram = createGpuEffectPulseProgramStorage(
+            this.effectPulseProgramCapacity
+        );
         this.hostRenderStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * this.capacity);
         this.hostBodyControlStates = new ArrayBuffer(
             BODY_CONTROL_STATE_STRIDE * this.capacity
@@ -958,13 +1092,17 @@ export class GpuCircleBodySimulation {
         this.pendingHandleToSlot = new Map();
         this.freeSlots = [];
         this.stagedFixedPrograms = null;
+        this.stagedEffectPulseBatch = null;
         this.fixedProgramIngressOpen = true;
+        this.effectProgramIngressOpen = true;
         this.terminalFixedProgramCancelStatus = null;
+        this.terminalEffectProgramCancelStatus = null;
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
         this.buffers = null;
         this.flowTexture = null;
+        this.flowIntegrationTexture = null;
         this.bindGroups = null;
         this.pipelines = null;
         this.state = 'idle';
@@ -1023,6 +1161,22 @@ export class GpuCircleBodySimulation {
         this.lastSpawnProgramNoTargetCount = 0;
         this.lastSpawnProgramCoreInvalidCount = 0;
         this.spawnProgramOverflowCount = 0;
+        this.effectProgramReadbackSlots = [];
+        this.effectProgramReadbackLease = 0;
+        this.effectProgramReadbackCursor = 0;
+        this.pendingEffectReadbacks = 0;
+        this.effectProgramBatchQueue = [];
+        this.effectProgramBackpressureCount = 0;
+        this.effectActivePoolIndex = 0;
+        this.lastEffectProgramSourceTick = 0;
+        this.lastEffectProgramSubmittedTick = 0;
+        this.lastEffectProgramCompletedTick = 0;
+        this.lastEffectProtocolKey = null;
+        this.lastEffectProgramCount = 0;
+        this.lastEffectCandidateCount = 0;
+        this.lastEffectAppliedInstanceCount = 0;
+        this.lastEffectEventCount = 0;
+        this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
         this.trackedPoseConfigBytes = new ArrayBuffer(TRACKED_POSE_CONFIG_BYTE_SIZE);
         this.trackedPoseHandle = null;
         this.trackedPoseSlot = -1;
@@ -1137,6 +1291,7 @@ export class GpuCircleBodySimulation {
         }
 
         const nextStorage = createGpuCircleBodyAbiStorage(this.capacity);
+        const nextEffectBodyState = createGpuEffectBodyStateStorage(this.capacity);
         const nextStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * this.capacity);
         const styleView = new DataView(nextStyles);
         const nextSlotHandles = new Array(this.capacity).fill(null);
@@ -1154,6 +1309,7 @@ export class GpuCircleBodySimulation {
                 nextHandleToSlot.set(key, index);
             }
             writeGpuCircleBodySpawn(nextStorage, index, body);
+            writeGpuEffectBodyStateSpawn(nextEffectBodyState, index, body);
             writeRenderStyle(styleView, index, body);
         }
         writeGpuCircleBodyCounts(nextStorage, { bodyCount: bodies.length });
@@ -1173,12 +1329,23 @@ export class GpuCircleBodySimulation {
             || this.pendingOverflowReadbacks > 0
             || this.pendingEventReadbacks > 0
             || this.pendingSpawnProgramReadbacks > 0
+            || this.pendingEffectReadbacks > 0
             || this.pendingTrackedPoseReadbacks > 0
             || this.eventBatchQueue.length > 0
             || this.bodyControlProgramBatchQueue.length > 0
             || this.spawnProgramBatchQueue.length > 0
+            || this.effectProgramBatchQueue.length > 0
+            || this.stagedEffectPulseBatch !== null
             || this.requiresAuthoritativeRebuild;
         this.hostStorage = nextStorage;
+        this.hostEffectBodyState = nextEffectBodyState;
+        this.hostEffectPoolState = createGpuEffectPoolStateStorage(
+            this.authoritativeEpoch + 1
+        );
+        this.hostEffectPulseProgram = createGpuEffectPulseProgramStorage(
+            this.effectPulseProgramCapacity
+        );
+        this.effectActivePoolIndex = 0;
         this.hostRenderStyles = nextStyles;
         this.bodyCount = bodies.length;
         this.activeBodyCount = bodies.length;
@@ -1194,6 +1361,22 @@ export class GpuCircleBodySimulation {
             clearBodyControlStateSlot(this.hostBodyControlStates, slot);
         }
         this.stagedFixedPrograms = null;
+        this.stagedEffectPulseBatch = null;
+        this.effectProgramBatchQueue.length = 0;
+        this.pendingEffectReadbacks = 0;
+        this.lastEffectProtocolKey = null;
+        this.lastEffectProgramSourceTick = 0;
+        this.lastEffectProgramSubmittedTick = 0;
+        this.lastEffectProgramCompletedTick = 0;
+        this.lastEffectProgramCount = 0;
+        this.lastEffectCandidateCount = 0;
+        this.lastEffectAppliedInstanceCount = 0;
+        this.lastEffectEventCount = 0;
+        this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
+        this.effectProgramBackpressureCount = 0;
+        if (this.terminalEffectProgramCancelStatus === null) {
+            this.effectProgramIngressOpen = true;
+        }
         this.#invalidateTrackedPose('authoritative-replace');
         this.#refreshHostBodyDerivedState();
         this.submittedTickCount = 0;
@@ -1266,6 +1449,7 @@ export class GpuCircleBodySimulation {
         }
 
         const stagingStorage = createGpuCircleBodyAbiStorage(bodies.length);
+        const stagingEffectBodyState = createGpuEffectBodyStateStorage(bodies.length);
         const stagingStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * bodies.length);
         const stagingStyleView = new DataView(stagingStyles);
         const handles = new Array(bodies.length);
@@ -1284,6 +1468,7 @@ export class GpuCircleBodySimulation {
             batchKeys.add(key);
             handles[index] = handle;
             writeGpuCircleBodySpawn(stagingStorage, index, body);
+            writeGpuEffectBodyStateSpawn(stagingEffectBodyState, index, body);
             writeRenderStyle(stagingStyleView, index, body);
         }
 
@@ -1310,6 +1495,12 @@ export class GpuCircleBodySimulation {
         for (let index = 0; index < bodies.length; index++) {
             const slot = selectedSlots[index];
             copyBodySlot(stagingStorage, index, this.hostStorage, slot);
+            copyEffectBodySlot(
+                stagingEffectBodyState,
+                index,
+                this.hostEffectBodyState,
+                slot
+            );
             copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
             this.slotActive[slot] = 1;
             this.slotHandles[slot] = handles[index];
@@ -1410,17 +1601,31 @@ export class GpuCircleBodySimulation {
         }
 
         const stagingStorage = createGpuCircleBodyAbiStorage(selectedSlots.length);
+        const stagingEffectBodyState = createGpuEffectBodyStateStorage(
+            selectedSlots.length
+        );
         const stagingStyles = new ArrayBuffer(
             BODY_RENDER_STYLE_STRIDE * selectedSlots.length
         );
         const stagingStyleView = new DataView(stagingStyles);
         for (let index = 0; index < selectedSlots.length; index++) {
             writeGpuCircleBodySpawn(stagingStorage, index, TOMBSTONE_BODY);
+            writeGpuEffectBodyStateSpawn(
+                stagingEffectBodyState,
+                index,
+                TOMBSTONE_BODY
+            );
             writeRenderStyle(stagingStyleView, index, TOMBSTONE_BODY);
         }
         for (let index = 0; index < selectedSlots.length; index++) {
             const slot = selectedSlots[index];
             copyBodySlot(stagingStorage, index, this.hostStorage, slot);
+            copyEffectBodySlot(
+                stagingEffectBodyState,
+                index,
+                this.hostEffectBodyState,
+                slot
+            );
             copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
             this.slotActive[slot] = 0;
             this.slotHandles[slot] = null;
@@ -1650,6 +1855,7 @@ export class GpuCircleBodySimulation {
         let normalizedSpawns = [];
         let selectedSlots = [];
         let stagingStorage = null;
+        let stagingEffectBodyState = null;
         let stagingStyles = null;
         let reusableCount = 0;
         let readbackSlot = null;
@@ -1667,6 +1873,9 @@ export class GpuCircleBodySimulation {
             const destinationKeys = new Set();
             normalizedSpawns = new Array(sourceRelativeSpawns.length);
             stagingStorage = createGpuCircleBodyAbiStorage(sourceRelativeSpawns.length);
+            stagingEffectBodyState = createGpuEffectBodyStateStorage(
+                sourceRelativeSpawns.length
+            );
             stagingStyles = new ArrayBuffer(
                 BODY_RENDER_STYLE_STRIDE * sourceRelativeSpawns.length
             );
@@ -1768,6 +1977,7 @@ export class GpuCircleBodySimulation {
                 };
                 this.#validateBody(body, index);
                 writeGpuCircleBodySpawn(stagingStorage, index, body);
+                writeGpuEffectBodyStateSpawn(stagingEffectBodyState, index, body);
                 writeRenderStyle(stagingStyleView, index, body);
                 const simulationView = new DataView(stagingStorage.simulationBuffer);
                 const simulationOffset = index * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
@@ -1816,11 +2026,10 @@ export class GpuCircleBodySimulation {
                         : Object.freeze({ x: 0, y: 0 }),
                     ...modePayload,
                     sourceTick: targetFixedTick,
+                    requestFlags: source.requestFlags ?? 0,
                     ...(isSelectedTarget ? {
                         selectionSequence: source.selectionSequence,
-                        attackFingerprint: source.attackFingerprint,
-                        requestFlags:
-                            source.requestFlags
+                        attackFingerprint: source.attackFingerprint
                     } : {})
                 };
                 writeGpuSpawnProgramRecord(spawnProgram, index, programRecord);
@@ -1846,6 +2055,7 @@ export class GpuCircleBodySimulation {
                 normalizedSpawns = [];
                 selectedSlots = [];
                 stagingStorage = null;
+                stagingEffectBodyState = null;
                 stagingStyles = null;
                 reusableCount = 0;
                 spawnProgram = createGpuSpawnProgramStorage(this.spawnProgramCapacity);
@@ -1860,6 +2070,12 @@ export class GpuCircleBodySimulation {
                 const slot = selectedSlots[index];
                 const spawn = normalizedSpawns[index];
                 copyBodySlot(stagingStorage, index, this.hostStorage, slot);
+                copyEffectBodySlot(
+                    stagingEffectBodyState,
+                    index,
+                    this.hostEffectBodyState,
+                    slot
+                );
                 copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
                 clearBodyControlStateSlot(this.hostBodyControlStates, slot);
                 this.slotActive[slot] = 2;
@@ -1914,6 +2130,388 @@ export class GpuCircleBodySimulation {
             destinationHandles: Object.freeze(
                 normalizedSpawns.map((spawn) => spawn.destinationHandle)
             )
+        });
+    }
+
+    /**
+     * 같은 sourceTick의 due emitter 전체를 하나의 atomic GPU pulse batch로 stage합니다.
+     * source slot은 public ABI에 노출하지 않고 exact handle을 private slot map으로
+     * 재검증한 뒤에만 packed record에 materialize합니다.
+     */
+    stageEffectPulseProgramBatch(request = {}) {
+        let rejectedSourceTick = 0;
+        try {
+            rejectedSourceTick = requireEffectUint32(
+                request?.sourceTick,
+                'effectBatch.sourceTick'
+            );
+        } catch {
+            // malformed diagnostics remain a non-throwing zero sentinel
+        }
+        const hardReject = (reason, requiresRecovery = false) => Object.freeze({
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            accepted: false,
+            sourceTick: rejectedSourceTick,
+            stagedCount: 0,
+            reason,
+            requiresRecovery
+        });
+        if (!this.effectProgramIngressOpen) {
+            return hardReject('effect-program-ingress-closed');
+        }
+        if (this.requiresAuthoritativeRebuild) {
+            return hardReject('requires-rebuild', true);
+        }
+        let sourceTick;
+        let batchIdFingerprint;
+        let records;
+        try {
+            if (Number(request?.abiVersion)
+                !== GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION) {
+                return hardReject('effect-program-abi');
+            }
+            sourceTick = requireEffectUint32(
+                request.sourceTick,
+                'effectBatch.sourceTick',
+                { positive: true }
+            );
+            batchIdFingerprint = requireEffectUint32(
+                request.batchIdFingerprint,
+                'effectBatch.batchIdFingerprint',
+                { positive: true }
+            );
+            if (!Array.isArray(request.records) || request.records.length === 0) {
+                return hardReject('effect-program-records');
+            }
+            if (request.records.length > this.effectPulseProgramCapacity) {
+                return hardReject('effect-program-capacity');
+            }
+            records = request.records;
+        } catch {
+            return hardReject('effect-program-contract');
+        }
+        if (!this.#ensureReady()) {
+            return hardReject(this.state, this.requiresAuthoritativeRebuild);
+        }
+        const programStorage = createGpuEffectPulseProgramStorage(
+            this.effectPulseProgramCapacity
+        );
+        const normalizedRecords = new Array(records.length);
+        const sourceKeys = new Set();
+        try {
+            for (let index = 0; index < records.length; index++) {
+                const source = records[index];
+                const sourceHandle = normalizeEntityHandle(
+                    {
+                        entityId: requireEffectUint32(
+                            source?.sourceEntityId,
+                            `effectBatch.records[${index}].sourceEntityId`,
+                            { positive: true }
+                        ),
+                        incarnation: requireEffectUint32(
+                            source?.sourceIncarnation,
+                            `effectBatch.records[${index}].sourceIncarnation`,
+                            { positive: true }
+                        )
+                    },
+                    `effectBatch.records[${index}].source`
+                );
+                const key = entityHandleKey(sourceHandle);
+                if (sourceKeys.has(key)) {
+                    throw new RangeError('Effect batch에는 source exact identity가 중복될 수 없습니다.');
+                }
+                sourceKeys.add(key);
+                const flags = requireEffectUint32(
+                    source?.flags,
+                    `effectBatch.records[${index}].flags`
+                );
+                if ((flags & ~EFFECT_PULSE_PROGRAM_KNOWN_FLAGS) !== 0) {
+                    throw new RangeError('Effect pulse flags에 unknown bit가 있습니다.');
+                }
+                const allowsSourceInvalid = (flags
+                    & GPU_EFFECT_PULSE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID) !== 0;
+                const sourceSlot = this.handleToSlot.get(key);
+                if (sourceSlot !== undefined) {
+                    const residentHandle = this.slotHandles[sourceSlot];
+                    if (this.slotActive[sourceSlot] !== 1
+                        || !residentHandle
+                        || entityHandleKey(residentHandle) !== key) {
+                        throw new Error('Effect source slot/identity mapping이 모순됩니다.');
+                    }
+                } else {
+                    for (let slot = 0; slot < this.bodyCount; slot++) {
+                        const residentHandle = this.slotHandles[slot];
+                        if (this.slotActive[slot] === 1
+                            && residentHandle
+                            && entityHandleKey(residentHandle) === key) {
+                            throw new Error('Effect source slot/identity mapping이 모순됩니다.');
+                        }
+                    }
+                    // Owner가 exact same-boundary lifecycle stale proof로 승인한
+                    // command만 sentinel을 pack합니다. 일반 missing source는 batch
+                    // 전체를 mutation/readback claim 전에 zero-partial reject합니다.
+                    if (!allowsSourceInvalid) {
+                        return hardReject('effect-source-invalid');
+                    }
+                }
+                const record = Object.freeze({
+                    sourceSlot: sourceSlot
+                        ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT,
+                    sourceEntityId: sourceHandle.entityId,
+                    sourceIncarnation: sourceHandle.incarnation,
+                    effectDefinitionCode: requireEffectUint32(
+                        source?.effectDefinitionCode,
+                        `effectBatch.records[${index}].effectDefinitionCode`,
+                        { positive: true }
+                    ),
+                    emitterDefinitionCode: requireEffectUint32(
+                        source?.emitterDefinitionCode,
+                        `effectBatch.records[${index}].emitterDefinitionCode`,
+                        { positive: true }
+                    ),
+                    sourceTick: requireEffectUint32(
+                        source?.sourceTick,
+                        `effectBatch.records[${index}].sourceTick`,
+                        { positive: true }
+                    ),
+                    pulseSequence: requireEffectUint32(
+                        source?.pulseSequence,
+                        `effectBatch.records[${index}].pulseSequence`
+                    ),
+                    radiusTiles: Math.fround(Number(source?.radiusTiles)),
+                    targetLayerMask: requireEffectUint32(
+                        source?.targetLayerMask,
+                        `effectBatch.records[${index}].targetLayerMask`,
+                        { positive: true }
+                    ),
+                    targetPolicy: requireEffectUint32(
+                        source?.targetPolicy,
+                        `effectBatch.records[${index}].targetPolicy`,
+                        { positive: true }
+                    ),
+                    fingerprint: requireEffectUint32(
+                        source?.fingerprint,
+                        `effectBatch.records[${index}].fingerprint`,
+                        { positive: true }
+                    ),
+                    flags,
+                    retargetIntervalTicks: requireEffectUint32(
+                        source?.retargetIntervalTicks,
+                        `effectBatch.records[${index}].retargetIntervalTicks`,
+                        { positive: true }
+                    )
+                });
+                if (!Number.isFinite(record.radiusTiles)
+                    || !(record.radiusTiles > 0)
+                    || record.sourceTick !== sourceTick) {
+                    throw new RangeError('Effect pulse tick/radius contract가 올바르지 않습니다.');
+                }
+                const previous = normalizedRecords[index - 1];
+                if (previous && (
+                    previous.sourceEntityId > record.sourceEntityId
+                    || (previous.sourceEntityId === record.sourceEntityId
+                        && previous.sourceIncarnation > record.sourceIncarnation)
+                    || (previous.sourceEntityId === record.sourceEntityId
+                        && previous.sourceIncarnation === record.sourceIncarnation
+                        && previous.pulseSequence >= record.pulseSequence)
+                )) {
+                    throw new RangeError('Effect pulse records가 canonical order가 아닙니다.');
+                }
+                writeGpuEffectPulseProgramRecord(programStorage, index, record);
+                normalizedRecords[index] = record;
+            }
+            writeGpuEffectPulseProgramHeader(programStorage, records.length);
+        } catch (error) {
+            const contradiction = error?.message?.includes('mapping이 모순');
+            if (contradiction) {
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.failure = captureFailure('effect-source-slot-identity', error);
+                this.state = this.requiresAuthoritativeRebuild
+                    ? 'requires-rebuild'
+                    : 'failed';
+            }
+            return hardReject(
+                contradiction ? 'effect-source-identity-conflict' : 'effect-program-record',
+                contradiction
+            );
+        }
+        if (this.stagedEffectPulseBatch) {
+            const prior = this.stagedEffectPulseBatch;
+            const recordsMatch = prior.records.length === normalizedRecords.length
+                && prior.records.every((record, index) => {
+                    const candidate = normalizedRecords[index];
+                    return Object.keys(record).every(
+                        (key) => Object.is(record[key], candidate[key])
+                    ) && Object.keys(candidate).length === Object.keys(record).length;
+                });
+            if (prior.sourceTick === sourceTick
+                && prior.batchIdFingerprint === batchIdFingerprint
+                && recordsMatch) {
+                return Object.freeze({
+                    abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                    accepted: true,
+                    sourceTick,
+                    stagedCount: normalizedRecords.length,
+                    replayed: true,
+                    reason: null
+                });
+            }
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.failure = captureFailure(
+                'effect-program-stage-conflict',
+                new Error('같은 fixed boundary에 서로 다른 Effect batch가 stage되었습니다.')
+            );
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+            return hardReject('effect-program-stage-conflict', true);
+        }
+        const readbackSlot = this.#claimEffectProgramReadbackSlot();
+        if (!readbackSlot) {
+            this.effectProgramBackpressureCount++;
+            return hardReject('effect-program-readback-capacity');
+        }
+        this.hostEffectPulseProgram = programStorage;
+        this.stagedEffectPulseBatch = Object.freeze({
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            batchIdFingerprint,
+            sourceTick,
+            records: Object.freeze(normalizedRecords),
+            readbackSlot
+        });
+        return Object.freeze({
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            accepted: true,
+            sourceTick,
+            stagedCount: normalizedRecords.length,
+            replayed: false,
+            reason: null
+        });
+    }
+
+    /** 완료된 whole-tick Effect batch를 authored program order로 drain합니다. */
+    drainCompletedEffectProgramBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('Effect 완료 batch 출력은 배열이어야 합니다.');
+        }
+        while (this.effectProgramBatchQueue[0]?.completed === true) {
+            const entry = this.effectProgramBatchQueue.shift();
+            if (entry.failure) {
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.failure = entry.failure;
+                this.state = this.requiresAuthoritativeRebuild
+                    ? 'requires-rebuild'
+                    : 'failed';
+                continue;
+            }
+            this.lastEffectProgramCompletedTick = Math.max(
+                this.lastEffectProgramCompletedTick,
+                entry.sourceTick
+            );
+            out.push(entry.completion);
+        }
+        if (this.idleReleasePending
+            && this.pendingEffectReadbacks === 0
+            && this.effectProgramBatchQueue.length === 0) {
+            this.#completeDeferredIdleRelease();
+        }
+        return out;
+    }
+
+    /** Terminal final submit 전 Effect ingress/readback leases를 모두 퇴역시킵니다. */
+    cancelPendingEffectProgramsForTerminal(request = {}) {
+        let abiVersion = NaN;
+        let requestedFinalFixedTick = NaN;
+        try {
+            abiVersion = Number(request?.abiVersion);
+            requestedFinalFixedTick = Number(request?.finalFixedTick);
+        } catch {
+            // malformed terminal requests return failed evidence without mutation
+        }
+        const finalFixedTick = Number.isSafeInteger(requestedFinalFixedTick)
+            && requestedFinalFixedTick > 0
+            ? requestedFinalFixedTick
+            : 0;
+        const failureResult = (failure) => {
+            const result = Object.freeze({
+                abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick,
+                submittedTick: 0,
+                pulseProgramCount: 0,
+                pendingPulseProgramCount:
+                    this.stagedEffectPulseBatch?.records.length ?? 0,
+                pendingEffectReadbackCount: this.pendingEffectReadbacks,
+                failure
+            });
+            this.terminalEffectProgramCancelStatus = result;
+            return result;
+        };
+        if (abiVersion !== GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
+            || finalFixedTick === 0) {
+            return failureResult('effect-terminal-cancel-contract');
+        }
+        if (this.terminalEffectProgramCancelStatus) {
+            const prior = this.terminalEffectProgramCancelStatus;
+            return prior.finalFixedTick === finalFixedTick
+                ? prior
+                : failureResult('effect-terminal-cancel-replay-mismatch');
+        }
+        this.effectProgramIngressOpen = false;
+        const pulseProgramCount = (
+            this.stagedEffectPulseBatch?.records.length ?? 0
+        ) + this.effectProgramBatchQueue.reduce((count, entry) => (
+            count + (entry.records?.length ?? 0)
+        ), 0);
+        this.#retireTerminalEffectReadbacks();
+        writeGpuEffectPulseProgramHeader(this.hostEffectPulseProgram, 0);
+        if (this.device && this.buffers?.effectPulseProgram) {
+            this.device.queue.writeBuffer(
+                this.buffers.effectPulseProgram,
+                0,
+                this.hostEffectPulseProgram.buffer,
+                0,
+                GPU_EFFECT_RUNTIME_ABI.PROGRAM_HEADER.STRIDE
+            );
+        }
+        const result = Object.freeze({
+            abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+            state: 'armed',
+            finalFixedTick,
+            submittedTick: 0,
+            pulseProgramCount,
+            pendingPulseProgramCount: 0,
+            pendingEffectReadbackCount: 0,
+            failure: null
+        });
+        this.terminalEffectProgramCancelStatus = result;
+        return result;
+    }
+
+    getEffectRuntimeStatus() {
+        return Object.freeze({
+            abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
+            state: this.state,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: this.deviceGeneration,
+            authoritativeEpoch: this.authoritativeEpoch,
+            ingressOpen: this.effectProgramIngressOpen,
+            stagedProgramCount: this.stagedEffectPulseBatch?.records.length ?? 0,
+            pendingPulseProgramCount: this.effectProgramBatchQueue.reduce(
+                (count, entry) => count + (entry.records?.length ?? 0),
+                this.stagedEffectPulseBatch?.records.length ?? 0
+            ),
+            pendingEffectReadbackCount: this.pendingEffectReadbacks,
+            completedThroughTick: this.lastEffectProgramCompletedTick,
+            activePoolIndex: this.effectActivePoolIndex,
+            sourceTick: this.lastEffectProgramSourceTick,
+            lastSubmittedTick: this.lastEffectProgramSubmittedTick,
+            runtimeStatus: this.lastEffectRuntimeStatus,
+            requiresRecovery: this.requiresAuthoritativeRebuild
+                || this.lastEffectRuntimeStatus !== GPU_EFFECT_RUNTIME_STATUS.OK
+                || this.terminalEffectProgramCancelStatus?.state === 'failed',
+            failure: this.failure,
+            terminal: this.terminalEffectProgramCancelStatus
         });
     }
 
@@ -2056,6 +2654,11 @@ export class GpuCircleBodySimulation {
             const renderStyleView = new DataView(this.hostRenderStyles);
             for (const slot of destinationSlots) {
                 writeGpuCircleBodySpawn(this.hostStorage, slot, TOMBSTONE_BODY);
+                writeGpuEffectBodyStateSpawn(
+                    this.hostEffectBodyState,
+                    slot,
+                    TOMBSTONE_BODY
+                );
                 writeRenderStyle(renderStyleView, slot, TOMBSTONE_BODY);
                 clearBodyControlStateSlot(this.hostBodyControlStates, slot);
             }
@@ -2205,6 +2808,11 @@ export class GpuCircleBodySimulation {
                     this.lastSpawnProgramResolvedCount++;
                 } else {
                     writeGpuCircleBodySpawn(this.hostStorage, slot, TOMBSTONE_BODY);
+                    writeGpuEffectBodyStateSpawn(
+                        this.hostEffectBodyState,
+                        slot,
+                        TOMBSTONE_BODY
+                    );
                     writeRenderStyle(
                         new DataView(this.hostRenderStyles),
                         slot,
@@ -2357,12 +2965,16 @@ export class GpuCircleBodySimulation {
             ? null
             : requireNonNegativeInteger(sourceTick, 'sourceTick');
         const terminalCancel = this.terminalFixedProgramCancelStatus;
-        const terminalFinalSubmit = terminalCancel?.state === 'armed';
+        const terminalEffectCancel = this.terminalEffectProgramCancelStatus;
+        const terminalFinalSubmit = terminalCancel?.state === 'armed'
+            || terminalEffectCancel?.state === 'armed';
         if (terminalCancel?.state === 'submitted'
-            || terminalCancel?.state === 'failed') {
+            || terminalCancel?.state === 'failed'
+            || terminalEffectCancel?.state === 'submitted'
+            || terminalEffectCancel?.state === 'failed') {
             return false;
         }
-        if (terminalFinalSubmit
+        if (terminalCancel?.state === 'armed'
             && requestedSourceTick !== terminalCancel.finalFixedTick) {
             this.terminalFixedProgramCancelStatus = Object.freeze({
                 ...terminalCancel,
@@ -2372,13 +2984,37 @@ export class GpuCircleBodySimulation {
             });
             return false;
         }
+        if (terminalEffectCancel?.state === 'armed'
+            && requestedSourceTick !== terminalEffectCancel.finalFixedTick) {
+            this.terminalEffectProgramCancelStatus = Object.freeze({
+                ...terminalEffectCancel,
+                state: 'failed',
+                failure: 'terminal-final-fixed-tick-mismatch'
+            });
+            return false;
+        }
         const stagedPrograms = this.stagedFixedPrograms;
+        const stagedEffectBatch = this.stagedEffectPulseBatch;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
                 'fixed-program-tick',
                 new Error(
                     `staged fixed program tick mismatch: staged=${stagedPrograms.targetFixedTick}, submitted=${requestedSourceTick}`
+                )
+            );
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+            return false;
+        }
+        if (stagedEffectBatch
+            && requestedSourceTick !== stagedEffectBatch.sourceTick) {
+            this.failure = captureFailure(
+                'effect-program-tick',
+                new Error(
+                    `staged Effect tick mismatch: staged=${stagedEffectBatch.sourceTick}, submitted=${requestedSourceTick}`
                 )
             );
             this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
@@ -2398,7 +3034,12 @@ export class GpuCircleBodySimulation {
                 : 'failed';
             return false;
         }
-        if (this.activeBodyCount === 0 && !terminalFinalSubmit) {
+        // 마지막 body가 같은 boundary에 despawn되어도 이미 accepted 된 Effect
+        // pulse는 GPU에서 SOURCE_INVALID completion을 만들고 readback lease를
+        // 끝내야 합니다. 빈 world fast-path가 staged batch를 삼키면 안 됩니다.
+        if (this.activeBodyCount === 0
+            && !terminalFinalSubmit
+            && !stagedEffectBatch) {
             return false;
         }
         if (this.state === 'telemetry-backpressure') {
@@ -2490,6 +3131,7 @@ export class GpuCircleBodySimulation {
         const overflowLease = this.overflowReadbackLease;
         const eventLease = this.eventReadbackLease;
         const spawnProgramLease = this.spawnProgramReadbackLease;
+        const effectProgramLease = this.effectProgramReadbackLease;
         const trackedPoseLease = this.trackedPoseReadbackLease;
         let encoder;
         try {
@@ -2523,6 +3165,22 @@ export class GpuCircleBodySimulation {
                     GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
                 );
             }
+            if (!terminalFinalSubmit && stagedEffectBatch) {
+                this.device.queue.writeBuffer(
+                    this.buffers.effectPulseProgram,
+                    0,
+                    this.hostEffectPulseProgram.buffer
+                );
+            } else {
+                writeGpuEffectPulseProgramHeader(this.hostEffectPulseProgram, 0);
+                this.device.queue.writeBuffer(
+                    this.buffers.effectPulseProgram,
+                    0,
+                    this.hostEffectPulseProgram.buffer,
+                    0,
+                    GPU_EFFECT_RUNTIME_ABI.PROGRAM_HEADER.STRIDE
+                );
+            }
             encoder = device.createCommandEncoder({
                 label: 'cirvivor-gpu-circle-fixed-step'
             });
@@ -2533,6 +3191,66 @@ export class GpuCircleBodySimulation {
             pass.setPipeline(this.pipelines.updateIndirectArgs);
             pass.setBindGroup(0, this.bindGroups.indirect);
             pass.dispatchWorkgroups(1);
+
+            // 모든 independent capability는 movement 전 exact tick-start grid를 공유합니다.
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
+            pass.setPipeline(this.pipelines.compute.clear_grid);
+            pass.dispatchWorkgroups(Math.ceil(
+                (this.gridCellTotal * GRID_BUCKET_COUNT) / BODY_WORKGROUP_SIZE
+            ));
+            this.#dispatchBodies(pass, 'build_tick_start_grid');
+
+            if (!terminalFinalSubmit) {
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.RESET_TICK
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.CLEAR_SUMMARIES
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.RETAIN_INSTANCES
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    this.effectInstanceCapacity / BODY_WORKGROUP_SIZE
+                ));
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.SCAN_PULSES
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_BATCH
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.FINISH_TICK
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.ACCUMULATE_SUMMARIES
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    this.effectInstanceCapacity / BODY_WORKGROUP_SIZE
+                ));
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.FINALIZE_SUMMARIES
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.APPLY_REGENERATION
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
 
             if (stagedLegacySpawnCount > 0) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE);
@@ -2576,12 +3294,27 @@ export class GpuCircleBodySimulation {
                     stagedSpawnCount / BODY_WORKGROUP_SIZE
                 ));
             }
+            if (!terminalFinalSubmit) {
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_CONTACT_DAMAGE
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL);
             this.#dispatchBodies(pass, 'apply_controlled_motion');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR);
             this.#dispatchBodies(pass, 'advance_enemy_charge');
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             this.#dispatchBodies(pass, 'prepare_bodies');
+            if (!terminalFinalSubmit) {
+                this.#setEffectEntry(
+                    pass,
+                    GPU_EFFECT_RUNTIME_ENTRY_POINT.ADVANCE_PENTA_NAVIGATION
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
+            this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             pass.setPipeline(this.pipelines.compute.clear_grid);
             pass.dispatchWorkgroups(Math.ceil(
                 (this.gridCellTotal * GRID_BUCKET_COUNT) / BODY_WORKGROUP_SIZE
@@ -2704,6 +3437,29 @@ export class GpuCircleBodySimulation {
                     this.hostSpawnProgram.buffer.byteLength
                 );
             }
+            if (!terminalFinalSubmit && stagedEffectBatch) {
+                encoder.copyBufferToBuffer(
+                    this.buffers.effectPoolState,
+                    0,
+                    stagedEffectBatch.readbackSlot.buffer,
+                    EFFECT_READBACK_POOL_STATE_OFFSET,
+                    GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE
+                );
+                encoder.copyBufferToBuffer(
+                    this.buffers.effectPulseProgram,
+                    0,
+                    stagedEffectBatch.readbackSlot.buffer,
+                    EFFECT_READBACK_PROGRAM_OFFSET,
+                    this.hostEffectPulseProgram.buffer.byteLength
+                );
+                encoder.copyBufferToBuffer(
+                    this.buffers.effectEvents,
+                    0,
+                    stagedEffectBatch.readbackSlot.buffer,
+                    effectReadbackEventOffset(this.effectPulseProgramCapacity),
+                    this.effectEventCapacity * GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE
+                );
+            }
             if (trackedPoseSlot) {
                 encoder.copyBufferToBuffer(
                     this.buffers.trackedPoseOutput,
@@ -2721,13 +3477,23 @@ export class GpuCircleBodySimulation {
             this.#releaseClaimedSpawnProgramReadbackSlot(
                 stagedPrograms?.readbackSlot ?? null
             );
+            this.#releaseClaimedEffectProgramReadbackSlot(
+                stagedEffectBatch?.readbackSlot ?? null
+            );
             this.failure = captureFailure('fixed-submit', error);
-            if (terminalFinalSubmit) {
+            if (terminalCancel?.state === 'armed') {
                 this.terminalFixedProgramCancelStatus = Object.freeze({
                     ...terminalCancel,
                     accepted: false,
                     state: 'failed',
                     reason: 'terminal-final-fixed-submit-failed'
+                });
+            }
+            if (terminalEffectCancel?.state === 'armed') {
+                this.terminalEffectProgramCancelStatus = Object.freeze({
+                    ...terminalEffectCancel,
+                    state: 'failed',
+                    failure: 'terminal-final-fixed-submit-failed'
                 });
             }
             this.requiresAuthoritativeRebuild = this.hasGpuAuthoritativeState
@@ -2815,6 +3581,41 @@ export class GpuCircleBodySimulation {
                 spawnProgramLease
             );
         }
+        if (!terminalFinalSubmit && stagedEffectBatch) {
+            const protocolKey = [
+                this.sessionGeneration,
+                generation,
+                authoritativeEpoch
+            ].join(':');
+            const predecessorMatches = this.lastEffectProtocolKey === protocolKey;
+            const effectQueueEntry = {
+                sessionGeneration: this.sessionGeneration,
+                previousSourceTick: predecessorMatches
+                    ? this.lastEffectProgramSourceTick
+                    : 0,
+                previousSubmittedTick: predecessorMatches
+                    ? this.lastEffectProgramSubmittedTick
+                    : 0,
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch,
+                batchIdFingerprint: stagedEffectBatch.batchIdFingerprint,
+                records: stagedEffectBatch.records,
+                completed: false,
+                completion: null,
+                failure: null
+            };
+            this.effectProgramBatchQueue.push(effectQueueEntry);
+            this.lastEffectProtocolKey = protocolKey;
+            this.lastEffectProgramSourceTick = resolvedSourceTick;
+            this.lastEffectProgramSubmittedTick = tick;
+            this.#beginEffectProgramReadback(
+                stagedEffectBatch.readbackSlot,
+                effectQueueEntry,
+                effectProgramLease
+            );
+        }
         if (trackedPoseSlot) {
             this.#beginTrackedPoseReadback(trackedPoseSlot, {
                 sourceTick: resolvedSourceTick,
@@ -2829,7 +3630,11 @@ export class GpuCircleBodySimulation {
             });
         }
         this.stagedFixedPrograms = null;
-        if (terminalFinalSubmit) {
+        this.stagedEffectPulseBatch = null;
+        if (!terminalFinalSubmit) {
+            this.effectActivePoolIndex = this.effectActivePoolIndex === 0 ? 1 : 0;
+        }
+        if (terminalCancel?.state === 'armed') {
             this.terminalFixedProgramCancelStatus = Object.freeze({
                 ...terminalCancel,
                 state: 'submitted',
@@ -2839,6 +3644,16 @@ export class GpuCircleBodySimulation {
                 pendingSpawnProgramReadbacks:
                     this.pendingSpawnProgramReadbacks
             });
+        }
+        if (terminalEffectCancel?.state === 'armed') {
+                this.terminalEffectProgramCancelStatus = Object.freeze({
+                    ...terminalEffectCancel,
+                    state: 'submitted',
+                    submittedTick: resolvedSourceTick,
+                    pendingPulseProgramCount: 0,
+                    pendingEffectReadbackCount: 0,
+                    failure: null
+                });
         }
         return true;
     }
@@ -3307,12 +4122,23 @@ export class GpuCircleBodySimulation {
                     contactHandling: 9,
                     maximumDamageWindow: 7,
                     fixedControl: 5,
-                    sourceResolve: 8,
+                    sourceResolve: 9,
                     enemyBehavior: 8,
                     coreDamageRequest: 9,
                     trackedPose: 6,
                     requiredMaximum: REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE
                 })
+            }),
+            effects: Object.freeze({
+                ...this.getEffectRuntimeStatus(),
+                instanceCapacity: this.effectInstanceCapacity,
+                pulseProgramCapacity: this.effectPulseProgramCapacity,
+                candidateCapacity: this.effectCandidateCapacity,
+                eventCapacity: this.effectEventCapacity,
+                instanceStride: GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE,
+                summaryStride: GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE,
+                emitterStride: GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE,
+                storageBuffersPerStage: 9
             }),
             overflow: Object.freeze({
                 pendingReadbacks: this.pendingOverflowReadbacks,
@@ -3615,6 +4441,26 @@ export class GpuCircleBodySimulation {
                     count * stride
                 );
             }
+            for (const [gpuKey, hostKey, stride] of [
+                [
+                    'effectSummaries',
+                    'summaryBuffer',
+                    GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE
+                ],
+                [
+                    'effectEmitterStates',
+                    'emitterStateBuffer',
+                    GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE
+                ]
+            ]) {
+                this.device.queue.writeBuffer(
+                    this.buffers[gpuKey],
+                    start * stride,
+                    this.hostEffectBodyState[hostKey],
+                    start * stride,
+                    count * stride
+                );
+            }
             this.device.queue.writeBuffer(
                 this.buffers.renderStyles,
                 start * BODY_RENDER_STYLE_STRIDE,
@@ -3675,6 +4521,7 @@ export class GpuCircleBodySimulation {
             this.device
             && this.buffers
             && this.flowTexture
+            && this.flowIntegrationTexture
             && this.bindGroups
             && this.pipelines
             && this.device === this.platform.getDevice()
@@ -3885,6 +4732,8 @@ export class GpuCircleBodySimulation {
                         || (!isSelectedTarget
                             && record.selectedTargetKind
                                 !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE)
+                        || (!isSelectedTarget
+                            && record.requestFlags !== expected.requestFlags)
                         || (isSelectedTarget
                             && record.result !== GPU_SPAWN_PROGRAM_RESULT.RESOLVED
                             && record.selectedTargetKind
@@ -3948,6 +4797,255 @@ export class GpuCircleBodySimulation {
             }
             this.#releaseClaimedSpawnProgramReadbackSlot(slot);
             queueEntry.failure = captureFailure('spawn-program-readback', error);
+            queueEntry.completed = true;
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.failure = queueEntry.failure;
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+            this.#completeDeferredIdleRelease();
+        });
+    }
+
+    #claimEffectProgramReadbackSlot() {
+        const slotCount = this.effectProgramReadbackSlots.length;
+        for (let offset = 0; offset < slotCount; offset++) {
+            const index = (this.effectProgramReadbackCursor + offset) % slotCount;
+            const slot = this.effectProgramReadbackSlots[index];
+            if (slot.inFlight) {
+                continue;
+            }
+            slot.inFlight = true;
+            this.pendingEffectReadbacks++;
+            this.effectProgramReadbackCursor = (index + 1) % slotCount;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedEffectProgramReadbackSlot(slot) {
+        if (!slot?.inFlight) {
+            return;
+        }
+        slot.inFlight = false;
+        this.pendingEffectReadbacks = Math.max(
+            0,
+            this.pendingEffectReadbacks - 1
+        );
+    }
+
+    #retireTerminalEffectReadbacks() {
+        this.effectProgramReadbackLease++;
+        this.stagedEffectPulseBatch = null;
+        this.effectProgramBatchQueue.length = 0;
+        for (const slot of this.effectProgramReadbackSlots) {
+            slot.lease = this.effectProgramReadbackLease;
+            slot.inFlight = false;
+            try {
+                slot.buffer.unmap();
+            } catch {
+                // already unmapped/retired
+            }
+        }
+        this.pendingEffectReadbacks = 0;
+    }
+
+    #beginEffectProgramReadback(slot, queueEntry, lease) {
+        slot.lease = lease;
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            const leaseMatches = !this.destroyed
+                && lease === this.effectProgramReadbackLease
+                && slot.lease === lease;
+            const generationMatches = queueEntry.deviceGeneration
+                === this.deviceGeneration;
+            const epochMatches = queueEntry.authoritativeEpoch
+                === this.authoritativeEpoch;
+            if (!leaseMatches || !generationMatches || !epochMatches) {
+                try {
+                    slot.buffer.unmap();
+                } catch {
+                    // retired resource may already be unmapped
+                }
+                if (leaseMatches) {
+                    this.#releaseClaimedEffectProgramReadbackSlot(slot);
+                    const index = this.effectProgramBatchQueue.indexOf(queueEntry);
+                    if (index >= 0) {
+                        this.effectProgramBatchQueue.splice(index, 1);
+                    }
+                    this.#completeDeferredIdleRelease();
+                } else {
+                    slot.inFlight = false;
+                }
+                return;
+            }
+
+            let completion = null;
+            let failure = null;
+            try {
+                const mapped = slot.buffer.getMappedRange();
+                const poolBytes = mapped.slice(
+                    EFFECT_READBACK_POOL_STATE_OFFSET,
+                    EFFECT_READBACK_PROGRAM_OFFSET
+                );
+                const pool = readGpuEffectPoolState(poolBytes);
+                const programByteLength = GPU_EFFECT_RUNTIME_ABI.PROGRAM_HEADER.STRIDE
+                    + (this.effectPulseProgramCapacity
+                        * GPU_EFFECT_RUNTIME_ABI.PULSE_PROGRAM_RECORD.STRIDE);
+                const programView = new DataView(
+                    mapped,
+                    EFFECT_READBACK_PROGRAM_OFFSET,
+                    programByteLength
+                );
+                const mappedProgram = {
+                    buffer: mapped,
+                    view: programView,
+                    capacity: this.effectPulseProgramCapacity
+                };
+                const header = readGpuEffectPulseProgramHeader(mappedProgram);
+                if (pool.abiVersion !== GPU_EFFECT_RUNTIME_ABI_VERSION
+                    || header.abiVersion !== GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION
+                    || header.count !== queueEntry.records.length
+                    || header.capacity !== this.effectPulseProgramCapacity
+                    || pool.sourceTick !== queueEntry.sourceTick
+                    || pool.pulseResultCount !== queueEntry.records.length) {
+                    throw new RangeError('Effect readback header/pool protocol이 일치하지 않습니다.');
+                }
+                const pulseResults = new Array(header.count);
+                let candidateTotal = 0;
+                let appliedTotal = 0;
+                for (let index = 0; index < header.count; index++) {
+                    const record = readGpuEffectPulseProgramRecord(
+                        mappedProgram,
+                        index
+                    );
+                    const expected = queueEntry.records[index];
+                    if (record.sourceSlot !== expected.sourceSlot
+                        || record.sourceEntityId !== expected.sourceEntityId
+                        || record.sourceIncarnation !== expected.sourceIncarnation
+                        || record.effectDefinitionCode
+                            !== expected.effectDefinitionCode
+                        || record.emitterDefinitionCode
+                            !== expected.emitterDefinitionCode
+                        || record.sourceTick !== expected.sourceTick
+                        || record.pulseSequence !== expected.pulseSequence
+                        || record.targetLayerMask !== expected.targetLayerMask
+                        || record.targetPolicy !== expected.targetPolicy
+                        || !Object.is(record.radiusTiles, expected.radiusTiles)
+                        || record.fingerprint !== expected.fingerprint
+                        || record.flags !== expected.flags
+                        || record.retargetIntervalTicks
+                            !== expected.retargetIntervalTicks) {
+                        throw new RangeError(
+                            `Effect result record provenance mismatch: index=${index}`
+                        );
+                    }
+                    const normalResult = record.result
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+                        || record.result
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET
+                        || record.result
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID;
+                    if (pool.status === GPU_EFFECT_RUNTIME_STATUS.OK
+                        && (!normalResult
+                            || (record.result
+                                === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+                                && record.appliedCount === 0)
+                            || (record.result
+                                !== GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+                                && (record.candidateCount !== 0
+                                    || record.appliedCount !== 0)))) {
+                        throw new RangeError(
+                            `Effect normal result/count mismatch: index=${index}, result=${record.result}`
+                        );
+                    }
+                    candidateTotal += record.candidateCount;
+                    appliedTotal += record.appliedCount;
+                    pulseResults[index] = Object.freeze({
+                        programIndex: index,
+                        pulseSequence: record.pulseSequence,
+                        resultCode: record.result,
+                        candidateCount: record.candidateCount,
+                        appliedCount: record.appliedCount
+                    });
+                }
+                if (candidateTotal !== pool.candidateCount
+                    || appliedTotal !== pool.materializedCount
+                    || pool.eventCount > this.effectEventCapacity) {
+                    throw new RangeError('Effect aggregate count가 pulse/pool과 다릅니다.');
+                }
+                const events = new Array(pool.eventCount);
+                const eventView = new DataView(
+                    mapped,
+                    effectReadbackEventOffset(this.effectPulseProgramCapacity),
+                    this.effectEventCapacity * GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE
+                );
+                for (let index = 0; index < pool.eventCount; index++) {
+                    const event = readGpuEffectEvent(eventView, index);
+                    if (event.type !== GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED
+                        && event.type !== GPU_EFFECT_EVENT_TYPE.INSTANCE_APPLIED) {
+                        throw new RangeError(`Effect event type이 유효하지 않습니다: ${event.type}`);
+                    }
+                    events[index] = event;
+                }
+                const status = (pool.status | header.status) >>> 0;
+                completion = Object.freeze({
+                    abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                    sessionGeneration: queueEntry.sessionGeneration,
+                    deviceGeneration: queueEntry.deviceGeneration,
+                    authoritativeEpoch: queueEntry.authoritativeEpoch,
+                    previousSourceTick: queueEntry.previousSourceTick,
+                    previousSubmittedTick: queueEntry.previousSubmittedTick,
+                    sourceTick: queueEntry.sourceTick,
+                    submittedTick: queueEntry.submittedTick,
+                    completedThroughTick: queueEntry.sourceTick,
+                    status,
+                    candidateCount: candidateTotal,
+                    appliedInstanceCount: appliedTotal,
+                    eventCount: events.length,
+                    pulseResults: Object.freeze(pulseResults),
+                    events: Object.freeze(events)
+                });
+                this.lastEffectRuntimeStatus = status;
+                this.lastEffectProgramCount = pulseResults.length;
+                this.lastEffectCandidateCount = candidateTotal;
+                this.lastEffectAppliedInstanceCount = appliedTotal;
+                this.lastEffectEventCount = events.length;
+                if (status !== GPU_EFFECT_RUNTIME_STATUS.OK) {
+                    this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                    this.failure = captureFailure(
+                        'effect-runtime-capacity',
+                        new Error(`GPU Effect runtime status=${status}`)
+                    );
+                    this.state = this.requiresAuthoritativeRebuild
+                        ? 'requires-rebuild'
+                        : 'failed';
+                }
+            } catch (error) {
+                failure = captureFailure('effect-program-readback', error);
+            } finally {
+                slot.buffer.unmap();
+            }
+            this.#releaseClaimedEffectProgramReadbackSlot(slot);
+            queueEntry.completion = completion;
+            queueEntry.failure = failure;
+            queueEntry.completed = true;
+            if (failure) {
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.failure = failure;
+                this.state = this.requiresAuthoritativeRebuild
+                    ? 'requires-rebuild'
+                    : 'failed';
+            }
+            this.#completeDeferredIdleRelease();
+        }).catch((error) => {
+            if (this.destroyed
+                || lease !== this.effectProgramReadbackLease
+                || slot.lease !== lease) {
+                slot.inFlight = false;
+                return;
+            }
+            this.#releaseClaimedEffectProgramReadbackSlot(slot);
+            queueEntry.failure = captureFailure('effect-program-readback', error);
             queueEntry.completed = true;
             this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
             this.failure = queueEntry.failure;
@@ -4157,17 +5255,44 @@ export class GpuCircleBodySimulation {
             || this.pendingEventReadbacks !== 0
             || this.pendingOverflowReadbacks !== 0
             || this.pendingSpawnProgramReadbacks !== 0
+            || this.pendingEffectReadbacks !== 0
             || this.pendingTrackedPoseReadbacks !== 0
             || this.eventBatchQueue.length !== 0
             || this.bodyControlProgramBatchQueue.length !== 0
             || this.spawnProgramBatchQueue.length !== 0
+            || this.effectProgramBatchQueue.length !== 0
             || this.pendingBodyCount !== 0
             || (this.state !== 'ready'
                 && this.state !== 'telemetry-backpressure'
                 && this.state !== 'event-backpressure')) {
             return false;
         }
-        this.authoritativeEpoch++;
+        const nextAuthoritativeEpoch = this.authoritativeEpoch + 1;
+        const nextEffectPoolState = createGpuEffectPoolStateStorage(
+            nextAuthoritativeEpoch
+        );
+        // 완전히 비어 lease가 끝난 world를 다시 열 때도 prior Effect identity,
+        // timers, summary/emitter bits를 재사용하지 않습니다. 다음 spawn은 새
+        // nonzero epoch의 instance ID space에서만 시작합니다.
+        this.hostEffectBodyState = createGpuEffectBodyStateStorage(this.capacity);
+        this.hostEffectPoolState = nextEffectPoolState;
+        this.hostEffectPulseProgram = createGpuEffectPulseProgramStorage(
+            this.effectPulseProgramCapacity
+        );
+        this.effectActivePoolIndex = 0;
+        this.stagedEffectPulseBatch = null;
+        this.effectProgramBatchQueue.length = 0;
+        this.pendingEffectReadbacks = 0;
+        this.lastEffectProtocolKey = null;
+        this.lastEffectProgramSourceTick = 0;
+        this.lastEffectProgramSubmittedTick = 0;
+        this.lastEffectProgramCompletedTick = 0;
+        this.lastEffectProgramCount = 0;
+        this.lastEffectCandidateCount = 0;
+        this.lastEffectAppliedInstanceCount = 0;
+        this.lastEffectEventCount = 0;
+        this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
+        this.authoritativeEpoch = nextAuthoritativeEpoch;
         this.#releaseGpuResources();
         this.state = 'idle';
         this.failure = null;
@@ -4762,6 +5887,13 @@ export class GpuCircleBodySimulation {
         const spawnProgramBytes = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
             + (this.spawnProgramCapacity
                 * GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE);
+        const effectProgramBytes = GPU_EFFECT_RUNTIME_ABI.PROGRAM_HEADER.STRIDE
+            + (this.effectPulseProgramCapacity
+                * GPU_EFFECT_RUNTIME_ABI.PULSE_PROGRAM_RECORD.STRIDE);
+        const effectReadbackBytes = effectReadbackByteSize(
+            this.effectPulseProgramCapacity,
+            this.effectEventCapacity
+        );
         const largestStorageBinding = Math.max(
             gridBodyBytes,
             this.capacity * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE,
@@ -4773,10 +5905,19 @@ export class GpuCircleBodySimulation {
             this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE,
             this.sdf.values.byteLength,
             this.capacity * BODY_CONTROL_STATE_STRIDE,
-            spawnProgramBytes
+            spawnProgramBytes,
+            effectProgramBytes,
+            this.capacity * GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE,
+            this.effectInstanceCapacity * GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE,
+            this.effectCandidateCapacity * GPU_EFFECT_RUNTIME_ABI.CANDIDATE.STRIDE,
+            this.effectEventCapacity * GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE
         );
         if (largestStorageBinding > Number(device.limits.maxStorageBufferBindingSize)
-            || Math.max(largestStorageBinding, eventReadbackBytes)
+            || Math.max(
+                largestStorageBinding,
+                eventReadbackBytes,
+                effectReadbackBytes
+            )
                 > Number(device.limits.maxBufferSize)) {
             throw new RangeError(
                 `GPU circle buffer가 adapter limit를 초과합니다: ${largestStorageBinding}`
@@ -4784,7 +5925,8 @@ export class GpuCircleBodySimulation {
         }
         const largestDirectDispatch = Math.max(
             this.gridCellTotal,
-            Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE)
+            Math.ceil(this.contactCapacity / BODY_WORKGROUP_SIZE),
+            Math.ceil(this.effectInstanceCapacity / BODY_WORKGROUP_SIZE)
         );
         if (largestDirectDispatch > Number(device.limits.maxComputeWorkgroupsPerDimension)) {
             throw new RangeError(
@@ -4855,6 +5997,57 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-circle-enemy-behavior-states',
                 GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            effectSummaries: createBuffer(
+                device,
+                'cirvivor-gpu-effect-summaries',
+                GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE * this.capacity,
+                storageUsage
+            ),
+            effectEmitterStates: createBuffer(
+                device,
+                'cirvivor-gpu-effect-emitter-states',
+                GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            effectInstancesA: createBuffer(
+                device,
+                'cirvivor-gpu-effect-instances-a',
+                GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE
+                    * this.effectInstanceCapacity,
+                storageUsage
+            ),
+            effectInstancesB: createBuffer(
+                device,
+                'cirvivor-gpu-effect-instances-b',
+                GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE
+                    * this.effectInstanceCapacity,
+                storageUsage
+            ),
+            effectPulseProgram: createBuffer(
+                device,
+                'cirvivor-gpu-effect-pulse-program',
+                this.hostEffectPulseProgram.buffer.byteLength,
+                storageUsage
+            ),
+            effectPoolState: createBuffer(
+                device,
+                'cirvivor-gpu-effect-pool-state',
+                GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE,
+                storageUsage
+            ),
+            effectCandidates: createBuffer(
+                device,
+                'cirvivor-gpu-effect-candidates',
+                GPU_EFFECT_RUNTIME_ABI.CANDIDATE.STRIDE
+                    * this.effectCandidateCapacity,
+                storageUsage
+            ),
+            effectEvents: createBuffer(
+                device,
+                'cirvivor-gpu-effect-events',
+                GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE * this.effectEventCapacity,
                 storageUsage
             ),
             bodyControlStates: createBuffer(
@@ -4976,6 +6169,16 @@ export class GpuCircleBodySimulation {
             format: 'rg32float',
             usage: textureUsage.TEXTURE_BINDING | textureUsage.COPY_DST
         });
+        this.flowIntegrationTexture = device.createTexture({
+            label: 'cirvivor-gpu-circle-route-flow-integration-atlas',
+            size: {
+                width: this.flowFieldAtlas.cols,
+                height: this.flowFieldAtlas.rows,
+                depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
+            },
+            format: 'r32float',
+            usage: textureUsage.TEXTURE_BINDING | textureUsage.COPY_DST
+        });
         const overflowLease = ++this.overflowReadbackLease;
         this.overflowReadbackSlots = Array.from(
             { length: OVERFLOW_READBACK_SLOT_COUNT },
@@ -5033,6 +6236,25 @@ export class GpuCircleBodySimulation {
         }
         this.spawnProgramReadbackCursor = 0;
         this.pendingSpawnProgramReadbacks = 0;
+        const effectProgramReadbackLease = ++this.effectProgramReadbackLease;
+        this.effectProgramReadbackSlots = [];
+        for (let index = 0; index < EFFECT_PROGRAM_READBACK_SLOT_COUNT; index++) {
+            this.effectProgramReadbackSlots.push({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-effect-program-readback-${index}`,
+                    effectReadbackByteSize(
+                        this.effectPulseProgramCapacity,
+                        this.effectEventCapacity
+                    ),
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                lease: effectProgramReadbackLease
+            });
+        }
+        this.effectProgramReadbackCursor = 0;
+        this.pendingEffectReadbacks = 0;
         const trackedPoseReadbackLease = ++this.trackedPoseReadbackLease;
         this.trackedPoseReadbackSlots = [];
         for (let index = 0; index < TRACKED_POSE_READBACK_SLOT_COUNT; index++) {
@@ -5176,7 +6398,8 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(5),
                 storageLayoutEntry(7),
                 storageLayoutEntry(10),
-                storageLayoutEntry(11)
+                storageLayoutEntry(11),
+                storageLayoutEntry(12)
             ]
         });
         const computeTrackedPoseLayout = device.createBindGroupLayout({
@@ -5200,7 +6423,7 @@ export class GpuCircleBodySimulation {
         });
         const renderBodiesLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-render-bodies-layout',
-            entries: [0, 1, 2, 3, 4, 5].map((binding) => ({
+            entries: [0, 1, 2, 3, 4, 5, 6].map((binding) => ({
                 binding,
                 visibility: stage.VERTEX,
                 buffer: { type: 'read-only-storage' }
@@ -5256,7 +6479,9 @@ export class GpuCircleBodySimulation {
                 computeParamsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE]: [
-                computeSourceResolveLayout
+                computeSourceResolveLayout,
+                computeEmptyLayout,
+                computeParamsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                 computeEnemyBehaviorBodiesLayout,
@@ -5286,9 +6511,94 @@ export class GpuCircleBodySimulation {
             bindGroupLayouts: [renderBodiesLayout, renderParamsLayout]
         });
 
+        const effectBindingPlan = Object.freeze({
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.RESET_TICK]: [[0, 7, 8], [], true],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.RETAIN_INSTANCES]: [[2, 8, 9, 10], [], true],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.SCAN_PULSES]: [
+                [1, 2, 6, 7, 8, 11], [0, 1, 2], true
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_BATCH]: [
+                [1, 5, 6, 7, 8, 10, 11, 12], [], true
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.FINISH_TICK]: [[8], [], false],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.CLEAR_SUMMARIES]: [[0, 2, 5], [], true],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.ACCUMULATE_SUMMARIES]: [
+                [0, 2, 5, 8, 10], [], true
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.FINALIZE_SUMMARIES]: [[0, 2, 5], [], true],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.APPLY_REGENERATION]: [[0, 2, 5], [], true],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_CONTACT_DAMAGE]: [
+                [0, 4, 5], [], false
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.ADVANCE_PENTA_NAVIGATION]: [
+                [0, 1, 2, 3, 6], [0, 1, 2, 4, 5, 6], true
+            ]
+        });
+        const effectReadOnlyBodyBindings = new Set([0, 9]);
+        const effectWorldStorageBindings = new Set([0, 1, 2, 4]);
+        const effectReadOnlyWorldBindings = new Set([1, 4]);
+        const effectPipelineLayouts = Object.fromEntries(Object.entries(
+            effectBindingPlan
+        ).map(([entryPoint, [bodyBindings, worldBindings, usesParams]]) => {
+            const storageBindingCount = bodyBindings.length
+                + worldBindings.filter((binding) => (
+                    effectWorldStorageBindings.has(binding)
+                )).length;
+            if (new Set(bodyBindings).size !== bodyBindings.length
+                || new Set(worldBindings).size !== worldBindings.length
+                || storageBindingCount > REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE) {
+                throw new RangeError(
+                    `Effect ${entryPoint} binding plan이 exact/<=9 계약을 위반합니다.`
+                );
+            }
+            const bodyLayout = device.createBindGroupLayout({
+                label: `cirvivor-gpu-effect-${entryPoint}-bodies-layout`,
+                entries: bodyBindings.map((binding) => storageLayoutEntry(
+                    binding,
+                    effectReadOnlyBodyBindings.has(binding)
+                        ? 'read-only-storage'
+                        : 'storage'
+                ))
+            });
+            const bindGroupLayouts = [bodyLayout];
+            if (worldBindings.length > 0 || usesParams) {
+                bindGroupLayouts.push(device.createBindGroupLayout({
+                    label: `cirvivor-gpu-effect-${entryPoint}-world-layout`,
+                    entries: worldBindings.map((binding) => (
+                        effectWorldStorageBindings.has(binding)
+                            ? storageLayoutEntry(
+                                binding,
+                                effectReadOnlyWorldBindings.has(binding)
+                                    ? 'read-only-storage'
+                                    : 'storage'
+                            )
+                            : {
+                                binding,
+                                visibility: stage.COMPUTE,
+                                texture: {
+                                    sampleType: 'unfilterable-float',
+                                    viewDimension: '2d-array'
+                                }
+                            }
+                    ))
+                }));
+            }
+            if (usesParams) {
+                bindGroupLayouts.push(computeParamsLayout);
+            }
+            return [entryPoint, device.createPipelineLayout({
+                label: `cirvivor-gpu-effect-${entryPoint}-pipeline-layout`,
+                bindGroupLayouts
+            })];
+        }));
+
         const computeModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-compute-shader',
             code: GPU_COLLISION_COMPUTE_WGSL
+        });
+        const effectModule = device.createShaderModule({
+            label: 'cirvivor-gpu-effect-runtime-compute-shader',
+            code: GPU_EFFECT_RUNTIME_COMPUTE_WGSL
         });
         const indirectModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-indirect-shader',
@@ -5309,8 +6619,19 @@ export class GpuCircleBodySimulation {
                 })
             ];
         }));
+        const effect = Object.fromEntries(
+            Object.values(GPU_EFFECT_RUNTIME_ENTRY_POINT).map((entryPoint) => [
+                entryPoint,
+                device.createComputePipeline({
+                    label: `cirvivor-gpu-effect-${entryPoint}`,
+                    layout: effectPipelineLayouts[entryPoint],
+                    compute: { module: effectModule, entryPoint }
+                })
+            ])
+        );
         this.pipelines = {
             compute,
+            effect,
             updateIndirectArgs: device.createComputePipeline({
                 label: 'cirvivor-gpu-circle-update-indirect-args',
                 layout: indirectPipelineLayout,
@@ -5344,6 +6665,82 @@ export class GpuCircleBodySimulation {
         };
 
         const resource = (buffer) => ({ buffer });
+        const effectCommonBodyBuffers = {
+            0: this.buffers.counts,
+            1: this.buffers.physics,
+            2: this.buffers.simulation,
+            3: this.buffers.temporary,
+            4: this.buffers.contactHandlers,
+            5: this.buffers.effectSummaries,
+            6: this.buffers.effectEmitterStates,
+            7: this.buffers.effectPulseProgram,
+            8: this.buffers.effectPoolState,
+            11: this.buffers.effectCandidates,
+            12: this.buffers.effectEvents
+        };
+        const effectWorldBuffers = {
+            0: this.buffers.gridCounts,
+            1: this.buffers.gridBodies,
+            2: this.buffers.gridOverflow,
+            4: this.buffers.sdf,
+            5: this.flowTexture.createView({ dimension: '2d-array' }),
+            6: this.flowIntegrationTexture.createView({ dimension: '2d-array' })
+        };
+        const createEffectBindGroupsForPool = (poolIndex) => {
+            const input = poolIndex === 0
+                ? this.buffers.effectInstancesA
+                : this.buffers.effectInstancesB;
+            const output = poolIndex === 0
+                ? this.buffers.effectInstancesB
+                : this.buffers.effectInstancesA;
+            const bodyBuffers = {
+                ...effectCommonBodyBuffers,
+                9: input,
+                10: output
+            };
+            return Object.fromEntries(Object.entries(effectBindingPlan).map(([
+                entryPoint,
+                [bodyBindings, worldBindings, usesParams]
+            ]) => {
+                const pipeline = effect[entryPoint];
+                const groups = [];
+                groups.push(device.createBindGroup({
+                    label: `cirvivor-gpu-effect-${entryPoint}-bodies-${poolIndex}`,
+                    layout: pipeline.getBindGroupLayout(0),
+                    entries: bodyBindings.map((binding) => ({
+                        binding,
+                        resource: resource(bodyBuffers[binding])
+                    }))
+                }));
+                if (worldBindings.length > 0 || usesParams) {
+                    groups.push(device.createBindGroup({
+                        label: `cirvivor-gpu-effect-${entryPoint}-world-${poolIndex}`,
+                        layout: pipeline.getBindGroupLayout(1),
+                        entries: worldBindings.map((binding) => ({
+                            binding,
+                            resource: binding === 5 || binding === 6
+                                ? effectWorldBuffers[binding]
+                                : resource(effectWorldBuffers[binding])
+                        }))
+                    }));
+                }
+                if (usesParams) {
+                    groups.push(device.createBindGroup({
+                        label: `cirvivor-gpu-effect-${entryPoint}-params-${poolIndex}`,
+                        layout: pipeline.getBindGroupLayout(2),
+                        entries: [{
+                            binding: 0,
+                            resource: resource(this.buffers.computeParams)
+                        }]
+                    }));
+                }
+                return [entryPoint, groups];
+            }));
+        };
+        const effectByPool = [
+            createEffectBindGroupsForPool(0),
+            createEffectBindGroupsForPool(1)
+        ];
         const computeBodiesBase = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-bodies-base',
             layout: computeBodiesBaseLayout,
@@ -5504,7 +6901,8 @@ export class GpuCircleBodySimulation {
                 { binding: 5, resource: resource(this.buffers.bodyControlStates) },
                 { binding: 7, resource: resource(this.buffers.spawnProgram) },
                 { binding: 10, resource: resource(this.buffers.combatStates) },
-                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) },
+                { binding: 12, resource: resource(this.buffers.effectSummaries) }
             ]
         });
         const computeTrackedPose = device.createBindGroup({
@@ -5520,6 +6918,7 @@ export class GpuCircleBodySimulation {
             ]
         });
         this.bindGroups = {
+            effectByPool,
             computeProfiles: {
                 [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
                     computeBodiesBase,
@@ -5562,7 +6961,9 @@ export class GpuCircleBodySimulation {
                     computeParams
                 ],
                 [COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE]: [
-                    computeSourceResolve
+                    computeSourceResolve,
+                    computeEmpty,
+                    computeParams
                 ],
                 [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                     computeEnemyBehaviorBodies,
@@ -5592,7 +6993,8 @@ export class GpuCircleBodySimulation {
                     { binding: 2, resource: resource(this.buffers.temporary) },
                     { binding: 3, resource: resource(this.buffers.renderStyles) },
                     { binding: 4, resource: resource(this.buffers.simulation) },
-                    { binding: 5, resource: resource(this.buffers.enemyBehaviorStates) }
+                    { binding: 5, resource: resource(this.buffers.enemyBehaviorStates) },
+                    { binding: 6, resource: resource(this.buffers.effectSummaries) }
                 ]
             }),
             renderParams: device.createBindGroup({
@@ -5623,6 +7025,16 @@ export class GpuCircleBodySimulation {
             this.buffers.spawnProgram,
             0,
             this.hostSpawnProgram.buffer
+        );
+        queue.writeBuffer(
+            this.buffers.effectPoolState,
+            0,
+            this.hostEffectPoolState
+        );
+        queue.writeBuffer(
+            this.buffers.effectPulseProgram,
+            0,
+            this.hostEffectPulseProgram.buffer
         );
         queue.writeBuffer(
             this.buffers.trackedPoseConfig,
@@ -5673,6 +7085,20 @@ export class GpuCircleBodySimulation {
                 bodyCount * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
             );
             queue.writeBuffer(
+                this.buffers.effectSummaries,
+                0,
+                this.hostEffectBodyState.summaryBuffer,
+                0,
+                bodyCount * GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE
+            );
+            queue.writeBuffer(
+                this.buffers.effectEmitterStates,
+                0,
+                this.hostEffectBodyState.emitterStateBuffer,
+                0,
+                bodyCount * GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE
+            );
+            queue.writeBuffer(
                 this.buffers.renderStyles,
                 0,
                 this.hostRenderStyles,
@@ -5686,6 +7112,19 @@ export class GpuCircleBodySimulation {
             this.flowFieldAtlas.directions,
             {
                 bytesPerRow: this.flowFieldAtlas.cols * 2 * FLOAT32_BYTES,
+                rowsPerImage: this.flowFieldAtlas.rows
+            },
+            {
+                width: this.flowFieldAtlas.cols,
+                height: this.flowFieldAtlas.rows,
+                depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
+            }
+        );
+        queue.writeTexture(
+            { texture: this.flowIntegrationTexture },
+            this.flowFieldAtlas.integrationCosts,
+            {
+                bytesPerRow: this.flowFieldAtlas.cols * FLOAT32_BYTES,
                 rowsPerImage: this.flowFieldAtlas.rows
             },
             {
@@ -5810,6 +7249,20 @@ export class GpuCircleBodySimulation {
         pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
     }
 
+    #setEffectEntry(pass, entryPoint) {
+        const pipeline = this.pipelines.effect[entryPoint];
+        const bindGroups = this.bindGroups.effectByPool[
+            this.effectActivePoolIndex
+        ]?.[entryPoint];
+        if (!pipeline || !bindGroups) {
+            throw new RangeError(`등록되지 않은 Effect pipeline입니다: ${entryPoint}`);
+        }
+        pass.setPipeline(pipeline);
+        for (let groupIndex = 0; groupIndex < bindGroups.length; groupIndex++) {
+            pass.setBindGroup(groupIndex, bindGroups[groupIndex]);
+        }
+    }
+
     #releaseGpuResources() {
         this.idleReleasePending = false;
         this.overflowReadbackLease++;
@@ -5827,6 +7280,21 @@ export class GpuCircleBodySimulation {
         this.pendingSpawnProgramReadbacks = 0;
         this.spawnProgramReadbackCursor = 0;
         this.spawnProgramBatchQueue.length = 0;
+        this.effectProgramReadbackLease++;
+        for (const slot of this.effectProgramReadbackSlots) {
+            slot.inFlight = false;
+            try {
+                slot.buffer?.destroy?.();
+            } catch {
+                // retired mapping/device resources are best-effort cleanup
+            }
+        }
+        this.effectProgramReadbackSlots = [];
+        this.pendingEffectReadbacks = 0;
+        this.effectProgramReadbackCursor = 0;
+        this.effectProgramBatchQueue.length = 0;
+        this.stagedEffectPulseBatch = null;
+        this.lastEffectProtocolKey = null;
         this.trackedPoseReadbackLease++;
         for (const slot of this.trackedPoseReadbackSlots) {
             slot.inFlight = false;
@@ -5869,8 +7337,14 @@ export class GpuCircleBodySimulation {
         } catch {
             // already lost/destroyed texture needs no further recovery here
         }
+        try {
+            this.flowIntegrationTexture?.destroy?.();
+        } catch {
+            // already lost/destroyed texture needs no further recovery here
+        }
         this.buffers = null;
         this.flowTexture = null;
+        this.flowIntegrationTexture = null;
         this.bindGroups = null;
         this.pipelines = null;
         this.device = null;

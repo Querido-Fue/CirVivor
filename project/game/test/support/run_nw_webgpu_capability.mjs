@@ -10,11 +10,13 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/archer_attack_data.js',
     'data/object/enemy/archer_enemy_data.js',
     'data/object/enemy/basic_circle_enemy_data.js',
+    'data/object/enemy/basic_penta_enemy_data.js',
     'data/object/enemy/basic_rhom_attack_data.js',
     'data/object/enemy/basic_rhom_enemy_data.js',
     'data/object/enemy/basic_rhom_profile_data.js',
     'data/object/enemy/enemy_ai_data.js',
     'data/object/enemy/enemy_catalog_data.js',
+    'data/object/enemy/enemy_effect_catalog_data.js',
     'data/object/enemy/enemy_profile_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
     'data/object/enemy/hostile_attack_runtime_data.js',
@@ -29,6 +31,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
+    'module/ingame/contract/enemy_effect_contract.js',
     'module/ingame/contract/enemy_lifecycle_disposition_contract.js',
     'module/ingame/contract/enemy_profile_contract.js',
     'module/ingame/contract/tile_navigation_contract.js',
@@ -48,9 +51,11 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/enemy/enemy_core_impact_director.js',
     'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     'module/ingame/object/enemy/enemy_simulation_backend.js',
+    'module/ingame/object/enemy/gpu_effect_command_owner.js',
     'module/ingame/object/enemy/gpu_enemy_spawn_adapter.js',
     'module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js',
     'module/ingame/object/enemy/hostile_attack_director.js',
+    'module/ingame/object/enemy/pentagon_effect_director.js',
     'module/ingame/object/enemy/resolved_enemy_spawn_stats.js',
     'module/ingame/object/core/gpu_core_proxy_spawn_adapter.js',
     'module/ingame/object/gpu_fixed_command_owner.js',
@@ -66,6 +71,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
     'module/ingame/physics/gpu/gpu_collision_shaders.js',
+    'module/ingame/physics/gpu/gpu_effect_runtime_abi.js',
+    'module/ingame/physics/gpu/gpu_effect_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_fixed_primitive_abi.js',
     'module/ingame/physics/gpu/gpu_signed_distance_field.js',
     'module/object/enemy/_hexa_hive_layout.js',
@@ -152,6 +159,22 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         fixture = result?.productionEnemyRhomPriority;
         scenarioValid = result?.productionEnemyRhomPriority?.scenario
             === 'rhom-core-priority-selected-target';
+    } else if (fixtureStage === 'enemy-pentagon-effect') {
+        fixture = result?.productionEnemyPentagonEffect;
+        scenarioValid = fixture?.scenario
+                === 'penta-independent-boost-pulse-whole-tick'
+            && fixture.candidateCount === 2
+            && fixture.appliedInstanceCount === 2
+            && fixture.eventCount === 3
+            && fixture.damageChannels?.towerContact === true
+            && fixture.damageChannels?.projectileTower === true
+            && fixture.damageChannels?.directCore === false
+            && fixture.damageChannels?.projectileCore === false
+            && fixture.storageProfile?.sourceResolve === 9
+            && fixture.effectStorageBuffersPerStage === 9
+            && fixture.terminal?.state === 'submitted'
+            && fixture.terminal?.pendingPulseProgramCount === 0
+            && fixture.terminal?.pendingEffectReadbackCount === 0;
     }
 
     const fixtureExists = fixture !== null
@@ -186,6 +209,7 @@ function assertFixtureStageResult(result) {
         fixtureStage === 'enemy-arrow-charge'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
+        || fixtureStage === 'enemy-pentagon-effect'
     ) {
         assertDedicatedFixtureResult(result, fixtureStage);
         return;
@@ -290,8 +314,12 @@ async function prepareHarnessApp(
         sourceIndexHtml.replace('</head>', `${importMapMarkup}</head>`),
         'utf8'
     );
+    const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
+    const runnerFileName = fixtureStage === 'enemy-pentagon-effect'
+        ? 'enemy_pentagon_effect_runner.js'
+        : 'runner.js';
     await linkRuntimeFile(
-        path.join(harnessDirectory, 'runner.js'),
+        path.join(harnessDirectory, runnerFileName),
         path.join(appDirectory, 'runner.js')
     );
     const productionDirectory = path.join(appDirectory, 'production');
@@ -343,6 +371,10 @@ async function runHarness() {
             fs.access(path.join(harnessDirectory, 'package.json')),
             fs.access(path.join(harnessDirectory, 'index.html')),
             fs.access(path.join(harnessDirectory, 'runner.js')),
+            fs.access(path.join(
+                harnessDirectory,
+                'enemy_pentagon_effect_runner.js'
+            )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))
             ))

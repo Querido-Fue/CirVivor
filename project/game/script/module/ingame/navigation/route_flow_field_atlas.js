@@ -157,9 +157,11 @@ export function createRouteFlowFieldAtlas(tileMap) {
             );
             if (!(field?.dirX instanceof Float32Array)
                 || !(field?.dirY instanceof Float32Array)
+                || !(field?.integration instanceof Float32Array)
                 || field.dirX.length !== grid.size
-                || field.dirY.length !== grid.size) {
-                throw new TypeError('JS/WASM flow-field 방향 plane 계약이 유효하지 않습니다.');
+                || field.dirY.length !== grid.size
+                || field.integration.length !== grid.size) {
+                throw new TypeError('JS/WASM flow-field 방향/integration plane 계약이 유효하지 않습니다.');
             }
             pendingFields.push({
                 field,
@@ -188,11 +190,15 @@ export function createRouteFlowFieldAtlas(tileMap) {
     }
 
     const directions = new Float32Array(pendingFields.length * grid.size * 2);
+    const integrationCosts = new Float32Array(pendingFields.length * grid.size);
     const stages = pendingFields.map((pending, fieldIndex) => {
         const layerOffset = fieldIndex * grid.size * 2;
+        const integrationLayerOffset = fieldIndex * grid.size;
         for (let cellIndex = 0; cellIndex < grid.size; cellIndex++) {
             directions[layerOffset + (cellIndex * 2)] = pending.field.dirX[cellIndex];
             directions[layerOffset + (cellIndex * 2) + 1] = pending.field.dirY[cellIndex];
+            integrationCosts[integrationLayerOffset + cellIndex]
+                = pending.field.integration[cellIndex];
         }
         return Object.freeze({
             pathId: pending.pathId,
@@ -216,6 +222,7 @@ export function createRouteFlowFieldAtlas(tileMap) {
         }),
         fieldCount: stages.length,
         directions,
+        integrationCosts,
         stages: Object.freeze(stages),
         routes: Object.freeze(compiledRoutes)
     });

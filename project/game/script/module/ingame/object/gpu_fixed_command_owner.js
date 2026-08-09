@@ -15,8 +15,24 @@ import {
 } from '../physics/gpu/gpu_fixed_primitive_abi.js';
 import {
     PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID,
-    PROJECTILE_SELECTED_TARGET_POLICY_ID
+    PROJECTILE_SELECTED_TARGET_POLICY_ID,
+    PROJECTILE_TARGET_POLICY_ID
 } from '../contract/projectile_target_policy_contract.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} from '../contract/gameplay_team_contract.js';
+import {
+    ARCHER_ATTACK_DATA
+} from 'data/object/enemy/archer_attack_data.js';
+import {
+    HOSTILE_BASIC_BULLET_DATA
+} from 'data/object/projectile/hostile_basic_bullet_data.js';
+import {
+    GPU_TOWER_DEFINITION_ID,
+    GPU_TOWER_WORLD_KIND_ID
+} from './tower/gpu_tower_spawn_adapter.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_CAPACITY = 1024;
@@ -373,6 +389,57 @@ function normalizeSourceRelativeMode(source) {
     return modeFlags;
 }
 
+function normalizeSourceRelativeRequestFlags(source, exact) {
+    const requestFlags = requireUint32Like(
+        source?.requestFlags ?? 0,
+        'sourceRelativeSpawn.requestFlags'
+    );
+    if (requestFlags === 0) {
+        return 0;
+    }
+    const destinationSpawn = exact.destinationSpawn;
+    const sourceView = exact.sourceView;
+    const targetView = exact.targetView;
+    const canonical = requestFlags
+            === GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+        && exact.modeFlags
+            === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+        && sourceView?.entityId === exact.sourceHandle.entityId
+        && sourceView?.incarnation === exact.sourceHandle.incarnation
+        && sourceView?.kindId === 'enemy'
+        && sourceView?.definitionId === ARCHER_ATTACK_DATA.sourceEnemyDefinitionId
+        && sourceView?.metadata?.definitionId
+            === ARCHER_ATTACK_DATA.sourceEnemyDefinitionId
+        && sourceView?.metadata?.teamId === GAMEPLAY_TEAM_ID.HOSTILE
+        && targetView?.entityId === exact.targetHandle?.entityId
+        && targetView?.incarnation === exact.targetHandle?.incarnation
+        && targetView?.kindId === GPU_TOWER_WORLD_KIND_ID
+        && targetView?.definitionId === GPU_TOWER_DEFINITION_ID
+        && targetView?.metadata?.definitionId === GPU_TOWER_DEFINITION_ID
+        && targetView?.metadata?.teamId === GAMEPLAY_TEAM_ID.PLAYER
+        && destinationSpawn.kindId === 'projectile'
+        && destinationSpawn.definitionId === HOSTILE_BASIC_BULLET_DATA.id
+        && destinationSpawn.teamId === GAMEPLAY_TEAM_ID.HOSTILE
+        && destinationSpawn.allegiancePolicy
+            === GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT
+        && destinationSpawn.damagePolicyId
+            === GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
+        && destinationSpawn.targetPolicyId
+            === PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
+        && destinationSpawn.producerId === ARCHER_ATTACK_DATA.producerId
+        && destinationSpawn.sourceAbilityId === ARCHER_ATTACK_DATA.sourceAbilityId
+        && destinationSpawn.targetEntityId === exact.targetHandle.entityId
+        && destinationSpawn.targetIncarnation === exact.targetHandle.incarnation
+        && Number(destinationSpawn.contactHandler?.damageOther)
+            === HOSTILE_BASIC_BULLET_DATA.damage;
+    if (!canonical) {
+        throw new RangeError(
+            'Tower damage channel flag는 canonical Archer exact Tower projectile에만 허용됩니다.'
+        );
+    }
+    return requestFlags;
+}
+
 function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('source-relative spawn intent가 필요합니다.');
@@ -442,6 +509,13 @@ function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
             targetIncarnation: targetHandle.incarnation
         } : {})
     }, { subjectTeamId });
+    const requestFlags = normalizeSourceRelativeRequestFlags(source, {
+        ...exact,
+        modeFlags,
+        sourceHandle,
+        targetHandle,
+        destinationSpawn
+    });
     const base = {
         sourceHandle,
         destinationSpawn,
@@ -523,7 +597,8 @@ function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
             source.targetOffset,
             'sourceRelativeSpawn.targetOffset'
         ),
-        launchSpeed
+        launchSpeed,
+        requestFlags
     });
 }
 
@@ -1312,10 +1387,13 @@ export class GpuFixedCommandOwner {
                 'source-metadata-missing'
             );
         }
+        const targetView = targetHandle
+            ? this.registry.copyEntityView(targetHandle, {})
+            : null;
         const payload = normalizeSourceRelativeIntent(
             snapshot,
             sourceView.metadata.teamId,
-            { modeFlags, sourceHandle, targetHandle }
+            { modeFlags, sourceHandle, targetHandle, sourceView, targetView }
         );
         return this.#enqueue({
             type: 'source-relative-spawn',
@@ -2047,7 +2125,8 @@ export class GpuFixedCommandOwner {
                     ? {
                         targetHandle: command.payload.targetHandle,
                         targetOffset: command.payload.targetOffset,
-                        launchSpeed: command.payload.launchSpeed
+                        launchSpeed: command.payload.launchSpeed,
+                        requestFlags: command.payload.requestFlags
                     }
                     : command.payload.modeFlags
                         === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_AIM_POINT

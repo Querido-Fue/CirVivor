@@ -178,7 +178,8 @@ export const GPU_SPAWN_PROGRAM_MODE = Object.freeze({
 });
 
 export const GPU_SPAWN_PROGRAM_REQUEST_FLAGS = Object.freeze({
-    REQUIRE_EXACT_SELECTED_TARGET: 1 << 0
+    REQUIRE_EXACT_SELECTED_TARGET: 1 << 0,
+    TOWER_DAMAGE_CHANNEL: 1 << 1
 });
 
 export const GPU_SPAWN_PROGRAM_RESULT = Object.freeze({
@@ -865,7 +866,10 @@ export function writeGpuSpawnProgramRecord(storage, index, record) {
     } else if (selectionSequence !== 0
         || attackFingerprint !== 0
         || selectedTargetKind !== GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE
-        || requestFlags !== 0) {
+        || (requestFlags !== 0
+            && (!isTargetEntity
+                || requestFlags
+                    !== GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL))) {
         throw new RangeError('legacy SpawnProgram에는 selected-target payload를 사용할 수 없습니다.');
     }
     const encodedTargetOffsetX = (isTargetEntity || isSelectedTarget)

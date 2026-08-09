@@ -5,6 +5,10 @@ import {
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
+    GPU_EFFECT_EMITTER_FLAG,
+    GPU_EFFECT_LAST_PULSE_TICK_INVALID
+} from '../../physics/gpu/gpu_effect_runtime_abi.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -12,6 +16,7 @@ import {
     assertEnemyDefinitionCapabilityImplementations,
     assertEnemyFixedCommandProducer,
     assertEnemyGameplayEventConsumer,
+    assertEnemyLifecycleObserver,
     createEnemyCapabilityMask,
     createEnemyCapabilityImplementationRegistry,
     ENEMY_CAPABILITY_ID,
@@ -24,10 +29,15 @@ import {
     ENEMY_PROFILE_CATALOG
 } from 'data/object/enemy/enemy_profile_catalog_data.js';
 import {
+    ENEMY_EFFECT_DEFINITION_BY_ID,
+    ENEMY_EFFECT_EMITTER_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_effect_catalog_data.js';
+import {
     assertResolvedEnemySpawnStats,
     resolveEnemySpawnStats
 } from './resolved_enemy_spawn_stats.js';
 import { EnemyCoreImpactDirector } from './enemy_core_impact_director.js';
+import { PentagonEffectDirector } from './pentagon_effect_director.js';
 
 export const GPU_ENEMY_WORLD_KIND_ID = 'enemy';
 export const GPU_ENEMY_FIRST_TARGET_WAYPOINT_INDEX = 1;
@@ -94,6 +104,27 @@ function assertChargeCapabilityDefinition(definition) {
     }
 }
 
+function assertEffectEmitterCapabilityDefinition(definition) {
+    const effectEmitterProfileId = requireNonEmptyString(
+        definition.effectEmitterProfileId,
+        'enemy effectEmitterProfileId'
+    );
+    const emitterProfile = ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[
+        effectEmitterProfileId
+    ];
+    const effectDefinition = emitterProfile
+        ? ENEMY_EFFECT_DEFINITION_BY_ID[emitterProfile.effectDefinitionId]
+        : null;
+    if (!emitterProfile
+        || !effectDefinition
+        || effectDefinition.effectDefinitionCode
+            !== emitterProfile.effectDefinitionCode) {
+        throw new RangeError(
+            'enemy-effect-emitter capability에는 exact emitter/effect catalog profile이 필요합니다.'
+        );
+    }
+}
+
 /** 실제 EnemyCoreImpactDirector method family를 가리키는 class-free roster seam입니다. */
 export const GPU_ENEMY_CORE_IMPACT_ROSTER_PORT = Object.freeze({
     observeCompletedEvents:
@@ -103,6 +134,22 @@ export const GPU_ENEMY_CORE_IMPACT_ROSTER_PORT = Object.freeze({
 });
 assertEnemyGameplayEventConsumer(GPU_ENEMY_CORE_IMPACT_ROSTER_PORT);
 assertEnemyFixedCommandProducer(GPU_ENEMY_CORE_IMPACT_ROSTER_PORT);
+
+/** 실제 PentagonEffectDirector method family를 가리키는 exact-handle roster seam입니다. */
+export const GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT = Object.freeze({
+    observeLifecycle: PentagonEffectDirector.prototype.observeLifecycle,
+    observeCompletedEvents:
+        PentagonEffectDirector.prototype.observeCompletedEvents,
+    stageForFixedTick: PentagonEffectDirector.prototype.stageForFixedTick,
+    observeFixedCommit: PentagonEffectDirector.prototype.observeFixedCommit,
+    getStatus: PentagonEffectDirector.prototype.getStatus,
+    requiresRecovery: PentagonEffectDirector.prototype.requiresRecovery,
+    resetGpuBinding: PentagonEffectDirector.prototype.resetGpuBinding,
+    destroy: PentagonEffectDirector.prototype.destroy
+});
+assertEnemyLifecycleObserver(GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT);
+assertEnemyGameplayEventConsumer(GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT);
+assertEnemyFixedCommandProducer(GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT);
 
 /**
  * GPU spawn path가 실제로 연결한 capability implementation seam입니다.
@@ -135,6 +182,12 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             capabilityId: ENEMY_CAPABILITY_ID.CHARGE,
             implementationId: 'gpu-exact-tower-charge',
             assertDefinition: assertChargeCapabilityDefinition
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
+            implementationId: 'gpu-pentagon-effect-emitter',
+            assertDefinition: assertEffectEmitterCapabilityDefinition,
+            rosterPort: GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT
         })
     ])
 );
@@ -392,6 +445,11 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.CHARGE,
         'enemy capabilityMask'
     );
+    const hasEffectEmitter = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
+        'enemy capabilityMask'
+    );
     if (canonicalDefinition
         && !hasContactCombat
         && resolvedStats.towerContactDamage > 0) {
@@ -439,6 +497,21 @@ export function createGpuEnemySpawnIntent(options) {
         : null;
     if (hasCharge && !chargeProfile) {
         throw new RangeError('enemy-charge spawn에는 charge behavior profile이 필요합니다.');
+    }
+    const effectEmitterProfile = hasEffectEmitter
+        ? ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[definition.effectEmitterProfileId]
+        : null;
+    const effectDefinition = effectEmitterProfile
+        ? ENEMY_EFFECT_DEFINITION_BY_ID[effectEmitterProfile.effectDefinitionId]
+        : null;
+    if (hasEffectEmitter
+        && (!effectEmitterProfile
+            || !effectDefinition
+            || effectDefinition.effectDefinitionCode
+                !== effectEmitterProfile.effectDefinitionCode)) {
+        throw new RangeError(
+            'enemy-effect-emitter spawn에는 exact emitter/effect catalog profile이 필요합니다.'
+        );
     }
 
     return Object.freeze({
@@ -500,6 +573,30 @@ export function createGpuEnemySpawnIntent(options) {
             enemyBehaviorState: Object.freeze({
                 programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
                 ...chargeProfile
+            })
+        } : {}),
+        ...(effectEmitterProfile ? {
+            effectEmitterProfileId: effectEmitterProfile.id,
+            effectEmitterDefinitionCode: effectEmitterProfile.emitterDefinitionCode,
+            effectDefinitionId: effectDefinition.id,
+            effectDefinitionCode: effectDefinition.effectDefinitionCode,
+            effectSelfTargetAllowed: effectEmitterProfile.selfTargetAllowed,
+            effectPentaTargetAllowed: effectEmitterProfile.pentaTargetAllowed,
+            effectTowerContactDamageModifiable:
+                effectDefinition.towerContactDamageEffectModifiable,
+            effectProjectileTowerDamageModifiable:
+                effectDefinition.projectileTowerDamageEffectModifiable,
+            effectDirectCoreImpactDamageModifiable:
+                effectDefinition.directCoreImpactDamageEffectModifiable,
+            effectProjectileCoreDamageModifiable:
+                effectDefinition.typedProjectileCoreDamageEffectModifiable,
+            effectClusterRetargetIntervalTicks:
+                effectEmitterProfile.retargetIntervalTicks,
+            effectEmitterState: Object.freeze({
+                emitterDefinitionCode: effectEmitterProfile.emitterDefinitionCode,
+                effectDefinitionCode: effectDefinition.effectDefinitionCode,
+                lastPulseTick: GPU_EFFECT_LAST_PULSE_TICK_INVALID,
+                flags: GPU_EFFECT_EMITTER_FLAG.ENABLED
             })
         } : {}),
         ...(resolvedStats.physicsProfileId === null ? {} : {

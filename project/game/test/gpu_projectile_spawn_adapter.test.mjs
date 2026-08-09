@@ -7,6 +7,7 @@ const {
     GPU_PROJECTILE_SPAWN_MODE,
     GPU_PROJECTILE_CONTACT_HANDLER_FLAGS,
     GPU_PROJECTILE_WORLD_KIND_ID,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_MODE,
     PROJECTILE_TARGET_POLICY_ID,
     GpuProjectileSpawnAdapter,
@@ -32,6 +33,12 @@ const {
     GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const { ARCHER_ATTACK_DATA } = await loadGameModule(
+    'data/object/enemy/archer_attack_data.js'
+);
+const { HOSTILE_BASIC_BULLET_DATA } = await loadGameModule(
+    'data/object/projectile/hostile_basic_bullet_data.js'
+);
 
 const EXPLICIT_PLAYER_ALLEGIANCE = Object.freeze({
     teamId: GAMEPLAY_TEAM_ID.PLAYER,
@@ -537,6 +544,57 @@ test('target-entity mode는 exact aim handle/provenance와 default targetOffset�
     assert.equal(Object.isFrozen(call.intent.positionOffset), true);
     assert.equal(Object.isFrozen(call.intent.targetOffset), true);
     assert.equal(Object.isFrozen(call.intent.destinationSpawn), true);
+});
+
+test('canonical Archer exact Tower request만 Tower damage channel flag를 materialize한다', () => {
+    const endpoint = createFakeEndpoint();
+    const sourceHandle = { entityId: 81, incarnation: 3 };
+    const targetHandle = { entityId: 91, incarnation: 5 };
+    const common = {
+        endpoint,
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        sourceHandle,
+        targetHandle,
+        positionOffset: { x: 0, y: 0 },
+        targetOffset: { x: 0, y: 0 },
+        launchSpeed: ARCHER_ATTACK_DATA.launchSpeed,
+        targetFixedTick: 31,
+        spawnSequence: 4,
+        allegiancePolicy: ARCHER_ATTACK_DATA.allegiancePolicy,
+        targetPolicyId: ARCHER_ATTACK_DATA.targetPolicyId,
+        producerId: ARCHER_ATTACK_DATA.producerId,
+        sourceAbilityId: ARCHER_ATTACK_DATA.sourceAbilityId
+    };
+
+    assert.equal(requestGpuProjectile({
+        ...common,
+        definition: HOSTILE_BASIC_BULLET_DATA,
+        commandId: 'archer:tower-channel'
+    }).accepted, true);
+    const canonical = endpoint.sourceRelativeCalls[0].intent;
+    assert.equal(
+        canonical.requestFlags,
+        GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+    );
+
+    assert.equal(requestGpuProjectile({
+        ...common,
+        definition: createDefinition({
+            targetPolicyId: ARCHER_ATTACK_DATA.targetPolicyId
+        }),
+        commandId: 'generic:player-damageable-layer'
+    }).accepted, true);
+    assert.equal(
+        'requestFlags' in endpoint.sourceRelativeCalls[1].intent,
+        false,
+        'PLAYER_DAMAGEABLE policy만으로 Tower channel을 추론하면 안 됩니다.'
+    );
+
+    assert.throws(() => requestGpuProjectile({
+        ...common,
+        definition: HOSTILE_BASIC_BULLET_DATA,
+        requestFlags: GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+    }), /requestFlags/);
 });
 
 test('target-entity default command ID는 동일 source/shot의 exact target identity를 구분한다', () => {

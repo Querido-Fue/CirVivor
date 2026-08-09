@@ -124,6 +124,31 @@ function createWaveDiagnosticStatus(status) {
     });
 }
 
+function createPentagonEffectDiagnosticStatus(status) {
+    return Object.freeze({
+        available: status !== null && status !== undefined,
+        activeEmitterCount: normalizeDiagnosticCount(
+            status?.activeEmitterCount
+        ),
+        pendingPulseCount: normalizeDiagnosticCount(status?.pendingPulseCount),
+        pendingBatchCount: normalizeDiagnosticCount(status?.pendingBatchCount),
+        pendingStaleCompletionCount: normalizeDiagnosticCount(
+            status?.pendingStaleCompletionCount
+        ),
+        lastCompletedSourceTick: normalizeDiagnosticCount(
+            status?.lastCompletedSourceTick
+        ),
+        recoveryRequired: status?.recoveryRequired === true,
+        terminalFinalFixedTick: normalizeDiagnosticCount(
+            status?.terminal?.finalFixedTick
+        ),
+        terminalFixedCommitObserved:
+            status?.terminal?.fixedCommitObserved === true,
+        terminalLifecycleObserved: status?.terminal?.lifecycleObserved === true,
+        terminalRosterSealed: status?.terminal?.rosterSealed === true
+    });
+}
+
 /**
  * @class GameSystem
  * @description 한 인게임 세션의 현재 최소 구현을 소유하고 입력·오브젝트 실행 순서를 조정합니다.
@@ -413,6 +438,11 @@ export class GameSystem {
         return this.objectSystem?.getHostileAttackStatus() ?? null;
     }
 
+    /** GPU_WORLD Pentagon Effect capability의 bounded scalar 상태입니다. */
+    getPentagonEffectStatus() {
+        return this.objectSystem?.getPentagonEffectStatus() ?? null;
+    }
+
     /**
      * HUD·manual QA가 raw GPU readback 없이 읽는 bounded scalar snapshot입니다.
      * Tower는 committed roster mirror, Core는 run-domain CoreIntegrity가 authority입니다.
@@ -430,6 +460,9 @@ export class GameSystem {
             terminal: this.objectSystem?.getTerminalStatus?.() ?? null,
             hostileAttack: createHostileAttackDiagnosticStatus(
                 hostileAttackStatus
+            ),
+            pentagonEffect: createPentagonEffectDiagnosticStatus(
+                this.getPentagonEffectStatus()
             ),
             wave: createWaveDiagnosticStatus(
                 this.objectSystem?.getEnemyWaveStatus?.() ?? null

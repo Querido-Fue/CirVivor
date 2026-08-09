@@ -22,12 +22,16 @@ import {
 import {
     BASIC_RHOM_ENEMY_DEFINITION_SOURCE
 } from './basic_rhom_enemy_data.js';
+import {
+    BASIC_PENTA_ENEMY_DATA
+} from './basic_penta_enemy_data.js';
 
 export {
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
     MAIN_GPU_ENEMY_COLOR_RGBA,
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
 } from './main_gpu_enemy_definition_data.js';
+export { BASIC_PENTA_ENEMY_DATA } from './basic_penta_enemy_data.js';
 
 /** main GPU wave에서 사용하는 시각 archetype 6종의 불변 선언입니다. */
 export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
@@ -61,10 +65,6 @@ export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
             ENEMY_CAPABILITY_ID.CHARGE
         ])
     }
-);
-export const BASIC_PENTA_ENEMY_DATA = createMainGpuEnemyDefinition(
-    'basic_penta_01',
-    'penta'
 );
 export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_hexa_01',

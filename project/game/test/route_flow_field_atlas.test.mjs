@@ -23,8 +23,13 @@ test('기존 JS/WASM flow plane을 waypoint별 GPU atlas로 결정적으로 컴�
     assert.equal(atlas.routes[0].firstFieldIndex, 0);
     assert.equal(atlas.routes[0].firstTargetWaypointIndex, 1);
     assert.equal(atlas.directions.length, atlas.fieldCount * atlas.size * 2);
+    assert.equal(atlas.integrationCosts.length, atlas.fieldCount * atlas.size);
     assert.equal(atlas.contentKey, repeated.contentKey);
     assert.deepEqual(Array.from(atlas.directions), Array.from(repeated.directions));
+    assert.deepEqual(
+        Array.from(atlas.integrationCosts),
+        Array.from(repeated.integrationCosts)
+    );
 
     const shiftedRoutes = tileMap.getSpawnRoutes().map((sourceRoute, routeIndex) => ({
         ...sourceRoute,
@@ -70,6 +75,10 @@ test('기존 JS/WASM flow plane을 waypoint별 GPU atlas로 결정적으로 컴�
         const goalDirectionOffset = ((index * atlas.size) + stage.goalIndex) * 2;
         assert.equal(atlas.directions[goalDirectionOffset], 0);
         assert.equal(atlas.directions[goalDirectionOffset + 1], 0);
+        assert.equal(
+            atlas.integrationCosts[(index * atlas.size) + stage.goalIndex],
+            0
+        );
     }
 
     const entry = route.entryPoint;
@@ -77,6 +86,7 @@ test('기존 JS/WASM flow plane을 waypoint별 GPU atlas로 결정적으로 컴�
     const entryDirectionOffset = entryCellIndex * 2;
     assert.equal(atlas.directions[entryDirectionOffset], 0);
     assert.ok(atlas.directions[entryDirectionOffset + 1] > 0);
+    assert.ok(atlas.integrationCosts[entryCellIndex] > 0);
 
     const blockedIndex = tileMap.getNavigationGrid().blocked.findIndex((value) => value !== 0);
     assert.ok(blockedIndex >= 0);
@@ -84,6 +94,9 @@ test('기존 JS/WASM flow plane을 waypoint별 GPU atlas로 결정적으로 컴�
         const offset = ((fieldIndex * atlas.size) + blockedIndex) * 2;
         assert.equal(atlas.directions[offset], 0);
         assert.equal(atlas.directions[offset + 1], 0);
+        assert.ok(
+            atlas.integrationCosts[(fieldIndex * atlas.size) + blockedIndex] >= 1e19
+        );
     }
 });
 

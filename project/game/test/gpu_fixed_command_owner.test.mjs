@@ -11,6 +11,7 @@ const { GpuFixedCommandOwner } = await loadGameModule(
 );
 const {
     GPU_FIXED_PRIMITIVE_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     GPU_SPAWN_PROGRAM_MODE
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_fixed_primitive_abi.js'
@@ -748,6 +749,114 @@ test('target-entity request는 Team/kind와 무관하게 exact target provenance
     assert.equal(view.metadata.sourceIncarnation, source.incarnation);
     assert.equal(view.metadata.targetEntityId, target.entityId);
     assert.equal(view.metadata.targetIncarnation, target.incarnation);
+    assert.equal(owner.getStatus().recoveryRequired, false);
+});
+
+test('Tower damage channel은 canonical Archer와 exact Tower/projection policy가 모두 맞을 때만 stage된다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 8 });
+    const archer = activateBody(registry, backend, {
+        kindId: 'enemy',
+        definitionId: 'archer_01',
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const tower = activateBody(registry, backend, {
+        kindId: 'tower',
+        definitionId: 'the-tower',
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+    });
+    const nonArcher = activateBody(registry, backend, {
+        kindId: 'enemy',
+        definitionId: 'not-archer',
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+    });
+    const playerDamageableButNotTower = activateBody(registry, backend, {
+        kindId: 'tower-proxy-fixture',
+        definitionId: 'player-damageable-proxy',
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+    });
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const canonicalDestination = () => createProjectileIntent({
+        definitionId: 'hostile_basic_bullet_01',
+        producerId: 'enemy-archer-basic-shot',
+        sourceAbilityId: 'enemy.archer.shoot.basic-bullet',
+        targetPolicyId:
+            PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        contactHandler: {
+            damageSelf: 1,
+            damageOther: 5,
+            flags: 0
+        }
+    });
+    const flagged = (sourceHandle, targetHandle, destinationSpawn) => (
+        createTargetEntityIntent(sourceHandle, targetHandle, {
+            destinationSpawn,
+            requestFlags:
+                GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+        })
+    );
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        flagged(archer, tower, canonicalDestination()),
+        34,
+        'spawn:archer:tower-damage-channel'
+    ).accepted, true);
+    const canonicalCommit = owner.commitAtFixedBoundary(34);
+    assert.equal(canonicalCommit.sourceRelativeSpawns.length, 1);
+    assert.equal(
+        backend.stagedPlans[0].sourceRelativeSpawns[0].requestFlags,
+        GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL
+    );
+
+    assert.equal(owner.requestSourceRelativeSpawn(
+        createTargetEntityIntent(archer, tower, {
+            destinationSpawn: createProjectileIntent({
+                targetPolicyId:
+                    PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+                interactionMask:
+                    GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                    | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+            })
+        }),
+        35,
+        'spawn:layer-only:no-tower-channel'
+    ).accepted, true);
+    owner.commitAtFixedBoundary(35);
+    assert.equal(
+        backend.stagedPlans[1].sourceRelativeSpawns[0].requestFlags,
+        0,
+        'PLAYER_DAMAGEABLE layer만으로 Tower channel을 추론하면 안 됩니다.'
+    );
+
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        flagged(nonArcher, tower, canonicalDestination()),
+        36,
+        'spawn:wrong-source:tower-channel'
+    ), /canonical Archer exact Tower projectile/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        flagged(archer, playerDamageableButNotTower, canonicalDestination()),
+        36,
+        'spawn:wrong-target:tower-channel'
+    ), /canonical Archer exact Tower projectile/);
+    assert.throws(() => owner.requestSourceRelativeSpawn(
+        flagged(archer, tower, createProjectileIntent({
+            definitionId: 'hostile_basic_bullet_01',
+            producerId: 'enemy-archer-basic-shot',
+            sourceAbilityId: 'enemy.archer.shoot.basic-bullet',
+            targetPolicyId: PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN,
+            interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+                | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+            contactHandler: { damageSelf: 1, damageOther: 5, flags: 0 }
+        })),
+        36,
+        'spawn:wrong-policy:tower-channel'
+    ), /canonical Archer exact Tower projectile/);
     assert.equal(owner.getStatus().recoveryRequired, false);
 });
 

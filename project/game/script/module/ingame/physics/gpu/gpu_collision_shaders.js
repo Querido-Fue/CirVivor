@@ -31,6 +31,10 @@ import {
     GPU_SPAWN_PROGRAM_RESULT
 } from './gpu_fixed_primitive_abi.js';
 import {
+    GPU_EFFECT_DAMAGE_CHANNEL_FLAG,
+    GPU_EFFECT_SUMMARY_FLAG
+} from './gpu_effect_runtime_abi.js';
+import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from '../../../../data/object/enemy/enemy_shape_geometry_data.js';
 import {
@@ -97,6 +101,7 @@ const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_AIM_POINT: u32 = ${GPU_SPAWN_PROGRAM_MO
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY}u;
 const SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET: u32 = ${GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET}u;
 const SPAWN_PROGRAM_REQUEST_REQUIRE_EXACT_SELECTED_TARGET: u32 = ${GPU_SPAWN_PROGRAM_REQUEST_FLAGS.REQUIRE_EXACT_SELECTED_TARGET}u;
+const SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL: u32 = ${GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL}u;
 const SPAWN_PROGRAM_RESULT_PENDING: u32 = ${GPU_SPAWN_PROGRAM_RESULT.PENDING}u;
 const SPAWN_PROGRAM_RESULT_RESOLVED: u32 = ${GPU_SPAWN_PROGRAM_RESULT.RESOLVED}u;
 const SPAWN_PROGRAM_RESULT_SOURCE_INVALID: u32 = ${GPU_SPAWN_PROGRAM_RESULT.SOURCE_INVALID}u;
@@ -193,6 +198,8 @@ const ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_VALID}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
+const EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER: u32 = ${GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_TOWER}u;
+const EFFECT_SUMMARY_FLAG_PROJECTILE_ATTACK_SNAPSHOT: u32 = ${GPU_EFFECT_SUMMARY_FLAG.PROJECTILE_ATTACK_SNAPSHOT}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
 const DEATH_EVENT_FLAG_LIFETIME: u32 = 2u;
 const EPSILON_MASS: f32 = 0.000001;
@@ -303,6 +310,32 @@ struct EnemyBehaviorState {
 }
 
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
+
+// ENEMY_BEHAVIOR_STATE와 독립적인 per-body Effect capability plane입니다.
+struct EffectSummary {
+    entity_id: u32,
+    incarnation: u32,
+    max_health_fixed_point: i32,
+    authored_damage_other: f32,
+    resolved_base_damage_other: f32,
+    active_family_mask: atomic<u32>,
+    boost_stack_count: atomic<u32>,
+    regen_per_tick_fixed_point: i32,
+    attack_multiplier: f32,
+    move_speed_multiplier: f32,
+    presentation_tags: atomic<u32>,
+    presentation_magnitude: f32,
+    last_pulse_tick: u32,
+    pulse_style_code: u32,
+    summary_tick: u32,
+    source_snapshot_tick: u32,
+    damage_taken_multiplier: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    flags: atomic<u32>,
+}
+
+struct EffectSummaryBuffer { values: array<EffectSummary> }
 
 struct ContactState {
     contact_count: atomic<u32>,
@@ -507,6 +540,7 @@ struct SimulationParams {
 @group(0) @binding(9) var<storage, read_write> tracked_pose_output: TrackedPoseRecord;
 @group(0) @binding(10) var<storage, read_write> combat_states: CombatStateBuffer;
 @group(0) @binding(11) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
+@group(0) @binding(12) var<storage, read_write> effect_summaries: EffectSummaryBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -604,6 +638,40 @@ fn load_simulation_flags(body_id: u32) -> u32 {
 
 fn body_id_is_alive(body_id: u32) -> bool {
     return body_is_alive(load_simulation_flags(body_id));
+}
+
+fn snapshot_tower_attack_damage(source_slot: u32, destination_slot: u32) {
+    let source_identity_matches = effect_summaries.values[source_slot].entity_id
+            == simulations.values[source_slot].entity_id
+        && effect_summaries.values[source_slot].incarnation
+            == simulations.values[source_slot].incarnation;
+    let destination_identity_matches =
+        effect_summaries.values[destination_slot].entity_id
+            == simulations.values[destination_slot].entity_id
+        && effect_summaries.values[destination_slot].incarnation
+            == simulations.values[destination_slot].incarnation;
+    if (!source_identity_matches || !destination_identity_matches) {
+        return;
+    }
+    let projectile_tower_damage_is_modifiable =
+        (atomicLoad(&effect_summaries.values[source_slot].flags)
+            & EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER) != 0u;
+    let source_attack_multiplier = select(
+        1.0,
+        max(effect_summaries.values[source_slot].attack_multiplier, 0.0),
+        projectile_tower_damage_is_modifiable
+    );
+    effect_summaries.values[destination_slot].resolved_base_damage_other = max(
+        effect_summaries.values[destination_slot].authored_damage_other
+            * source_attack_multiplier,
+        0.0
+    );
+    effect_summaries.values[destination_slot].source_snapshot_tick
+        = params.fixed_tick;
+    atomicOr(
+        &effect_summaries.values[destination_slot].flags,
+        EFFECT_SUMMARY_FLAG_PROJECTILE_ATTACK_SNAPSHOT
+    );
 }
 
 fn flow_cell_for_position(position: vec2f) -> vec2i {
@@ -1149,12 +1217,16 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
                 == BODY_CONTROL_SELECTED_TARGET_NONE
             && program.request_flags
                 == SPAWN_PROGRAM_REQUEST_REQUIRE_EXACT_SELECTED_TARGET);
+    let legacy_request_flags_valid = program.request_flags == 0u
+        || (target_mode
+            && program.request_flags
+                == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL);
     let legacy_selection_payload_valid = selected_target_mode
         || (program.selection_sequence == 0u
             && program.attack_fingerprint == 0u
             && program.selected_target_kind
                 == BODY_CONTROL_SELECTED_TARGET_NONE
-            && program.request_flags == 0u);
+            && legacy_request_flags_valid);
     let selected_destination_config_valid = !selected_target_mode
         || (program.destination_slot < body_capacity
             && enemy_behavior_states.values[program.destination_slot].program_id
@@ -1495,6 +1567,12 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
             = control_state.selected_target_incarnation;
         spawn_program.records[program_index].selected_target_kind
             = control_state.selected_target_kind;
+        if (selected_is_tower) {
+            snapshot_tower_attack_damage(
+                program.source_slot,
+                program.destination_slot
+            );
+        }
         atomicOr(
             &simulations.values[program.destination_slot].flags,
             BODY_FLAG_ALIVE
@@ -1559,6 +1637,16 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
     temporaries.values[program.destination_slot].grid_index = -1;
     temporaries.values[program.destination_slot].previous_flow_field_index
         = simulations.values[program.destination_slot].flow_field_index;
+    // Host가 exact Tower roster + projectile channel을 증명한 target-entity
+    // request에만 source Boost를 한 번 snapshot합니다. PLAYER_DAMAGEABLE layer
+    // 자체는 Tower 권한 증거가 아니며 aim/core/other projectile은 원본 damage를 유지합니다.
+    if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
+        && program.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL) {
+        snapshot_tower_attack_damage(
+            program.source_slot,
+            program.destination_slot
+        );
+    }
     atomicOr(
         &simulations.values[program.destination_slot].flags,
         BODY_FLAG_ALIVE
@@ -1758,6 +1846,12 @@ fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3
         = control_state.selected_target_incarnation;
     spawn_program.records[program_index].selected_target_kind
         = control_state.selected_target_kind;
+    if (selected_is_tower) {
+        snapshot_tower_attack_damage(
+            program.source_slot,
+            program.destination_slot
+        );
+    }
     atomicOr(
         &simulations.values[program.destination_slot].flags,
         BODY_FLAG_ALIVE
@@ -2081,6 +2175,71 @@ fn clear_grid(@builtin(global_invocation_id) global_id: vec3u) {
     if (index == 0u) {
         atomicStore(&grid_overflow.small_count, 0u);
         atomicStore(&grid_overflow.big_count, 0u);
+    }
+}
+
+// Effect pulse/Formation 계열 capability가 movement 전의 exact tick-start world를
+// 공유하도록 physics.position에서 기존 grid ABI를 재사용합니다.
+@compute @workgroup_size(256)
+fn build_tick_start_grid(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let position = physics.values[body_id].position;
+    let cell = vec2i(floor(position / params.grid_cell_size));
+    if (cell.x < 0 || cell.y < 0
+        || cell.x >= i32(params.grid_cell_count.x)
+        || cell.y >= i32(params.grid_cell_count.y)) {
+        return;
+    }
+
+    let body = physics.values[body_id];
+    let grid_body = make_grid_body(body_id, position);
+    let max_per_cell = params.max_bodies_per_cell;
+    if (body_uses_small_grid(body.radius)) {
+        let cell_index = (u32(cell.y) * params.grid_cell_count.x) + u32(cell.x);
+        let counter_index = cell_index * 2u;
+        let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
+        if (slot >= max_per_cell) {
+            atomicAdd(&grid_overflow.small_count, 1u);
+            atomicAdd(&grid_overflow.total_small_count, 1u);
+            return;
+        }
+        let storage_index = (counter_index * max_per_cell) + slot;
+        grid_bodies.values[storage_index] = grid_body;
+        return;
+    }
+
+    let maximum_small_radius = 0.5
+        * min(params.grid_cell_size.x, params.grid_cell_size.y);
+    let padding = vec2f(body.radius + maximum_small_radius);
+    let max_cell = vec2i(params.grid_cell_count) - vec2i(1);
+    let min_covered = clamp(
+        vec2i(floor((position - padding) / params.grid_cell_size)),
+        vec2i(0),
+        max_cell
+    );
+    let max_covered = clamp(
+        vec2i(floor((position + padding) / params.grid_cell_size)),
+        vec2i(0),
+        max_cell
+    );
+    for (var y = min_covered.y; y <= max_covered.y; y += 1) {
+        for (var x = min_covered.x; x <= max_covered.x; x += 1) {
+            let cell_index = (u32(y) * params.grid_cell_count.x) + u32(x);
+            let counter_index = (cell_index * 2u) + 1u;
+            let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
+            if (slot >= max_per_cell) {
+                atomicAdd(&grid_overflow.big_count, 1u);
+                atomicAdd(&grid_overflow.total_big_count, 1u);
+                continue;
+            }
+            grid_bodies.values[(counter_index * max_per_cell) + slot] = grid_body;
+        }
     }
 }
 
@@ -4170,6 +4329,29 @@ struct EnemyBehaviorState {
     telegraph_radius_scale: f32,
 }
 
+struct EffectSummary {
+    entity_id: u32,
+    incarnation: u32,
+    max_health_fixed_point: i32,
+    authored_damage_other: f32,
+    resolved_base_damage_other: f32,
+    active_family_mask: u32,
+    boost_stack_count: u32,
+    regen_per_tick_fixed_point: i32,
+    attack_multiplier: f32,
+    move_speed_multiplier: f32,
+    presentation_tags: u32,
+    presentation_magnitude: f32,
+    last_pulse_tick: u32,
+    pulse_style_code: u32,
+    summary_tick: u32,
+    source_snapshot_tick: u32,
+    damage_taken_multiplier: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    flags: u32,
+}
+
 struct BodyTemporary {
     previous_position: vec2f,
     predicted_position: vec2f,
@@ -4191,6 +4373,7 @@ struct TemporaryBuffer { values: array<BodyTemporary> }
 struct RenderStyleBuffer { values: array<BodyRenderStyle> }
 struct SimulationBuffer { values: array<BodySimulation> }
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
+struct EffectSummaryBuffer { values: array<EffectSummary> }
 
 struct RenderParams {
     viewport_origin: vec2f,
@@ -4215,6 +4398,7 @@ struct VertexOutput {
 @group(0) @binding(3) var<storage, read> styles: RenderStyleBuffer;
 @group(0) @binding(4) var<storage, read> simulations: SimulationBuffer;
 @group(0) @binding(5) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;
+@group(0) @binding(6) var<storage, read> effect_summaries: EffectSummaryBuffer;
 @group(1) @binding(0) var<uniform> params: RenderParams;
 
 const QUAD_VERTICES = array<vec2f, 6>(
@@ -4232,6 +4416,8 @@ const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
 const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
+const EFFECT_PRESENTATION_TAG_BOOST: u32 = 1u;
+const EFFECT_PRESENTATION_TAG_PULSE: u32 = 2u;
 const SHAPE_DIRECTION_EPSILON: f32 = 0.000001;
 const SQUARE_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.center)};
 const SQUARE_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.square.box.halfSize)};
@@ -4395,6 +4581,7 @@ fn vertex_main(
     let temporary = temporaries.values[instance_index];
     let style = styles.values[instance_index];
     let behavior = enemy_behavior_states.values[instance_index];
+    let effect_summary = effect_summaries.values[instance_index];
     var body_position = mix(
         temporary.previous_position,
         body.position,
@@ -4407,6 +4594,28 @@ fn vertex_main(
     var presentation_velocity = body.velocity;
     var presentation_color = style.color;
     var presentation_radius_scale = style.radius_scale;
+    let effect_identity_matches = effect_summary.entity_id
+            == simulations.values[instance_index].entity_id
+        && effect_summary.incarnation
+            == simulations.values[instance_index].incarnation;
+    if (effect_identity_matches
+        && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_BOOST) != 0u) {
+        presentation_color.rgb = mix(
+            presentation_color.rgb,
+            vec3f(0.28, 0.92, 1.0),
+            0.35
+        );
+    }
+    if (effect_identity_matches
+        && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_PULSE) != 0u) {
+        presentation_color.rgb = mix(
+            presentation_color.rgb,
+            vec3f(0.72, 1.0, 0.95),
+            0.55
+        );
+        presentation_radius_scale *= 1.0
+            + (0.16 * clamp(effect_summary.presentation_magnitude, 0.0, 1.0));
+    }
     if (behavior.program_id == ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
         && behavior.state == ENEMY_BEHAVIOR_STATE_WINDUP) {
         if (behavior.telegraph_style_code != 0u) {

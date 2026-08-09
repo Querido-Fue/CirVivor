@@ -1,5 +1,6 @@
 import { WorldRegistry } from '../world_registry.js';
 import { GpuFixedCommandOwner } from '../gpu_fixed_command_owner.js';
+import { GpuEffectCommandOwner } from './gpu_effect_command_owner.js';
 import {
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
@@ -50,8 +51,18 @@ import {
     GPU_TOWER_DEFINITION_ID,
     GPU_TOWER_WORLD_KIND_ID
 } from '../tower/gpu_tower_spawn_adapter.js';
+import {
+    ENEMY_EFFECT_DEFINITION_BY_ID,
+    ENEMY_EFFECT_EMITTER_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_effect_catalog_data.js';
+import {
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_RUNTIME_ABI_VERSION,
+    GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
+} from '../../physics/gpu/gpu_effect_runtime_abi.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
+const DEFAULT_EFFECT_COMMAND_CAPACITY = 256;
 const DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY = 2048;
 const DEFAULT_COMPLETED_EVENT_KEY_HISTORY_CAPACITY = 65536;
 let nextGpuSimulationSessionGeneration = 1;
@@ -97,6 +108,19 @@ function freezePosition(source) {
     return Number.isFinite(x) && Number.isFinite(y)
         ? Object.freeze({ x, y })
         : null;
+}
+
+function compareProtocolGeneration(left, right) {
+    if (left.sessionGeneration !== right.sessionGeneration) {
+        return left.sessionGeneration < right.sessionGeneration ? -1 : 1;
+    }
+    if (left.deviceGeneration !== right.deviceGeneration) {
+        return left.deviceGeneration < right.deviceGeneration ? -1 : 1;
+    }
+    if (left.authoritativeEpoch !== right.authoritativeEpoch) {
+        return left.authoritativeEpoch < right.authoritativeEpoch ? -1 : 1;
+    }
+    return 0;
 }
 
 function createEmptyCompletedEventSnapshot(completedThroughTick = 0, overrides = {}) {
@@ -191,6 +215,81 @@ function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
     });
 }
 
+function createEffectBackendPort(backend, sessionGeneration) {
+    const supportsRuntime = [
+        'stageEffectPulseProgramBatch',
+        'drainCompletedEffectProgramBatches',
+        'cancelPendingEffectProgramsForTerminal',
+        'getEffectRuntimeStatus'
+    ].every((methodName) => typeof backend?.[methodName] === 'function');
+    let fallbackTerminal = null;
+    return Object.freeze({
+        hasBody: (handle) => backend.hasBody(handle),
+        stageEffectPulseProgramBatch: (batch) => supportsRuntime
+            ? backend.stageEffectPulseProgramBatch(batch)
+            : Object.freeze({
+                accepted: false,
+                abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                sourceTick: batch?.sourceTick ?? 0,
+                stagedCount: 0,
+                reason: 'effect-runtime-unsupported'
+            }),
+        drainCompletedEffectProgramBatches: (out = []) => supportsRuntime
+            ? backend.drainCompletedEffectProgramBatches(out)
+            : out,
+        cancelPendingEffectProgramsForTerminal: (request) => {
+            if (supportsRuntime) {
+                return backend.cancelPendingEffectProgramsForTerminal(request);
+            }
+            fallbackTerminal = Object.freeze({
+                abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'armed',
+                finalFixedTick: request?.finalFixedTick ?? 0,
+                submittedTick: 0,
+                pulseProgramCount: 0,
+                pendingPulseProgramCount: 0,
+                pendingEffectReadbackCount: 0,
+                failure: null
+            });
+            return fallbackTerminal;
+        },
+        getEffectRuntimeStatus: () => supportsRuntime
+            ? backend.getEffectRuntimeStatus()
+            : Object.freeze({
+                abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
+                state: 'idle',
+                activePoolIndex: 0,
+                sourceTick: 0,
+                lastSubmittedTick: fallbackTerminal?.submittedTick ?? 0,
+                completedThroughTick: 0,
+                pendingPulseProgramCount: 0,
+                pendingEffectReadbackCount: 0,
+                requiresRecovery: false,
+                failure: null,
+                terminal: fallbackTerminal
+            }),
+        getEventProtocolState: () => backend.getEventProtocolState?.()
+            ?? Object.freeze({
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0
+            }),
+        noteFixedSubmit(sourceTick, submitted) {
+            if (!supportsRuntime
+                && submitted === true
+                && fallbackTerminal?.state === 'armed'
+                && fallbackTerminal.finalFixedTick === sourceTick) {
+                fallbackTerminal = Object.freeze({
+                    ...fallbackTerminal,
+                    state: 'submitted',
+                    submittedTick: sourceTick
+                });
+            }
+        },
+        isSupported: () => supportsRuntime
+    });
+}
+
 function createTerminalCleanupAuthority() {
     const issuedPermits = new WeakSet();
     let revoked = false;
@@ -228,10 +327,13 @@ function createTerminalCleanupAuthority() {
 export class GpuEnemySimulationEndpoint {
     #terminalCleanupAuthority;
     #coreImpactCleanupPortState;
+    #authenticEffectLifecycleCommits;
+    #effectLifecycleCommitProofTick;
+    #effectLifecycleCommitProofs;
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         if (dependencies.coreImpactCleanupPortReceiver !== undefined
@@ -239,31 +341,63 @@ export class GpuEnemySimulationEndpoint {
             throw new TypeError('coreImpactCleanupPortReceiver는 함수여야 합니다.');
         }
         this.sessionGeneration = allocateSessionGeneration();
+        const directInjectedBackend = dependencies.gpuSimulationBackend
+            ?? dependencies.enemySimulationBackend
+            ?? null;
+        const backendFactory = dependencies.gpuSimulationBackendFactory
+            ?? dependencies.enemySimulationBackendFactory;
+        const compositionBodyCapacity = requirePositiveSafeInteger(
+            options.capacity
+                ?? (typeof backendFactory !== 'function'
+                    && typeof directInjectedBackend?.getCapacity === 'function'
+                    ? directInjectedBackend.getCapacity()
+                    : DEFAULT_ENEMY_CAPACITY),
+            'GPU enemy composition capacity'
+        );
+        const configuredEffectCommandCapacity = requirePositiveSafeInteger(
+            options.effectCommandCapacity
+                ?? Math.min(
+                    compositionBodyCapacity,
+                    DEFAULT_EFFECT_COMMAND_CAPACITY
+                ),
+            'effectCommandCapacity'
+        );
+        if (configuredEffectCommandCapacity > compositionBodyCapacity) {
+            throw new RangeError(
+                'effectCommandCapacity는 GPU enemy composition capacity를 초과할 수 없습니다.'
+            );
+        }
         const backendDependencies = {
             webGpuPlatformPort: dependencies.webGpuPlatformPort ?? null
         };
         const backendOptions = {
-            capacity: options.capacity,
+            capacity: compositionBodyCapacity,
             presentationProfile: options.presentationProfile,
             controlCommandCapacity: options.controlCommandCapacity,
             spawnProgramCapacity: options.spawnProgramCapacity,
+            effectCommandCapacity: configuredEffectCommandCapacity,
             sessionGeneration: this.sessionGeneration
         };
-        const backendFactory = dependencies.gpuSimulationBackendFactory
-            ?? dependencies.enemySimulationBackendFactory;
         const injectedBackend = typeof backendFactory
             === 'function'
             ? backendFactory(
                 backendDependencies,
                 backendOptions
             )
-            : dependencies.gpuSimulationBackend
-                ?? dependencies.enemySimulationBackend;
+            : directInjectedBackend;
         this.backend = assertEnemySimulationBackend(
             injectedBackend
                 ?? new EnemySimulationBackend(backendDependencies, backendOptions)
         );
         this.capacity = resolveCapacity(this.backend, options);
+        this.effectCommandCapacity = options.effectCommandCapacity === undefined
+            ? Math.min(this.capacity, configuredEffectCommandCapacity)
+            : configuredEffectCommandCapacity;
+        if (this.effectCommandCapacity > this.capacity) {
+            throw new RangeError(
+                'effectCommandCapacity는 resolved GPU enemy capacity를 초과할 수 없습니다.'
+            );
+        }
         this.registry = new WorldRegistry({ capacity: this.capacity });
         this.#terminalCleanupAuthority = createTerminalCleanupAuthority();
         this.lifecycleCommandOwner = new EnemyLifecycleCommandOwner(
@@ -271,6 +405,9 @@ export class GpuEnemySimulationEndpoint {
             this.registry,
             { terminalCleanupAuthority: this.#terminalCleanupAuthority }
         );
+        this.#authenticEffectLifecycleCommits = new WeakSet();
+        this.#effectLifecycleCommitProofTick = 0;
+        this.#effectLifecycleCommitProofs = [];
         this.#coreImpactCleanupPortState = { revoked: false };
         const cleanupPortState = this.#coreImpactCleanupPortState;
         const cleanupPort = Object.freeze({
@@ -311,6 +448,28 @@ export class GpuEnemySimulationEndpoint {
                 controlCommandCapacity: options.controlCommandCapacity,
                 sourceRelativeSpawnCommandCapacity:
                     options.sourceRelativeSpawnCommandCapacity
+            }
+        );
+        this.effectBackendPort = createEffectBackendPort(
+            this.backend,
+            this.sessionGeneration
+        );
+        this.effectCommandOwner = new GpuEffectCommandOwner(
+            this.effectBackendPort,
+            this.registry,
+            {
+                sessionGeneration: this.sessionGeneration,
+                commandCapacity: this.effectCommandCapacity,
+                historyCapacity: options.effectCommandHistoryCapacity,
+                completionBatchCapacity: options.effectCompletionBatchCapacity,
+                effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
+                effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
+                lifecycleCommitProofPort: Object.freeze({
+                    isAuthenticCommit: (commit, fixedTick) => (
+                        this.#authenticEffectLifecycleCommits.has(commit)
+                        && commit?.fixedTick === fixedTick
+                    )
+                })
             }
         );
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
@@ -498,6 +657,20 @@ export class GpuEnemySimulationEndpoint {
         );
     }
 
+    /** GameObject-owned capability director에 주입하는 좁고 frozen인 Effect command port입니다. */
+    getEffectCommandPort() {
+        this.#assertUsable();
+        return this.effectCommandOwner.getCommandPort();
+    }
+
+    /** 완료된 Effect pulse program을 다음 cadence 관찰용 bounded snapshot으로 확정합니다. */
+    commitCompletedEffectProgramsAtFixedBoundary(targetFixedTick) {
+        this.#assertUsable();
+        return this.effectCommandOwner.commitCompletedAtFixedBoundary(
+            targetFixedTick
+        );
+    }
+
     /** Session당 exact GPU body 하나의 lossy observed-pose tracking을 설정합니다. */
     configureTrackedBody(handle = null) {
         this.#assertUsable();
@@ -544,9 +717,14 @@ export class GpuEnemySimulationEndpoint {
                 this.gameplayIngressCloseReason,
                 finalFixedTick
             );
+            const effectCommands = this.effectCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason,
+                finalFixedTick
+            );
             this.gameplayIngressCloseCleanup = Object.freeze({
                 lifecycle,
-                fixedCommands
+                fixedCommands,
+                effectCommands
             });
         }
         return Object.freeze({
@@ -565,6 +743,11 @@ export class GpuEnemySimulationEndpoint {
         });
     }
 
+    /** Terminal Effect cancel owner/backend의 ABI/tick/count/pending 증거입니다. */
+    getTerminalEffectProgramCancelStatus() {
+        return this.effectCommandOwner.getTerminalCancelStatus();
+    }
+
     /** @returns {boolean} public spawn/control/source-relative ingress가 열려 있는지 여부입니다. */
     isGameplayIngressOpen() {
         return !this.destroyed && this.gameplayIngressOpen;
@@ -574,14 +757,22 @@ export class GpuEnemySimulationEndpoint {
     finalizeClosedGameplayIngress() {
         this.#assertUsable();
         if (this.gameplayIngressOpen) {
-            return Object.freeze({ lifecycleCancelledCount: 0, fixedCommands: null });
+            return Object.freeze({
+                lifecycleCancelledCount: 0,
+                fixedCommands: null,
+                effectCommands: null
+            });
         }
         let lifecycleCancelledCount = 0;
         let fixedCommands = null;
+        let effectCommands = null;
         try {
             lifecycleCancelledCount
                 = this.lifecycleCommandOwner.finalizeClosedIngress();
             fixedCommands = this.fixedCommandOwner.closeIngress(
+                this.gameplayIngressCloseReason
+            );
+            effectCommands = this.effectCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason
             );
         } finally {
@@ -589,7 +780,11 @@ export class GpuEnemySimulationEndpoint {
             // 만들지 못하도록 permit authority까지 terminal finalizer가 닫습니다.
             this.#revokeCoreImpactCleanupPort();
         }
-        return Object.freeze({ lifecycleCancelledCount, fixedCommands });
+        return Object.freeze({
+            lifecycleCancelledCount,
+            fixedCommands,
+            effectCommands
+        });
     }
 
     /** GPU authority가 아닌 최신 bounded observed pose snapshot입니다. */
@@ -611,6 +806,7 @@ export class GpuEnemySimulationEndpoint {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
         if (this.completedEventRecoveryRequired
+            || this.effectCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             this.#finalizeClosedLifecycleIngress();
@@ -623,7 +819,8 @@ export class GpuEnemySimulationEndpoint {
                 recoveryRequired: true,
                 backendState: this.backend.getRuntimeState(),
                 registryRevision: this.registry.getRevision(),
-                fixedCommands: null
+                fixedCommands: null,
+                effectPrograms: null
             });
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
@@ -631,23 +828,39 @@ export class GpuEnemySimulationEndpoint {
             this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 ...lifecycle,
-                fixedCommands: null
+                fixedCommands: null,
+                effectPrograms: null
             });
         }
+        this.#rememberEffectLifecycleCommit(lifecycle, tick);
         const fixedCommands = this.fixedCommandOwner.commitAtFixedBoundary(tick);
+        const effectPrograms = fixedCommands.recoveryRequired === true
+            ? null
+            : this.effectCommandOwner.commitAtFixedBoundary(
+                tick,
+                this.#effectLifecycleCommitProofs.length > 0
+                    ? Object.freeze([...this.#effectLifecycleCommitProofs])
+                    : null
+            );
         this.#finalizeClosedLifecycleIngress();
-        const recoveryRequired = fixedCommands.recoveryRequired === true;
+        const recoveryRequired = fixedCommands.recoveryRequired === true
+            || effectPrograms?.recoveryRequired === true;
         const state = recoveryRequired
-            ? fixedCommands.state === 'stalled' ? 'stalled' : 'failed'
+            ? fixedCommands.state === 'stalled'
+                && effectPrograms?.recoveryRequired !== true
+                ? 'stalled'
+                : 'failed'
             : lifecycle.state === 'committed-with-rejections'
                 || fixedCommands.state === 'committed-with-rejections'
+                || effectPrograms?.state === 'committed-with-rejections'
                 ? 'committed-with-rejections'
                 : lifecycle.state;
         return Object.freeze({
             ...lifecycle,
             state,
             recoveryRequired,
-            fixedCommands
+            fixedCommands,
+            effectPrograms
         });
     }
 
@@ -799,11 +1012,14 @@ export class GpuEnemySimulationEndpoint {
     fixedUpdate(delta, sourceTick) {
         this.#assertUsable();
         if (this.completedEventRecoveryRequired
+            || this.effectCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             return false;
         }
-        return this.backend.fixedUpdate(delta, sourceTick);
+        const submitted = this.backend.fixedUpdate(delta, sourceTick);
+        this.effectBackendPort.noteFixedSubmit(sourceTick, submitted === true);
+        return submitted;
     }
 
     /** 렌더 프레임 presentation clock만 갱신합니다. */
@@ -841,6 +1057,7 @@ export class GpuEnemySimulationEndpoint {
     requiresRecovery() {
         return !this.destroyed && (
             this.completedEventRecoveryRequired
+            || this.effectCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
             || this.backend.requiresRecovery()
@@ -855,7 +1072,8 @@ export class GpuEnemySimulationEndpoint {
         return this.destroyed
             ? 0
             : this.lifecycleCommandOwner.getPendingCount()
-                + this.fixedCommandOwner.getPendingCount();
+                + this.fixedCommandOwner.getPendingCount()
+                + this.effectCommandOwner.getPendingCount();
     }
 
     getCapacity() {
@@ -882,6 +1100,7 @@ export class GpuEnemySimulationEndpoint {
         const registry = this.registry.getStatus();
         const lifecycle = this.lifecycleCommandOwner.getStatus();
         const fixedCommands = this.fixedCommandOwner.getStatus();
+        const effectCommands = this.effectCommandOwner.getStatus();
         const backend = typeof this.backend.getStatus === 'function'
             ? this.backend.getStatus()
             : Object.freeze({ state: this.getRuntimeState() });
@@ -903,6 +1122,7 @@ export class GpuEnemySimulationEndpoint {
             initialized: this.initialized,
             destroyed: this.destroyed,
             capacity: this.capacity,
+            effectCommandCapacity: this.effectCommandCapacity,
             sessionGeneration: this.sessionGeneration,
             activeCount: registry.activeCount,
             activeEnemyCount: this.registry.getActiveCount('enemy'),
@@ -911,12 +1131,16 @@ export class GpuEnemySimulationEndpoint {
             pendingCommandCount: lifecycle.pendingCount
                 + fixedCommands.pendingCommandCount
                 + fixedCommands.pendingDestinationCount
-                + (fixedCommands.pendingPriorityTargetControlCount ?? 0),
+                + (fixedCommands.pendingPriorityTargetControlCount ?? 0)
+                + effectCommands.pendingPulseProgramCount,
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
             pendingPriorityTargetControlCount:
                 fixedCommands.pendingPriorityTargetControlCount ?? 0,
+            pendingEffectPulseProgramCount:
+                effectCommands.pendingPulseProgramCount,
+            effectRuntimeSupported: this.effectBackendPort.isSupported(),
             priorityTargetControlCompletedThroughTick:
                 fixedCommands.priorityTargetControlCompletedThroughTick ?? 0,
             gameplayIngressOpen: this.gameplayIngressOpen,
@@ -925,12 +1149,14 @@ export class GpuEnemySimulationEndpoint {
             completedThroughTick: this.completedThroughTick,
             recoveryRequired: !this.destroyed && (
                 this.completedEventRecoveryRequired
+                || effectCommands.recoveryRequired
                 || fixedCommands.recoveryRequired
                 || lifecycle.recoveryRequired
                 || this.backend.requiresRecovery()
             ),
             events,
             backend,
+            effectCommands,
             fixedCommands,
             lifecycle,
             registry
@@ -944,6 +1170,7 @@ export class GpuEnemySimulationEndpoint {
         }
         this.destroyed = true;
         this.#revokeCoreImpactCleanupPort();
+        this.effectCommandOwner.destroy();
         this.fixedCommandOwner.destroy();
         this.lifecycleCommandOwner.destroy();
         this.registry.destroy();
@@ -956,6 +1183,9 @@ export class GpuEnemySimulationEndpoint {
         this.knownCompletedEventKeys.clear();
         this.completedEventKeys.length = 0;
         this.completedEventKeyHead = 0;
+        this.#authenticEffectLifecycleCommits = new WeakSet();
+        this.#effectLifecycleCommitProofTick = 0;
+        this.#effectLifecycleCommitProofs.length = 0;
         this.initialized = false;
     }
 
@@ -1007,13 +1237,8 @@ export class GpuEnemySimulationEndpoint {
                 queueEntry,
                 protocolKey: `${protocol.sessionGeneration}:${protocol.deviceGeneration}:${protocol.authoritativeEpoch}`
             };
-            const hasOlderGeneration = batch.sessionGeneration < this.sessionGeneration
-                || batch.deviceGeneration < protocol.deviceGeneration
-                || batch.authoritativeEpoch < protocol.authoritativeEpoch;
-            const hasNewerGeneration = batch.sessionGeneration > this.sessionGeneration
-                || batch.deviceGeneration > protocol.deviceGeneration
-                || batch.authoritativeEpoch > protocol.authoritativeEpoch;
-            if (hasNewerGeneration) {
+            const generationOrder = compareProtocolGeneration(batch, protocol);
+            if (generationOrder > 0) {
                 return {
                     failure: this.#createEventProtocolFailure(
                         'generation-mismatch',
@@ -1021,7 +1246,7 @@ export class GpuEnemySimulationEndpoint {
                     )
                 };
             }
-            if (hasOlderGeneration) {
+            if (generationOrder < 0) {
                 staleEventCount += batch.sourceEvents.length;
                 continue;
             }
@@ -1854,6 +2079,23 @@ export class GpuEnemySimulationEndpoint {
     #finalizeClosedLifecycleIngress() {
         if (!this.gameplayIngressOpen) {
             this.lifecycleCommandOwner.finalizeClosedIngress();
+        }
+    }
+
+    #rememberEffectLifecycleCommit(commit, fixedTick) {
+        if (this.lifecycleCommandOwner.getLastCommitResult() !== commit
+            || commit?.fixedTick !== fixedTick
+            || commit.recoveryRequired !== false
+            || !Array.isArray(commit.despawned)) {
+            throw new Error('Effect lifecycle proof는 authentic same-boundary commit이어야 합니다.');
+        }
+        this.#authenticEffectLifecycleCommits.add(commit);
+        if (this.#effectLifecycleCommitProofTick !== fixedTick) {
+            this.#effectLifecycleCommitProofTick = fixedTick;
+            this.#effectLifecycleCommitProofs.length = 0;
+        }
+        if (commit.despawned.length > 0) {
+            this.#effectLifecycleCommitProofs.push(commit);
         }
     }
 

@@ -212,6 +212,24 @@ test('generic endpoint 이름은 기존 enemy endpoint와 constructor identity�
     endpoint.destroy();
 });
 
+test('endpoint는 body capacity와 256 상한으로 Effect capacity를 한 번 resolve해 backend와 owner에 공유한다', () => {
+    const backend = createFakeBackend({ capacity: 300 });
+    let receivedOptions = null;
+    const endpoint = createGpuSimulationEndpoint({
+        gpuSimulationBackendFactory(_dependencies, options) {
+            receivedOptions = options;
+            return backend;
+        }
+    }, { capacity: 300 });
+
+    assert.equal(receivedOptions.capacity, 300);
+    assert.equal(receivedOptions.effectCommandCapacity, 256);
+    const status = endpoint.getStatus();
+    assert.equal(status.effectCommandCapacity, 256);
+    assert.equal(status.effectCommands.capacity, 256);
+    endpoint.destroy();
+});
+
 test('GPU enemy endpoint는 lifecycle mutation을 target fixed boundary까지 보류하고 registry와 backend를 함께 확정한다', () => {
     const backend = createFakeBackend({ capacity: 4 });
     const endpoint = createGpuEnemySimulationEndpoint({
@@ -974,7 +992,7 @@ test('sparse event batch predecessor chain은 drain timing과 무관하게 같�
     });
 });
 
-test('backend protocol session mismatch와 mixed old/new generation은 stale로 숨기지 않는다', () => {
+test('backend protocol session mismatch는 실패하고 hierarchical old generation envelope는 stale drop한다', () => {
     const bootstrap = createGpuEnemySimulationEndpoint({
         enemySimulationBackend: createFakeBackend({ capacity: 1 })
     });
@@ -1005,11 +1023,26 @@ test('backend protocol session mismatch와 mixed old/new generation은 stale로 
     });
     backend2.completedEventBatches.push(createCompletedBatch(protocol2, {
         deviceGeneration: 2,
-        authoritativeEpoch: 4
+        authoritativeEpoch: 4,
+        events: [{
+            type: 'death', eventType: 'death', sequence: 0,
+            entityId: 90, incarnation: 1, bodyId: 0, reasonFlags: 1
+        }]
+    }));
+    backend2.completedEventBatches.push(createCompletedBatch(protocol2, {
+        sessionGeneration: protocol2.sessionGeneration - 1,
+        deviceGeneration: 999,
+        authoritativeEpoch: 999,
+        events: [{
+            type: 'death', eventType: 'death', sequence: 0,
+            entityId: 91, incarnation: 1, bodyId: 0, reasonFlags: 1
+        }]
     }));
     const mixed = endpoint2.commitCompletedEventsAtFixedBoundary(2);
-    assert.equal(mixed.protocolFailure.code, 'generation-mismatch');
-    assert.equal(endpoint2.getStatus().events.stale, 0);
+    assert.equal(mixed.protocolFailure, null);
+    assert.equal(mixed.events.length, 0);
+    assert.equal(endpoint2.getStatus().events.stale, 2);
+    assert.equal(endpoint2.requiresRecovery(), false);
     endpoint2.destroy();
 });
 
