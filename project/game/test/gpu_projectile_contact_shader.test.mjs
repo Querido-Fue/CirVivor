@@ -511,7 +511,10 @@ assert.match(compute, /if \(health_before < amount\) \{\s*return false;/);
 assert.match(compute, /if \(damage\.applied <= 0\)[\s\S]*?atomicAdd\(&simulations\.values\[self_body_id\]\.health, damage_self\);/);
 
 // DIRECT target은 기존 per-hit apply를 유지하고 Maximum Damage Window target만 후보 marker로 보냅니다.
-const markerCall = compute.lastIndexOf('mark_maximum_damage_window_candidate(');
+const markerCall = compute.indexOf(
+    'mark_maximum_damage_window_candidate(',
+    reserveCall
+);
 assert.ok(markerCall > reserveCall);
 assert.ok(targetDamageCall > markerCall);
 assert.match(
@@ -607,6 +610,35 @@ assert.doesNotMatch(compute, /\blet active\b/);
 assert.match(compute, /const CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST: u32 = 32u;/);
 assert.match(compute, /const APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST: u32 = 6u;/);
 assert.match(compute, /const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = 2u;/);
+assert.match(compute, /const CORE_DAMAGE_REQUEST_MARKER_MAGIC: u32 = 0x7fc00020u;/);
+const coreDamageMarkerStart = compute.indexOf(
+    'fn mark_core_damage_request_candidate('
+);
+const coreDamageMarkerEnd = compute.indexOf(
+    'fn contact_is_core_damage_request_candidate(',
+    coreDamageMarkerStart
+);
+assert.ok(
+    coreDamageMarkerStart >= 0 && coreDamageMarkerEnd > coreDamageMarkerStart
+);
+const coreDamageMarkerBlock = compute.slice(
+    coreDamageMarkerStart,
+    coreDamageMarkerEnd
+);
+// quiet-NaN marker의 u32 identity는 유지하되 Dawn이 NaN constant-expression을
+// 평가하지 않도록 function-scope var load 뒤에만 f32 bitcast합니다.
+assert.match(
+    coreDamageMarkerBlock,
+    /var marker_bits: u32 = CORE_DAMAGE_REQUEST_MARKER_MAGIC;[\s\S]*?bitcast<f32>\(marker_bits\);/
+);
+assert.doesNotMatch(
+    compute,
+    /bitcast<f32>\(CORE_DAMAGE_REQUEST_MARKER_MAGIC\)/
+);
+assert.match(
+    compute,
+    /fn contact_is_core_damage_request_candidate\(contact: Contact\)[\s\S]*?bitcast<u32>\(contact\.normal\.y\)[\s\S]*?CORE_DAMAGE_REQUEST_MARKER_MAGIC_MASK[\s\S]*?== CORE_DAMAGE_REQUEST_MARKER_MAGIC;/
+);
 const handleContactsStart = compute.indexOf('fn handle_contacts(');
 const coreValidationStart = compute.indexOf(
     'fn core_damage_request_candidate_is_valid(',
@@ -620,11 +652,12 @@ assert.match(
 assert.match(compute, /const SELECTED_TARGET_TOWER_MARKER_MAGIC: u32 = 0x7fc00030u;/);
 assert.match(
     handleContactsBlock,
-    /CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE[\s\S]*?mark_selected_target_tower_candidate\([\s\S]*?return;/
+    /CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?mark_selected_target_tower_candidate\([\s\S]*?return;/
 );
+assert.doesNotMatch(handleContactsBlock, /enemy_behavior_states/);
 assert.match(
     compute,
-    /fn selected_target_tower_candidate_is_valid\([\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?target_interaction_layer_mask[\s\S]*?GAMEPLAY_TEAM_HOSTILE[\s\S]*?maximum_damage_window_target_is_configured/
+    /fn selected_target_tower_candidate_is_valid\([\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?target_interaction_layer_mask[\s\S]*?GAMEPLAY_TEAM_HOSTILE[\s\S]*?ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE[\s\S]*?maximum_damage_window_target_is_configured/
 );
 assert.match(
     compute,

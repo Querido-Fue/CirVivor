@@ -146,8 +146,17 @@ function createOwnerFixture() {
         records: [{ sourceHandle: handle, prepareSequence: 0 }]
     }).accepted, true);
     assert.equal(owner.commitAtFixedBoundary(5).stagedCount, 1);
-    return { owner, backend };
+    return { owner, backend, handle };
 }
+
+test('prepare owner는 backend에 Formation ABI exact source identity를 전달한다', () => {
+    const { backend, handle } = createOwnerFixture();
+    const record = backend.staged[0].records[0];
+    assert.equal(record.sourceEntityId, handle.entityId);
+    assert.equal(record.sourceIncarnation, handle.incarnation);
+    assert.equal(Object.hasOwn(record, 'entityId'), false);
+    assert.equal(Object.hasOwn(record, 'incarnation'), false);
+});
 
 test('exact live staged H의 DIED_AFTER_STAGE는 normal SOURCE_INVALID로 완료된다', () => {
     const { owner, backend } = createOwnerFixture();

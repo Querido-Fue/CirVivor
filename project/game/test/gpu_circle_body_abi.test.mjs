@@ -488,7 +488,7 @@ writeGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0, {
     coreDamageFixedPoint: 731
 });
 assert.deepEqual(
-    readGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0),
+    { ...readGpuCircleEnemyBehaviorState(selectedProjectileStorage, 0) },
     {
         programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE,
         selectedTargetKind: 0,
@@ -1193,14 +1193,17 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(0x10000, 1), 'RangeError');
 assertThrowsNamed(() => packGpuCircleInteractionMeta(1, 0x10000), 'RangeError');
 assertThrowsNamed(() => packGpuCircleSimulationMeta(-1), 'RangeError');
-assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(7), 'RangeError');
+assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(8), 'RangeError');
 assertThrowsNamed(() => normalizeGpuCircleBodyLifetime(-2), 'RangeError');
 assertThrowsNamed(
     () => normalizeGpuCircleBodyLifetime(Number.POSITIVE_INFINITY),
     'TypeError'
 );
 assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(Number.NaN), 'TypeError');
-assertThrowsNamed(() => encodeGpuCircleBodyFixedPoint(1, 0), 'RangeError');
+assertThrowsNamed(
+    () => encodeGpuCircleBodyFixedPoint(Number.MAX_VALUE),
+    'RangeError'
+);
 assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
     ...spawn,
     lifetime: -2

@@ -405,7 +405,7 @@ test('600 fixed tick f32 reference는 명시한 누적 오차 한도 안에서 C
     fixture.tower.destroy();
 });
 
-test('control marker는 FLOW_FIELD validation과 기존 ballistic prepare branch를 침범하지 않는다', () => {
+test('control marker는 controlled body의 FLOW_FIELD overwrite를 막고 ballistic prepare를 보존한다', () => {
     const clearControl = extractWgslFunction(
         GPU_COLLISION_COMPUTE_WGSL,
         'clear_body_control_states'
@@ -426,13 +426,19 @@ test('control marker는 FLOW_FIELD validation과 기존 ballistic prepare branch
         GPU_COLLISION_COMPUTE_WGSL,
         'finalize_velocities'
     );
+    const finalizeControlledMotion = extractWgslFunction(
+        GPU_COLLISION_COMPUTE_WGSL,
+        'finalize_controlled_motion'
+    );
 
     assert.match(validateControl, /BODY_FLAG_USE_FLOW/);
     assert.match(validateControl, /FIXED_PROGRAM_STATUS_RECORD_INVALID/);
     assert.match(clearControl, /atomicAnd[\s\S]*~BODY_FLAG_CONTROLLED_THIS_TICK/);
     assert.match(applyControl, /atomicOr[\s\S]*BODY_FLAG_CONTROLLED_THIS_TICK/);
-    assert.equal(prepareBodies.includes('BODY_FLAG_CONTROLLED_THIS_TICK'), false);
-    assert.match(prepareBodies, /body_has_flag\([\s\S]*BODY_FLAG_USE_FLOW/);
+    assert.match(
+        prepareBodies,
+        /body_has_flag\(simulation_flags, BODY_FLAG_USE_FLOW\)[\s\S]*?!body_has_flag\(simulation_flags, BODY_FLAG_CONTROLLED_THIS_TICK\)[\s\S]*?velocity = mix\(/
+    );
     assert.match(prepareBodies, /velocity = mix\(/);
     assert.match(
         prepareBodies,
@@ -442,12 +448,16 @@ test('control marker는 FLOW_FIELD validation과 기존 ballistic prepare branch
         finalizeVelocities,
         /BODY_FLAG_CONTROLLED_THIS_TICK[\s\S]*return;[\s\S]*velocity_damping/
     );
+    assert.match(
+        finalizeControlledMotion,
+        /BODY_FLAG_CONTROLLED_THIS_TICK[\s\S]*?CONTROL_MAX_LINEAR_SPEED/
+    );
     assert.equal(
         (GPU_COLLISION_COMPUTE_WGSL.match(
             /BODY_FLAG_CONTROLLED_THIS_TICK/g
         ) ?? []).length,
-        4,
-        'marker는 선언/clear/apply/finalize 외 flow·ballistic 경로에 나타나면 안 됩니다.'
+        7,
+        'marker는 선언/clear/move+stop apply/flow skip/general+controlled finalize에만 있어야 합니다.'
     );
 });
 
@@ -460,56 +470,119 @@ test('async death readback 전 exact dead body control은 hard protocol failure 
         GPU_COLLISION_COMPUTE_WGSL,
         'apply_body_control_commands'
     );
-    const recordInvalidIndex = validateControl.indexOf(
+    const firstRecordInvalidIndex = validateControl.indexOf(
+        'FIXED_PROGRAM_STATUS_RECORD_INVALID'
+    );
+    const lastRecordInvalidIndex = validateControl.lastIndexOf(
         'FIXED_PROGRAM_STATUS_RECORD_INVALID'
     );
     const deadNoOpIndex = validateControl.indexOf(
         'if (!body_id_is_alive(command.destination_slot))'
     );
+    const identityValidationIndex = validateControl.indexOf(
+        'command.destination_slot >= counts.body_count'
+    );
+    const identityRecordInvalidIndex = validateControl.indexOf(
+        'FIXED_PROGRAM_STATUS_RECORD_INVALID',
+        identityValidationIndex
+    );
 
     assert.ok(
-        recordInvalidIndex >= 0,
-        '구조/identity/flow/move 위반은 RECORD_INVALID를 유지해야 합니다.'
+        firstRecordInvalidIndex >= 0,
+        '구조/flow/move payload 위반은 RECORD_INVALID를 유지해야 합니다.'
+    );
+    assert.match(
+        validateControl,
+        /let output_is_initial = command\.result == BODY_CONTROL_RESULT_PENDING/
     );
     for (const requiredHardValidation of [
-        'command.flags != 0u',
+        '!supported_mode',
+        '!output_is_initial',
+        '!finite_move',
+        '!priority_payload_valid',
+        '!move_payload_valid',
         'command.reserved_0 != 0u',
-        'command.reserved_1 != 0u',
-        'command.destination_slot >= counts.body_count',
-        'entity_id != command.entity_id',
-        'incarnation != command.incarnation',
-        'BODY_FLAG_USE_FLOW',
-        'dot(command.move_intent, command.move_intent) > 1.000002'
+        'command.destination_slot >= body_capacity'
     ]) {
         const validationIndex = validateControl.indexOf(requiredHardValidation);
         assert.ok(
-            validationIndex >= 0 && validationIndex < recordInvalidIndex,
+            validationIndex >= 0 && validationIndex < firstRecordInvalidIndex,
             requiredHardValidation + ' 위반은 dead no-op보다 먼저 hard reject해야 합니다.'
         );
     }
+    assert.match(
+        validateControl.slice(firstRecordInvalidIndex, deadNoOpIndex),
+        /BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT[\s\S]*?BODY_FLAG_USE_FLOW[\s\S]*?FIXED_PROGRAM_STATUS_RECORD_INVALID/
+    );
     assert.ok(
-        deadNoOpIndex > recordInvalidIndex,
-        'exact identity의 GPU-dead command는 RECORD_INVALID 이후 별도 no-op branch여야 합니다.'
+        identityValidationIndex >= 0
+            && identityRecordInvalidIndex > identityValidationIndex
+            && validateControl.indexOf(
+                'simulations.values[command.destination_slot].entity_id\n            != command.entity_id',
+                identityValidationIndex
+            ) < identityRecordInvalidIndex
+            && validateControl.indexOf(
+                'simulations.values[command.destination_slot].incarnation\n            != command.incarnation',
+                identityValidationIndex
+            ) < identityRecordInvalidIndex
+            && identityRecordInvalidIndex < deadNoOpIndex,
+        'destination range/entity/incarnation mismatch는 dead no-op 전에 hard reject해야 합니다.'
+    );
+    assert.ok(
+        deadNoOpIndex > lastRecordInvalidIndex,
+        '구조와 flow 위반을 모두 preflight한 뒤 exact GPU-dead command만 no-op이어야 합니다.'
     );
     assert.match(
         validateControl.slice(deadNoOpIndex),
         /^if \(!body_id_is_alive\(command\.destination_slot\)\) \{\s*return;\s*\}/
     );
 
-    const applyDeadGuardIndex = applyControl.indexOf(
-        'if (!body_id_is_alive(command.destination_slot))'
+    const applyExactLivingGuardIndex = applyControl.indexOf(
+        'if (!exact_living_body('
     );
-    const applyIdentityGuardIndex = applyControl.indexOf(
-        'entity_id != command.entity_id'
+    const sourceInvalidWriteIndex = applyControl.indexOf(
+        'BODY_CONTROL_RESULT_SOURCE_INVALID',
+        applyExactLivingGuardIndex
     );
+    const exactDeadMoveIndex = applyControl.indexOf(
+        'let exact_dead_move = command.mode_flags',
+        applyExactLivingGuardIndex
+    );
+    const exactDeadMoveReturnIndex = applyControl.indexOf(
+        'if (exact_dead_move)',
+        exactDeadMoveIndex
+    );
+    const exactDeadMoveReturnEnd = applyControl.indexOf(
+        'return;',
+        exactDeadMoveReturnIndex
+    ) + 'return;'.length;
     const controlStateWriteIndex = applyControl.indexOf(
-        'body_control_states.values[command.destination_slot]'
+        'store_body_control_state(',
+        applyExactLivingGuardIndex
     );
     assert.ok(
-        applyIdentityGuardIndex >= 0
-            && applyIdentityGuardIndex < applyDeadGuardIndex
-            && applyDeadGuardIndex >= 0
-            && applyDeadGuardIndex < controlStateWriteIndex,
-        'apply는 exact identity를 재확인하고 dead record만 건너뛰어야 합니다.'
+        applyExactLivingGuardIndex >= 0
+            && sourceInvalidWriteIndex > applyExactLivingGuardIndex
+            && controlStateWriteIndex > sourceInvalidWriteIndex,
+        'apply는 exact living identity를 재확인하고 stale/dead source를 state mutation 없이 종료해야 합니다.'
+    );
+    assert.ok(
+        exactDeadMoveIndex > applyExactLivingGuardIndex
+            && exactDeadMoveReturnIndex > exactDeadMoveIndex
+            && exactDeadMoveReturnIndex < sourceInvalidWriteIndex,
+        'exact dead MOVE no-op은 SOURCE_INVALID output보다 먼저 판정해야 합니다.'
+    );
+    const exactDeadMoveBlock = applyControl.slice(
+        exactDeadMoveIndex,
+        exactDeadMoveReturnEnd
+    );
+    assert.match(
+        exactDeadMoveBlock,
+        /BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT[\s\S]*?entity_id[\s\S]*?command\.entity_id[\s\S]*?incarnation[\s\S]*?command\.incarnation[\s\S]*?!body_id_is_alive\(command\.destination_slot\)[\s\S]*?if \(exact_dead_move\) \{\s*(?:\/\/[^\n]*\n\s*)*return;/
+    );
+    assert.doesNotMatch(
+        exactDeadMoveBlock,
+        /body_control_program\.records\[command_index\]\.result\s*=/,
+        'exact dead MOVE는 ingress PENDING output record를 변경하면 안 됩니다.'
     );
 });

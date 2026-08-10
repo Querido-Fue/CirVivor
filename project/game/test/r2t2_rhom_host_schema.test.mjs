@@ -251,7 +251,7 @@ function createDirectorFixture(options = {}) {
         registry,
         backend,
         projectileSpawnAdapter: adapter,
-        priorityTargetControlPort,
+        priorityTargetControlPort: priorityControlPort,
         sessionGeneration: 9,
         ...options
     });
@@ -354,6 +354,31 @@ test('M authored data와 selected-target host descriptor는 exact Core와 inclus
         unavailable.reason,
         'selected-target-fixed-primitive-unavailable'
     );
+
+    const requested = [];
+    const endpoint = new class SelectedTargetEndpointFixture {
+        requestSelectedTargetSpawn(intent, targetFixedTick, requestedCommandId) {
+            requested.push({ intent, targetFixedTick, requestedCommandId });
+            return Object.freeze({
+                accepted: true,
+                commandId: requestedCommandId,
+                targetFixedTick
+            });
+        }
+    }();
+    const accepted = requestGpuSelectedTargetProjectile({
+        endpoint,
+        ...createSelectedIntent(),
+        definition: HOSTILE_RHOM_PROJECTILE_DATA,
+        targetFixedTick: 31,
+        spawnSequence: 5,
+        commandId
+    });
+    assert.equal(accepted.accepted, true);
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0].targetFixedTick, 31);
+    assert.equal(requested[0].requestedCommandId, commandId);
+    assert.equal('endpoint' in requested[0].intent, false);
 });
 
 test('accepted no-target attempt도 fairness cursor를 전진시켜 다음 M source starvation을 막는다', () => {
@@ -450,8 +475,8 @@ test('HostileAttackDirector는 M source를 canonical 집계하고 no-target에 s
     assert.equal(fixture.adapter.calls[0].towerTargetHandle, null);
     assert.equal(fixture.priorityControlPort.calls.length, 1);
     assert.deepEqual(
-        fixture.priorityControlPort.calls[0].command.coreTargetHandle,
-        CORE_HANDLE
+        { ...fixture.priorityControlPort.calls[0].command.coreTargetHandle },
+        { ...CORE_HANDLE }
     );
 
     const commandId = fixture.adapter.calls[0].commandId;

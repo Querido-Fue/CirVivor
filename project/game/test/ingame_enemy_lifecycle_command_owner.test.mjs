@@ -12,7 +12,11 @@ const { EnemyLifecycleCommandOwner } = await loadGameModule(
 const { createGpuEnemySpawnIntent } = await loadGameModule(
     'ingame/object/enemy/gpu_enemy_spawn_adapter.js'
 );
-const { GPU_CIRCLE_BODY_COLLISION_LAYER } = await loadGameModule(
+const {
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+} = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_abi.js'
 );
 const {
@@ -20,6 +24,9 @@ const {
     GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
+const { ENEMY_SPAWN_POLICY } = await loadGameModule(
+    'ingame/contract/enemy_profile_contract.js'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -402,6 +409,126 @@ test('generic projectile intent는 route 없이 canonical definition/layer와 ne
     );
 });
 
+test('generic spawn ingress는 selected-target 전용 metadata/program/handler를 mutation 전에 각각 거부한다', () => {
+    const selectedOnlyCases = [
+        {
+            label: 'metadata',
+            overrides: {
+                targetSelectionPolicyId: 'core-first-in-range-then-tower'
+            }
+        },
+        {
+            label: 'program',
+            overrides: {
+                enemyBehaviorState: {
+                    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+                        .SELECTED_TARGET_PROJECTILE,
+                    coreDamageFixedPoint: 500
+                }
+            }
+        },
+        {
+            label: 'handler',
+            overrides: {
+                contactHandler: {
+                    damageSelf: 1,
+                    damageOther: 2.5,
+                    flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+                        .KILL_IF_OTHER_TERRAIN
+                        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CLOSEST_ONLY
+                        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+                            .INTERACTION_ENTER_ONLY
+                        | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG
+                            .CORE_DAMAGE_REQUEST
+                }
+            }
+        }
+    ];
+
+    for (const [index, { label, overrides }] of selectedOnlyCases.entries()) {
+        const backend = createFakeBackend();
+        const registry = new WorldRegistry({ capacity: 4 });
+        const owner = new EnemyLifecycleCommandOwner(backend, registry);
+        const commandId = `generic:selected-only:${label}`;
+
+        assert.throws(
+            () => owner.requestSpawn(
+                createProjectileIntent({
+                    ...overrides,
+                    spawnSequence: 100 + index
+                }),
+                1,
+                commandId
+            ),
+            /requestSelectedTargetSpawn 전용 ingress/
+        );
+        assert.equal(owner.getPendingCount(), 0);
+        assert.deepEqual(backend.events, []);
+        assert.equal(backend.bodies.size, 0);
+        assert.equal(registry.getReservedCount(), 0);
+        assert.equal(registry.getActiveCount(), 0);
+        assert.equal(
+            owner.requestSpawn(
+                createProjectileIntent({ spawnSequence: 200 + index }),
+                1,
+                commandId
+            ).accepted,
+            true
+        );
+    }
+});
+
+test('generic spawn batch의 selected-target forge는 valid prefix까지 zero-partial로 거부한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 4 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+
+    assert.throws(
+        () => owner.requestSpawnBatch([
+            {
+                intent: createProjectileIntent({ spawnSequence: 300 }),
+                targetFixedTick: 2,
+                commandId: 'generic:selected-batch:prefix'
+            },
+            {
+                intent: createProjectileIntent({
+                    spawnSequence: 301,
+                    targetSelectionPolicyId: 'core-first-in-range-then-tower',
+                    enemyBehaviorState: {
+                        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+                            .SELECTED_TARGET_PROJECTILE,
+                        coreDamageFixedPoint: 500
+                    }
+                }),
+                targetFixedTick: 2,
+                commandId: 'generic:selected-batch:forged'
+            }
+        ]),
+        /requestSelectedTargetSpawn 전용 ingress/
+    );
+    assert.equal(owner.getPendingCount(), 0);
+    assert.deepEqual(backend.events, []);
+    assert.equal(backend.bodies.size, 0);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(registry.getActiveCount(), 0);
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 300 }),
+            2,
+            'generic:selected-batch:prefix'
+        ).accepted,
+        true
+    );
+    assert.equal(
+        owner.requestSpawn(
+            createProjectileIntent({ spawnSequence: 301 }),
+            2,
+            'generic:selected-batch:forged'
+        ).accepted,
+        true
+    );
+});
+
 test('layer alias 불일치는 fail-fast하고 같은 command ID 재요청을 막지 않는다', () => {
     const backend = createFakeBackend();
     const registry = new WorldRegistry({ capacity: 1 });
@@ -447,6 +574,7 @@ test('enemy intent만 gate/path/flow를 요구하고 projectile identity 주입�
         () => owner.requestSpawn({
             kindId: 'enemy',
             definitionId: 'enemy_without_route',
+            spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
             bodyLayer: 1,
             collisionMask: 1,
             interactionLayer: 1,

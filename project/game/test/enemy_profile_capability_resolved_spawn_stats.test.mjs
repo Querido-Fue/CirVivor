@@ -6,6 +6,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
     BASIC_ARROW_ENEMY_DATA,
+    BASIC_CIRCLE_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
@@ -517,6 +518,32 @@ test('resolved stats는 identity, modifier precedence, absolute 마지막 승자
         Math.fround(1 / authoredWeight),
         'inverseMass는 raw authoring 값이 아니라 반환된 final f32 weight에서 파생해야 합니다.'
     );
+});
+
+test('custom fixture HP는 canonical profile view 덮어쓰기가 아니라 exact resolvedStats로 주입한다', () => {
+    const fixtureDefinition = Object.freeze({
+        ...BASIC_CIRCLE_ENEMY_DATA,
+        id: 'resolved-stats-custom-fixture'
+    });
+    const fixtureStats = resolveEnemySpawnStats({
+        definition: fixtureDefinition,
+        waveEnemyModifiers: modifierSet(
+            modifierScope({}, { maxHealth: 20 })
+        )
+    });
+    const intent = createGpuEnemySpawnIntent({
+        definition: fixtureDefinition,
+        route: FIXTURE_ROUTE,
+        spawnSequence: 0,
+        resolvedStats: fixtureStats
+    });
+
+    assert.equal(BASIC_CIRCLE_ENEMY_DATA.maxHealth, 1);
+    assert.equal(fixtureStats.maxHealth, Math.fround(20));
+    assert.equal(intent.health, fixtureStats.maxHealth);
+    assert.equal(intent.physicsProfileId, fixtureDefinition.physicsProfileId);
+    assert.equal(intent.combatProfileId, fixtureDefinition.combatProfileId);
+    assert.equal(intent.behaviorProfileId, fixtureDefinition.behaviorProfileId);
 });
 
 test('modifier source mutation은 resolved 값과 WaveDirector immutable schedule input에 영향을 주지 않는다', () => {

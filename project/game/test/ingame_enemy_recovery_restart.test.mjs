@@ -802,7 +802,7 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
         initialFormationRuntimeDirector.getStatus().pendingTransformBatchCount,
         0
     );
-    assert.deepEqual(staleEffectCommandPort.requestPulseBatch({}), {
+    assert.deepEqual({ ...staleEffectCommandPort.requestPulseBatch({}) }, {
         accepted: false,
         reason: 'effect-command-port-revoked'
     });

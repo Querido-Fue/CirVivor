@@ -982,12 +982,18 @@ fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3
         );
         return;
     }
+    if (command.destination_slot >= counts.body_count
+        || simulations.values[command.destination_slot].entity_id
+            != command.entity_id
+        || simulations.values[command.destination_slot].incarnation
+            != command.incarnation) {
+        atomicOr(
+            &body_control_program.header.status,
+            FIXED_PROGRAM_STATUS_RECORD_INVALID
+        );
+        return;
+    }
     if (command.mode_flags == BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT
-        && command.destination_slot < counts.body_count
-        && simulations.values[command.destination_slot].entity_id
-            == command.entity_id
-        && simulations.values[command.destination_slot].incarnation
-            == command.incarnation
         && body_has_flag(
             load_simulation_flags(command.destination_slot),
             BODY_FLAG_USE_FLOW
@@ -1025,6 +1031,20 @@ fn apply_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) 
         command.entity_id,
         command.incarnation
     )) {
+        let exact_dead_move = command.mode_flags
+                == BODY_CONTROL_PROGRAM_MODE_MOVE_INTENT
+            && command.destination_slot < counts.body_count
+            && command.destination_slot < arrayLength(&simulations.values)
+            && simulations.values[command.destination_slot].entity_id
+                == command.entity_id
+            && simulations.values[command.destination_slot].incarnation
+                == command.incarnation
+            && !body_id_is_alive(command.destination_slot);
+        if (exact_dead_move) {
+            // GPU death readback 전의 exact MOVE는 ingress PENDING record를
+            // 그대로 보존하는 bounded no-op이다.
+            return;
+        }
         body_control_program.records[command_index].result
             = BODY_CONTROL_RESULT_SOURCE_INVALID;
         return;
@@ -2412,8 +2432,9 @@ fn append_contact(contact: Contact) {
 }
 
 fn mark_core_damage_request_candidate(contact_index: u32) {
+    var marker_bits: u32 = CORE_DAMAGE_REQUEST_MARKER_MAGIC;
     contacts.values[contact_index].normal.y
-        = bitcast<f32>(CORE_DAMAGE_REQUEST_MARKER_MAGIC);
+        = bitcast<f32>(marker_bits);
 }
 
 fn contact_is_core_damage_request_candidate(contact: Contact) -> bool {
@@ -3389,12 +3410,10 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
             CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
         ) && body_interaction_layer(
             physics.values[other_body_id].interaction_meta
-        ) == BODY_LAYER_PLAYER_DAMAGEABLE
-        && enemy_behavior_states.values[self_body_id].program_id
-            == ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE) {
-        // Program 2 Tower branch도 exact selected target 검증 전에는 generic
-        // budget/window authority를 갖지 않습니다. 전용 <=9-storage pass가
-        // 검증 후 budget을 reserve하고 standard window marker로 승격합니다.
+        ) == BODY_LAYER_PLAYER_DAMAGEABLE) {
+        // Tower 후보는 여기서 program state를 읽지 않고 marker만 남깁니다.
+        // 전용 <=9-storage pass가 program/team/identity/policy/budget을 exact
+        // 검증한 뒤에만 standard window marker로 승격합니다.
         mark_selected_target_tower_candidate(
             contact_index,
             resolve_final_contact_damage(
@@ -4751,18 +4770,24 @@ fn vertex_main(
             == simulations.values[instance_index].incarnation;
     if (effect_identity_matches
         && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_BOOST) != 0u) {
-        presentation_color.rgb = mix(
-            presentation_color.rgb,
-            vec3f(0.28, 0.92, 1.0),
-            0.35
+        presentation_color = vec4f(
+            mix(
+                presentation_color.rgb,
+                vec3f(0.28, 0.92, 1.0),
+                0.35
+            ),
+            presentation_color.a
         );
     }
     if (effect_identity_matches
         && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_PULSE) != 0u) {
-        presentation_color.rgb = mix(
-            presentation_color.rgb,
-            vec3f(0.72, 1.0, 0.95),
-            0.55
+        presentation_color = vec4f(
+            mix(
+                presentation_color.rgb,
+                vec3f(0.72, 1.0, 0.95),
+                0.55
+            ),
+            presentation_color.a
         );
         presentation_radius_scale *= 1.0
             + (0.16 * clamp(effect_summary.presentation_magnitude, 0.0, 1.0));
@@ -4835,16 +4860,42 @@ fn vertex_main(
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
+    let occupied_distance = formation_mask_distance(
+        input.local_position,
+        input.formation_occupied_mask
+    );
+    let occupied_aa = max(fwidth(occupied_distance), 0.002);
+    let link_distance = formation_member_link_distance(
+        input.local_position,
+        input.formation_occupied_mask
+    );
+    let link_aa = max(fwidth(link_distance), 0.002);
+    let empty_distance = formation_empty_boundary_distance(
+        input.local_position,
+        input.formation_occupied_mask
+    );
+    let empty_aa = max(fwidth(empty_distance), 0.002);
+    let pulse_distance = abs(length(input.local_position) - 0.92);
+    let pulse_aa = max(fwidth(pulse_distance), 0.002);
+    let bar_center = vec2f(0.0, 0.86);
+    let bar_half = vec2f(0.68, 0.065);
+    let outer_distance = box_distance(
+        input.local_position,
+        bar_center,
+        bar_half
+    );
+    let bar_aa = max(fwidth(outer_distance), 0.002);
+    let distance = shape_distance(
+        input.local_position,
+        input.velocity,
+        input.shape_code
+    );
+    let anti_alias_width = max(fwidth(distance), 0.002);
     if (length(input.local_position) > 1.0) {
         discard;
     }
     if (input.shape_code == RENDER_SHAPE_HEXA
         && input.formation_member_count > 0u) {
-        let occupied_distance = formation_mask_distance(
-            input.local_position,
-            input.formation_occupied_mask
-        );
-        let occupied_aa = max(fwidth(occupied_distance), 0.002);
         let occupied_coverage = 1.0 - smoothstep(
             -occupied_aa,
             occupied_aa,
@@ -4858,11 +4909,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         );
         var alpha = input.color.a * occupied_coverage;
 
-        let link_distance = formation_member_link_distance(
-            input.local_position,
-            input.formation_occupied_mask
-        );
-        let link_aa = max(fwidth(link_distance), 0.002);
         let link = 1.0 - smoothstep(
             0.032 - link_aa,
             0.032 + link_aa,
@@ -4873,11 +4919,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         }
         alpha = max(alpha, link * input.color.a * 0.78);
 
-        let empty_distance = formation_empty_boundary_distance(
-            input.local_position,
-            input.formation_occupied_mask
-        );
-        let empty_aa = max(fwidth(empty_distance), 0.002);
         let empty_outline = 1.0 - smoothstep(
             0.018 - empty_aa,
             0.018 + empty_aa,
@@ -4900,8 +4941,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
 
         if ((input.formation_presentation_flags
                 & FORMATION_FLAG_MERGE_PULSE) != 0u) {
-            let pulse_distance = abs(length(input.local_position) - 0.92);
-            let pulse_aa = max(fwidth(pulse_distance), 0.002);
             let pulse = 1.0 - smoothstep(
                 0.025 - pulse_aa,
                 0.025 + pulse_aa,
@@ -4914,14 +4953,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         }
 
         if (input.formation_member_count == 6u) {
-            let bar_center = vec2f(0.0, 0.86);
-            let bar_half = vec2f(0.68, 0.065);
-            let outer_distance = box_distance(
-                input.local_position,
-                bar_center,
-                bar_half
-            );
-            let bar_aa = max(fwidth(outer_distance), 0.002);
             let outer = 1.0 - smoothstep(-bar_aa, bar_aa, outer_distance);
             let fill_half_x = max(0.0, bar_half.x * input.health_ratio);
             let fill_center = vec2f(
@@ -4950,8 +4981,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         if (alpha <= 0.0) { discard; }
         return vec4f(rgb * alpha, alpha);
     }
-    let distance = shape_distance(input.local_position, input.velocity, input.shape_code);
-    let anti_alias_width = max(fwidth(distance), 0.002);
     let coverage = 1.0 - smoothstep(-anti_alias_width, anti_alias_width, distance);
     let alpha = input.color.a * coverage;
     return vec4f(input.color.rgb * alpha, alpha);

@@ -368,8 +368,8 @@ test('Effect owner는 same-tick P 전체를 한 batch로 stage하고 zero-target
     assert.equal(completion.protocolFailure, null);
     assert.equal(completion.results.length, 2);
     assert.deepEqual(
-        completion.results.map(({ commandId }) => commandId),
-        commands.map(({ commandId }) => commandId)
+        Array.from(completion.results, ({ commandId }) => commandId),
+        Array.from(commands, ({ commandId }) => commandId)
     );
     assert.equal(owner.getStatus().pendingPulseProgramCount, 0);
     assert.equal(backend.getEventProtocolState().authoritativeEpoch, 8);
@@ -447,8 +447,14 @@ test('Effect owner는 pulse/application event의 exact source-target-definition 
     const completion = owner.commitCompletedAtFixedBoundary(6);
     assert.equal(completion.protocolFailure, null);
     assert.equal(completion.events.length, 2);
-    assert.deepEqual(completion.events[0].targetHandle, sourceHandle);
-    assert.deepEqual(completion.events[1].targetHandle, targetHandle);
+    assert.deepEqual(
+        { ...completion.events[0].targetHandle },
+        { ...sourceHandle }
+    );
+    assert.deepEqual(
+        { ...completion.events[1].targetHandle },
+        { ...targetHandle }
+    );
 });
 
 for (const forgedCase of ['missing', 'extra', 'duplicate']) {
@@ -807,7 +813,10 @@ test('Effect owner는 same-boundary despawn source를 SOURCE_INVALID provenance�
     assert.equal(completion.protocolFailure, null);
     assert.equal(completion.results[0].resultCode,
         GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID);
-    assert.deepEqual(completion.results[0].sourceHandle, handle);
+    assert.deepEqual(
+        { ...completion.results[0].sourceHandle },
+        { ...handle }
+    );
     assert.equal(owner.getStatus().pendingPulseProgramCount, 0);
 });
 

@@ -1182,6 +1182,22 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
             rejected: 0
         });
     };
+    backend.cancelPendingFixedProgramsForTerminal = (request) => {
+        const result = Object.freeze({
+            abiVersion: request.abiVersion,
+            finalFixedTick: request.finalFixedTick,
+            accepted: true,
+            state: 'armed',
+            destinationCount: request.destinationHandles.length,
+            priorityControlCount: request.priorityControls.length
+        });
+        backend.calls.push({
+            type: 'cancelPendingFixedProgramsForTerminal',
+            request,
+            result
+        });
+        return result;
+    };
     let cleanupBinding = null;
     const endpoint = createGpuSimulationEndpoint({
         gpuSimulationBackend: backend,
@@ -1303,8 +1319,22 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
     }, 5, 'terminal-close:source-relative').accepted, true);
     assert.equal(endpoint.getPendingCommandCount(), 10);
 
-    const closed = endpoint.closeGameplayIngress('run-defeated');
-    assert.deepEqual({ ...closed }, { closed: true, reason: 'run-defeated' });
+    const closed = endpoint.closeGameplayIngress('run-defeated', 3);
+    assert.deepEqual({
+        closed: closed.closed,
+        reason: closed.reason
+    }, { closed: true, reason: 'run-defeated' });
+    assert.equal(closed.cleanup.fixedCommands.finalFixedTick, 3);
+    assert.equal(
+        closed.cleanup.effectCommands.terminalCancellation.finalFixedTick,
+        3
+    );
+    assert.equal(closed.cleanup.formationCommands.finalFixedTick, 3);
+    const terminalCancelCall = backend.calls.findLast(
+        ({ type }) => type === 'cancelPendingFixedProgramsForTerminal'
+    );
+    assert.equal(terminalCancelCall.request.finalFixedTick, 3);
+    assert.equal(terminalCancelCall.request.destinationHandles.length, 1);
     const closedStatus = endpoint.getStatus();
     assert.equal(closedStatus.pendingCommandCount, 2);
     assert.equal(closedStatus.lifecycle.pendingCount, 2);
@@ -1421,13 +1451,26 @@ test('terminal close는 pending gameplay command와 raw lifecycle 우회를 제�
     assert.equal(endpoint.getRegistry().getReservedCount(), 0);
     const finalized = endpoint.finalizeClosedGameplayIngress();
     assert.equal(finalized.lifecycleCancelledCount, 0);
-    assert.deepEqual({ ...finalized.fixedCommands }, {
+    assert.deepEqual({
+        closed: finalized.fixedCommands.closed,
+        reason: finalized.fixedCommands.reason,
+        cancelledCommandCount:
+            finalized.fixedCommands.cancelledCommandCount,
+        releasedDestinationCount:
+            finalized.fixedCommands.releasedDestinationCount,
+        failedDestinationCount:
+            finalized.fixedCommands.failedDestinationCount
+    }, {
         closed: true,
         reason: 'run-defeated',
         cancelledCommandCount: 0,
         releasedDestinationCount: 0,
         failedDestinationCount: 0
     });
+    assert.equal(
+        finalized.fixedCommands.terminalCancellation.finalFixedTick,
+        3
+    );
 
     assert.equal(cleanupBinding.port.requestCommittedCoreImpactCleanup(
         { entityId: 99, incarnation: 1 },

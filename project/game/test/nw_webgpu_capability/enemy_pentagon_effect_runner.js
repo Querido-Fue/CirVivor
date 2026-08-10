@@ -53,6 +53,7 @@ import {
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
+const HARDWARE_FIXED_SUBMIT_SETTLE_INTERVAL_TICKS = 16;
 const REQUIRED_EFFECT_FLAGS = GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
     | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
     | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE;
@@ -199,6 +200,10 @@ async function readEffectBodyPlanes(backend, device, bodyCount) {
                     offset + abi.PRESENTATION_MAGNITUDE,
                     true
                 ),
+                summaryTick: summaries.getUint32(
+                    offset + abi.SUMMARY_TICK,
+                    true
+                ),
                 sourceSnapshotTick: summaries.getUint32(
                     offset + abi.SOURCE_SNAPSHOT_TICK,
                     true
@@ -279,6 +284,28 @@ async function waitForSpawnCompletion(backend, device, timeoutMs = 5_000) {
     throw new Error(
         `Spawn completion timeout: ${JSON.stringify(backend.getStatus().gpu)}`
     );
+}
+
+async function advanceFixedTicksWithReadbackYields(
+    backend,
+    device,
+    firstTick,
+    lastTick,
+    label
+) {
+    let ticksSinceSettle = 0;
+    for (let tick = firstTick; tick <= lastTick; tick++) {
+        assert(backend.fixedUpdate(1 / 60, tick), `${label} tick ${tick} failed`);
+        ticksSinceSettle++;
+        // 독립 hardware runner에는 browser frame yield가 없으므로 bounded
+        // telemetry readback ring이 정상적으로 lease를 반환할 기회를 줍니다.
+        if (ticksSinceSettle === HARDWARE_FIXED_SUBMIT_SETTLE_INTERVAL_TICKS
+            || tick === lastTick) {
+            await device.queue.onSubmittedWorkDone();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+            ticksSinceSettle = 0;
+        }
+    }
 }
 
 async function runPentagonEffectFixture(device, format) {
@@ -430,10 +457,13 @@ async function runPentagonEffectFixture(device, format) {
     const intervalPlanes = await readEffectBodyPlanes(backend, device, 3);
     assert(intervalPlanes.emitter(0).lastRetargetTick === 16,
         'P retarget interval boundary mismatch');
-    for (let tick = 17; tick <= 180; tick++) {
-        assert(backend.fixedUpdate(1 / 60, tick), `Effect lifetime tick ${tick} failed`);
-    }
-    await device.queue.onSubmittedWorkDone();
+    await advanceFixedTicksWithReadbackYields(
+        backend,
+        device,
+        17,
+        180,
+        'Effect lifetime'
+    );
     const beforeExpiry = await readEffectBodyPlanes(backend, device, 3);
     assert(beforeExpiry.summary(1).boostStackCount === 2,
         'Effect half-open pre-expiry stack mismatch');
@@ -455,6 +485,8 @@ async function runPentagonEffectFixture(device, format) {
     assert(gpuStatus.effects.storageBuffersPerStage === 9, 'Effect storage profile mismatch');
     assert(gpuStatus.fixedPrimitives.storageProfile.sourceResolve === 9,
         'Effect source-resolve storage profile mismatch');
+    assert(backend.requiresRecovery() === false,
+        'Effect lifetime pacing unexpectedly entered recovery');
 
     const terminal = backend.cancelPendingEffectProgramsForTerminal({
         abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
@@ -1218,17 +1250,26 @@ async function runEffectPresentationPixelFixture(device, format) {
     });
     const target = withIdentity(targetIntent, 402, 1, {
         contactHandler: null,
-        position: Object.freeze({ x: origin.x + 3, y: origin.y }),
+        // west route의 첫 corridor는 column 0..5입니다. x + 3은 첫 blocked
+        // column에 걸리므로 baseline 뒤 SDF solver가 body를 이동시킵니다.
+        position: Object.freeze({ x: origin.x + 2, y: origin.y }),
         velocity: Object.freeze({ x: 0, y: 0 }),
         flowSpeed: 0,
         maxSpeed: 0
     });
+    const targetTile = tileMap.worldToTile(target.position.x, target.position.y);
+    assert(targetTile.inside
+        && tileMap.isWalkableTile(targetTile.row, targetTile.column),
+    'Effect offscreen target must start on a walkable tile');
     assert(backend.replaceBodies([source, target]).accepted === 2,
         'Effect offscreen presentation replacement failed');
 
     const scale = 20;
     const sourceCenter = Object.freeze({ x: 32, y: 64 });
-    const targetCenter = Object.freeze({ x: 92, y: 64 });
+    const targetCenter = Object.freeze({
+        x: sourceCenter.x + ((target.position.x - origin.x) * scale),
+        y: sourceCenter.y + ((target.position.y - origin.y) * scale)
+    });
     const camera = Object.freeze({
         worldToViewport(x, y, out) {
             out.x = sourceCenter.x + ((x - origin.x) * scale);
@@ -1298,17 +1339,64 @@ async function runEffectPresentationPixelFixture(device, format) {
     )) === JSON.stringify(boostedTargetPixel),
     'Effect BOOST visual disappeared before expiry');
 
+    await advanceFixedTicksWithReadbackYields(
+        backend,
+        device,
+        3,
+        180,
+        'Effect offscreen lifetime'
+    );
+    const beforeExpiryPlanes = await readEffectBodyPlanes(backend, device, 2);
+    const beforeExpirySummary = beforeExpiryPlanes.summary(1);
+    assert(beforeExpirySummary.summaryTick === 180
+        && beforeExpirySummary.boostStackCount === 1
+        && (beforeExpirySummary.presentationTags
+            & GPU_EFFECT_PRESENTATION_TAG.BOOST) !== 0,
+    'Effect offscreen pre-expiry summary mismatch');
+
     assert(backend.fixedUpdate(1 / 60, 181),
         'Effect offscreen expiry submit failed');
     await device.queue.onSubmittedWorkDone();
+    const expiredPlanes = await readEffectBodyPlanes(backend, device, 2);
+    const expiredSummary = expiredPlanes.summary(1);
+    assert(expiredSummary.summaryTick === 181
+        && expiredSummary.boostStackCount === 0
+        && (expiredSummary.presentationTags
+            & GPU_EFFECT_PRESENTATION_TAG.BOOST) === 0,
+    'Effect offscreen expired summary mismatch');
     const expired = await render();
     const expiredTargetPixel = readRenderPixel(
         expired,
         targetCenter.x,
         targetCenter.y
     );
+    const expiredBodies = await backend.simulation.readbackBodies();
+    const expiredTargetBody = expiredBodies.find(({ handle }) => (
+        handle?.entityId === target.entityId
+            && handle.incarnation === target.incarnation
+    ));
+    assert(expiredTargetBody, 'Effect offscreen expired target body missing');
+    const expiryPixelEvidence = Object.freeze({
+        baselineTargetPixel,
+        boostedTargetPixel,
+        expiredTargetPixel,
+        sampledTargetCenter: targetCenter,
+        authoredTargetPosition: target.position,
+        targetRenderStyle: target.renderStyle,
+        tick181Body: Object.freeze({
+            position: expiredTargetBody.position,
+            previousPosition: expiredTargetBody.previousPosition,
+            predictedPosition: expiredTargetBody.predictedPosition,
+            velocity: expiredTargetBody.velocity,
+            radius: expiredTargetBody.radius,
+            health: expiredTargetBody.health,
+            healthFixedPoint: expiredTargetBody.healthFixedPoint,
+            flowSpeed: expiredTargetBody.flowSpeed,
+            simulationMeta: expiredTargetBody.simulationMeta
+        })
+    });
     assert(JSON.stringify(expiredTargetPixel) === JSON.stringify(baselineTargetPixel),
-        'Effect BOOST visual did not disappear at half-open expiry');
+        `Effect BOOST visual did not disappear at half-open expiry: ${JSON.stringify(expiryPixelEvidence)}`);
 
     backend.destroy();
     renderTexture.destroy();
@@ -1317,7 +1405,10 @@ async function runEffectPresentationPixelFixture(device, format) {
         pulsedSourcePixels,
         baselineTargetPixel,
         boostedTargetPixel,
-        expiredTargetPixel
+        expiredTargetPixel,
+        beforeExpirySummary,
+        expiredSummary,
+        expiryPixelEvidence
     });
 }
 
@@ -1349,11 +1440,24 @@ async function runEffectBigBucketFixture(device, format) {
     const target = withIdentity(targetIntent, 412, 1, {
         contactHandler: null,
         position: Object.freeze({
-            x: sourceIntent.position.x + 3,
-            y: sourceIntent.position.y
+            x: sourceIntent.position.x,
+            y: sourceIntent.position.y + 3
         }),
-        radius: 2
+        radius: 2,
+        // 지름이 grid cell을 넘는 body는 3x3 dynamic 탐색에 들어갈 수
+        // 없으며, multi-cell big bucket은 static proxy로만 유효합니다.
+        inverseMass: 0
     });
+    const targetTile = tileMap.worldToTile(target.position.x, target.position.y);
+    assert(targetTile.inside
+        && tileMap.isWalkableTile(targetTile.row, targetTile.column),
+    'Effect big-bucket target must start on a walkable tile');
+    const minimumGridCellSize = Math.min(
+        backend.simulation.gridCellSize.x,
+        backend.simulation.gridCellSize.y
+    );
+    assert(target.inverseMass === 0 && (target.radius * 2) > minimumGridCellSize,
+        'Effect big-bucket target must be a static multi-cell body');
     assert(backend.replaceBodies([source, target]).accepted === 2,
         'Effect big-bucket replacement failed');
     assert(backend.stageEffectPulseProgramBatch({
@@ -1382,7 +1486,11 @@ async function runEffectBigBucketFixture(device, format) {
         candidateCount: completion.candidateCount,
         appliedInstanceCount: completion.appliedInstanceCount,
         eventCount: completion.eventCount,
-        boostStackCount: summary.boostStackCount
+        boostStackCount: summary.boostStackCount,
+        targetRadius: target.radius,
+        targetInverseMass: target.inverseMass,
+        minimumGridCellSize,
+        targetTile
     });
 }
 

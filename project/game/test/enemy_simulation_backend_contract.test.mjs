@@ -68,6 +68,12 @@ test('empty enemy session은 GPU 자원을 지연하고 terminal unsupported spa
     assert.equal(backend.getStatus().flowFieldCount, 0);
     assert.equal(backend.getStatus().gpu.capacity, 16384);
     assert.equal(deviceReadCount, 0);
+    assert.deepEqual({ ...backend.getEventProtocolState() }, {
+        sessionGeneration: 1,
+        deviceGeneration: 0,
+        authoritativeEpoch: 0,
+        submittedTickCount: 0
+    });
     assert.equal(backend.fixedUpdate(1 / 60), false);
     assert.equal(backend.draw(null), false);
     assert.equal(deviceReadCount, 0);

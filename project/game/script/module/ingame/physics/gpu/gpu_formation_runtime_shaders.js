@@ -985,23 +985,31 @@ fn candidate_is_better(
     rotation_step: u32,
     best: ptr<function, FormationCandidateRank>
 ) -> bool {
-    return distance_squared < (*best).distance_squared
-        || (distance_squared == (*best).distance_squared
-            && (forward_stage_delta < (*best).forward_stage_delta
-                || (forward_stage_delta == (*best).forward_stage_delta
-                    && (forward_cost_delta < (*best).forward_cost_delta
-                        || (forward_cost_delta == (*best).forward_cost_delta
-                            && (identity_before(
-                                root_entity_id,
-                                root_incarnation,
-                                (*best).root_entity_id,
-                                (*best).root_incarnation
-                            ) || (root_entity_id == (*best).root_entity_id
-                                && root_incarnation == (*best).root_incarnation
-                                && (slot_index < (*best).slot
-                                    || (slot_index == (*best).slot
-                                        && rotation_step
-                                            < (*best).rotation_step))))))))));
+    if (distance_squared != (*best).distance_squared) {
+        return distance_squared < (*best).distance_squared;
+    }
+    if (forward_stage_delta != (*best).forward_stage_delta) {
+        return forward_stage_delta < (*best).forward_stage_delta;
+    }
+    if (forward_cost_delta != (*best).forward_cost_delta) {
+        return forward_cost_delta < (*best).forward_cost_delta;
+    }
+    if (identity_before(
+        root_entity_id,
+        root_incarnation,
+        (*best).root_entity_id,
+        (*best).root_incarnation
+    )) {
+        return true;
+    }
+    if (root_entity_id != (*best).root_entity_id
+        || root_incarnation != (*best).root_incarnation) {
+        return false;
+    }
+    if (slot_index != (*best).slot) {
+        return slot_index < (*best).slot;
+    }
+    return rotation_step < (*best).rotation_step;
 }
 
 fn consider_candidate(
@@ -1325,7 +1333,7 @@ fn advance_formation_motion(@builtin(global_invocation_id) id: vec3u) {
     let base_speed = length(base_velocity);
     if (!(base_speed > EPSILON)) { return; }
     let forward = base_velocity / base_speed;
-    let desired_velocity = normalize(delta)
+    var desired_velocity = normalize(delta)
         * min(simulations.values[slot].flow_speed, base_speed);
     if (dot(desired_velocity, forward) < 0.0) {
         atomicOr(

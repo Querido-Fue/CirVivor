@@ -501,6 +501,7 @@ test('generic endpoint는 fixed primitive public seam을 제공하고 private GP
     assert.deepEqual(Array.from(staged.plan.controls, (entry) => ({ ...entry })), [{
         entityId: source.entityId,
         incarnation: source.incarnation,
+        modeFlags: GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT,
         moveIntentX: 1,
         moveIntentY: 0
     }]);
@@ -711,16 +712,23 @@ test('Tower gameplay target은 exact Tower만 hard gate하고 tracked pose desyn
     assert.equal(endpoint.getStatus().trackedPoseDiagnostic.reason,
         'registry-backend-desync');
     backend.bodies.set(decoyKey, decoyBody);
-    assert.deepEqual({ ...endpoint.configureTrackedBody(tower) }, {
+    const trackedTower = endpoint.configureTrackedBody(tower);
+    assert.deepEqual({
+        ...trackedTower,
+        tracked: { ...trackedTower.tracked }
+    }, {
         accepted: true,
-        tracked: tower
+        tracked: { ...tower }
     });
     assert.deepEqual({ ...endpoint.configureTowerGameplayTarget(null) }, {
         accepted: true,
         configured: null
     });
     assert.equal(endpoint.configureTowerGameplayTarget(tower).accepted, true);
-    assert.equal(endpoint.closeGameplayIngress('fixture-terminal').closed, true);
+    assert.equal(
+        endpoint.closeGameplayIngress('fixture-terminal', 2).closed,
+        true
+    );
     const gameplayCallsBeforeClosedReenable = backend.calls.filter(
         ({ type }) => type === 'configureTowerGameplayTarget'
     ).length;

@@ -39,11 +39,23 @@ const {
     'ingame/object/enemy/hostile_attack_director.js'
 );
 const {
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_STATE_FLAGS,
     GPU_SPAWN_PROGRAM_MODE
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 const {
     encodeGpuCircleBodyFixedPoint
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    GPU_EFFECT_EVENT_TYPE,
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_PULSE_PROGRAM_RESULT,
+    GPU_EFFECT_RUNTIME_ABI_VERSION,
+    GPU_EFFECT_RUNTIME_STATUS,
+    GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
+} = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_abi.js');
 
 const NORMAL_GROUP = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0].spawnGroups[0];
 const CUSTOM_ARCHER_WAVE = Object.freeze({
@@ -127,13 +139,20 @@ class ArcherIntegrationBackend {
         this.fixedPlans = [];
         this.materializedShots = [];
         this.spawnCompletionBatches = [];
+        this.bodyControlCompletionBatches = [];
         this.completedEventBatches = [];
         this.pendingFixedPlan = null;
+        this.pendingEffectBatch = null;
+        this.effectCompletionBatches = [];
+        this.lastEffectSourceTick = 0;
+        this.lastEffectSubmittedTick = 0;
+        this.effectTerminal = null;
         this.rejectSpawnProgramTicks = new Set();
         this.targetInvalidHostileTicks = new Set();
         this.lastEventSourceTick = 0;
         this.lastEventSubmittedTick = 0;
         this.controlAcceptedCount = 0;
+        this.priorityControlAcceptedCount = 0;
         this.fixedUpdateCount = 0;
         this.destroyCount = 0;
         this.drawSnapshots = [];
@@ -200,7 +219,19 @@ class ArcherIntegrationBackend {
         const requestedSpawns = Array.from(plan.sourceRelativeSpawns ?? []);
         assert.equal(this.pendingFixedPlan, null);
         assert.equal(
-            controls.every((control) => this.canControlBody(control)),
+            controls.every((control) => {
+                if (control.modeFlags
+                    === GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT) {
+                    return this.canControlBody(control);
+                }
+                return control.modeFlags
+                        === GPU_BODY_CONTROL_PROGRAM_MODE
+                            .PRIORITY_TARGET_IN_RANGE
+                    && this.hasBody(control.sourceHandle)
+                    && this.hasBody(control.coreTargetHandle)
+                    && (control.towerTargetHandle === null
+                        || this.hasBody(control.towerTargetHandle));
+            }),
             true
         );
         assert.equal(
@@ -219,7 +250,13 @@ class ArcherIntegrationBackend {
             controls,
             sourceRelativeSpawns: acceptedSpawns
         };
-        this.controlAcceptedCount += controls.length;
+        this.controlAcceptedCount += controls.filter(({ modeFlags }) => (
+            modeFlags === GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT
+        )).length;
+        this.priorityControlAcceptedCount += controls.filter(({ modeFlags }) => (
+            modeFlags
+                === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE
+        )).length;
         this.fixedPlans.push(Object.freeze({
             targetFixedTick: plan.targetFixedTick,
             controls: Object.freeze(controls),
@@ -246,21 +283,117 @@ class ArcherIntegrationBackend {
         };
     }
 
+    stageEffectPulseProgramBatch(batch) {
+        assert.equal(this.pendingEffectBatch, null);
+        const records = Array.from(batch.records ?? []);
+        this.pendingEffectBatch = Object.freeze({
+            ...batch,
+            records: Object.freeze(records)
+        });
+        return Object.freeze({
+            accepted: true,
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            sourceTick: batch.sourceTick,
+            stagedCount: records.length
+        });
+    }
+
     fixedUpdate(delta, sourceTick) {
         const plan = this.pendingFixedPlan;
         if (plan) {
             assert.equal(plan.targetFixedTick, sourceTick);
             this.#materializeSourceRelativeSpawns(plan, sourceTick);
+            const priorityOutcomes = [];
             for (const control of plan.controls) {
-                const tower = this.bodies.get(handleKey(control));
-                tower.velocity.x = control.moveIntentX * 3;
-                tower.velocity.y = control.moveIntentY * 3;
+                if (control.modeFlags
+                    === GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT) {
+                    const tower = this.bodies.get(handleKey(control));
+                    tower.velocity.x = control.moveIntentX * 3;
+                    tower.velocity.y = control.moveIntentY * 3;
+                    continue;
+                }
+                const source = this.bodies.get(handleKey(control.sourceHandle));
+                assert.ok(source);
+                priorityOutcomes.push(Object.freeze({
+                    sourceHandle: exactHandle(control.sourceHandle),
+                    coreTargetHandle: exactHandle(control.coreTargetHandle),
+                    towerTargetHandle: control.towerTargetHandle
+                        ? exactHandle(control.towerTargetHandle)
+                        : null,
+                    sourceTick,
+                    selectionSequence: control.selectionSequence,
+                    attackFingerprint: control.attackFingerprint,
+                    attackRangeTiles: control.attackRangeTiles,
+                    result: GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET,
+                    outcome: 'no-target',
+                    selectedTargetKind:
+                        GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+                    stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW,
+                    selectedTargetHandle: null
+                }));
+            }
+            if (priorityOutcomes.length > 0) {
+                this.bodyControlCompletionBatches.push(Object.freeze({
+                    ...this.eventProtocol,
+                    sourceTick,
+                    outcomes: Object.freeze(priorityOutcomes)
+                }));
             }
             this.pendingFixedPlan = null;
         }
         for (const body of this.bodies.values()) {
             body.position.x += body.velocity.x * delta;
             body.position.y += body.velocity.y * delta;
+        }
+        const effectBatch = this.pendingEffectBatch;
+        if (effectBatch) {
+            assert.equal(effectBatch.sourceTick, sourceTick);
+            const pulseResults = effectBatch.records.map((record, index) => (
+                Object.freeze({
+                    programIndex: index,
+                    pulseSequence: record.pulseSequence,
+                    resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
+                    candidateCount: 0,
+                    appliedCount: 0
+                })
+            ));
+            const events = effectBatch.records.map((record) => {
+                const source = this.bodies.get(
+                    `${record.sourceEntityId}:${record.sourceIncarnation}`
+                );
+                assert.ok(source);
+                return Object.freeze({
+                    type: GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED,
+                    sourceEntityId: record.sourceEntityId,
+                    sourceIncarnation: record.sourceIncarnation,
+                    targetEntityId: record.sourceEntityId,
+                    targetIncarnation: record.sourceIncarnation,
+                    effectDefinitionCode: record.effectDefinitionCode,
+                    flags: 0,
+                    effectInstanceId: record.fingerprint,
+                    instanceIncarnation: 1,
+                    valueFixedPoint: 0,
+                    position: Object.freeze(copyVector(source.position))
+                });
+            });
+            this.effectCompletionBatches.push(Object.freeze({
+                abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                ...this.eventProtocol,
+                previousSourceTick: this.lastEffectSourceTick,
+                previousSubmittedTick: this.lastEffectSubmittedTick,
+                sourceTick,
+                submittedTick: sourceTick,
+                completedThroughTick: sourceTick,
+                status: GPU_EFFECT_RUNTIME_STATUS.OK,
+                candidateCount: 0,
+                appliedInstanceCount: 0,
+                eventCount: events.length,
+                pulseResults: Object.freeze(pulseResults),
+                events: Object.freeze(events)
+            }));
+            this.lastEffectSourceTick = sourceTick;
+            this.lastEffectSubmittedTick = sourceTick;
+            this.pendingEffectBatch = null;
         }
         this.fixedUpdateCount++;
         return this.bodies.size > 0;
@@ -270,10 +403,19 @@ class ArcherIntegrationBackend {
         const outcomes = [];
         for (const spawn of plan.sourceRelativeSpawns) {
             const source = this.bodies.get(handleKey(spawn.sourceHandle));
-            const target = spawn.targetHandle
-                ? this.bodies.get(handleKey(spawn.targetHandle))
+            const selectedPriorityTarget = spawn.modeFlags
+                === GPU_SPAWN_PROGRAM_MODE
+                    .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+            const targetHandle = selectedPriorityTarget
+                ? null
+                : spawn.targetHandle ?? null;
+            const target = targetHandle
+                ? this.bodies.get(handleKey(targetHandle))
                 : null;
             let outcome = source ? 'resolved' : 'source-invalid';
+            if (outcome === 'resolved' && selectedPriorityTarget) {
+                outcome = 'no-target';
+            }
             if (outcome === 'resolved'
                 && spawn.modeFlags
                     === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
@@ -302,7 +444,9 @@ class ArcherIntegrationBackend {
                     };
                 } else {
                     const aim = spawn.modeFlags
-                        === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+                            === GPU_SPAWN_PROGRAM_MODE
+                                .SOURCE_RELATIVE_TARGET_ENTITY
+                        || selectedPriorityTarget
                         ? {
                             x: target.position.x + spawn.targetOffset.x,
                             y: target.position.y + spawn.targetOffset.y
@@ -330,8 +474,8 @@ class ArcherIntegrationBackend {
                 sourceTick,
                 definitionId: spawn.destinationSpawn.definitionId,
                 sourceHandle: exactHandle(spawn.sourceHandle),
-                targetHandle: spawn.targetHandle
-                    ? exactHandle(spawn.targetHandle)
+                targetHandle: targetHandle
+                    ? exactHandle(targetHandle)
                     : null,
                 destinationHandle: exactHandle(spawn.destinationHandle),
                 destinationSpawn: spawn.destinationSpawn,
@@ -343,10 +487,19 @@ class ArcherIntegrationBackend {
             }));
             outcomes.push(Object.freeze({
                 sourceHandle: exactHandle(spawn.sourceHandle),
-                targetHandle: spawn.targetHandle
-                    ? exactHandle(spawn.targetHandle)
-                    : null,
+                targetHandle: selectedPriorityTarget
+                    ? outcome === 'resolved' && targetHandle
+                        ? exactHandle(targetHandle)
+                        : null
+                    : targetHandle
+                        ? exactHandle(targetHandle)
+                        : null,
                 destinationHandle: exactHandle(spawn.destinationHandle),
+                ...(selectedPriorityTarget
+                    ? {
+                        selectedTargetKind: 'none'
+                    }
+                    : {}),
                 reason: outcome
             }));
         }
@@ -362,6 +515,57 @@ class ArcherIntegrationBackend {
     drainCompletedSpawnProgramBatches(out = []) {
         out.push(...this.spawnCompletionBatches.splice(0));
         return out;
+    }
+
+    drainCompletedBodyControlProgramBatches(out = []) {
+        out.push(...this.bodyControlCompletionBatches.splice(0));
+        return out;
+    }
+
+    drainCompletedEffectProgramBatches(out = []) {
+        out.push(...this.effectCompletionBatches.splice(0));
+        return out;
+    }
+
+    cancelPendingEffectProgramsForTerminal(request) {
+        const pendingPulseProgramCount = (
+            this.pendingEffectBatch?.records.length ?? 0
+        ) + this.effectCompletionBatches.reduce(
+            (count, batch) => count + batch.pulseResults.length,
+            0
+        );
+        this.effectTerminal = Object.freeze({
+            abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+            state: 'armed',
+            finalFixedTick: request.finalFixedTick,
+            submittedTick: 0,
+            pulseProgramCount: pendingPulseProgramCount,
+            pendingPulseProgramCount,
+            pendingEffectReadbackCount: this.effectCompletionBatches.length,
+            failure: null
+        });
+        return this.effectTerminal;
+    }
+
+    getEffectRuntimeStatus() {
+        return Object.freeze({
+            abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
+            state: 'idle',
+            ...this.eventProtocol,
+            ingressOpen: this.effectTerminal === null,
+            stagedProgramCount: this.pendingEffectBatch?.records.length ?? 0,
+            pendingPulseProgramCount:
+                this.pendingEffectBatch?.records.length ?? 0,
+            pendingEffectReadbackCount: this.effectCompletionBatches.length,
+            completedThroughTick: this.lastEffectSourceTick,
+            activePoolIndex: 0,
+            sourceTick: this.lastEffectSourceTick,
+            lastSubmittedTick: this.lastEffectSubmittedTick,
+            runtimeStatus: GPU_EFFECT_RUNTIME_STATUS.OK,
+            requiresRecovery: false,
+            failure: null,
+            terminal: this.effectTerminal
+        });
     }
 
     hasPendingSpawnProgramThroughTick() {
@@ -510,8 +714,11 @@ class ArcherIntegrationBackend {
         this.destroyCount++;
         this.bodies.clear();
         this.spawnCompletionBatches.length = 0;
+        this.bodyControlCompletionBatches.length = 0;
+        this.effectCompletionBatches.length = 0;
         this.completedEventBatches.length = 0;
         this.pendingFixedPlan = null;
+        this.pendingEffectBatch = null;
         this.towerGameplayTargetHandle = null;
         this.trackedHandle = null;
         this.runtimeState = 'destroyed';
@@ -1305,7 +1512,10 @@ test('production wave alive recovery는 HP와 failed replacement를 보존하고
     assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 1);
     assert.equal(gameSystem.fixedUpdate(), true);
     hostileStatus = gameSystem.getHostileAttackStatus();
-    assert.equal(hostileStatus.shotResolvedCount, 1);
+    assert.equal(
+        findArcherStatus(hostileStatus, firstArcherHandle).shotSequence,
+        1
+    );
     const firstHostileHandle = findProjectileHandleByDefinition(
         oldRegistry,
         HOSTILE_BASIC_BULLET_DATA.id
@@ -1505,7 +1715,14 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     const firstAcceptedFixedTick = firstEligibleFixedTick + 1;
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(gameSystem.getFixedTick(), firstAcceptedFixedTick);
-    assert.equal(gameSystem.getHostileAttackStatus().pendingShotCount, 1);
+    assert.equal(
+        gameSystem.getHostileAttackStatus().pendingShots.filter(
+            ({ sourceHandle }) => (
+                handleKey(sourceHandle) === handleKey(firstArcherHandle)
+            )
+        ).length,
+        1
+    );
     inputState.primaryPressed = false;
     assert.equal(gameSystem.fixedUpdate(), true);
     hostileStatus = gameSystem.getHostileAttackStatus();
@@ -1757,8 +1974,16 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
 
     hostileStatus = gameSystem.getHostileAttackStatus();
     const deathFixedTick = gameSystem.getFixedTick();
-    const attemptsAtDeath = hostileStatus.shotStartAttemptCount;
-    const acceptedAtDeath = hostileStatus.shotRequestAcceptedCount;
+    const archerAttemptOrdinalsAtDeath = new Map(
+        hostileStatus.archers.map(({ handle, lastAttemptOrdinal }) => (
+            [handleKey(handle), lastAttemptOrdinal]
+        ))
+    );
+    const archerShotSequencesAtDeath = new Map(
+        hostileStatus.archers.map(({ handle, shotSequence }) => (
+            [handleKey(handle), shotSequence]
+        ))
+    );
     const hostileMaterializationsAtDeath = hostileShots().length;
     const playerMaterializationsAtDeath = backend.materializedShots.filter(
         ({ definitionId }) => definitionId === BASIC_BULLET_PROJECTILE_DATA.id
@@ -1780,8 +2005,16 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     advanceThrough(gameSystem, postDeathFixedTick);
     hostileStatus = gameSystem.getHostileAttackStatus();
     assert.equal(gameSystem.getFixedTick() - deathFixedTick >= 30, true);
-    assert.equal(hostileStatus.shotStartAttemptCount, attemptsAtDeath);
-    assert.equal(hostileStatus.shotRequestAcceptedCount, acceptedAtDeath);
+    for (const record of hostileStatus.archers) {
+        assert.equal(
+            record.lastAttemptOrdinal,
+            archerAttemptOrdinalsAtDeath.get(handleKey(record.handle))
+        );
+        assert.equal(
+            record.shotSequence,
+            archerShotSequencesAtDeath.get(handleKey(record.handle))
+        );
+    }
     assert.equal(hostileShots().length, hostileMaterializationsAtDeath);
     assert.equal(
         backend.materializedShots.filter(
@@ -1809,9 +2042,25 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
         assert.equal(registry.has(record.handle), true);
         assert.equal(backend.hasBody(record.handle), true);
     }
-    assert.equal(endpoint.getStatus().reservedCount, 0);
-    assert.equal(endpoint.getStatus().pendingCommandCount, 0);
-    assert.equal(endpoint.getStatus().pendingSourceRelativeDestinationCount, 0);
+    const postDeathEndpointStatus = endpoint.getStatus();
+    assert.equal(
+        hostileStatus.pendingShots.filter(({ sourceHandle }) => (
+            archerHandleKeys.has(handleKey(sourceHandle))
+        )).length,
+        0
+    );
+    assert.equal(
+        postDeathEndpointStatus.pendingCommandCount,
+        hostileStatus.pendingControlCount + hostileStatus.pendingShotCount
+    );
+    assert.equal(
+        postDeathEndpointStatus.reservedCount,
+        hostileStatus.pendingShotCount
+    );
+    assert.equal(
+        postDeathEndpointStatus.pendingSourceRelativeDestinationCount,
+        hostileStatus.pendingShotCount
+    );
     assert.equal(backend.pendingFixedPlan, null);
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);
@@ -1902,9 +2151,13 @@ test('production 32-spawn wave의 Archer 4기는 Tower death 뒤에도 route를 
     assert.equal(objectSystem.getEnemyWaveStatus().totalSpawnCount, 32);
     assert.equal(objectSystem.getEnemyWaveStatus().queuedSpawnCount, 7);
     advanceThrough(gameSystem, deadRecoveryOffset + 36);
-    assert.equal(gameSystem.getHostileAttackStatus().shotStartAttemptCount, 0);
+    const deadRecoveryPostStatus = gameSystem.getHostileAttackStatus();
+    assert.equal(deadRecoveryPostStatus.shotStartAttemptCount, 0);
     assert.equal(replacementEndpoint.getStatus().reservedCount, 0);
-    assert.equal(replacementEndpoint.getStatus().pendingCommandCount, 0);
+    assert.equal(
+        replacementEndpoint.getStatus().pendingCommandCount,
+        deadRecoveryPostStatus.pendingControlCount
+    );
     assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     assert.strictEqual(gameSystem.getCoreIntegrity(), coreIntegrity);
     assert.equal(coreIntegrity.getCurrentIntegrity(), initialCoreIntegrity);

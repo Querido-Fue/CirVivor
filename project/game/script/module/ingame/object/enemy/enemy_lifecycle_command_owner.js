@@ -19,6 +19,10 @@ import {
 import {
     BASIC_HEXA_ENEMY_DEFINITION_ID
 } from 'data/object/enemy/basic_hexa_enemy_data.js';
+import {
+    GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+} from '../../physics/gpu/gpu_circle_body_abi.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
@@ -28,6 +32,28 @@ const AUTHENTIC_TERMINAL_CLEANUP_COMMANDS = new WeakSet();
 const PRIVILEGED_TRANSFORM_DISPOSITIONS = new Set([
     ENEMY_LIFECYCLE_DISPOSITION_ID.MERGE_CONSUMED,
     ENEMY_LIFECYCLE_DISPOSITION_ID.TRANSFORM_CONSUMED
+]);
+const SELECTED_TARGET_PROJECTILE_PRIVATE_FIELDS = Object.freeze([
+    'targetSelectionPolicyId',
+    'distancePolicyId',
+    'attackRangeTiles',
+    'towerTargetPolicyId',
+    'coreTargetPolicyId',
+    'coreDamageRequestPolicyId',
+    'coreDamage',
+    'coreDamageFixedPoint',
+    'requiresExactSelectedTarget',
+    'coreTargetEntityId',
+    'coreTargetIncarnation',
+    'towerTargetEntityId',
+    'towerTargetIncarnation',
+    'selectedTargetKind',
+    'selectedTargetEntityId',
+    'selectedTargetIncarnation',
+    'selectedTargetPolicyId',
+    'selectionSourceTick',
+    'selectionSequence',
+    'attackFingerprint'
 ]);
 
 function requirePositiveSafeInteger(value, label) {
@@ -93,7 +119,24 @@ function isRetryableBackendRecoveryState(state) {
     return state === 'gpu-backpressure';
 }
 
-export const normalizeSpawnIntent = normalizeGpuSpawnIntent;
+export function normalizeSpawnIntent(source) {
+    const intent = normalizeGpuSpawnIntent(source);
+    const selectedOnlyField = SELECTED_TARGET_PROJECTILE_PRIVATE_FIELDS.find(
+        (field) => Object.prototype.hasOwnProperty.call(intent, field)
+    );
+    const hasCoreDamageRequest = (
+        intent.contactHandler?.flags
+        & GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.CORE_DAMAGE_REQUEST
+    ) !== 0;
+    const hasSelectedTargetProgram = intent.enemyBehaviorState?.programId
+        === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE;
+    if (hasCoreDamageRequest || hasSelectedTargetProgram || selectedOnlyField) {
+        throw new RangeError(
+            'selected-target projectile는 requestSelectedTargetSpawn 전용 ingress입니다.'
+        );
+    }
+    return intent;
+}
 export const createRegistryMetadata = createGpuRegistryMetadata;
 
 function freezeCommitResult(result) {

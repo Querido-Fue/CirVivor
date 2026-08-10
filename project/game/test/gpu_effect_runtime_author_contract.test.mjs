@@ -29,6 +29,9 @@ const {
     GPU_COLLISION_COMPUTE_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
 const {
+    GPU_FORMATION_RUNTIME_COMPUTE_WGSL
+} = await loadGameModule('ingame/physics/gpu/gpu_formation_runtime_shaders.js');
+const {
     GPU_SPAWN_PROGRAM_REQUEST_FLAGS,
     createGpuSpawnProgramStorage,
     readGpuSpawnProgramRecord,
@@ -82,6 +85,73 @@ function readNamedBindGroupBindings(source, variableName) {
     ));
     assert(match, `${variableName} bind group source block missing`);
     return [...match[1].matchAll(/binding:\s*(\d+)/g)].map((entry) => Number(entry[1]));
+}
+
+function readTransitiveStorageUsage(source) {
+    const wgsl = source
+        .replace(/\/\*[\s\S]*?\*\//g, '')
+        .replace(/\/\/[^\n]*/g, '');
+    const storageResources = Array.from(wgsl.matchAll(
+        /@group\((\d+)\)\s*@binding\((\d+)\)\s*var<storage[^>]*>\s+(\w+)\s*:/g
+    ), ([, group, binding, name]) => ({
+        group: Number(group),
+        binding: Number(binding),
+        name
+    }));
+    const functions = new Map();
+    const functionPattern = /\bfn\s+(\w+)/g;
+    for (let match = functionPattern.exec(wgsl);
+        match;
+        match = functionPattern.exec(wgsl)) {
+        const openBrace = wgsl.indexOf('{', functionPattern.lastIndex);
+        assert.ok(openBrace >= 0, `${match[1]} WGSL body missing`);
+        let depth = 1;
+        let cursor = openBrace + 1;
+        while (cursor < wgsl.length && depth > 0) {
+            if (wgsl[cursor] === '{') {
+                depth += 1;
+            } else if (wgsl[cursor] === '}') {
+                depth -= 1;
+            }
+            cursor += 1;
+        }
+        assert.equal(depth, 0, `${match[1]} WGSL body is unbalanced`);
+        functions.set(match[1], wgsl.slice(openBrace + 1, cursor - 1));
+        functionPattern.lastIndex = cursor;
+    }
+    const entryPoints = Array.from(wgsl.matchAll(
+        /@compute\s+@workgroup_size\([^)]*\)\s*fn\s+(\w+)/g
+    ), (match) => match[1]);
+    return new Map(entryPoints.map((entryPoint) => {
+        const visited = new Set();
+        const usedResources = new Map();
+        const visit = (functionName) => {
+            if (visited.has(functionName)) {
+                return;
+            }
+            visited.add(functionName);
+            const body = functions.get(functionName) ?? '';
+            for (const resource of storageResources) {
+                if (new RegExp(`\\b${resource.name}\\b`).test(body)) {
+                    usedResources.set(
+                        `${resource.group}:${resource.binding}`,
+                        resource
+                    );
+                }
+            }
+            for (const candidate of functions.keys()) {
+                if (new RegExp(`\\b${candidate}\\s*\\(`).test(body)) {
+                    visit(candidate);
+                }
+            }
+        };
+        visit(entryPoint);
+        const bindings = Array.from(usedResources.values())
+            .sort((left, right) => left.group - right.group
+                || left.binding - right.binding)
+            .map(({ group, binding, name }) => `${group}:${binding}:${name}`);
+        return [entryPoint, bindings];
+    }));
 }
 
 test('Effect ABI는 Body v6와 분리된 exact strides/offsets와 catalog target policy authority를 고정한다', () => {
@@ -197,7 +267,106 @@ test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 a
         GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
         /atomicLoad\(&grid_overflow\.small_count\)[\s\S]*?safe_program_count == 0u/
     );
+    const scanStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
+        'fn scan_effect_pulse_candidates('
+    );
+    const materializeStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
+        'fn materialize_effect_batch('
+    );
+    const writeEventStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
+        'fn write_effect_event('
+    );
+    const finishStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
+        'fn finish_effect_tick('
+    );
+    assert.ok(scanStart >= 0 && writeEventStart > scanStart
+        && materializeStart > writeEventStart
+        && finishStart > materializeStart);
+    const scanBlock = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(
+        scanStart,
+        writeEventStart
+    );
+    const materializeBlock = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(
+        materializeStart,
+        finishStart
+    );
+    assert.doesNotMatch(scanBlock, /effect_instances_output|effect_events/);
+    const firstMaterializeMutation = materializeBlock.indexOf(
+        'var event_index = 0u;'
+    );
+    assert.ok(firstMaterializeMutation > 0);
+    const materializePreflight = materializeBlock.slice(
+        0,
+        firstMaterializeMutation
+    );
+    assert.match(materializePreflight,
+        /arrayLength\(&effect_candidates\.values\)[\s\S]*?arrayLength\(&effect_instances_output\.values\)[\s\S]*?arrayLength\(&effect_events\.values\)/);
+    assert.match(materializePreflight,
+        /EFFECT_RESULT_CAPACITY_REJECTED[\s\S]*?candidate_count, 0u[\s\S]*?event_count, 0u[\s\S]*?return;/);
     assert.doesNotMatch(GPU_EFFECT_RUNTIME_COMPUTE_WGSL, /ENEMY_BEHAVIOR_STATE_PENTA/);
+});
+
+test('모든 compute entry의 transitive storage usage는 exact 9 이하이다', () => {
+    const collisionUsage = readTransitiveStorageUsage(GPU_COLLISION_COMPUTE_WGSL);
+    const effectUsage = readTransitiveStorageUsage(GPU_EFFECT_RUNTIME_COMPUTE_WGSL);
+    const formationUsage = readTransitiveStorageUsage(
+        GPU_FORMATION_RUNTIME_COMPUTE_WGSL
+    );
+    for (const [domain, usage] of [
+        ['collision', collisionUsage],
+        ['effect', effectUsage],
+        ['formation', formationUsage]
+    ]) {
+        for (const [entryPoint, bindings] of usage) {
+            assert.ok(
+                bindings.length <= 9,
+                `${domain}.${entryPoint} storage=${bindings.length}: ${bindings.join(', ')}`
+            );
+        }
+    }
+    assert.deepEqual(collisionUsage.get('handle_contacts'), [
+        '0:0:counts',
+        '0:1:physics',
+        '0:2:simulations',
+        '0:4:contact_handlers',
+        '0:10:combat_states',
+        '3:0:contact_state',
+        '3:1:contacts',
+        '3:2:applied_events',
+        '3:3:death_events'
+    ]);
+    assert.deepEqual(collisionUsage.get('resolve_maximum_damage_window'), [
+        '0:0:counts',
+        '0:1:physics',
+        '0:2:simulations',
+        '0:4:contact_handlers',
+        '0:10:combat_states',
+        '0:11:enemy_behavior_states',
+        '3:0:contact_state',
+        '3:1:contacts',
+        '3:2:applied_events'
+    ]);
+    assert.deepEqual(effectUsage.get('scan_effect_pulse_candidates'), [
+        '0:1:physics',
+        '0:2:simulations',
+        '0:6:effect_emitters',
+        '0:7:pulse_program',
+        '0:8:pool_state',
+        '0:11:effect_candidates',
+        '1:0:grid_counts',
+        '1:1:grid_bodies',
+        '1:2:grid_overflow'
+    ]);
+    assert.deepEqual(effectUsage.get('materialize_effect_batch'), [
+        '0:1:physics',
+        '0:5:effect_summaries',
+        '0:6:effect_emitters',
+        '0:7:pulse_program',
+        '0:8:pool_state',
+        '0:10:effect_instances_output',
+        '0:11:effect_candidates',
+        '0:12:effect_events'
+    ]);
 });
 
 test('Effect damage order는 immutable contact base와 Tower-only projectile snapshot을 사용하고 Core channel을 곱하지 않는다', () => {
@@ -384,7 +553,27 @@ test('전용 NW stage는 big-bucket dedupe와 offscreen pulse/boost/expiry pixel
     );
     assert.match(
         nwEffectRunnerSource,
+        /runEffectBigBucketFixture[\s\S]*?x: sourceIntent\.position\.x,[\s\S]*?y: sourceIntent\.position\.y \+ 3[\s\S]*?radius: 2,[\s\S]*?inverseMass: 0[\s\S]*?isWalkableTile\(targetTile\.row, targetTile\.column\)[\s\S]*?target\.radius \* 2\) > minimumGridCellSize[\s\S]*?candidateCount === 1[\s\S]*?appliedInstanceCount === 1[\s\S]*?eventCount === 2/
+    );
+    assert.match(
+        nwEffectRunnerSource,
         /runEffectPresentationPixelFixture[\s\S]*?GPUTextureUsage\.RENDER_ATTACHMENT \| GPUTextureUsage\.COPY_SRC[\s\S]*?pulsedSourcePixels > baselineSourcePixels[\s\S]*?BOOST visual did not disappear at half-open expiry/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /HARDWARE_FIXED_SUBMIT_SETTLE_INTERVAL_TICKS = 16[\s\S]*?advanceFixedTicksWithReadbackYields[\s\S]*?ticksSinceSettle === HARDWARE_FIXED_SUBMIT_SETTLE_INTERVAL_TICKS[\s\S]*?queue\.onSubmittedWorkDone\(\)[\s\S]*?setTimeout\(resolve, 0\)/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /advanceFixedTicksWithReadbackYields\([\s\S]*?17,[\s\S]*?180,[\s\S]*?'Effect lifetime'[\s\S]*?requiresRecovery\(\) === false/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /runEffectPresentationPixelFixture[\s\S]*?advanceFixedTicksWithReadbackYields\([\s\S]*?3,[\s\S]*?180,[\s\S]*?'Effect offscreen lifetime'[\s\S]*?summaryTick === 180[\s\S]*?boostStackCount === 1[\s\S]*?GPU_EFFECT_PRESENTATION_TAG\.BOOST[\s\S]*?summaryTick === 181[\s\S]*?boostStackCount === 0[\s\S]*?GPU_EFFECT_PRESENTATION_TAG\.BOOST/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /position: Object\.freeze\(\{ x: origin\.x \+ 2, y: origin\.y \}\)[\s\S]*?isWalkableTile\(targetTile\.row, targetTile\.column\)[\s\S]*?expiryPixelEvidence[\s\S]*?baselineTargetPixel[\s\S]*?boostedTargetPixel[\s\S]*?expiredTargetPixel[\s\S]*?tick181Body/
     );
 });
 
@@ -396,8 +585,14 @@ test('Effect readback은 GPU가 소비한 radiusTiles까지 exact f32 provenance
 });
 
 test('fixed terminal retire는 Effect lease를 침범하지 않고 Effect cancel만 exact pending을 퇴역한다', () => {
-    const fixedRetireStart = simulationSource.indexOf('#retireTerminalReadbacks()');
-    const fixedRetireEnd = simulationSource.indexOf('#validateBody(', fixedRetireStart);
+    const fixedRetireStart = simulationSource.indexOf(
+        '    #retireTerminalReadbacks() {'
+    );
+    const fixedRetireEnd = simulationSource.indexOf(
+        '\n    #validateBody(',
+        fixedRetireStart
+    );
+    assert.ok(fixedRetireStart >= 0 && fixedRetireEnd > fixedRetireStart);
     const fixedRetireBody = simulationSource.slice(fixedRetireStart, fixedRetireEnd);
     assert.doesNotMatch(fixedRetireBody, /effectProgram|stagedEffect|EffectReadback/);
     assert.match(
@@ -411,8 +606,24 @@ test('fixed terminal retire는 Effect lease를 침범하지 않고 Effect cancel
 });
 
 test('idle release 뒤 respawn world는 Effect pool/summary/emitter identity를 새 epoch로 초기화한다', () => {
-    assert.match(
-        simulationSource,
-        /#completeDeferredIdleRelease\(\)[\s\S]*?nextAuthoritativeEpoch[\s\S]*?createGpuEffectBodyStateStorage\(this\.capacity\)[\s\S]*?createGpuEffectPoolStateStorage[\s\S]*?effectActivePoolIndex = 0/
+    const idleReleaseStart = simulationSource.indexOf(
+        '    #completeDeferredIdleRelease() {'
     );
+    const idleReleaseEnd = simulationSource.indexOf(
+        '\n    #beginEventReadback(',
+        idleReleaseStart
+    );
+    assert.ok(idleReleaseStart >= 0 && idleReleaseEnd > idleReleaseStart);
+    const idleReleaseBody = simulationSource.slice(
+        idleReleaseStart,
+        idleReleaseEnd
+    );
+    assert.match(
+        idleReleaseBody,
+        /nextAuthoritativeEpoch[\s\S]*?createGpuEffectPoolStateStorage\(\s*nextAuthoritativeEpoch\s*\)/
+    );
+    assert.match(idleReleaseBody, /createGpuEffectBodyStateStorage\(this\.capacity\)/);
+    assert.match(idleReleaseBody, /createGpuEffectPulseProgramStorage\([\s\S]*?effectPulseProgramCapacity/);
+    assert.match(idleReleaseBody, /effectActivePoolIndex = 0/);
+    assert.match(idleReleaseBody, /authoritativeEpoch = nextAuthoritativeEpoch/);
 });

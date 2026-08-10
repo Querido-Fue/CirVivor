@@ -29,6 +29,9 @@ const {
 const {
     createGpuRegistryMetadata
 } = await loadGameModule('ingame/object/gpu_spawn_intent.js');
+const {
+    encodeGpuCircleBodyFixedPoint
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 const ROUTE = Object.freeze({
     gateId: 'formation-host-gate',
@@ -57,7 +60,11 @@ function activateNaturalH(registry, spawnSequence, createdAtTick = 1) {
         registry.activateReserved(handle, createGpuRegistryMetadata(activation)),
         true
     );
-    return Object.freeze({ handle, activation });
+    return Object.freeze({
+        handle,
+        activation,
+        healthCenti: encodeGpuCircleBodyFixedPoint(activation.health)
+    });
 }
 
 function lifecycleCommit(fixedTick, spawned = [], despawned = [], rejected = []) {
@@ -127,8 +134,8 @@ function preparedSource(source, destination, partner) {
         rotationStep: metadata.formationRotationStep,
         generation: metadata.formationGeneration,
         lineageHash: metadata.formationLineageHash,
-        currentHealthCenti: metadata.healthFixedPoint,
-        maxHealthCenti: metadata.maxHealthFixedPoint,
+        currentHealthCenti: source.healthCenti,
+        maxHealthCenti: source.healthCenti,
         pairSourceEntityId: partner.handle.entityId,
         pairSourceIncarnation: partner.handle.incarnation,
         destinationMemberCount: 2,
@@ -162,7 +169,10 @@ test('Formation roster는 accepted prepare에서만 sequence를 전진하고 rej
     const first = director.stageForFixedTick({ targetFixedTick: 2 });
     assert.equal(first.accepted, true);
     assert.deepEqual(
-        harness.prepareRequests[0].records.map(({ prepareSequence }) => prepareSequence),
+        Array.from(
+            harness.prepareRequests[0].records,
+            ({ prepareSequence }) => prepareSequence
+        ),
         [0, 0]
     );
     assert.equal(director.stageForFixedTick({ targetFixedTick: 2 }).replayed, true);
@@ -173,13 +183,19 @@ test('Formation roster는 accepted prepare에서만 sequence를 전진하고 rej
     assert.equal(rejected.accepted, false);
     assert.equal(rejected.requiresRecovery, false);
     assert.deepEqual(
-        harness.prepareRequests[1].records.map(({ prepareSequence }) => prepareSequence),
+        Array.from(
+            harness.prepareRequests[1].records,
+            ({ prepareSequence }) => prepareSequence
+        ),
         [1, 1]
     );
     harness.setPrepareMode('accept');
     assert.equal(director.stageForFixedTick({ targetFixedTick: 4 }).accepted, true);
     assert.deepEqual(
-        harness.prepareRequests[2].records.map(({ prepareSequence }) => prepareSequence),
+        Array.from(
+            harness.prepareRequests[2].records,
+            ({ prepareSequence }) => prepareSequence
+        ),
         [1, 1],
         'rejected batch는 sequence를 소비하지 않는다'
     );
@@ -203,10 +219,10 @@ test('two-source exact lineage는 prepare→privileged lifecycle→destination S
         Object.freeze({ handle: right.handle })
     ]), 1);
     const mergedHealth = mergeBasicHexaHealthCenti({
-        sourceACurrentHealthCenti: left.activation.healthFixedPoint,
-        sourceAMaxHealthCenti: left.activation.maxHealthFixedPoint,
-        sourceBCurrentHealthCenti: right.activation.healthFixedPoint,
-        sourceBMaxHealthCenti: right.activation.maxHealthFixedPoint
+        sourceACurrentHealthCenti: left.healthCenti,
+        sourceAMaxHealthCenti: left.healthCenti,
+        sourceBCurrentHealthCenti: right.healthCenti,
+        sourceBMaxHealthCenti: right.healthCenti
     });
     const prepared = director.observeCompletedPreparations({
         sourceTick: 10,
@@ -220,8 +236,17 @@ test('two-source exact lineage는 prepare→privileged lifecycle→destination S
     assert.equal(prepared.accepted, true);
     assert.equal(prepared.transformCount, 1);
     const requested = harness.transformRequests[0];
-    assert.deepEqual(requested.records[0].sourceHandles, [left.handle, right.handle]);
-    assert.deepEqual(requested.records[0].sourceLineages, [[left.handle], [right.handle]]);
+    assert.deepEqual(
+        Array.from(requested.records[0].sourceHandles),
+        [left.handle, right.handle]
+    );
+    assert.deepEqual(
+        Array.from(
+            requested.records[0].sourceLineages,
+            (lineage) => Array.from(lineage)
+        ),
+        [[left.handle], [right.handle]]
+    );
     const combinedLineage = [left.handle, right.handle];
     assert.equal(
         requested.records[0].destinationDescriptor.formationLineageHash,
@@ -295,11 +320,11 @@ test('two-source exact lineage는 prepare→privileged lifecycle→destination S
     assert.equal(director.hasExactMember(destinationHandle, right.handle), true);
     assert.deepEqual(
         director.copyExactMemberHandleAt(destinationHandle, 0, {}),
-        left.handle
+        { ...left.handle }
     );
     assert.deepEqual(
         director.copyExactMemberHandleAt(destinationHandle, 1, {}),
-        right.handle
+        { ...right.handle }
     );
     assert.equal(director.getMemberCount(left.handle), 0);
     assert.equal(director.getMemberCount(right.handle), 0);
@@ -363,7 +388,13 @@ test('GPU-world replacement는 old Formation director roster를 폐기하고 fre
     assert.equal(destroyed.totalOriginalMemberCount, 0);
     assert.equal(destroyed.pendingTransformBatchCount, 0);
     assert.equal(destroyed.recoveryRequired, false);
-    assert.throws(() => director.stageForFixedTick({ targetFixedTick: 2 }));
+    assert.deepEqual(
+        { ...director.stageForFixedTick({ targetFixedTick: 2 }) },
+        {
+            accepted: false,
+            reason: 'formation-unavailable'
+        }
+    );
 
     const replacementRegistry = new WorldRegistry({
         capacity: 2,

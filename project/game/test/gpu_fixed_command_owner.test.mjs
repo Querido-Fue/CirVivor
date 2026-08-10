@@ -1675,7 +1675,7 @@ test('target completion mismatch는 batch 전체 registry mutation 없이 recove
     });
 
     const completion = owner.commitCompletedAtFixedBoundary(26);
-    assert.equal(completion.protocolFailure.code, 'destination-contract');
+    assert.equal(completion.protocolFailure.code, 'target-contract');
     assert.equal(completion.completed.length, 0);
     assert.equal(registry.getRevision(), revisionBeforeCompletion);
     assert.equal(registry.getActiveCount(), 3);

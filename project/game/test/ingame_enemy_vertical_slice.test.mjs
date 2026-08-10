@@ -30,6 +30,21 @@ const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_RENDER_SHAPE
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    GPU_EFFECT_EVENT_TYPE,
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_PULSE_PROGRAM_RESULT,
+    GPU_EFFECT_RUNTIME_ABI_VERSION,
+    GPU_EFFECT_RUNTIME_STATUS,
+    GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
+} = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_abi.js');
+const {
+    GPU_BODY_CONTROL_PROGRAM_MODE,
+    GPU_BODY_CONTROL_PROGRAM_RESULT,
+    GPU_BODY_CONTROL_SELECTED_TARGET_KIND,
+    GPU_BODY_CONTROL_STATE_FLAGS,
+    GPU_SPAWN_PROGRAM_MODE
+} = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -48,7 +63,13 @@ class FakeEnemySimulationBackend {
         this.recovering = false;
         this.completedEventBatches = [];
         this.spawnCompletionBatches = [];
+        this.bodyControlCompletionBatches = [];
         this.pendingSourceRelativePlan = null;
+        this.pendingEffectBatch = null;
+        this.effectCompletionBatches = [];
+        this.lastEffectSourceTick = 0;
+        this.lastEffectSubmittedTick = 0;
+        this.effectTerminal = null;
         this.eventProtocolState = null;
         this.replaceBodiesCallCount = 0;
         this.readbackBodiesCallCount = 0;
@@ -133,8 +154,21 @@ class FakeEnemySimulationBackend {
 
         const controlledHandles = new Set();
         const controlsValid = controls.every((control) => {
-            const key = handleKey(control);
-            if (controlledHandles.has(key) || !this.canControlBody(control)) {
+            const priorityControl = control.modeFlags
+                === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE;
+            const controlledHandle = priorityControl
+                ? control.sourceHandle
+                : control;
+            const key = handleKey(controlledHandle);
+            const exactCandidatesLive = priorityControl
+                ? this.hasBody(control.sourceHandle)
+                    && this.hasBody(control.coreTargetHandle)
+                    && (control.towerTargetHandle === null
+                        || this.hasBody(control.towerTargetHandle))
+                : control.modeFlags
+                    === GPU_BODY_CONTROL_PROGRAM_MODE.MOVE_INTENT
+                    && this.canControlBody(control);
+            if (controlledHandles.has(key) || !exactCandidatesLive) {
                 return false;
             }
             controlledHandles.add(key);
@@ -153,9 +187,14 @@ class FakeEnemySimulationBackend {
             };
         }
         assert.equal(this.pendingSourceRelativePlan, null);
-        if (sourceRelativeSpawns.length > 0) {
+        if (sourceRelativeSpawns.length > 0
+            || controls.some(({ modeFlags }) => (
+                modeFlags
+                    === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE
+            ))) {
             this.pendingSourceRelativePlan = {
                 targetFixedTick: plan.targetFixedTick,
+                controls,
                 sourceRelativeSpawns
             };
         }
@@ -174,6 +213,21 @@ class FakeEnemySimulationBackend {
             },
             requiresRecovery: false
         };
+    }
+
+    stageEffectPulseProgramBatch(batch) {
+        assert.equal(this.pendingEffectBatch, null);
+        const records = Array.from(batch.records ?? []);
+        this.pendingEffectBatch = Object.freeze({
+            ...batch,
+            records: Object.freeze(records)
+        });
+        return Object.freeze({
+            accepted: true,
+            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+            sourceTick: batch.sourceTick,
+            stagedCount: records.length
+        });
     }
 
     configureTowerGameplayTarget(handle = null) {
@@ -222,23 +276,65 @@ class FakeEnemySimulationBackend {
         const plan = this.pendingSourceRelativePlan;
         if (plan) {
             assert.equal(plan.targetFixedTick, sourceTick);
+            const priorityOutcomes = plan.controls
+                .filter(({ modeFlags }) => (
+                    modeFlags
+                        === GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE
+                ))
+                .map((control) => Object.freeze({
+                    sourceHandle: Object.freeze({ ...control.sourceHandle }),
+                    coreTargetHandle: Object.freeze({
+                        ...control.coreTargetHandle
+                    }),
+                    towerTargetHandle: control.towerTargetHandle
+                        ? Object.freeze({ ...control.towerTargetHandle })
+                        : null,
+                    sourceTick,
+                    selectionSequence: control.selectionSequence,
+                    attackFingerprint: control.attackFingerprint,
+                    attackRangeTiles: control.attackRangeTiles,
+                    result: GPU_BODY_CONTROL_PROGRAM_RESULT.NO_TARGET,
+                    outcome: 'no-target',
+                    selectedTargetKind:
+                        GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE,
+                    stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW,
+                    selectedTargetHandle: null
+                }));
+            if (priorityOutcomes.length > 0) {
+                this.bodyControlCompletionBatches.push(Object.freeze({
+                    ...this.eventProtocolState,
+                    sourceTick,
+                    outcomes: Object.freeze(priorityOutcomes)
+                }));
+            }
             const outcomes = [];
             for (const spawn of plan.sourceRelativeSpawns) {
                 const source = this.bodiesByHandle.get(handleKey(spawn.sourceHandle));
                 assert.ok(source);
-                this.bodiesByHandle.set(handleKey(spawn.destinationHandle), {
-                    ...spawn.destinationSpawn,
-                    ...spawn.destinationHandle,
-                    position: { ...source.position },
-                    velocity: { x: 0, y: 0 }
-                });
+                const selectedPriorityTarget = spawn.modeFlags
+                    === GPU_SPAWN_PROGRAM_MODE
+                        .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+                const targetHandle = selectedPriorityTarget
+                    ? null
+                    : spawn.targetHandle ?? null;
+                if (!selectedPriorityTarget) {
+                    this.bodiesByHandle.set(handleKey(spawn.destinationHandle), {
+                        ...spawn.destinationSpawn,
+                        ...spawn.destinationHandle,
+                        position: { ...source.position },
+                        velocity: { x: 0, y: 0 }
+                    });
+                }
                 outcomes.push(Object.freeze({
                     sourceHandle: { ...spawn.sourceHandle },
-                    targetHandle: spawn.targetHandle
-                        ? { ...spawn.targetHandle }
+                    targetHandle: targetHandle
+                        ? { ...targetHandle }
                         : null,
                     destinationHandle: { ...spawn.destinationHandle },
-                    reason: 'resolved'
+                    ...(selectedPriorityTarget
+                        ? { selectedTargetKind: 'none' }
+                        : {}),
+                    reason: selectedPriorityTarget ? 'no-target' : 'resolved'
                 }));
             }
             this.spawnCompletionBatches.push(Object.freeze({
@@ -247,6 +343,57 @@ class FakeEnemySimulationBackend {
                 outcomes: Object.freeze(outcomes)
             }));
             this.pendingSourceRelativePlan = null;
+        }
+        const effectBatch = this.pendingEffectBatch;
+        if (effectBatch) {
+            assert.equal(effectBatch.sourceTick, sourceTick);
+            assert.ok(this.eventProtocolState);
+            const pulseResults = effectBatch.records.map((record, index) => (
+                Object.freeze({
+                    programIndex: index,
+                    pulseSequence: record.pulseSequence,
+                    resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
+                    candidateCount: 0,
+                    appliedCount: 0
+                })
+            ));
+            const events = effectBatch.records.map((record) => {
+                const source = this.bodiesByHandle.get(
+                    `${record.sourceEntityId}:${record.sourceIncarnation}`
+                );
+                assert.ok(source);
+                return Object.freeze({
+                    type: GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED,
+                    sourceEntityId: record.sourceEntityId,
+                    sourceIncarnation: record.sourceIncarnation,
+                    targetEntityId: record.sourceEntityId,
+                    targetIncarnation: record.sourceIncarnation,
+                    effectDefinitionCode: record.effectDefinitionCode,
+                    flags: 0,
+                    effectInstanceId: record.fingerprint,
+                    instanceIncarnation: 1,
+                    valueFixedPoint: 0,
+                    position: Object.freeze({ ...source.position })
+                });
+            });
+            this.effectCompletionBatches.push(Object.freeze({
+                abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                ...this.eventProtocolState,
+                previousSourceTick: this.lastEffectSourceTick,
+                previousSubmittedTick: this.lastEffectSubmittedTick,
+                sourceTick,
+                submittedTick: sourceTick,
+                completedThroughTick: sourceTick,
+                status: GPU_EFFECT_RUNTIME_STATUS.OK,
+                candidateCount: 0,
+                appliedInstanceCount: 0,
+                eventCount: events.length,
+                pulseResults: Object.freeze(pulseResults),
+                events: Object.freeze(events)
+            }));
+            this.lastEffectSourceTick = sourceTick;
+            this.lastEffectSubmittedTick = sourceTick;
+            this.pendingEffectBatch = null;
         }
         return true;
     }
@@ -298,6 +445,61 @@ class FakeEnemySimulationBackend {
         return out;
     }
 
+    drainCompletedBodyControlProgramBatches(out = []) {
+        out.push(...this.bodyControlCompletionBatches.splice(0));
+        return out;
+    }
+
+    drainCompletedEffectProgramBatches(out = []) {
+        out.push(...this.effectCompletionBatches.splice(0));
+        return out;
+    }
+
+    cancelPendingEffectProgramsForTerminal(request) {
+        const pendingPulseProgramCount = (
+            this.pendingEffectBatch?.records.length ?? 0
+        ) + this.effectCompletionBatches.reduce(
+            (count, batch) => count + batch.pulseResults.length,
+            0
+        );
+        this.effectTerminal = Object.freeze({
+            abiVersion: GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION,
+            state: 'armed',
+            finalFixedTick: request.finalFixedTick,
+            submittedTick: 0,
+            pulseProgramCount: pendingPulseProgramCount,
+            pendingPulseProgramCount,
+            pendingEffectReadbackCount: this.effectCompletionBatches.length,
+            failure: null
+        });
+        return this.effectTerminal;
+    }
+
+    getEffectRuntimeStatus() {
+        return Object.freeze({
+            abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
+            state: 'idle',
+            sessionGeneration: this.eventProtocolState?.sessionGeneration ?? 1,
+            deviceGeneration: this.eventProtocolState?.deviceGeneration ?? 0,
+            authoritativeEpoch:
+                this.eventProtocolState?.authoritativeEpoch ?? 0,
+            ingressOpen: this.effectTerminal === null,
+            stagedProgramCount: this.pendingEffectBatch?.records.length ?? 0,
+            pendingPulseProgramCount: (
+                this.pendingEffectBatch?.records.length ?? 0
+            ),
+            pendingEffectReadbackCount: this.effectCompletionBatches.length,
+            completedThroughTick: this.lastEffectSourceTick,
+            activePoolIndex: 0,
+            sourceTick: this.lastEffectSourceTick,
+            lastSubmittedTick: this.lastEffectSubmittedTick,
+            runtimeStatus: GPU_EFFECT_RUNTIME_STATUS.OK,
+            requiresRecovery: false,
+            failure: null,
+            terminal: this.effectTerminal
+        });
+    }
+
     hasPendingSpawnProgramThroughTick() {
         return false;
     }
@@ -319,7 +521,10 @@ class FakeEnemySimulationBackend {
         this.calls.push({ type: 'destroy' });
         this.bodiesByHandle.clear();
         this.spawnCompletionBatches.length = 0;
+        this.bodyControlCompletionBatches.length = 0;
+        this.effectCompletionBatches.length = 0;
         this.pendingSourceRelativePlan = null;
+        this.pendingEffectBatch = null;
         this.destroyed = true;
         this.initialized = false;
     }

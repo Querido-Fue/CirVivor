@@ -194,7 +194,7 @@ test('timeline cursor는 duration/wait/group/formation을 60Hz exact tick으로 
     const director = new WaveDirector({ waveDefinition });
     assert.equal(director.init(createFixtureTileMap()), true);
     assert.deepEqual(
-        director.schedule.map(({ targetFixedTick }) => targetFixedTick),
+        Array.from(director.schedule, ({ targetFixedTick }) => targetFixedTick),
         [1, 31, 61, 181, 181, 182]
     );
     assert.equal(
@@ -238,7 +238,7 @@ test('concurrent duration groups의 같은 tick spawn은 requestSpawnBatch 한 �
     assert.equal(sink.batches.length, 1);
     assert.equal(sink.batches[0].length, 2);
     assert.deepEqual(
-        sink.batches[0].map(({ intent }) => intent.definitionId),
+        Array.from(sink.batches[0], ({ intent }) => intent.definitionId),
         [BASIC_CIRCLE_ENEMY_DATA.id, BASIC_TRIANGLE_ENEMY_DATA.id]
     );
     const missingSinkDirector = new WaveDirector({ waveDefinition });
@@ -288,7 +288,7 @@ test('atomic batch 거절은 schedule index를 보존하고 동일 command ident
     const director = new WaveDirector({ waveDefinition });
     director.init(createFixtureTileMap());
     const attempts = [];
-    const snapshotRequests = (requests) => requests.map((request) => ({
+    const snapshotRequests = (requests) => Array.from(requests, (request) => ({
         commandId: request.commandId,
         targetFixedTick: request.targetFixedTick,
         spawnSequence: request.intent.spawnSequence,
@@ -304,7 +304,7 @@ test('atomic batch 거절은 schedule index를 보존하고 동일 command ident
             };
         }
     }), /atomic spawn batch queue 실패/);
-    assert.deepEqual(director.getStatus(), {
+    assert.deepEqual({ ...director.getStatus() }, {
         waveId: 'atomic-retry-wave',
         initialized: true,
         totalSpawnCount: 2,
@@ -387,13 +387,14 @@ test('PATH_RELATIVE formation은 first segment forward/normal과 sequential row 
     const director = new WaveDirector({ waveDefinition });
     director.init(createFixtureTileMap());
     assert.deepEqual(
-        director.schedule.map(({ targetFixedTick }) => targetFixedTick),
+        Array.from(director.schedule, ({ targetFixedTick }) => targetFixedTick),
         [1, 1, 5, 5, 5, 6]
     );
     assert.deepEqual(
-        director.schedule.slice(0, 5).map(({ initialWorldOffsetTiles }) => (
-            { ...initialWorldOffsetTiles }
-        )),
+        Array.from(
+            director.schedule.slice(0, 5),
+            ({ initialWorldOffsetTiles }) => ({ ...initialWorldOffsetTiles })
+        ),
         [
             { x: 1, y: -1.5 },
             { x: 1, y: 2.5 },
@@ -404,7 +405,10 @@ test('PATH_RELATIVE formation은 first segment forward/normal과 sequential row 
     );
     const sink = createAtomicSink();
     assert.equal(director.queueSpawnsForFixedTick(1, sink), 2);
-    const positions = sink.batches[0].map(({ intent }) => ({ ...intent.position }));
+    const positions = Array.from(
+        sink.batches[0],
+        ({ intent }) => ({ ...intent.position })
+    );
     assert.deepEqual(positions, [
         { x: 11, y: 8.5 },
         { x: 11, y: 12.5 }
@@ -450,20 +454,21 @@ test('formation rows/columns는 raw rectangular layout에서 derive되며 dot-on
     });
     derived.init(createFixtureTileMap());
     explicit.init(createFixtureTileMap());
-    const snapshot = (director) => director.schedule.map((entry) => ({
+    const snapshot = (director) => Array.from(director.schedule, (entry) => ({
         commandId: entry.commandId,
         targetFixedTick: entry.targetFixedTick,
         offset: { ...entry.initialWorldOffsetTiles }
     }));
     assert.deepEqual(snapshot(explicit), snapshot(derived));
     assert.deepEqual(
-        derived.schedule.map(({ targetFixedTick }) => targetFixedTick),
+        Array.from(derived.schedule, ({ targetFixedTick }) => targetFixedTick),
         [1, 7, 8]
     );
     assert.deepEqual(
-        derived.schedule.slice(0, 2).map(({ commandId }) => (
-            commandId.slice(commandId.lastIndexOf(':') + 1)
-        )),
+        Array.from(
+            derived.schedule.slice(0, 2),
+            ({ commandId }) => commandId.slice(commandId.lastIndexOf(':') + 1)
+        ),
         ['member-0-0', 'member-2-0']
     );
     derived.destroy();
@@ -485,7 +490,7 @@ test('같은 tick formation retry는 exact member command identity를 보존한�
     const attempts = [];
     const request = (accepted) => ({
         requestSpawnBatch(requests) {
-            attempts.push(requests.map(({ commandId, targetFixedTick, intent }) => ({
+            attempts.push(Array.from(requests, ({ commandId, targetFixedTick, intent }) => ({
                 commandId,
                 targetFixedTick,
                 definitionId: intent.definitionId,
@@ -506,7 +511,10 @@ test('같은 tick formation retry는 exact member command identity를 보존한�
     assert.equal(director.queueSpawnsForFixedTick(1, request(true)), 2);
     assert.deepEqual(attempts[1], attempts[0]);
     assert.deepEqual(
-        attempts[1].map(({ commandId }) => commandId.slice(commandId.lastIndexOf(':') + 1)),
+        Array.from(
+            attempts[1],
+            ({ commandId }) => commandId.slice(commandId.lastIndexOf(':') + 1)
+        ),
         ['member-0-0', 'member-0-1']
     );
     director.destroy();
@@ -554,21 +562,28 @@ test('persistent H HEX_AXIAL formation은 six-ring provenance를 exact compile�
     const director = new WaveDirector({ waveDefinition: keepFormationWave });
     assert.equal(director.init(createFixtureTileMap()), true);
     assert.deepEqual(
-        director.schedule.map(({ formationProvenance }) => (
-            formationProvenance.formationMemberSlotIndex
-        )),
+        Array.from(
+            director.schedule,
+            ({ formationProvenance }) => (
+                formationProvenance.formationMemberSlotIndex
+            )
+        ),
         [2, 1, 3, 0, 4, 5]
     );
     assert.deepEqual(
-        director.schedule.map(({ formationProvenance }) => (
-            formationProvenance.formationMemberIndex
-        )),
+        Array.from(
+            director.schedule,
+            ({ formationProvenance }) => (
+                formationProvenance.formationMemberIndex
+            )
+        ),
         [0, 1, 2, 3, 4, 5]
     );
     assert.deepEqual(
-        director.schedule.map(({ initialWorldOffsetTiles }) => (
-            { ...initialWorldOffsetTiles }
-        )),
+        Array.from(
+            director.schedule,
+            ({ initialWorldOffsetTiles }) => ({ ...initialWorldOffsetTiles })
+        ),
         [
             { x: -0.5, y: -1 },
             { x: 0.5, y: -1 },
@@ -606,7 +621,7 @@ test('persistent H atomic retry는 command와 authored member/slot provenance를
     const attempts = [];
     const sink = (accepted) => ({
         requestSpawnBatch(requests) {
-            attempts.push(requests.map(({ commandId, intent }) => ({
+            attempts.push(Array.from(requests, ({ commandId, intent }) => ({
                 commandId,
                 formationGroupId: intent.formationGroupId,
                 formationMemberIndex: intent.formationMemberIndex,
@@ -839,14 +854,16 @@ test('production timeline은 32/5와 Archer index를 보존한 C/T/A/M/C/T/Arche
     );
     director.init(tileMapModule.createTileMap(mapDataModule.CORRIDOR_EIGHT_MAP_DATA.id));
     assert.deepEqual(
-        director.schedule
-            .map((scheduled, index) => ({ scheduled, index }))
+        Array.from(
+            director.schedule,
+            (scheduled, index) => ({ scheduled, index })
+        )
             .filter(({ scheduled }) => scheduled.definition.id === ARCHER_ENEMY_DATA.id)
             .map(({ index }) => index),
         [6, 13, 20, 27]
     );
     assert.deepEqual(
-        director.schedule.map(({ targetFixedTick }) => targetFixedTick),
+        Array.from(director.schedule, ({ targetFixedTick }) => targetFixedTick),
         Array.from({ length: 32 }, (_, index) => 1 + (index * 5))
     );
     director.destroy();

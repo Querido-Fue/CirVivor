@@ -57,11 +57,13 @@ export const ENEMY_CAPABILITY_ALL_MASK = Object.values(ENEMY_CAPABILITY_BIT)
 export const ENEMY_CAPABILITY_ROSTER_PORT_METHOD = Object.freeze({
     OBSERVE_LIFECYCLE: 'observeLifecycle',
     OBSERVE_COMPLETED_EVENTS: 'observeCompletedEvents',
+    OBSERVE_COMPLETED_PREPARATIONS: 'observeCompletedPreparations',
     STAGE_FOR_FIXED_TICK: 'stageForFixedTick',
     OBSERVE_FIXED_COMMIT: 'observeFixedCommit',
     GET_STATUS: 'getStatus',
     REQUIRES_RECOVERY: 'requiresRecovery',
     RESET_GPU_BINDING: 'resetGpuBinding',
+    CLOSE_FOR_TERMINAL: 'closeForTerminal',
     DESTROY: 'destroy'
 });
 

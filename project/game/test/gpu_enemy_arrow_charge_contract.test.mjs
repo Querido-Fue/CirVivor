@@ -19,6 +19,10 @@ const {
 const { GPU_COLLISION_COMPUTE_WGSL } = await loadGameModule(
     'ingame/physics/gpu/gpu_collision_shaders.js'
 );
+const {
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
 const SIMULATION_SOURCE = await readFile(new URL(
     '../script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
@@ -51,6 +55,12 @@ test('Body ABI v6 charge side-plane은 별도 80-byte record이고 reuse에서 z
         velocity: { x: 0, y: 0 },
         radius: 0.25,
         inverseMass: 1,
+        bodyLayer: 1,
+        collisionMask: 0,
+        interactionLayer: 1,
+        interactionMask: 0,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         alive: true,
         enemyBehaviorState: CHARGE_CONFIG
     };
@@ -118,7 +128,10 @@ test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
         TARGET_VALID: 1,
         TELEGRAPH_PENDING: 2,
-        RECOIL_PENDING: 4
+        RECOIL_PENDING: 4,
+        SELECTED_TARGET_VALID: 8,
+        SELECTED_TARGET_CORE: 16,
+        SELECTED_TARGET_TOWER: 32
     });
     assert.equal(GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED, 4);
     assert.equal(

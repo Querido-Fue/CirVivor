@@ -1957,6 +1957,7 @@ export class GpuCircleBodySimulation {
                 moveIntentX: source.moveIntentX,
                 moveIntentY: source.moveIntentY
             };
+            let towerTargetHandle = null;
             if (isPriority) {
                 const coreTargetHandle = normalizeEntityHandle(
                     source.coreTargetHandle,
@@ -1969,7 +1970,7 @@ export class GpuCircleBodySimulation {
                     || this.slotActive[coreTargetSlot] !== 1) {
                     return hardReject('core-target-invalid');
                 }
-                const towerTargetHandle = normalizeEntityHandle(
+                towerTargetHandle = normalizeEntityHandle(
                     source.towerTargetHandle,
                     `controls[${index}].towerTargetHandle`,
                     false
@@ -2755,7 +2756,10 @@ export class GpuCircleBodySimulation {
             const seen = new Set();
             for (let index = 0; index < request.records.length; index++) {
                 const source = request.records[index];
-                const handle = normalizeEntityHandle(source, `formationPrepare[${index}]`);
+                const handle = normalizeEntityHandle({
+                    entityId: source?.sourceEntityId,
+                    incarnation: source?.sourceIncarnation
+                }, `formationPrepare[${index}]`);
                 const key = entityHandleKey(handle);
                 if (seen.has(key)) {
                     return reject('formation-prepare-source-duplicate', true);
@@ -2965,6 +2969,23 @@ export class GpuCircleBodySimulation {
         try {
             for (let index = 0; index < request.records.length; index++) {
                 const source = request.records[index];
+                const destinationSource = source.destination;
+                const destinationHandleSource = Object.freeze({
+                    entityId: destinationSource?.entityId,
+                    incarnation: destinationSource?.incarnation
+                });
+                const destinationState = Object.freeze({
+                    definitionCode: destinationSource?.definitionCode,
+                    coordinateSystemCode:
+                        destinationSource?.coordinateSystemCode,
+                    policyCode: destinationSource?.policyCode,
+                    memberCount: destinationSource?.memberCount,
+                    occupiedSlotMask: destinationSource?.occupiedSlotMask,
+                    rotationStep: destinationSource?.rotationStep,
+                    generation: destinationSource?.generation,
+                    flags: destinationSource?.flags,
+                    lineageHash: destinationSource?.lineageHash
+                });
                 const sourceAHandle = normalizeEntityHandle(
                     source.sourceA,
                     `formationTransform[${index}].sourceA`
@@ -3020,16 +3041,16 @@ export class GpuCircleBodySimulation {
                         !== preparedA.expectedMergedCurrentHealthCenti
                     || source.expectedMaxHealthCenti
                         !== preparedA.expectedMergedMaxHealthCenti
-                    || source.destination?.memberCount
+                    || destinationState.memberCount
                         !== preparedA.destinationMemberCount
-                    || source.destination?.occupiedSlotMask
+                    || destinationState.occupiedSlotMask
                         !== preparedA.destinationOccupiedSlotMask
-                    || source.destination?.rotationStep
+                    || destinationState.rotationStep
                         !== preparedA.destinationRotationStep) {
                     throw new RangeError('Formation destination prepare facts mismatch');
                 }
                 const destination = normalizeEntityHandle(
-                    source.destination,
+                    destinationHandleSource,
                     `formationTransform[${index}].destination`
                 );
                 if (destination.entityId !== sourceAHandle.entityId
@@ -3049,6 +3070,7 @@ export class GpuCircleBodySimulation {
                     sourceA: Object.freeze({ ...source.sourceA, slot: slotA }),
                     sourceB: Object.freeze({ ...source.sourceB, slot: slotB }),
                     destination,
+                    destinationState,
                     preparedSourceTick,
                     targetFixedTick,
                     prepareBatchFingerprint
@@ -5309,7 +5331,7 @@ export class GpuCircleBodySimulation {
                         this.lastSpawnProgramTargetInvalidCount,
                     completedNoTarget: this.lastSpawnProgramNoTargetCount,
                     completedCoreInvalid: this.lastSpawnProgramCoreInvalidCount,
-                    storageBuffersPerStage: 8
+                    storageBuffersPerStage: 9
                 }),
                 towerGameplayTarget: Object.freeze({
                     abiVersion:
@@ -5342,13 +5364,13 @@ export class GpuCircleBodySimulation {
                 coreDamageRequest: Object.freeze({
                     storageBuffersPerStage: 9
                 }),
-                windowStorageBuffersPerStage: 7,
+                windowStorageBuffersPerStage: 9,
                 storageProfile: Object.freeze({
                     physics: 8,
                     bodyContacts: 9,
                     worldContacts: 7,
                     contactHandling: 9,
-                    maximumDamageWindow: 7,
+                    maximumDamageWindow: 9,
                     fixedControl: 5,
                     sourceResolve: 9,
                     enemyBehavior: 8,
@@ -8050,7 +8072,9 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(0),
                 storageLayoutEntry(1),
                 storageLayoutEntry(2),
-                storageLayoutEntry(10)
+                storageLayoutEntry(4, 'read-only-storage'),
+                storageLayoutEntry(10),
+                storageLayoutEntry(11)
             ]
         });
         const computeCoreDamageRequestBodiesLayout = device.createBindGroupLayout({
@@ -8728,7 +8752,9 @@ export class GpuCircleBodySimulation {
                 { binding: 0, resource: resource(this.buffers.counts) },
                 { binding: 1, resource: resource(this.buffers.physics) },
                 { binding: 2, resource: resource(this.buffers.simulation) },
-                { binding: 10, resource: resource(this.buffers.combatStates) }
+                { binding: 4, resource: resource(this.buffers.contactHandlers) },
+                { binding: 10, resource: resource(this.buffers.combatStates) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
             ]
         });
         const computeCoreDamageRequestBodies = device.createBindGroup({

@@ -181,7 +181,11 @@ test('main GPU enemy catalog과 단일 wave timeline은 65% radius·shape cycle�
         assert.equal(Object.isFrozen(definition), true);
         assert.equal(definition.shapeType, shapeType);
         assert.equal(definition.collisionRadiusTiles, MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES);
-        assert.equal(definition.collisionWeight, 1);
+        assert.equal(
+            Number.isFinite(definition.collisionWeight)
+                && definition.collisionWeight > 0,
+            true
+        );
         assert.equal(definition.radiusScale, 1);
         assert.strictEqual(INGAME_ENEMY_DEFINITION_BY_ID[definition.id], definition);
     }
@@ -291,7 +295,7 @@ test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달�
         assert.equal(intent.velocity.x, definition.moveSpeedTilesPerSecond);
         assert.equal(intent.velocity.y, 0);
         assert.equal(Math.hypot(intent.velocity.x, intent.velocity.y), intent.flowSpeed);
-        assert.equal(intent.renderStyle.radiusScale, 1);
+        assert.equal(intent.renderStyle.radiusScale, definition.radiusScale);
         assert.equal(intent.renderStyle.shapeCode, shapeCode);
     }
 

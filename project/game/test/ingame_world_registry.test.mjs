@@ -170,6 +170,60 @@ test('exact target provenance metadata를 보존하고 incarnation reuse에 누�
     assert.equal(reusedView.metadata.sourceIncarnation, 8);
 });
 
+test('cross-realm plain metadata는 getter 1회 snapshot과 fail-closed activation을 보존한다', () => {
+    const registry = new WorldRegistry({ capacity: 2 });
+    const handle = reserveEnemy(registry, 15);
+    const metadata = {};
+    let getterReadCount = 0;
+    Object.defineProperties(metadata, {
+        capabilityMask: {
+            configurable: true,
+            enumerable: true,
+            get() {
+                getterReadCount++;
+                metadata.lateUnknown = 'not-in-key-snapshot';
+                return 16;
+            }
+        },
+        optionalValue: {
+            enumerable: true,
+            get() {
+                getterReadCount++;
+                return undefined;
+            }
+        }
+    });
+
+    assert.equal(registry.activateReserved(handle, metadata), true);
+    assert.equal(getterReadCount, 2);
+    const view = registry.copyEntityView(handle, {});
+    assert.equal(Object.isFrozen(view.metadata), true);
+    assert.equal(view.metadata.capabilityMask, 16);
+    assert.equal(view.metadata.optionalValue, null);
+    assert.equal('lateUnknown' in view.metadata, false);
+    Object.defineProperty(metadata, 'capabilityMask', { value: 99 });
+    assert.equal(view.metadata.capabilityMask, 16);
+
+    const rejectedHandle = reserveEnemy(registry, 16);
+    const beforeRejectedActivation = registry.getStatus();
+    class MetadataRecord {
+        constructor() {
+            this.capabilityMask = 16;
+        }
+    }
+    assert.throws(
+        () => registry.activateReserved(rejectedHandle, new MetadataRecord()),
+        /plain object/
+    );
+    assert.deepEqual(registry.getStatus(), beforeRejectedActivation);
+    assert.equal(registry.has(rejectedHandle), false);
+    assert.throws(
+        () => registry.activateReserved(rejectedHandle, { nested: {} }),
+        /primitive/
+    );
+    assert.deepEqual(registry.getStatus(), beforeRejectedActivation);
+});
+
 test('예약 취소와 destroy는 phantom entity를 남기지 않고 이후 mutation을 막는다', () => {
     const registry = new WorldRegistry({ capacity: 2 });
     const cancelledHandle = reserveEnemy(registry, 7);

@@ -618,6 +618,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
         'gpuSelectedTargetProjectileRequest',
         { opaqueKeys: ['endpoint'] }
     );
+    const { endpoint, ...intentOptions } = snapshot;
     rejectPresentProperties(snapshot, [
         'position',
         'velocity',
@@ -632,7 +633,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
         'targetWorldPosition',
         'cpuTargetPosition'
     ], GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET);
-    if (!snapshot.endpoint || typeof snapshot.endpoint !== 'object') {
+    if (!endpoint || typeof endpoint !== 'object') {
         throw new TypeError('GPU selected-target projectile endpoint가 필요합니다.');
     }
     const targetFixedTick = requirePositiveSafeInteger(
@@ -644,7 +645,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
         'spawnSequence'
     );
     const intent = createGpuSelectedTargetProjectileIntent({
-        ...snapshot,
+        ...intentOptions,
         spawnSequence
     });
     const commandId = snapshot.commandId === undefined
@@ -659,7 +660,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
             commandNamespace: snapshot.commandNamespace
         })
         : requireNonEmptyString(snapshot.commandId, 'commandId');
-    if (typeof snapshot.endpoint.requestSelectedTargetSpawn !== 'function') {
+    if (typeof endpoint.requestSelectedTargetSpawn !== 'function') {
         return Object.freeze({
             accepted: false,
             reason: 'selected-target-fixed-primitive-unavailable',
@@ -667,7 +668,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
             targetFixedTick
         });
     }
-    return snapshot.endpoint.requestSelectedTargetSpawn(
+    return endpoint.requestSelectedTargetSpawn(
         intent,
         targetFixedTick,
         commandId

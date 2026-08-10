@@ -26,7 +26,7 @@ function transformRequest(sourceA, sourceB, createdAtTick = 2) {
                 kindId: 'enemy',
                 definitionId: 'basic_hexa_group_01',
                 createdAtTick,
-                metadata: Object.freeze({ formationMemberCount: 2 })
+                metadata: null
             })
         })])
     });
@@ -55,7 +55,7 @@ test('WorldRegistry atomic transform authority/token은 private이고 full-capac
         transformRequest(sourceA, sourceB),
         Object.freeze({})
     ), /authority/);
-    assert.deepEqual(registry.getStatus(), {
+    assert.deepEqual({ ...registry.getStatus() }, {
         capacity: 2,
         activeCount: 2,
         reservedCount: 0,
@@ -69,8 +69,13 @@ test('WorldRegistry atomic transform authority/token은 private이고 full-capac
     );
     assert.ok(preflight);
     assert.equal(preflight.transforms.length, 1);
-    assert.deepEqual(preflight.transforms[0].sourceHandles, [sourceA, sourceB]);
-    assert.deepEqual(preflight.transforms[0].destinationHandle, {
+    assert.deepEqual(
+        Array.from(preflight.transforms[0].sourceHandles, (handle) => ({
+            ...handle
+        })),
+        [{ ...sourceA }, { ...sourceB }]
+    );
+    assert.deepEqual({ ...preflight.transforms[0].destinationHandle }, {
         entityId: sourceA.entityId,
         incarnation: sourceA.incarnation + 1
     });

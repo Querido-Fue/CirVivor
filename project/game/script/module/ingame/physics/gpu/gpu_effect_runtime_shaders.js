@@ -747,6 +747,47 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
             atomicLoad(&pool_state.candidate_count) - candidate_start;
     }
 
+}
+
+fn write_effect_event(
+    index: u32,
+    event_type: u32,
+    instance_id: u32,
+    instance_incarnation: u32,
+    source_entity_id: u32,
+    source_incarnation: u32,
+    target_entity_id: u32,
+    target_incarnation: u32,
+    effect_definition_code: u32,
+    value_fixed_point: i32,
+    position: vec2f
+) {
+    effect_events.values[index] = EffectEvent(
+        event_type,
+        0u,
+        instance_id,
+        instance_incarnation,
+        source_entity_id,
+        source_incarnation,
+        target_entity_id,
+        target_incarnation,
+        effect_definition_code,
+        value_fixed_point,
+        position
+    );
+}
+
+@compute @workgroup_size(1)
+fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
+    if (global_id.x != 0u) {
+        return;
+    }
+    // Candidate scan과 mutation을 분리해 이 serial pass의 기존 8-storage
+    // binding set에서 전역 capacity/identity preflight를 먼저 seal합니다.
+    let safe_program_count = min(
+        pulse_program.header.count,
+        min(pulse_program.header.capacity, arrayLength(&pulse_program.records))
+    );
     let retained_count = atomicLoad(&pool_state.retained_count);
     let candidate_count = atomicLoad(&pool_state.candidate_count);
     let valid_pulse_count = atomicLoad(&pool_state.valid_pulse_count);
@@ -754,7 +795,8 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
         || candidate_count > arrayLength(&effect_candidates.values)) {
         atomicOr(&pool_state.status, EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED);
     }
-    if (retained_count + candidate_count > arrayLength(&effect_instances_output.values)) {
+    if (retained_count + candidate_count
+        > arrayLength(&effect_instances_output.values)) {
         atomicOr(&pool_state.status, EFFECT_STATUS_INSTANCE_CAPACITY_EXCEEDED);
     }
     if (valid_pulse_count + candidate_count > arrayLength(&effect_events.values)) {
@@ -788,43 +830,9 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
         atomicStore(&pool_state.materialized_count, 0u);
         atomicStore(&pool_state.event_count, 0u);
         atomicOr(&pulse_program.header.status, atomicLoad(&pool_state.status));
-    }
-}
-
-fn write_effect_event(
-    index: u32,
-    event_type: u32,
-    instance_id: u32,
-    instance_incarnation: u32,
-    source_entity_id: u32,
-    source_incarnation: u32,
-    target_entity_id: u32,
-    target_incarnation: u32,
-    effect_definition_code: u32,
-    value_fixed_point: i32,
-    position: vec2f
-) {
-    effect_events.values[index] = EffectEvent(
-        event_type,
-        0u,
-        instance_id,
-        instance_incarnation,
-        source_entity_id,
-        source_incarnation,
-        target_entity_id,
-        target_incarnation,
-        effect_definition_code,
-        value_fixed_point,
-        position
-    );
-}
-
-@compute @workgroup_size(1)
-fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
-    if (global_id.x != 0u || atomicLoad(&pool_state.batch_accepted) == 0u) {
         return;
     }
-    let program_count = min(pulse_program.header.count, pulse_program.header.capacity);
+    let program_count = safe_program_count;
     var event_index = 0u;
     for (var pulse_index = 0u; pulse_index < program_count; pulse_index += 1u) {
         let current_result = pulse_program.records[pulse_index].result;
@@ -866,8 +874,6 @@ fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
         event_index += 1u;
     }
 
-    let retained_count = atomicLoad(&pool_state.retained_count);
-    let candidate_count = atomicLoad(&pool_state.candidate_count);
     for (var candidate_index = 0u; candidate_index < candidate_count; candidate_index += 1u) {
         let candidate = effect_candidates.values[candidate_index];
         let record = pulse_program.records[candidate.pulse_index];

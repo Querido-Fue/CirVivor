@@ -59,9 +59,12 @@ function normalizeMetadata(source) {
     if (source === undefined || source === null) {
         return null;
     }
-    if (typeof source !== 'object'
-        || (Object.getPrototypeOf(source) !== Object.prototype
-            && Object.getPrototypeOf(source) !== null)) {
+    const prototype = typeof source === 'object'
+        ? Object.getPrototypeOf(source)
+        : null;
+    const isPlainObject = prototype === null
+        || (prototype !== null && Object.getPrototypeOf(prototype) === null);
+    if (!source || typeof source !== 'object' || !isPlainObject) {
         throw new TypeError('entity metadata는 plain object여야 합니다.');
     }
     const result = {};

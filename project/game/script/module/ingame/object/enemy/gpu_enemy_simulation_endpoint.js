@@ -380,6 +380,7 @@ function createFormationBackendPort(backend, sessionGeneration) {
                 stagedPrepareProgramCount: 0,
                 pendingPrepareProgramCount: 0,
                 pendingPrepareReadbackCount: 0,
+                pendingTransformReadbackCount: 0,
                 armedTransformCount: 0,
                 commitRequested: false,
                 runtimeStatus: 0,

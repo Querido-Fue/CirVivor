@@ -459,9 +459,7 @@ function createGameSystem({
     useRealCoreImpactDirector = false,
     initialCameraZoom = undefined
 } = {}) {
-    let backend = backendFactory
-        ? null
-        : new TerminalBackend({ fixedResult });
+    let backend = null;
     const directorFactory = useRealCoreImpactDirector
         ? null
         : createDirectorFactory({
@@ -505,14 +503,15 @@ function createGameSystem({
         webGpuPlatformPort: {
             getState: () => Object.freeze({ ready: true, status: 'ready' })
         },
-        ...(backendFactory
-            ? {
-                enemySimulationBackendFactory(_dependencies, endpointOptions) {
-                    backend = backendFactory(endpointOptions);
-                    return backend;
-                }
-            }
-            : { enemySimulationBackend: backend }),
+        enemySimulationBackendFactory(_dependencies, endpointOptions) {
+            backend = backendFactory
+                ? backendFactory(endpointOptions)
+                : new TerminalBackend({
+                    fixedResult,
+                    sessionGeneration: endpointOptions.sessionGeneration
+                });
+            return backend;
+        },
         ...(directorFactory
             ? { enemyCoreImpactDirectorFactory: directorFactory }
             : {}),
@@ -588,6 +587,11 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     assert.equal(endpoint.getStatus().lifecycle.pendingCount, 0);
     assert.equal(endpoint.getStatus().fixedCommands.pendingCommandCount, 0);
     assert.equal(endpoint.getStatus().fixedCommands.pendingDestinationCount, 0);
+    assert.equal(
+        endpoint.getStatus().formationCommands.backend
+            .pendingTransformReadbackCount,
+        0
+    );
     assert.equal(cleanupPort.requestCommittedCoreImpactCleanup(
         { entityId: 99, incarnation: 1 },
         2,

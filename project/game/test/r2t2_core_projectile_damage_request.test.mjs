@@ -187,16 +187,19 @@ test('typed Core damage request는 append 순서와 source liveness에 무관하
         ({ type }) => type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
     );
     assert.deepEqual(
-        requests.map(({ projectileHandle }) => projectileHandle.entityId),
+        Array.from(
+            requests,
+            ({ projectileHandle }) => projectileHandle.entityId
+        ),
         [40, 50]
     );
     assert.deepEqual(
-        requests.map(({ requestedDamage }) => requestedDamage),
+        Array.from(requests, ({ requestedDamage }) => requestedDamage),
         [5, 5]
     );
     assert.equal(requests[0].sequence, 1);
     assert.deepEqual(
-        requests.map(({ appliedDamage }) => appliedDamage),
+        Array.from(requests, ({ appliedDamage }) => appliedDamage),
         [5, 2]
     );
     assert.ok(requests.every(({ sourceHandle }) => (
@@ -216,6 +219,49 @@ test('typed Core damage request는 append 순서와 source liveness에 무관하
     assert.equal(status.coreDamageRequestAppliedCount, 2);
     assert.equal(status.dedupedCount, 1);
     assert.equal(status.recoveryRequired, false);
+});
+
+test('cleanup 뒤 applied Core request direct replay는 dedupe보다 exact liveness를 먼저 검증한다', () => {
+    const projectile = Object.freeze({ entityId: 55, incarnation: 6 });
+    const event = coreDamageRequest(projectile, {
+        sourceTick: 18,
+        sequence: 4
+    });
+    const core = new CoreIntegrity({ maxIntegrity: 10 });
+    const director = new EnemyCoreImpactDirector({
+        coreIntegrity: core,
+        endpoint: createEndpoint()
+    });
+    const first = director.observeCompletedEvents(snapshot([event]), createRegistry([{
+        handle: projectile,
+        metadata: createProjectileMetadata(6)
+    }]));
+    assert.equal(
+        first.facts.filter(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
+        ).length,
+        1
+    );
+    assert.equal(core.getCurrentIntegrity(), 5);
+
+    const beforeReplay = director.getStatus();
+    const replay = director.observeCompletedEvents(
+        snapshot([event]),
+        createRegistry([])
+    );
+    const afterReplay = director.getStatus();
+    assert.equal(replay.facts.length, 0);
+    assert.equal(core.getCurrentIntegrity(), 5);
+    assert.equal(afterReplay.dedupedCount, beforeReplay.dedupedCount);
+    assert.equal(
+        afterReplay.coreDamageRequestCommittedCount,
+        beforeReplay.coreDamageRequestCommittedCount
+    );
+    assert.equal(
+        afterReplay.coreDamageRequestFailure?.reason,
+        'exact-entity-contract'
+    );
+    assert.equal(afterReplay.recoveryRequired, true);
 });
 
 test('한 completed snapshot의 forged typed request는 앞선 valid candidate도 원자적으로 폐기한다', () => {

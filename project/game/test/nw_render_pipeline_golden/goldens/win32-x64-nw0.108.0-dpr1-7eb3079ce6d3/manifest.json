@@ -141,7 +141,7 @@
                 "width": 640,
                 "height": 360,
                 "byteLength": 921600,
-                "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020",
+                "sha256": "872ebc7fabe01827b113f32f420fd76ee22d278e7e25dd0002cf0aa433f4e140",
                 "file": "canonical.overlay.effect.rgba"
             },
             {
@@ -171,10 +171,10 @@
             "width": 640,
             "height": 360,
             "byteLength": 921600,
-            "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0",
+            "sha256": "3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf",
             "file": "canonical.final.rgba",
             "reviewPng": "canonical.final.png",
-            "reviewPngSha256": "5c8f46b9c05813e5f47d419d513eb2236981047458994a66c066050677bb8ff0"
+            "reviewPngSha256": "ee5bb5f2a359502a29ebee669995be1a790c7040b16bf12786827b34d505d7e2"
         }
     },
     "cases": {
@@ -226,7 +226,7 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
+                    "sha256": "872ebc7fabe01827b113f32f420fd76ee22d278e7e25dd0002cf0aa433f4e140"
                 },
                 {
                     "role": "overlay.ui",
@@ -244,7 +244,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
+                "sha256": "3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf"
             }
         },
         "contextRestore": {
@@ -295,7 +295,7 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
+                    "sha256": "872ebc7fabe01827b113f32f420fd76ee22d278e7e25dd0002cf0aa433f4e140"
                 },
                 {
                     "role": "overlay.ui",
@@ -313,7 +313,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
+                "sha256": "3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf"
             }
         },
         "releaseReacquire": {
@@ -364,7 +364,7 @@
                     "role": "overlay.effect",
                     "width": 640,
                     "height": 360,
-                    "sha256": "a4aaf176706ced8949c803c93d187e291b33812614b5f3b4dd958e079a2c1020"
+                    "sha256": "872ebc7fabe01827b113f32f420fd76ee22d278e7e25dd0002cf0aa433f4e140"
                 },
                 {
                     "role": "overlay.ui",
@@ -382,7 +382,7 @@
             "final": {
                 "width": 640,
                 "height": 360,
-                "sha256": "72b78d7d191f4cb25227c89f6da8f59204abce51db984bc14516b7730c5f6be0"
+                "sha256": "3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf"
             }
         }
     },

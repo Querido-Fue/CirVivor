@@ -612,9 +612,25 @@ export class EnemySimulationBackend {
 
     /** Facade event envelope 검증용 현재 session/device/epoch 상태입니다. */
     getEventProtocolState() {
-        return this.simulation?.getEventProtocolState?.() ?? Object.freeze({
+        const protocol = this.simulation?.getEventProtocolState?.() ?? null;
+        if (protocol
+            && protocol.sessionGeneration === this.sessionGeneration
+            && protocol.deviceGeneration === -1
+            && protocol.authoritativeEpoch === 0
+            && protocol.submittedTickCount === 0
+            && this.simulation?.getRuntimeState?.() === 'idle') {
+            return Object.freeze({
+                ...protocol,
+                // 아직 device를 소유한 적 없는 pristine simulation은
+                // completion이 없는 CPU host epoch에서 시작합니다.
+                deviceGeneration: 0
+            });
+        }
+        return protocol ?? Object.freeze({
             sessionGeneration: this.sessionGeneration,
-            deviceGeneration: -1,
+            // GPU가 없는 CPU fallback도 Effect/Formation completion owner가
+            // empty boundary를 정상 관찰할 수 있는 host protocol epoch입니다.
+            deviceGeneration: 0,
             authoritativeEpoch: 0,
             submittedTickCount: 0
         });

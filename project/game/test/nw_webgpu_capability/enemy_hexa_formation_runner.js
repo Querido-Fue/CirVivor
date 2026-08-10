@@ -8,6 +8,9 @@ import {
     BASIC_PENTA_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
 import {
+    MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
+} from './production/script/data/object/enemy/enemy_profile_catalog_data.js';
+import {
     HEXA_HIVE_SIX_RING_FORMATION_DEFINITION
 } from './production/script/data/object/enemy/enemy_formation_catalog_data.js';
 import {
@@ -21,7 +24,14 @@ import {
 import {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } from './production/script/module/ingame/contract/enemy_lifecycle_disposition_contract.js';
-import { createTileMap } from './production/script/module/ingame/map/tile_map.js';
+import {
+    TileMap,
+    createTileMap,
+    resolveIngameMapDefinition
+} from './production/script/module/ingame/map/tile_map.js';
+import {
+    createRouteFlowFieldAtlas
+} from './production/script/module/ingame/navigation/route_flow_field_atlas.js';
 import { WorldRegistry } from './production/script/module/ingame/object/world_registry.js';
 import {
     createGpuRegistryMetadata
@@ -36,7 +46,8 @@ import {
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
 import {
     GPU_CIRCLE_BODY_ABI,
-    GPU_CIRCLE_BODY_COLLISION_LAYER
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    encodeGpuCircleBodyFixedPoint
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_INSTANCE_FLAG,
@@ -59,6 +70,9 @@ import {
     GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION,
     readGpuFormationBodyState
 } from './production/script/module/ingame/physics/gpu/gpu_formation_runtime_abi.js';
+import {
+    createGpuSignedDistanceField
+} from './production/script/module/ingame/physics/gpu/gpu_signed_distance_field.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
@@ -111,7 +125,6 @@ function createNaturalHexa(route, spawnSequence, handle, position) {
     });
     const activated = materializeNaturalHexaFormationActivation(raw, handle);
     return withIdentity(activated, handle, {
-        contactHandler: null,
         position: Object.freeze({ x: position.x, y: position.y })
     });
 }
@@ -283,6 +296,85 @@ function countChangedPixelsInRoi(left, right, center, halfSize) {
         }
     }
     return count;
+}
+
+function summarizeRoiColors(frame, center, halfSize, format, targetColor) {
+    const minimumX = Math.max(0, Math.floor(center.x - halfSize.x));
+    const maximumX = Math.min(frame.width - 1, Math.ceil(center.x + halfSize.x));
+    const minimumY = Math.max(0, Math.floor(center.y - halfSize.y));
+    const maximumY = Math.min(frame.height - 1, Math.ceil(center.y + halfSize.y));
+    const frequencies = new Map();
+    let sampledPixelCount = 0;
+    let nonTransparentPixelCount = 0;
+    const maximumRaw = { r: 0, g: 0, b: 0, a: 0 };
+    const maximumUnpremultiplied = { r: 0, g: 0, b: 0 };
+    for (let y = minimumY; y <= maximumY; y++) {
+        for (let x = minimumX; x <= maximumX; x++) {
+            sampledPixelCount++;
+            const pixel = decodeRenderPixel(frame, x, y, format);
+            if (pixel.a === 0) { continue; }
+            nonTransparentPixelCount++;
+            maximumRaw.r = Math.max(maximumRaw.r, pixel.r);
+            maximumRaw.g = Math.max(maximumRaw.g, pixel.g);
+            maximumRaw.b = Math.max(maximumRaw.b, pixel.b);
+            maximumRaw.a = Math.max(maximumRaw.a, pixel.a);
+            const unpremultiplied = Object.freeze({
+                r: Math.min(255, Math.round((pixel.r * 255) / pixel.a)),
+                g: Math.min(255, Math.round((pixel.g * 255) / pixel.a)),
+                b: Math.min(255, Math.round((pixel.b * 255) / pixel.a))
+            });
+            maximumUnpremultiplied.r = Math.max(
+                maximumUnpremultiplied.r,
+                unpremultiplied.r
+            );
+            maximumUnpremultiplied.g = Math.max(
+                maximumUnpremultiplied.g,
+                unpremultiplied.g
+            );
+            maximumUnpremultiplied.b = Math.max(
+                maximumUnpremultiplied.b,
+                unpremultiplied.b
+            );
+            const key = `${pixel.r},${pixel.g},${pixel.b},${pixel.a}`;
+            const previous = frequencies.get(key);
+            if (previous) {
+                previous.count++;
+            } else {
+                frequencies.set(key, {
+                    raw: pixel,
+                    unpremultiplied,
+                    count: 1,
+                    targetDistanceSquared:
+                        ((unpremultiplied.r - targetColor.r) ** 2)
+                        + ((unpremultiplied.g - targetColor.g) ** 2)
+                        + ((unpremultiplied.b - targetColor.b) ** 2)
+                });
+            }
+        }
+    }
+    const colors = [...frequencies.values()];
+    const toEvidence = (entry) => Object.freeze({
+        raw: entry.raw,
+        unpremultiplied: entry.unpremultiplied,
+        count: entry.count,
+        targetDistanceSquared: entry.targetDistanceSquared
+    });
+    return Object.freeze({
+        bounds: Object.freeze({ minimumX, maximumX, minimumY, maximumY }),
+        sampledPixelCount,
+        nonTransparentPixelCount,
+        uniqueColorCount: colors.length,
+        maximumRaw: Object.freeze(maximumRaw),
+        maximumUnpremultiplied: Object.freeze(maximumUnpremultiplied),
+        mostFrequent: Object.freeze(colors.slice().sort((left, right) => (
+            right.count - left.count
+                || left.targetDistanceSquared - right.targetDistanceSquared
+        )).slice(0, 8).map(toEvidence)),
+        closestToTarget: Object.freeze(colors.slice().sort((left, right) => (
+            left.targetDistanceSquared - right.targetDistanceSquared
+                || right.count - left.count
+        )).slice(0, 8).map(toEvidence))
+    });
 }
 
 async function waitForFormationPrepare(backend, device, timeoutMs = 5_000) {
@@ -757,21 +849,55 @@ async function runPrimaryFormationFixture(device, format) {
     const tileMap = createTileMap();
     const route = tileMap.getSpawnRoutes()[0];
     backend.init(tileMap);
-    const seed = createGpuEnemySpawnIntent({
-        definition: BASIC_HEXA_ENEMY_DATA,
-        route,
-        spawnSequence: 0,
-        laneOffsetTiles: 0
+    const pairBase = tileMap.tileToWorld(7, 1, {});
+    const pairCenters = Object.freeze([
+        Object.freeze({ x: pairBase.x, y: pairBase.y - 0.45 }),
+        Object.freeze({ x: pairBase.x, y: pairBase.y + 0.25 }),
+        Object.freeze({ x: pairBase.x, y: pairBase.y - 1.15 })
+    ]);
+    const pairHalfSeparation = 0.325;
+    const positions = Object.freeze(pairCenters.flatMap((center) => ([
+        Object.freeze({
+            x: center.x - pairHalfSeparation,
+            y: center.y
+        }),
+        Object.freeze({
+            x: center.x + pairHalfSeparation,
+            y: center.y
+        })
+    ])));
+    for (const position of positions) {
+        const tile = tileMap.worldToTile(position.x, position.y, {});
+        assert(tileMap.isWalkableTile(tile.row, tile.column),
+            'Hexa primary pair position must be walkable');
+    }
+    const firstFieldIndex = backend.flowRouteByPathId.get(route.pathId)
+        ?.firstFieldIndex;
+    const atlas = backend.flowFieldAtlas;
+    const integrationCosts = positions.map((position) => {
+        const tile = tileMap.worldToTile(position.x, position.y, {});
+        return atlas.integrationCosts[
+            (firstFieldIndex * atlas.size)
+                + (tile.row * atlas.cols)
+                + tile.column
+        ];
     });
-    const origin = seed.position;
-    const offsets = [0, 0.35, 1.55, 1.9, 3.1, 3.45];
-    const groups = offsets.map((offset, index) => {
+    assert(Number.isSafeInteger(firstFieldIndex)
+        && integrationCosts.slice(0, 4).every(
+            (cost) => cost === integrationCosts[0]
+        )
+        && integrationCosts.slice(4).every(
+            (cost) => cost === integrationCosts[4]
+        )
+        && integrationCosts[4] > integrationCosts[0],
+    'Hexa primary A/B contour and chasing C contour mismatch');
+    const groups = positions.map((position, index) => {
         const handle = Object.freeze({ entityId: 501 + index, incarnation: 1 });
         const body = createNaturalHexa(
             route,
             index,
             handle,
-            { x: origin.x + offset, y: origin.y }
+            position
         );
         return {
             handle,
@@ -780,12 +906,62 @@ async function runPrimaryFormationFixture(device, format) {
             lineage: Object.freeze([handle])
         };
     });
+    const mateDistance = pairHalfSeparation * 2;
+    const mergeCommitDistance =
+        HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeCommitDistanceTiles;
+    const solverMinimumDistance = mergeCommitDistance
+        * MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+    const crossPairDistances = [];
+    for (let leftPair = 0; leftPair < pairCenters.length; leftPair++) {
+        for (let rightPair = leftPair + 1;
+            rightPair < pairCenters.length;
+            rightPair++) {
+            for (let leftMember = 0; leftMember < 2; leftMember++) {
+                for (let rightMember = 0; rightMember < 2; rightMember++) {
+                    const left = positions[(leftPair * 2) + leftMember];
+                    const right = positions[(rightPair * 2) + rightMember];
+                    crossPairDistances.push(Math.hypot(
+                        right.x - left.x,
+                        right.y - left.y
+                    ));
+                }
+            }
+        }
+    }
+    const minimumCrossPairDistance = Math.min(...crossPairDistances);
+    const maximumInitialTravel = groups[0].body.flowSpeed * FIXED_DELTA;
+    const minimumRowMargin = Math.min(...pairCenters.map((center) => {
+        const rowFraction = center.y - Math.floor(center.y);
+        return Math.min(rowFraction, 1 - rowFraction);
+    }));
+    assert(mateDistance > solverMinimumDistance
+        && mateDistance < mergeCommitDistance
+        && minimumCrossPairDistance > mateDistance
+        && minimumCrossPairDistance < mergeCommitDistance,
+    'Hexa primary mate/cross solver and commit distance invariant failed');
+    assert(minimumRowMargin > maximumInitialTravel,
+        'Hexa primary pair center lacks one-tick row margin');
     const pentaHandle = Object.freeze({ entityId: 590, incarnation: 1 });
+    const pentaPosition = Object.freeze(tileMap.tileToWorld(10, 1, {}));
+    const pentaTile = tileMap.worldToTile(
+        pentaPosition.x,
+        pentaPosition.y,
+        {}
+    );
+    const pentaTargetDistances = positions.map((position) => Math.hypot(
+        position.x - pentaPosition.x,
+        position.y - pentaPosition.y
+    ));
+    assert(tileMap.isWalkableTile(pentaTile.row, pentaTile.column)
+        && Math.min(...pentaTargetDistances) > mergeCommitDistance
+        && Math.max(...pentaTargetDistances)
+            <= PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.pulseRadiusTiles,
+    'Hexa primary Penta must be walkable, non-contact, and cover all H');
     const penta = createPenta(
         route,
         7,
         pentaHandle,
-        { x: origin.x + 1.7, y: origin.y + 2.2 }
+        pentaPosition
     );
     assert(
         backend.replaceBodies([...groups.map(({ body }) => body), penta])
@@ -813,6 +989,7 @@ async function runPrimaryFormationFixture(device, format) {
     let actualEffectRekeyTotal = 0;
     const consumedHandles = new Set();
     const transformCompletions = [];
+    const transformStatRecords = [];
     for (let attempt = 0;
         attempt < 90 && activeGroups.length > 1;
         attempt++) {
@@ -860,6 +1037,15 @@ async function runPrimaryFormationFixture(device, format) {
             )));
             assert(initialEffectInstances.length === 6,
                 'Formation chain initial Effect snapshot is not exact six');
+            if (prepare.pairCount !== 3) {
+                const [planes, diagnostics] = await Promise.all([
+                    readFormationPlanes(backend, device, capacity),
+                    readFormationMotionDiagnostics(backend, device, capacity)
+                ]);
+                assert(false,
+                    `Formation first append-independent pairCount=${prepare.pairCount}: `
+                    + JSON.stringify({ planes, diagnostics }));
+            }
             assert(prepare.pairCount === 3,
                 `Formation first append-independent pairCount=${prepare.pairCount}`);
         }
@@ -878,6 +1064,19 @@ async function runPrimaryFormationFixture(device, format) {
         );
         assert(transformRecords.length === prepare.pairCount,
             'Formation transform pair count mismatch');
+        transformStatRecords.push(...transformRecords.map((record) => (
+            Object.freeze({
+                targetFixedTick: tick + 1,
+                sourceA: record.sourceA,
+                sourceB: record.sourceB,
+                destination: record.destination,
+                destinationRadius: record.destinationRadius,
+                destinationInverseMass: record.destinationInverseMass,
+                destinationFlowSpeed: record.destinationFlowSpeed,
+                destinationTowerContactDamage:
+                    record.destinationTowerContactDamage
+            })
+        )));
         const consumedThisBatch = new Set();
         const destinationBySource = new Map();
         const preTransformPlanes = await readFormationPlanes(
@@ -1054,7 +1253,66 @@ async function runPrimaryFormationFixture(device, format) {
         mergeCount += transformRecords.length;
         tick += 2;
     }
-    assert(activeGroups.length === 1, 'Formation chain did not converge to HX');
+    if (activeGroups.length !== 1) {
+        const [plateauPlanes, plateauDiagnostics] = await Promise.all([
+            readFormationPlanes(backend, device, capacity),
+            readFormationMotionDiagnostics(backend, device, capacity)
+        ]);
+        const plateauFlowEvidence = plateauPlanes.map((plane) => {
+            const tile = tileMap.worldToTile(
+                plane.position.x,
+                plane.position.y,
+                {}
+            );
+            const fieldIndex = plane.flowFieldIndex;
+            const cellIndex = (tile.row * atlas.cols) + tile.column;
+            const fieldOffset = (fieldIndex * atlas.size) + cellIndex;
+            const directionOffset = fieldOffset * 2;
+            const fieldValid = Number.isSafeInteger(fieldIndex)
+                && fieldIndex >= 0
+                && fieldIndex < atlas.fieldCount
+                && tile.row >= 0
+                && tile.row < atlas.rows
+                && tile.column >= 0
+                && tile.column < atlas.cols;
+            return Object.freeze({
+                slot: plane.slot,
+                entityId: plane.state.entityId,
+                incarnation: plane.state.incarnation,
+                tile: Object.freeze({ row: tile.row, column: tile.column }),
+                flowFieldIndex: fieldIndex,
+                integrationCost: fieldValid
+                    ? atlas.integrationCosts[fieldOffset]
+                    : null,
+                flowDirection: fieldValid
+                    ? Object.freeze({
+                        x: atlas.directions[directionOffset],
+                        y: atlas.directions[directionOffset + 1]
+                    })
+                    : null
+            });
+        });
+        assert(false, 'Formation chain did not converge to HX: '
+            + JSON.stringify({
+                tick,
+                mergeCount,
+                activeGroups: activeGroups.map((group) => Object.freeze({
+                    handle: group.handle,
+                    lineage: group.lineage,
+                    expectedMemberCount: group.expectedMemberCount,
+                    expectedOccupiedSlotMask:
+                        group.expectedOccupiedSlotMask,
+                    expectedRotationStep: group.expectedRotationStep,
+                    expectedGeneration: group.expectedGeneration,
+                    expectedLineageHash: group.expectedLineageHash
+                })),
+                planes: plateauPlanes,
+                flow: plateauFlowEvidence,
+                diagnostics: plateauDiagnostics,
+                transformCompletions,
+                formationStatus: backend.getFormationRuntimeStatus()
+            }));
+    }
     assert(mergeCount === 5, `Formation merge count=${mergeCount}`);
     const finalGroup = activeGroups[0];
     const planes = await readFormationPlanes(backend, device, capacity);
@@ -1087,7 +1345,35 @@ async function runPrimaryFormationFixture(device, format) {
     const expectedEffectiveTowerContactDamage = Math.fround(
         finalStats.towerContactDamage * finalPlane.attackMultiplier
     );
-    assert(finalPlane.radius === finalGroup.radius
+    const expectedGpuRadius = Math.fround(finalGroup.radius);
+    const finalStatEvidence = Object.freeze({
+        expected: Object.freeze({
+            authoredRadius: finalGroup.radius,
+            gpuRadius: expectedGpuRadius,
+            inverseMass: finalStats.inverseMass,
+            derivedWeight: finalStats.weight,
+            flowSpeed: finalStats.moveSpeedTilesPerSecond,
+            baseTowerContactDamage: finalStats.towerContactDamage,
+            effectiveTowerContactDamage:
+                expectedEffectiveTowerContactDamage
+        }),
+        actual: Object.freeze({
+            radius: finalPlane.radius,
+            inverseMass: finalPlane.inverseMass,
+            derivedWeight: Math.fround(1 / finalPlane.inverseMass),
+            flowSpeed: finalPlane.flowSpeed,
+            baseTowerContactDamage:
+                finalPlane.resolvedBaseTowerContactDamage,
+            boostStackCount: finalPlane.boostStackCount,
+            attackMultiplier: finalPlane.attackMultiplier,
+            effectiveTowerContactDamage: finalPlane.towerContactDamage,
+            effectSummaryMaxHealthFixedPoint:
+                finalPlane.maxHealthFixedPoint
+        }),
+        transformStatRecords: Object.freeze(transformStatRecords.slice()),
+        transformCompletions: Object.freeze(transformCompletions.slice())
+    });
+    assert(finalPlane.radius === expectedGpuRadius
         && finalPlane.inverseMass === finalStats.inverseMass
         && Math.fround(1 / finalPlane.inverseMass) === finalStats.weight
         && finalPlane.flowSpeed === finalStats.moveSpeedTilesPerSecond
@@ -1095,7 +1381,9 @@ async function runPrimaryFormationFixture(device, format) {
             === finalStats.towerContactDamage
         && finalPlane.towerContactDamage
             === expectedEffectiveTowerContactDamage,
-    'Formation final GPU n-table stat materialization mismatch');
+    `Formation final GPU n-table stat materialization mismatch: ${
+        JSON.stringify(finalStatEvidence)
+    }`);
     const survivingConsumed = planes.filter(({ state }) => (
         consumedHandles.has(`${state.entityId}:${state.incarnation}`)
     ));
@@ -1429,7 +1717,8 @@ async function runPrimaryFormationFixture(device, format) {
             liveCurrentHealthCenti: finalPlane.healthFixedPoint,
             expectedMaxHealthCenti: finalGroup.expectedMaxHealthCenti,
             liveMaxHealthCenti: finalPlane.maxHealthFixedPoint,
-            canonicalRadius: finalGroup.radius,
+            authoredRadius: finalGroup.radius,
+            canonicalRadius: expectedGpuRadius,
             liveRadius: finalPlane.radius,
             canonicalInverseMass: finalStats.inverseMass,
             liveInverseMass: finalPlane.inverseMass,
@@ -1601,23 +1890,56 @@ async function runReservationPresentationFixture(device, format) {
     const tileMap = createTileMap();
     const route = tileMap.getSpawnRoutes()[0];
     backend.init(tileMap);
-    const seed = createGpuEnemySpawnIntent({
-        definition: BASIC_HEXA_ENEMY_DATA,
-        route,
-        spawnSequence: 0
+    const reservationWorldCenter = tileMap.tileToWorld(7, 1, {});
+    const mergeCommitDistance =
+        HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeCommitDistanceTiles;
+    const reservationSeparation = mergeCommitDistance + 0.1;
+    const reservationHalfSeparation = reservationSeparation * 0.5;
+    const reservationPositions = Object.freeze([
+        Object.freeze({
+            x: reservationWorldCenter.x - reservationHalfSeparation,
+            y: reservationWorldCenter.y
+        }),
+        Object.freeze({
+            x: reservationWorldCenter.x + reservationHalfSeparation,
+            y: reservationWorldCenter.y
+        })
+    ]);
+    const reservationFieldIndex = backend.flowRouteByPathId.get(route.pathId)
+        ?.firstFieldIndex;
+    const reservationAtlas = backend.flowFieldAtlas;
+    const reservationTiles = reservationPositions.map((position) => {
+        const tile = tileMap.worldToTile(position.x, position.y, {});
+        assert(tileMap.isWalkableTile(tile.row, tile.column),
+            'Hexa reservation position must be walkable');
+        return Object.freeze({ row: tile.row, column: tile.column });
     });
-    const origin = seed.position;
+    const reservationCosts = reservationTiles.map((tile) => (
+        reservationAtlas.integrationCosts[
+            (reservationFieldIndex * reservationAtlas.size)
+                + (tile.row * reservationAtlas.cols)
+                + tile.column
+        ]
+    ));
+    assert(Number.isSafeInteger(reservationFieldIndex)
+        && reservationTiles[0].row === reservationTiles[1].row
+        && reservationTiles[0].column === reservationTiles[1].column
+        && reservationCosts[0] === reservationCosts[1]
+        && reservationSeparation > mergeCommitDistance
+        && reservationSeparation
+            < HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeSeekRadiusTiles,
+    'Hexa reservation pair must share one exact pre-commit contour');
     const left = createNaturalHexa(
         route,
         0,
         { entityId: 701, incarnation: 1 },
-        origin
+        reservationPositions[0]
     );
     const right = createNaturalHexa(
         route,
         1,
         { entityId: 702, incarnation: 1 },
-        { x: origin.x + 2.5, y: origin.y }
+        reservationPositions[1]
     );
     assert(backend.replaceBodies([left, right]).accepted === 2,
         'Hexa reservation replacement failed');
@@ -1625,8 +1947,8 @@ async function runReservationPresentationFixture(device, format) {
     const scale = 20;
     const camera = Object.freeze({
         worldToViewport(x, y, out) {
-            out.x = center.x + ((x - origin.x) * scale);
-            out.y = center.y + ((y - origin.y) * scale);
+            out.x = center.x + ((x - reservationWorldCenter.x) * scale);
+            out.y = center.y + ((y - reservationWorldCenter.y) * scale);
             return out;
         },
         getScale: () => scale
@@ -1640,21 +1962,66 @@ async function runReservationPresentationFixture(device, format) {
         (state.presentationFlags
             & GPU_FORMATION_BODY_STATE_FLAG.PRESENTATION_RESERVATION) !== 0
     ));
-    assert(reserved.length > 0, 'Hexa reservation flag was not materialized');
+    if (reserved.length === 0) {
+        const diagnostics = await readFormationMotionDiagnostics(
+            backend,
+            device,
+            2
+        );
+        const flow = states.map((entry) => {
+            const tile = tileMap.worldToTile(
+                entry.position.x,
+                entry.position.y,
+                {}
+            );
+            const fieldOffset = (entry.flowFieldIndex * reservationAtlas.size)
+                + (tile.row * reservationAtlas.cols)
+                + tile.column;
+            return Object.freeze({
+                slot: entry.slot,
+                entityId: entry.state.entityId,
+                incarnation: entry.state.incarnation,
+                tile: Object.freeze({ row: tile.row, column: tile.column }),
+                flowFieldIndex: entry.flowFieldIndex,
+                integrationCost:
+                    reservationAtlas.integrationCosts[fieldOffset],
+                direction: Object.freeze({
+                    x: reservationAtlas.directions[fieldOffset * 2],
+                    y: reservationAtlas.directions[(fieldOffset * 2) + 1]
+                })
+            });
+        });
+        assert(false, 'Hexa reservation flag was not materialized: '
+            + JSON.stringify({
+                expected: Object.freeze({
+                    positions: reservationPositions,
+                    tiles: reservationTiles,
+                    integrationCosts: reservationCosts,
+                    separation: reservationSeparation,
+                    mergeCommitDistance
+                }),
+                planes: states,
+                flow,
+                diagnostics,
+                formationStatus: backend.getFormationRuntimeStatus()
+            }));
+    }
     const after = await renderBackend(backend, device, texture, camera, 2);
     const changed = countChangedPixels(before, after);
     const reservationCenter = Object.freeze({
-        x: center.x + ((reserved[0].position.x - origin.x) * scale),
-        y: center.y + ((reserved[0].position.y - origin.y) * scale)
+        x: center.x + ((reserved[0].position.x
+            - reservationWorldCenter.x) * scale),
+        y: center.y + ((reserved[0].position.y
+            - reservationWorldCenter.y) * scale)
     });
     const reservationHalfSize = Object.freeze({
         x: Math.ceil(left.radius * scale),
         y: Math.ceil(left.radius * scale)
     });
     const isReservationCyan = (pixel) => pixel.a > 0
-        && pixel.b >= 190
-        && pixel.g >= 180
-        && pixel.r <= 180;
+        && (pixel.b * 255) >= (190 * pixel.a)
+        && (pixel.g * 255) >= (180 * pixel.a)
+        && (pixel.r * 255) <= (180 * pixel.a);
     const reservationCyanPixelsBefore = countPixelsInRoi(
         before,
         reservationCenter,
@@ -1669,15 +2036,128 @@ async function runReservationPresentationFixture(device, format) {
         format,
         isReservationCyan
     );
-    assert(changed > 0, 'Hexa reservation did not change rendered pixels');
-    assert(reservationCyanPixelsAfter > reservationCyanPixelsBefore,
-        'Hexa reservation cyan bounded ROI evidence missing');
+    const reservationRoiChangedPixels = countChangedPixelsInRoi(
+        before,
+        after,
+        reservationCenter,
+        reservationHalfSize
+    );
+    if (changed <= 0
+        || reservationCyanPixelsAfter <= reservationCyanPixelsBefore) {
+        const temporaryBytes = await readGpuBufferBytes(
+            device,
+            backend.simulation.buffers.temporaries,
+            2 * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE,
+            'cirvivor-nw-hexa-reservation-temporary'
+        );
+        const temporaryView = new DataView(temporaryBytes);
+        const projectPosition = (position) => {
+            const projected = {};
+            camera.worldToViewport(position.x, position.y, projected);
+            return Object.freeze({ x: projected.x, y: projected.y });
+        };
+        const presentationPoses = reserved.map((entry) => {
+            const offset = entry.slot * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
+            const previous = Object.freeze({
+                x: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_X,
+                    true
+                ),
+                y: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_Y,
+                    true
+                )
+            });
+            const predicted = Object.freeze({
+                x: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_X,
+                    true
+                ),
+                y: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_Y,
+                    true
+                )
+            });
+            const delta = Object.freeze({
+                x: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_X,
+                    true
+                ),
+                y: temporaryView.getFloat32(
+                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_Y,
+                    true
+                )
+            });
+            return Object.freeze({
+                slot: entry.slot,
+                handle: Object.freeze({
+                    entityId: entry.state.entityId,
+                    incarnation: entry.state.incarnation
+                }),
+                velocity: entry.velocity,
+                current: entry.position,
+                previous,
+                predicted,
+                delta,
+                projected: Object.freeze({
+                    current: projectPosition(entry.position),
+                    previous: projectPosition(previous),
+                    predicted: projectPosition(predicted)
+                })
+            });
+        });
+        const reservationTargetColor = Object.freeze({
+            r: Math.round(0.25 * 255),
+            g: Math.round(0.95 * 255),
+            b: 255
+        });
+        const diagnostic = Object.freeze({
+            center: reservationCenter,
+            halfSize: reservationHalfSize,
+            presentationPoses: Object.freeze(presentationPoses),
+            changedPixelCount: changed,
+            roiChangedPixelCount: reservationRoiChangedPixels,
+            cyanPixelCountBefore: reservationCyanPixelsBefore,
+            cyanPixelCountAfter: reservationCyanPixelsAfter,
+            cyanPredicate: Object.freeze({
+                alphaPositive: true,
+                alphaAwareUnpremultiply: true,
+                minimumBlue: 190,
+                minimumGreen: 180,
+                maximumRed: 180
+            }),
+            reservationTargetColor,
+            beforeColors: summarizeRoiColors(
+                before,
+                reservationCenter,
+                reservationHalfSize,
+                format,
+                reservationTargetColor
+            ),
+            afterColors: summarizeRoiColors(
+                after,
+                reservationCenter,
+                reservationHalfSize,
+                format,
+                reservationTargetColor
+            )
+        });
+        assert(changed > 0,
+            `Hexa reservation did not change rendered pixels: ${
+                JSON.stringify(diagnostic)
+            }`);
+        assert(reservationCyanPixelsAfter > reservationCyanPixelsBefore,
+            `Hexa reservation cyan bounded ROI evidence missing: ${
+                JSON.stringify(diagnostic)
+            }`);
+    }
     backend.destroy();
     texture.destroy();
     return Object.freeze({
         reservationChangedPixels: true,
         reservationPixelDelta: changed,
         reservationBodyCount: reserved.length,
+        reservationRoiPixelDelta: reservationRoiChangedPixels,
         reservationCyanPixelsBefore,
         reservationCyanPixelsAfter,
         reservationCyanPixelDelta:
@@ -1701,23 +2181,66 @@ async function runAtomicRejectFixture(device, format) {
     const tileMap = createTileMap();
     const route = tileMap.getSpawnRoutes()[0];
     backend.init(tileMap);
-    const seed = createGpuEnemySpawnIntent({
-        definition: BASIC_HEXA_ENEMY_DATA,
-        route,
-        spawnSequence: 0
+    const pairCenter = tileMap.tileToWorld(7, 1, {});
+    const pairHalfSeparation = 0.325;
+    const pairPositions = Object.freeze([-1, 1].map((direction) => (
+        Object.freeze({
+            x: pairCenter.x + (direction * pairHalfSeparation),
+            y: pairCenter.y
+        })
+    )));
+    const firstFieldIndex = backend.flowRouteByPathId.get(route.pathId)
+        ?.firstFieldIndex;
+    const atlas = backend.flowFieldAtlas;
+    const pairTiles = pairPositions.map((position) => {
+        const tile = tileMap.worldToTile(position.x, position.y, {});
+        assert(tileMap.isWalkableTile(tile.row, tile.column),
+            'Hexa atomic reject pair must be walkable');
+        return Object.freeze({ row: tile.row, column: tile.column });
     });
-    const origin = seed.position;
-    const bodies = [0, 0.35].map((offset, index) => createNaturalHexa(
+    const pairCosts = pairTiles.map((tile) => atlas.integrationCosts[
+        (firstFieldIndex * atlas.size)
+            + (tile.row * atlas.cols)
+            + tile.column
+    ]);
+    const pairDistance = pairHalfSeparation * 2;
+    const mergeCommitDistance =
+        HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeCommitDistanceTiles;
+    const solverMinimumDistance = mergeCommitDistance
+        * MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+    assert(Number.isSafeInteger(firstFieldIndex)
+        && pairTiles[0].row === pairTiles[1].row
+        && pairTiles[0].column === pairTiles[1].column
+        && pairCosts[0] === pairCosts[1]
+        && pairDistance > solverMinimumDistance
+        && pairDistance < mergeCommitDistance,
+    'Hexa atomic reject pair contour/distance invariant failed');
+    const bodies = pairPositions.map((position, index) => createNaturalHexa(
         route,
         index,
         { entityId: 731 + index, incarnation: 1 },
-        { x: origin.x + offset, y: origin.y }
+        position
     ));
+    const pentaPosition = Object.freeze(tileMap.tileToWorld(10, 1, {}));
+    const pentaDistances = pairPositions.map((position) => Math.hypot(
+        position.x - pentaPosition.x,
+        position.y - pentaPosition.y
+    ));
+    const pentaTile = tileMap.worldToTile(
+        pentaPosition.x,
+        pentaPosition.y,
+        {}
+    );
+    assert(tileMap.isWalkableTile(pentaTile.row, pentaTile.column)
+        && Math.min(...pentaDistances) > mergeCommitDistance
+        && Math.max(...pentaDistances)
+            <= PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.pulseRadiusTiles,
+    'Hexa atomic reject Penta placement invariant failed');
     const penta = createPenta(
         route,
         2,
         { entityId: 739, incarnation: 1 },
-        { x: origin.x + 0.2, y: origin.y + 2 }
+        pentaPosition
     );
     assert(backend.replaceBodies([...bodies, penta]).accepted === 3,
         'Hexa atomic reject replacement failed');
@@ -1746,7 +2269,29 @@ async function runAtomicRejectFixture(device, format) {
     const effectCompletion = await waitForEffectCompletion(backend, device);
     assert(effectCompletion.appliedInstanceCount === 2,
         'Hexa atomic reject Effect materialization failed');
-    assert(prepare.pairCount === 1, 'Hexa atomic reject pair missing');
+    if (prepare.pairCount !== 1) {
+        const [planes, diagnostics] = await Promise.all([
+            readFormationPlanes(backend, device, 3),
+            readFormationMotionDiagnostics(backend, device, 3)
+        ]);
+        assert(false, 'Hexa atomic reject pair missing: '
+            + JSON.stringify({
+                expected: Object.freeze({
+                    pairPositions,
+                    pairTiles,
+                    pairCosts,
+                    pairDistance,
+                    solverMinimumDistance,
+                    mergeCommitDistance,
+                    pentaPosition,
+                    pentaDistances
+                }),
+                prepare,
+                planes,
+                diagnostics,
+                formationStatus: backend.getFormationRuntimeStatus()
+            }));
+    }
     const groups = new Map(bodies.map((body) => [
         handleKey(body),
         { handle: body, radius: body.radius, lineage: [body] }
@@ -2058,11 +2603,19 @@ function runHostAtomicLifecycleFixture() {
         });
         effectLedger.set(key, Object.freeze([effect]));
         initialEffectIdentities.push(effect);
+        const currentHealthCenti = encodeGpuCircleBodyFixedPoint(
+            activation.health
+        );
+        const maxHealthCenti = currentHealthCenti;
+        assert(currentHealthCenti > 0
+            && maxHealthCenti > 0
+            && currentHealthCenti <= maxHealthCenti,
+        'Host atomic natural H centi-HP authority mismatch');
         groups.push(Object.freeze({
             handle,
             lineage: Object.freeze([handle]),
-            currentHealthCenti: activation.healthFixedPoint,
-            maxHealthCenti: activation.maxHealthFixedPoint
+            currentHealthCenti,
+            maxHealthCenti
         }));
     }
     assert(registry.getStatus().activeCount === 6
@@ -2195,16 +2748,23 @@ function runHostAtomicLifecycleFixture() {
         'Host atomic merge commit failed');
         const destinationHandle = commit.spawned[0].handle;
         const destinationView = registry.copyEntityView(destinationHandle, {});
+        const transaction = transactionCommits[transactionCommits.length - 1];
         assert(destinationView
             && destinationView.metadata.formationMemberCount
                 === facts.facts.descriptor.memberCount
+            && destinationView.metadata.formationOccupiedSlotMask
+                === facts.facts.descriptor.formationOccupiedSlotMask
+            && destinationView.metadata.formationRotationStep
+                === facts.facts.descriptor.formationRotationStep
+            && destinationView.metadata.formationGeneration
+                === facts.facts.descriptor.formationGeneration
             && destinationView.metadata.formationLineageHash
                 === facts.facts.descriptor.formationLineageHash
-            && destinationView.metadata.healthFixedPoint
+            && transaction?.destinationCurrentHealthCenti
                 === facts.facts.descriptor.currentHealthCenti
-            && destinationView.metadata.maxHealthFixedPoint
+            && transaction.destinationMaxHealthCenti
                 === facts.facts.descriptor.maxHealthCenti,
-        'Host atomic destination registry metadata mismatch');
+        'Host atomic destination registry/transaction evidence mismatch');
         for (const despawn of commit.despawned) {
             consumedHandles.add(handleKey(despawn.handle));
             assert(despawn.bountyEligible === false,
@@ -2214,7 +2774,6 @@ function runHostAtomicLifecycleFixture() {
                 ? sourceBountyByKey.get(handleKey(despawn.handle))
                 : 0;
         }
-        const transaction = transactionCommits[transactionCommits.length - 1];
         assert(transaction
             && transaction.destination.entityId === destinationHandle.entityId
             && transaction.destination.incarnation === destinationHandle.incarnation
@@ -2403,20 +2962,74 @@ async function runAbaResetFixture(device, format) {
         route,
         spawnSequence: 0
     });
+    const pairCenter = tileMap.tileToWorld(7, 1, {});
+    const pairHalfSeparation = 0.325;
+    const pairPositions = Object.freeze([-1, 1].map((direction) => (
+        Object.freeze({
+            x: pairCenter.x + (direction * pairHalfSeparation),
+            y: pairCenter.y
+        })
+    )));
+    const firstFieldIndex = backend.flowRouteByPathId.get(route.pathId)
+        ?.firstFieldIndex;
+    const atlas = backend.flowFieldAtlas;
+    const pairTiles = pairPositions.map((position) => {
+        const tile = tileMap.worldToTile(position.x, position.y, {});
+        assert(tileMap.isWalkableTile(tile.row, tile.column),
+            'Hexa ABA pair must be walkable');
+        return Object.freeze({ row: tile.row, column: tile.column });
+    });
+    const pairCosts = pairTiles.map((tile) => atlas.integrationCosts[
+        (firstFieldIndex * atlas.size)
+            + (tile.row * atlas.cols)
+            + tile.column
+    ]);
+    const pairDistance = pairHalfSeparation * 2;
+    const mergeCommitDistance =
+        HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeCommitDistanceTiles;
+    const solverMinimumDistance = mergeCommitDistance
+        * MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE;
+    assert(Number.isSafeInteger(firstFieldIndex)
+        && pairTiles[0].row === pairTiles[1].row
+        && pairTiles[0].column === pairTiles[1].column
+        && pairCosts[0] === pairCosts[1]
+        && pairDistance > solverMinimumDistance
+        && pairDistance < mergeCommitDistance,
+    'Hexa ABA pair contour/distance invariant failed');
     const oldHandle = Object.freeze({ entityId: 741, incarnation: 1 });
     const oldPeerHandle = Object.freeze({ entityId: 742, incarnation: 1 });
-    const oldBody = createNaturalHexa(route, 0, oldHandle, seed.position);
+    const oldBody = createNaturalHexa(
+        route,
+        0,
+        oldHandle,
+        pairPositions[0]
+    );
     const oldPeer = createNaturalHexa(
         route,
         1,
         oldPeerHandle,
-        { x: seed.position.x + 0.35, y: seed.position.y }
+        pairPositions[1]
     );
+    const pentaPosition = Object.freeze(tileMap.tileToWorld(10, 1, {}));
+    const pentaDistances = pairPositions.map((position) => Math.hypot(
+        position.x - pentaPosition.x,
+        position.y - pentaPosition.y
+    ));
+    const pentaTile = tileMap.worldToTile(
+        pentaPosition.x,
+        pentaPosition.y,
+        {}
+    );
+    assert(tileMap.isWalkableTile(pentaTile.row, pentaTile.column)
+        && Math.min(...pentaDistances) > mergeCommitDistance
+        && Math.max(...pentaDistances)
+            <= PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.pulseRadiusTiles,
+    'Hexa ABA Penta placement invariant failed');
     const penta = createPenta(
         route,
         2,
         { entityId: 749, incarnation: 1 },
-        { x: seed.position.x + 0.2, y: seed.position.y + 2 }
+        pentaPosition
     );
     assert(backend.replaceBodies([oldBody, oldPeer, penta]).accepted === 3,
         'Hexa ABA initial replacement failed');
@@ -2440,8 +3053,31 @@ async function runAbaResetFixture(device, format) {
         'Hexa ABA seed submit failed');
     const prepare = await waitForFormationPrepare(backend, device);
     const effect = await waitForEffectCompletion(backend, device);
-    assert(prepare.pairCount === 1 && effect.appliedInstanceCount === 2,
-        'Hexa ABA pre-reset Formation/Effect evidence missing');
+    if (prepare.pairCount !== 1 || effect.appliedInstanceCount !== 2) {
+        const [planes, diagnostics] = await Promise.all([
+            readFormationPlanes(backend, device, 3),
+            readFormationMotionDiagnostics(backend, device, 3)
+        ]);
+        assert(false, 'Hexa ABA pre-reset Formation/Effect evidence missing: '
+            + JSON.stringify({
+                expected: Object.freeze({
+                    pairPositions,
+                    pairTiles,
+                    pairCosts,
+                    pairDistance,
+                    solverMinimumDistance,
+                    mergeCommitDistance,
+                    pentaPosition,
+                    pentaDistances
+                }),
+                prepare,
+                effect,
+                planes,
+                diagnostics,
+                formationStatus: backend.getFormationRuntimeStatus(),
+                effectStatus: backend.getEffectRuntimeStatus()
+            }));
+    }
     const record = publicTransformRecord(buildTransformRecords(
         prepare,
         new Map([
@@ -2688,63 +3324,14 @@ async function runGridOverflowFailCloseFixture(device, format) {
     });
 }
 
-function collectBlockedSegmentCandidates(tileMap, maximum = 12) {
-    const grid = tileMap.getNavigationGrid();
-    const candidates = [];
-    const isWalkable = (row, column) => row >= 0 && column >= 0
-        && row < grid.rows && column < grid.cols
-        && grid.blocked[(row * grid.cols) + column] === 0;
-    for (let row = 0; row < grid.rows && candidates.length < maximum; row++) {
-        for (let column = 0;
-            column < grid.cols && candidates.length < maximum;
-            column++) {
-            if (!isWalkable(row, column)) { continue; }
-            for (let dy = -3; dy <= 3 && candidates.length < maximum; dy++) {
-                for (let dx = -3; dx <= 3 && candidates.length < maximum; dx++) {
-                    const otherRow = row + dy;
-                    const otherColumn = column + dx;
-                    const distance = Math.hypot(dx, dy);
-                    if (distance < 1.25 || distance > 3.8
-                        || !isWalkable(otherRow, otherColumn)) {
-                        continue;
-                    }
-                    let crossesBlocked = false;
-                    for (let sample = 1; sample < 12; sample++) {
-                        const t = sample / 12;
-                        const sampleRow = Math.floor(row + 0.5 + (dy * t));
-                        const sampleColumn = Math.floor(
-                            column + 0.5 + (dx * t)
-                        );
-                        if (!isWalkable(sampleRow, sampleColumn)) {
-                            crossesBlocked = true;
-                            break;
-                        }
-                    }
-                    if (crossesBlocked) {
-                        candidates.push(Object.freeze({
-                            left: Object.freeze({
-                                x: column + 0.5,
-                                y: row + 0.5
-                            }),
-                            right: Object.freeze({
-                                x: otherColumn + 0.5,
-                                y: otherRow + 0.5
-                            })
-                        }));
-                    }
-                }
-            }
-        }
-    }
-    return Object.freeze(candidates);
-}
-
 async function runMotionDiagnosticCase(
     device,
     format,
     sessionGeneration,
     bodies,
-    expectedFlag
+    expectedFlag,
+    tileMap = createTileMap(),
+    captureMotionBeforePrepare = false
 ) {
     const backend = new EnemySimulationBackend({
         webGpuPlatformPort: createPlatformPort(device, format)
@@ -2754,7 +3341,6 @@ async function runMotionDiagnosticCase(
         formationTransformCapacity: 1,
         sessionGeneration
     });
-    const tileMap = createTileMap();
     backend.init(tileMap);
     assert(backend.replaceBodies(bodies).accepted === bodies.length,
         'Formation motion diagnostic replacement failed');
@@ -2763,10 +3349,22 @@ async function runMotionDiagnosticCase(
         device,
         bodies.length
     );
+    let diagnostics = null;
+    if (captureMotionBeforePrepare) {
+        assert(backend.fixedUpdate(FIXED_DELTA, 1),
+            'Formation pre-prepare motion diagnostic submit failed');
+        await device.queue.onSubmittedWorkDone();
+        diagnostics = await readFormationMotionDiagnostics(
+            backend,
+            device,
+            bodies.length
+        );
+    }
+    const prepareTick = captureMotionBeforePrepare ? 2 : 1;
     assert(backend.stageFormationPrepareBatch({
         abiVersion: GPU_FORMATION_PREPARE_PROGRAM_ABI_VERSION,
         batchIdFingerprint: (0x760000 + sessionGeneration) >>> 0,
-        targetFixedTick: 1,
+        targetFixedTick: prepareTick,
         records: bodies.map((body, index) => Object.freeze({
             sourceEntityId: body.entityId,
             sourceIncarnation: body.incarnation,
@@ -2775,14 +3373,16 @@ async function runMotionDiagnosticCase(
             flags: 0
         }))
     }).accepted, 'Formation motion diagnostic prepare stage failed');
-    assert(backend.fixedUpdate(FIXED_DELTA, 1),
+    assert(backend.fixedUpdate(FIXED_DELTA, prepareTick),
         'Formation motion diagnostic submit failed');
     const completion = await waitForFormationPrepare(backend, device);
-    const diagnostics = await readFormationMotionDiagnostics(
-        backend,
-        device,
-        bodies.length
-    );
+    if (diagnostics === null) {
+        diagnostics = await readFormationMotionDiagnostics(
+            backend,
+            device,
+            bodies.length
+        );
+    }
     const after = await readFormationPlanes(backend, device, bodies.length);
     const observedCount = diagnostics.filter(({ diagnosticFlags }) => (
         (diagnosticFlags & expectedFlag) !== 0
@@ -2817,14 +3417,32 @@ async function runMotionDiagnosticCase(
         ),
         selectedForwardCostDeltas: Object.freeze(
             acceptedDiagnostics.map(({ forwardCostDelta }) => forwardCostDelta)
-        )
+        ),
+        completionResults: Object.freeze(completion.results.map(({ result }) => (
+            result
+        ))),
+        diagnostics
     });
 }
 
 async function runMotionPolicyFixture(device, format) {
-    const tileMap = createTileMap();
+    const mapDefinition = resolveIngameMapDefinition();
+    const sourceRoute = mapDefinition.enemySpawnRoutes[0];
+    const fixtureRoute = Object.freeze({
+        ...sourceRoute,
+        gateId: `${sourceRoute.gateId}-formation-motion-fixture`,
+        pathId: `${sourceRoute.pathId}-formation-motion-fixture`
+    });
+    const tileMap = new TileMap(Object.freeze({
+        ...mapDefinition,
+        id: `${mapDefinition.id}-formation-motion-fixture`,
+        enemySpawnRoutes: Object.freeze([sourceRoute, fixtureRoute])
+    }));
     const routes = tileMap.getSpawnRoutes();
-    assert(routes.length >= 2, 'Cross-route Formation fixture needs two routes');
+    assert(routes.length === 2
+        && routes[0].gateId !== routes[1].gateId
+        && routes[0].pathId !== routes[1].pathId,
+    'Cross-route Formation fixture needs two exact route identities');
     const firstSeed = createGpuEnemySpawnIntent({
         definition: BASIC_HEXA_ENEMY_DATA,
         route: routes[0],
@@ -2849,9 +3467,14 @@ async function runMotionPolicyFixture(device, format) {
         format,
         76,
         crossRouteBodies,
-        GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG.ROUTE_SPAN_REJECTED
+        GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG.ROUTE_SPAN_REJECTED,
+        tileMap
     );
-    assert(crossRoute.observedCount > 0 && crossRoute.pairCount === 0,
+    assert(crossRoute.observedCount > 0
+        && crossRoute.pairCount === 0
+        && crossRoute.beforeFlowFieldIndices.length === 2
+        && crossRoute.beforeFlowFieldIndices[0]
+            !== crossRoute.beforeFlowFieldIndices[1],
         'Formation cross-route candidate did not fail-close');
 
     const waypoints = routes[0].waypoints;
@@ -2895,40 +3518,127 @@ async function runMotionPolicyFixture(device, format) {
         && reverse.minimumVelocityDot >= -0.000001,
     'Formation reverse candidate/no-reverse velocity failed');
 
-    const blockedCandidates = collectBlockedSegmentCandidates(tileMap);
-    assert(blockedCandidates.length > 0,
-        'Formation SDF fixture found no blocked corridor segment');
-    let blocked = null;
-    for (let index = 0; index < blockedCandidates.length; index++) {
-        const candidate = blockedCandidates[index];
-        const blockedBodies = [
-            createNaturalHexa(
-                routes[0],
-                index * 2,
-                { entityId: 921 + (index * 2), incarnation: 1 },
-                candidate.left
-            ),
-            createNaturalHexa(
-                routes[0],
-                (index * 2) + 1,
-                { entityId: 922 + (index * 2), incarnation: 1 },
-                candidate.right
-            )
-        ];
-        const evidence = await runMotionDiagnosticCase(
-            device,
-            format,
-            78 + index,
-            blockedBodies,
-            GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG.SDF_SEGMENT_REJECTED
-        );
-        if (evidence.observedCount > 0) {
-            blocked = evidence;
-            break;
+    const blockedLeft = Object.freeze(tileMap.tileToWorld(10, 5, {}));
+    const blockedRight = Object.freeze(tileMap.tileToWorld(12, 8, {}));
+    const blockedPositions = Object.freeze([blockedRight, blockedLeft]);
+    const blockedTiles = blockedPositions.map((position) => Object.freeze(
+        tileMap.worldToTile(position.x, position.y, {})
+    ));
+    const blockedBodies = blockedPositions.map((position, index) => (
+        createNaturalHexa(
+            routes[0],
+            index,
+            { entityId: 921 + index, incarnation: 1 },
+            position
+        )
+    ));
+    const blockedAtlas = createRouteFlowFieldAtlas(tileMap);
+    const blockedRouteSpan = blockedAtlas.routes.find(({ pathId }) => (
+        pathId === routes[0].pathId
+    ));
+    const blockedFieldIndex = blockedRouteSpan?.firstFieldIndex;
+    const blockedCosts = blockedTiles.map((tile) => (
+        blockedAtlas.integrationCosts[
+            (blockedFieldIndex * blockedAtlas.size)
+                + (tile.row * blockedAtlas.cols)
+                + tile.column
+        ]
+    ));
+    const blockedDistance = Math.hypot(
+        blockedRight.x - blockedLeft.x,
+        blockedRight.y - blockedLeft.y
+    );
+    const grid = tileMap.getNavigationGrid();
+    const sdf = createGpuSignedDistanceField(grid);
+    const requiredSdfSamples = Math.max(
+        1,
+        Math.ceil(blockedDistance / grid.cellSize)
+    );
+    const worldBounds = tileMap.getWorldBounds();
+    const sdfSamples = Object.freeze(Array.from(
+        { length: requiredSdfSamples + 1 },
+        (_, sample) => {
+            const t = sample / requiredSdfSamples;
+            const position = Object.freeze({
+                x: blockedRight.x + ((blockedLeft.x - blockedRight.x) * t),
+                y: blockedRight.y + ((blockedLeft.y - blockedRight.y) * t)
+            });
+            const uvX = Math.max(0, Math.min(
+                0.999999,
+                position.x / worldBounds.width
+            ));
+            const uvY = Math.max(0, Math.min(
+                0.999999,
+                position.y / worldBounds.height
+            ));
+            const column = Math.floor(uvX * sdf.cols);
+            const row = Math.floor(uvY * sdf.rows);
+            const boundary = Math.min(
+                position.x,
+                worldBounds.width - position.x,
+                position.y,
+                worldBounds.height - position.y
+            );
+            return Object.freeze({
+                sample,
+                position,
+                column,
+                row,
+                distance: Math.min(
+                    boundary,
+                    sdf.values[(row * sdf.cols) + column] * grid.cellSize
+                )
+            });
         }
-    }
-    assert(blocked && blocked.pairCount === 0,
-        'Formation blocked SDF segment did not fail-close');
+    ));
+    const blockedClearance = Math.fround(
+        Math.fround(blockedBodies[0].radius)
+            * Math.fround(
+                HEXA_HIVE_SIX_RING_FORMATION_DEFINITION
+                    .corridorClearanceRadiusScale
+            )
+    );
+    assert(blockedTiles.every(({ row, column }) => (
+        tileMap.isWalkableTile(row, column)
+    ))
+        && blockedRouteSpan?.gateId === routes[0].gateId
+        && blockedRouteSpan.pathId === routes[0].pathId
+        && Number.isSafeInteger(blockedFieldIndex)
+        && blockedFieldIndex >= 0
+        && blockedRouteSpan.fieldCount > 0
+        && blockedFieldIndex + blockedRouteSpan.fieldCount
+            <= blockedAtlas.fieldCount
+        && blockedCosts[0] > blockedCosts[1]
+        && blockedDistance
+            < HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeSeekRadiusTiles
+        && requiredSdfSamples
+            <= HEXA_HIVE_SIX_RING_FORMATION_DEFINITION
+                .maximumSdfSegmentSamples
+        && Math.min(...sdfSamples.map(({ distance }) => distance))
+            < blockedClearance,
+    'Formation deterministic blocked SDF fixture invariant failed');
+    const blocked = await runMotionDiagnosticCase(
+        device,
+        format,
+        78,
+        blockedBodies,
+        GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG.SDF_SEGMENT_REJECTED,
+        tileMap,
+        true
+    );
+    assert(blocked.observedCount > 0 && blocked.pairCount === 0,
+        `Formation blocked SDF segment did not fail-close: ${JSON.stringify({
+            blockedPositions,
+            blockedTiles,
+            blockedRouteSpan,
+            blockedFieldIndex,
+            blockedCosts,
+            blockedDistance,
+            requiredSdfSamples,
+            blockedClearance,
+            sdfSamples,
+            evidence: blocked
+        })}`);
     return Object.freeze({
         sameRouteOnly: true,
         crossRouteRejectedPairCount: crossRoute.rejectedPairCount,

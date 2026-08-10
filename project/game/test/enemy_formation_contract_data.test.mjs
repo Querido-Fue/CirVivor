@@ -253,7 +253,10 @@ test('six-ring catalog는 empty center, graph, +60 rotation, connectivity를 고
         HEXA_HIVE_SIX_RING: 1
     });
     assert.equal(definition.id, HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID);
-    assert.deepEqual(definition.slotCoordinates.map((entry) => ({ ...entry })), [
+    assert.deepEqual(Array.from(
+        definition.slotCoordinates,
+        (entry) => ({ q: entry.q, r: entry.r })
+    ), [
         { q: 1, r: 0 },
         { q: 1, r: -1 },
         { q: 0, r: -1 },

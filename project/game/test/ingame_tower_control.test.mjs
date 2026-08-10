@@ -273,6 +273,12 @@ assert.deepEqual({ ...enemySimulationBackend.getStatus() }, {
     gpu: null,
     events: null
 });
+assert.deepEqual({ ...enemySimulationBackend.getEventProtocolState() }, {
+    sessionGeneration: 1,
+    deviceGeneration: 0,
+    authoritativeEpoch: 0,
+    submittedTickCount: 0
+});
 assert.equal(enemySimulationBackend.getSignedDistanceField().values.length, 1620);
 assert.equal(enemySimulationBackend.getFlowFieldAtlas().fieldCount, 24);
 assert.equal(tower.position.x, tileMap.getTowerSpawnPosition().x);
@@ -404,13 +410,16 @@ const frictionStoppedX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.equal(tower.position.x, frictionStoppedX);
 
-assert.equal(towerPhysicsBody.applyImpulse(-2.5, 0), true);
-assert.equal(towerPhysicsBody.getVelocity().x, -2.5);
+const towerRecoilImpulse = -2.5;
+const expectedRecoilVelocity = towerRecoilImpulse
+    * towerPhysicsBody.getInverseMass();
+assert.equal(towerPhysicsBody.applyImpulse(towerRecoilImpulse, 0), true);
+assert.equal(towerPhysicsBody.getVelocity().x, expectedRecoilVelocity);
 const recoilStartX = tower.position.x;
 gameSystem.fixedUpdate();
 assert.ok(tower.position.x < recoilStartX);
 assert.ok(towerPhysicsBody.getVelocity().x < 0);
-assert.ok(towerPhysicsBody.getVelocity().x > -2.5);
+assert.ok(towerPhysicsBody.getVelocity().x > expectedRecoilVelocity);
 
 for (let index = 0; index < 100; index++) {
     gameSystem.fixedUpdate();
