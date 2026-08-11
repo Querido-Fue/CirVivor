@@ -3,6 +3,21 @@ import {
     normalizeEnemyProfileCatalog
 } from 'ingame/contract/enemy_profile_contract.js';
 import {
+    FORMATION_COORDINATE_SYSTEM,
+    FORMATION_COORDINATE_SYSTEM_CODE
+} from 'ingame/contract/enemy_formation_contract.js';
+import {
+    ENEMY_DIRECTIONAL_DEFENSE_BOUNDARY_POLICY,
+    ENEMY_DIRECTIONAL_DEFENSE_ZERO_DIRECTION_POLICY,
+    ENEMY_ORBIT_CENTER_TARGET_POLICY,
+    ENEMY_ORBIT_FIXED_TICKS_PER_SECOND,
+    ENEMY_ORBIT_SLOT_CAPACITY,
+    ENEMY_ORBIT_TOWER_LOSS_POLICY
+} from 'ingame/contract/enemy_orbit_directional_defense_contract.js';
+import {
+    THE_TOWER_DATA
+} from '../tower/the_tower_data.js';
+import {
     LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES
 } from './enemy_shape_geometry_data.js';
 import {
@@ -37,11 +52,39 @@ export const TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID = (
 export const TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID = (
     'triangle-core-route-fast-01'
 );
+export const OCTAGON_HEAVY_ENEMY_PHYSICS_PROFILE_ID = (
+    'octagon-heavy-physics-01'
+);
+export const OCTAGON_TOWER_ORBIT_ENEMY_BEHAVIOR_PROFILE_ID = (
+    'octagon-tower-orbit-01'
+);
 export const ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'archer-core-route-01';
 export const ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID = 'arrow-tower-charge-01';
 export const HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-seek-formation-01';
 export const HEXA_KEEP_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-keep-formation-01';
 export const ARCHER_ATTACK_DEFINITION_ID = 'archer_basic_shot_01';
+
+export const OCTAGON_TOWER_ORBIT_RADIUS_TILES = Math.fround(
+    THE_TOWER_DATA.RADIUS_TILES * 12
+);
+export const OCTAGON_TOWER_ORBIT_ANGULAR_SPEED_RADIANS_PER_SECOND
+    = Math.fround(0.25);
+export const OCTAGON_TOWER_ORBIT_SLOT_FILL_ORDER = Object.freeze([
+    0,
+    4,
+    2,
+    6,
+    1,
+    5,
+    3,
+    7
+]);
+export const OCTAGON_DIRECTIONAL_DEFENSE_ARMORED_FACET_INDICES = Object.freeze([
+    7,
+    0,
+    1
+]);
+export const OCTAGON_DIRECTIONAL_DEFENSE_FLAT_REDUCTION = Math.fround(0.5);
 
 const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
     physics: Object.freeze([
@@ -56,6 +99,13 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             id: TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID,
             collisionRadiusTiles: MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
             weight: 0.6,
+            pairCollisionRadiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
+            knockbackResistancePolicy: 'inverse-mass'
+        }),
+        Object.freeze({
+            id: OCTAGON_HEAVY_ENEMY_PHYSICS_PROFILE_ID,
+            collisionRadiusTiles: MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
+            weight: 2.5,
             pairCollisionRadiusScale: MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE,
             knockbackResistancePolicy: 'inverse-mass'
         })
@@ -139,6 +189,45 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
                 telegraphStyleCode: 1,
                 telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
                 telegraphRadiusScale: 1.35
+            })
+        }),
+        Object.freeze({
+            id: OCTAGON_TOWER_ORBIT_ENEMY_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'tower-orbit-with-core-fallback',
+            navigationMode: 'gpu-exact-tower-orbit',
+            moveSpeedTilesPerSecond: 2.5,
+            towerEngagement: 'directional-defense-contact',
+            towerTargetSelection: 'dedicated-exact-single-living-tower',
+            towerPhysicalResponse: 'weight-based-pushable',
+            fallback: 'latched-core-route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.NONE,
+            orbit: Object.freeze({
+                coordinateSystemId: FORMATION_COORDINATE_SYSTEM.RING_SLOTS,
+                coordinateSystemCode: FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS,
+                orbitRadiusTiles: OCTAGON_TOWER_ORBIT_RADIUS_TILES,
+                angularSpeedRadiansPerSecond:
+                    OCTAGON_TOWER_ORBIT_ANGULAR_SPEED_RADIANS_PER_SECOND,
+                fixedTicksPerSecond: ENEMY_ORBIT_FIXED_TICKS_PER_SECOND,
+                slotCapacity: ENEMY_ORBIT_SLOT_CAPACITY,
+                slotFillOrder: OCTAGON_TOWER_ORBIT_SLOT_FILL_ORDER,
+                centerTargetPolicy:
+                    ENEMY_ORBIT_CENTER_TARGET_POLICY.EXACT_GPU_TOWER,
+                towerLossPolicy:
+                    ENEMY_ORBIT_TOWER_LOSS_POLICY.LATCH_CORE_FALLBACK
+            }),
+            directionalDefense: Object.freeze({
+                totalFacetCount: 8,
+                armoredFacetCount: 3,
+                armoredFacetIndices:
+                    OCTAGON_DIRECTIONAL_DEFENSE_ARMORED_FACET_INDICES,
+                flatReduction: OCTAGON_DIRECTIONAL_DEFENSE_FLAT_REDUCTION,
+                minimumDamage: null,
+                boundaryPolicy:
+                    ENEMY_DIRECTIONAL_DEFENSE_BOUNDARY_POLICY.INCLUSIVE,
+                zeroDirectionPolicy:
+                    ENEMY_DIRECTIONAL_DEFENSE_ZERO_DIRECTION_POLICY.NORMAL_DAMAGE
             })
         }),
         Object.freeze({

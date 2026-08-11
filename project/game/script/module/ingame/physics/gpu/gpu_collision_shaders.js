@@ -15,6 +15,13 @@ import {
     GAMEPLAY_DAMAGE_RESOLUTION_POLICY_ID,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
+import {
+    ENEMY_ORBIT_PHASE_Q32_SCALE,
+    ENEMY_ORBIT_SLOT_CAPACITY
+} from '../../contract/enemy_orbit_directional_defense_contract.js';
+import {
+    FORMATION_COORDINATE_SYSTEM_CODE
+} from '../../contract/enemy_formation_contract.js';
 import { THE_TOWER_DATA } from '../../../../data/object/tower/the_tower_data.js';
 import {
     GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
@@ -44,7 +51,13 @@ import {
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
 } from '../../../../data/object/enemy/basic_circle_enemy_data.js';
 
-const WGSL_POLYGON_POINT_CAPACITY = 6;
+const WGSL_POLYGON_POINT_CAPACITY = 8;
+
+/** Contact normal을 handler 전용 flat-reduction payload로 재사용하는 transient marker입니다. */
+export const GPU_DIRECTIONAL_DEFENSE_CONTACT_MARKER = Object.freeze({
+    MAGIC: 0x7fc00040,
+    MAGIC_MASK: 0xfffffff0
+});
 
 const toWgslFloat = (value) => {
     if (!Number.isFinite(value)) {
@@ -173,6 +186,8 @@ const CORE_DAMAGE_REQUEST_MARKER_MAGIC: u32 = 0x7fc00020u;
 const CORE_DAMAGE_REQUEST_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
 const SELECTED_TARGET_TOWER_MARKER_MAGIC: u32 = 0x7fc00030u;
 const SELECTED_TARGET_TOWER_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;
+const DIRECTIONAL_DEFENSE_MARKER_MAGIC: u32 = ${GPU_DIRECTIONAL_DEFENSE_CONTACT_MARKER.MAGIC}u;
+const DIRECTIONAL_DEFENSE_MARKER_MAGIC_MASK: u32 = ${GPU_DIRECTIONAL_DEFENSE_CONTACT_MARKER.MAGIC_MASK}u;
 const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK: u32 = 0u;
 const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_FAILURE: u32 = 1u;
 const APPLIED_EVENT_TYPE_DAMAGE_APPLIED: u32 = ${GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED}u;
@@ -187,20 +202,32 @@ const APPLIED_EVENT_FLAG_ENTER_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.ENT
 const APPLIED_EVENT_FLAG_CONTINUOUS_POLICY: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY}u;
 const APPLIED_EVENT_FLAG_TERRAIN_CONTACT: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT}u;
 const APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW}u;
+const APPLIED_EVENT_FLAG_DIRECTIONAL_DEFENSE: u32 = ${GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE}u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE}u;
+const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
 const ENEMY_BEHAVIOR_STATE_SEEK_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER}u;
 const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
 const ENEMY_BEHAVIOR_STATE_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE}u;
 const ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL}u;
 const ENEMY_BEHAVIOR_STATE_RECOVER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER}u;
 const ENEMY_BEHAVIOR_STATE_CORE_FALLBACK: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CORE_FALLBACK}u;
+const ENEMY_BEHAVIOR_STATE_ORBIT_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.ORBIT_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
 const ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TELEGRAPH_PENDING}u;
 const ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_VALID}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
+const ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.DIRECTIONAL_DEFENSE_ACTIVE}u;
+const ENEMY_ORBIT_COORDINATE_SYSTEM_RING_SLOTS: u32 = ${FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS}u;
+const ENEMY_ORBIT_SLOT_CAPACITY: u32 = ${ENEMY_ORBIT_SLOT_CAPACITY}u;
+const ENEMY_ORBIT_PHASE_RADIANS_PER_Q32: f32 = ${toWgslFloat(
+    (Math.PI * 2) / ENEMY_ORBIT_PHASE_Q32_SCALE
+)};
+// RING_SLOTS global clock의 phase 0에서 slot 0을 서쪽 기준 반경에 둡니다.
+// 이후 모든 slot은 같은 fixed-tick Q32 phase로 함께 회전합니다.
+const ENEMY_ORBIT_SLOT_ZERO_PHASE_Q32: u32 = 0x80000000u;
 const EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER: u32 = ${GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_TOWER}u;
 const EFFECT_SUMMARY_FLAG_PROJECTILE_ATTACK_SNAPSHOT: u32 = ${GPU_EFFECT_SUMMARY_FLAG.PROJECTILE_ATTACK_SNAPSHOT}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
@@ -1991,6 +2018,169 @@ fn disable_enemy_flow(body_id: u32) {
     atomicAnd(&simulations.values[body_id].flags, ~BODY_FLAG_USE_FLOW);
 }
 
+fn octagon_orbit_config_is_valid(body_id: u32) -> bool {
+    let facet_config = enemy_behavior_states.values[body_id].telegraph_color_rgba8;
+    let armored_facet_count = facet_config & 65535u;
+    let total_facet_count = (facet_config >> 16u) & 65535u;
+    return enemy_behavior_states.values[body_id].windup_range > 0.0
+        && enemy_behavior_states.values[body_id].windup_range
+            <= 3.402823466e+38
+        && enemy_behavior_states.values[body_id].windup_ticks
+            == ENEMY_ORBIT_COORDINATE_SYSTEM_RING_SLOTS
+        && enemy_behavior_states.values[body_id].charge_max_ticks
+            < enemy_behavior_states.values[body_id].recoil_ticks
+        && enemy_behavior_states.values[body_id].recoil_ticks
+            == ENEMY_ORBIT_SLOT_CAPACITY
+        && enemy_behavior_states.values[body_id].recover_ticks != 0u
+        && bitcast<i32>(enemy_behavior_states.values[body_id]
+            .telegraph_style_code) > 0
+        && armored_facet_count == 3u
+        && total_facet_count == ENEMY_ORBIT_SLOT_CAPACITY
+        && enemy_behavior_states.values[body_id].charge_speed == 0.0
+        && enemy_behavior_states.values[body_id].recoil_impulse == 0.0
+        && enemy_behavior_states.values[body_id].telegraph_radius_scale == 0.0;
+}
+
+fn rotate_octagon_orbit_radial(radial: vec2f, angle: f32) -> vec2f {
+    let cosine = cos(angle);
+    let sine = sin(angle);
+    return vec2f(
+        radial.x * cosine - radial.y * sine,
+        radial.x * sine + radial.y * cosine
+    );
+}
+
+@compute @workgroup_size(256)
+fn advance_octagon_orbit(@builtin(global_invocation_id) global_id: vec3u) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count
+        || enemy_behavior_states.values[body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT
+        || !body_id_is_alive(body_id)) {
+        return;
+    }
+    let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
+    // Tower loss is a same-world latch. A later exact Tower config cannot re-enter orbit.
+    if (state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
+        enter_enemy_core_fallback(body_id);
+        return;
+    }
+    if ((state != ENEMY_BEHAVIOR_STATE_SEEK_TOWER
+            && state != ENEMY_BEHAVIOR_STATE_ORBIT_TOWER)
+        || !octagon_orbit_config_is_valid(body_id)
+        || !tower_gameplay_target_is_valid()) {
+        enter_enemy_core_fallback(body_id);
+        return;
+    }
+    let previous_flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
+    let allowed_seek_flags = ENEMY_BEHAVIOR_FLAG_TARGET_VALID;
+    let allowed_active_flags = ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+        | ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE;
+    let flags_match_state = select(
+        previous_flags == allowed_active_flags,
+        previous_flags == 0u || previous_flags == allowed_seek_flags,
+        state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER
+    );
+    if (!flags_match_state
+        || ((previous_flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
+            && !behavior_target_matches_gameplay_tower(body_id))) {
+        enter_enemy_core_fallback(body_id);
+        return;
+    }
+    bind_behavior_target_to_gameplay_tower(body_id);
+
+    let phase_word = ENEMY_ORBIT_SLOT_ZERO_PHASE_Q32
+        + (enemy_behavior_states.values[body_id].charge_max_ticks << 29u)
+        + (params.fixed_tick
+            * enemy_behavior_states.values[body_id].recover_ticks);
+    let angle = f32(phase_word) * ENEMY_ORBIT_PHASE_RADIANS_PER_Q32;
+    let desired_radial = vec2f(cos(angle), sin(angle));
+    let target_position = physics.values[tower_gameplay_target.target_slot].position;
+    var facing = target_position - physics.values[body_id].position;
+    let facing_length_squared = dot(facing, facing);
+    if (facing_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        facing = -desired_radial;
+    } else {
+        facing *= inverseSqrt(facing_length_squared);
+    }
+    enemy_behavior_states.values[body_id].charge_direction = facing;
+
+    let orbit_radius = enemy_behavior_states.values[body_id].windup_range;
+    if (state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER) {
+        // 접근 중에는 route flow와 exact Tower-facing만 유지합니다. 방어는 실제
+        // radius capture 뒤에만 활성화되어 멀리서 생기는 가짜 armored hit를 막습니다.
+        atomicStore(
+            &enemy_behavior_states.values[body_id].flags,
+            allowed_seek_flags
+        );
+        atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
+        if (facing_length_squared > orbit_radius * orbit_radius) {
+            return;
+        }
+        set_enemy_behavior_state(
+            body_id,
+            ENEMY_BEHAVIOR_STATE_ORBIT_TOWER,
+            0u
+        );
+    }
+
+    // Capture 뒤에는 exact Tower orbit이 velocity를 소유합니다.
+    disable_enemy_flow(body_id);
+    atomicStore(
+        &enemy_behavior_states.values[body_id].flags,
+        allowed_active_flags
+    );
+
+    let body_position = physics.values[body_id].position;
+    let current_delta = body_position - target_position;
+    let current_distance_squared = dot(current_delta, current_delta);
+    var current_radial = desired_radial;
+    if (current_distance_squared > EPSILON_DISTANCE_SQUARED) {
+        current_radial = current_delta * inverseSqrt(current_distance_squared);
+    }
+    let radial_dot = clamp(dot(current_radial, desired_radial), -1.0, 1.0);
+    let radial_cross = current_radial.x * desired_radial.y
+        - current_radial.y * desired_radial.x;
+    var turn_direction = select(-1.0, 1.0, radial_cross >= 0.0);
+    if (abs(radial_cross) <= EPSILON_MASS && radial_dot < 0.0) {
+        // Exact opposite slot은 entity/order와 무관한 slot parity로 tie-break합니다.
+        turn_direction = select(
+            -1.0,
+            1.0,
+            (enemy_behavior_states.values[body_id].charge_max_ticks & 1u) == 0u
+        );
+    }
+    let signed_angle_error = acos(radial_dot) * turn_direction;
+    let maximum_speed = max(simulations.values[body_id].flow_speed, 0.0);
+    let maximum_angular_step = select(
+        0.0,
+        maximum_speed * max(params.dt, 0.0) / orbit_radius,
+        orbit_radius > EPSILON_MASS
+    );
+    let settle_angle = clamp(
+        signed_angle_error,
+        -maximum_angular_step,
+        maximum_angular_step
+    );
+    let settle_radial = rotate_octagon_orbit_radial(
+        current_radial,
+        settle_angle
+    );
+    let desired_position = target_position + settle_radial * orbit_radius;
+    let position_error = desired_position - body_position;
+    var desired_velocity = position_error * max(params.inverse_dt, 0.0);
+    let desired_speed_squared = dot(desired_velocity, desired_velocity);
+    if (maximum_speed <= 0.0) {
+        desired_velocity = vec2f(0.0);
+    } else if (desired_speed_squared > maximum_speed * maximum_speed) {
+        desired_velocity *= maximum_speed * inverseSqrt(desired_speed_squared);
+    }
+    physics.values[body_id].velocity = desired_velocity;
+}
+
 @compute @workgroup_size(256)
 fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
     if (!abi_is_current()) {
@@ -2443,6 +2633,15 @@ fn contact_is_core_damage_request_candidate(contact: Contact) -> bool {
         == CORE_DAMAGE_REQUEST_MARKER_MAGIC;
 }
 
+fn directional_defense_flat_reduction(contact: Contact) -> i32 {
+    if ((bitcast<u32>(contact.normal.y)
+            & DIRECTIONAL_DEFENSE_MARKER_MAGIC_MASK)
+        != DIRECTIONAL_DEFENSE_MARKER_MAGIC) {
+        return 0;
+    }
+    return max(bitcast<i32>(contact.normal.x), 0);
+}
+
 fn selected_target_tower_marker_for_policy(policy_event_flag: u32) -> u32 {
     if (policy_event_flag == APPLIED_EVENT_FLAG_ENTER_POLICY) {
         return SELECTED_TARGET_TOWER_MARKER_MAGIC
@@ -2851,6 +3050,91 @@ fn generate_world_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     ));
 }
 
+@compute @workgroup_size(256)
+fn classify_directional_defense_contacts(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (contact.other_body_id < 0) {
+        return;
+    }
+    let source_body_id = contact.self_body_id;
+    let target_body_id = u32(contact.other_body_id);
+    if (source_body_id >= counts.body_count
+        || target_body_id >= counts.body_count
+        || source_body_id == target_body_id
+        || simulations.values[source_body_id].incarnation
+            != contact.self_incarnation
+        || simulations.values[target_body_id].incarnation
+            != contact.other_incarnation
+        || !body_id_is_alive(source_body_id)
+        || !body_id_is_alive(target_body_id)
+        || enemy_behavior_states.values[target_body_id].program_id
+            != ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT
+        || atomicLoad(&enemy_behavior_states.values[target_body_id].state)
+            != ENEMY_BEHAVIOR_STATE_ORBIT_TOWER
+        || !octagon_orbit_config_is_valid(target_body_id)
+        || !behavior_target_matches_gameplay_tower(target_body_id)) {
+        return;
+    }
+    let target_flags = atomicLoad(
+        &enemy_behavior_states.values[target_body_id].flags
+    );
+    if ((target_flags & (
+            ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE
+        )) != (
+            ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE
+        )) {
+        return;
+    }
+    // Contact generation substitutes an identity-derived unit normal for an exact
+    // center overlap. Directional defense must instead honor the authored
+    // zero-direction policy from the same predicted positions used by the grid.
+    let incoming_delta = temporaries.values[source_body_id].predicted_position
+        - temporaries.values[target_body_id].predicted_position;
+    let incoming_distance_squared = dot(incoming_delta, incoming_delta);
+    let facing = enemy_behavior_states.values[target_body_id].charge_direction;
+    let facing_length_squared = dot(facing, facing);
+    if (incoming_distance_squared <= EPSILON_DISTANCE_SQUARED
+        || facing_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        return;
+    }
+    let incoming_direction = incoming_delta
+        * inverseSqrt(incoming_distance_squared);
+    let target_facing = facing * inverseSqrt(facing_length_squared);
+    let facet_config = enemy_behavior_states.values[target_body_id]
+        .telegraph_color_rgba8;
+    let armored_facet_count = facet_config & 65535u;
+    let total_facet_count = (facet_config >> 16u) & 65535u;
+    let armored_half_angle = 3.141592653589793
+        * f32(armored_facet_count)
+        / f32(total_facet_count);
+    if (dot(target_facing, incoming_direction) < cos(armored_half_angle)) {
+        return;
+    }
+    let flat_reduction = bitcast<i32>(
+        enemy_behavior_states.values[target_body_id].telegraph_style_code
+    );
+    contacts.values[contact_index].normal = vec2f(
+        bitcast<f32>(flat_reduction),
+        bitcast<f32>(DIRECTIONAL_DEFENSE_MARKER_MAGIC)
+    );
+}
+
 struct DamageResult {
     applied: i32,
     target_died: u32,
@@ -2963,29 +3247,12 @@ fn resolve_contact_source_modified_damage(
 }
 
 fn resolve_contact_target_mitigation(
-    _self_body_id: u32,
-    _other_body_id: u32,
+    contact: Contact,
     source_modified_damage: i32
 ) -> i32 {
-    // Future armor/resistance resolution seam. Turn 1 is identity by contract.
-    return source_modified_damage;
-}
-
-fn resolve_final_contact_damage(
-    self_body_id: u32,
-    other_body_id: u32,
-    contact: Contact,
-    handler: ContactHandler
-) -> i32 {
-    let source_modified_damage = resolve_contact_source_modified_damage(
-        self_body_id,
-        contact,
-        handler
-    );
-    return resolve_contact_target_mitigation(
-        self_body_id,
-        other_body_id,
-        source_modified_damage
+    return max(
+        source_modified_damage - directional_defense_flat_reduction(contact),
+        0
     );
 }
 
@@ -3416,9 +3683,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         // 검증한 뒤에만 standard window marker로 승격합니다.
         mark_selected_target_tower_candidate(
             contact_index,
-            resolve_final_contact_damage(
+            resolve_contact_source_modified_damage(
                 self_body_id,
-                other_body_id,
                 contact,
                 handler
             ),
@@ -3427,13 +3693,12 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
-    let final_damage = resolve_final_contact_damage(
+    let source_modified_damage = resolve_contact_source_modified_damage(
         self_body_id,
-        other_body_id,
         contact,
         handler
     );
-    if (final_damage <= 0) {
+    if (source_modified_damage <= 0) {
         append_applied_event(AppliedEvent(
             simulations.values[self_body_id].entity_id,
             contact.self_incarnation,
@@ -3482,6 +3747,31 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     if (!self_budget_reserved) {
         return;
     }
+    let directional_flat_reduction = directional_defense_flat_reduction(contact);
+    let final_damage = resolve_contact_target_mitigation(
+        contact,
+        source_modified_damage
+    );
+    let directional_defense_event_flag = select(
+        0u,
+        APPLIED_EVENT_FLAG_DIRECTIONAL_DEFENSE,
+        directional_flat_reduction > 0
+    );
+    if (final_damage <= 0) {
+        // Valid fully absorbed hits consume the source/self budget and remain observable.
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            simulations.values[other_body_id].entity_id,
+            contact.other_incarnation,
+            0,
+            APPLIED_EVENT_TYPE_DAMAGE_APPLIED
+                | policy_event_flag
+                | directional_defense_event_flag,
+            contact.world_position
+        ));
+        return;
+    }
     if (gameplay_damage_resolution_policy_id(
             simulations.values[other_body_id].gameplay_meta
         ) == GAMEPLAY_DAMAGE_RESOLUTION_POLICY_MAXIMUM_DAMAGE_WINDOW) {
@@ -3514,6 +3804,7 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         damage.applied,
         APPLIED_EVENT_TYPE_DAMAGE_APPLIED
             | policy_event_flag
+            | directional_defense_event_flag
             | target_died_flag,
         contact.world_position
     ));
@@ -4478,6 +4769,7 @@ struct VertexOutput {
     @location(5) @interpolate(flat) formation_occupied_mask: u32,
     @location(6) @interpolate(flat) formation_presentation_flags: u32,
     @location(7) @interpolate(flat) health_ratio: f32,
+    @location(8) @interpolate(flat) directional_defense_active: u32,
 }
 
 @group(0) @binding(0) var<storage, read> counts: BodyCounts;
@@ -4502,9 +4794,13 @@ const RENDER_SHAPE_PENTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA}u;
 const RENDER_SHAPE_HEXA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA}u;
 const RENDER_SHAPE_GEN: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.GEN}u;
 const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
+const RENDER_SHAPE_OCTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA}u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
+const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
 const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
+const ENEMY_BEHAVIOR_STATE_ORBIT_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.ORBIT_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
+const ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.DIRECTIONAL_DEFENSE_ACTIVE}u;
 const EFFECT_PRESENTATION_TAG_BOOST: u32 = 1u;
 const EFFECT_PRESENTATION_TAG_PULSE: u32 = 2u;
 const FORMATION_FLAG_ACTIVE: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.ACTIVE}u;
@@ -4529,6 +4825,7 @@ const ARROW_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.arrow.points)};
 const PENTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.penta.points)};
 const HEXA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.hexa.points)};
 const RHOM_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.rhom.points)};
+const OCTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.octa.points)};
 const GENERATOR_OUTER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.center)};
 const GENERATOR_OUTER_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.halfSize)};
 const GENERATOR_INNER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.innerBox.center)};
@@ -4559,7 +4856,7 @@ fn box_distance(point: vec2f, center: vec2f, half_size: vec2f) -> f32 {
 
 fn polygon_distance(
     point: vec2f,
-    vertices: array<vec2f, 6>,
+    vertices: array<vec2f, ${WGSL_POLYGON_POINT_CAPACITY}>,
     vertex_count: u32
 ) -> f32 {
     var distance_squared = 3.402823466e+38;
@@ -4641,6 +4938,13 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     }
     if (shape_code == RENDER_SHAPE_RHOM) {
         return polygon_distance(point, RHOM_POINTS, 4u);
+    }
+    if (shape_code == RENDER_SHAPE_OCTA) {
+        return polygon_distance(
+            directional_local_position(point, velocity),
+            OCTA_POINTS,
+            8u
+        );
     }
     if (shape_code == RENDER_SHAPE_GEN) {
         return generator_distance(point);
@@ -4731,6 +5035,7 @@ fn vertex_main(
         output.formation_occupied_mask = 0u;
         output.formation_presentation_flags = 0u;
         output.health_ratio = 0.0;
+        output.directional_defense_active = 0u;
         return output;
     }
     let simulation_flags = simulations.values[instance_index].flags;
@@ -4744,6 +5049,7 @@ fn vertex_main(
         output.formation_occupied_mask = 0u;
         output.formation_presentation_flags = 0u;
         output.health_ratio = 0.0;
+        output.directional_defense_active = 0u;
         return output;
     }
     let body = physics.values[instance_index];
@@ -4809,6 +5115,14 @@ fn vertex_main(
                 - body.position;
         }
     }
+    let directional_defense_active = behavior.program_id
+            == ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT
+        && behavior.state == ENEMY_BEHAVIOR_STATE_ORBIT_TOWER
+        && (behavior.flags & ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE) != 0u;
+    if (directional_defense_active) {
+        // The same +32/+36 facing drives presentation and contact classification.
+        presentation_velocity = behavior.charge_direction;
+    }
     let local = QUAD_VERTICES[vertex_index];
     let world_position = body_position
         + (local * body.radius * presentation_radius_scale);
@@ -4854,6 +5168,11 @@ fn vertex_main(
             1.0
         ),
         formation_identity_matches && effect_identity_matches
+    );
+    output.directional_defense_active = select(
+        0u,
+        1u,
+        directional_defense_active
     );
     return output;
 }
@@ -4983,6 +5302,29 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     }
     let coverage = 1.0 - smoothstep(-anti_alias_width, anti_alias_width, distance);
     let alpha = input.color.a * coverage;
-    return vec4f(input.color.rgb * alpha, alpha);
+    var rgb = input.color.rgb;
+    if (input.shape_code == RENDER_SHAPE_OCTA
+        && input.directional_defense_active != 0u) {
+        let oriented = directional_local_position(
+            input.local_position,
+            input.velocity
+        );
+        let oriented_length_squared = dot(oriented, oriented);
+        let armored_half_angle = 3.0 * 3.141592653589793 / 8.0;
+        let armored_sector = oriented_length_squared > SHAPE_DIRECTION_EPSILON
+            && dot(
+                oriented * inverseSqrt(oriented_length_squared),
+                vec2f(0.0, 1.0)
+            ) >= cos(armored_half_angle);
+        let armor_rim = 1.0 - smoothstep(
+            0.09 - anti_alias_width,
+            0.09 + anti_alias_width,
+            abs(distance)
+        );
+        if (armored_sector && armor_rim > 0.0) {
+            rgb = mix(rgb, vec3f(0.38, 0.94, 1.0), 0.72 * armor_rim);
+        }
+    }
+    return vec4f(rgb * alpha, alpha);
 }
 `;

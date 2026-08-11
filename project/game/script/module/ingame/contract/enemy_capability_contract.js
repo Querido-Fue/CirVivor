@@ -13,7 +13,8 @@ export const ENEMY_CAPABILITY_ID = Object.freeze({
     PROJECTILE_CAPTURE: 'enemy-projectile-capture',
     ROUTE_CLOSURE: 'enemy-route-closure',
     CORE_IMPACT: 'enemy-core-impact',
-    CHARGE: 'enemy-charge'
+    CHARGE: 'enemy-charge',
+    ORBIT: 'enemy-orbit'
 });
 
 /** Runtime/WorldRegistry 경계에서 capability를 primitive로 보존하는 stable bit입니다. */
@@ -30,7 +31,9 @@ export const ENEMY_CAPABILITY_BIT = Object.freeze({
     // 기존 stable bit를 이동시키지 않는 append-only Turn 1 bit입니다.
     CORE_IMPACT: 0x200,
     // Arrow A의 실제 GPU charge runtime이 소비하는 append-only Turn 2 bit입니다.
-    CHARGE: 0x400
+    CHARGE: 0x400,
+    // Octagon O의 실제 GPU Tower orbit runtime이 소비하는 append-only Turn 5 bit입니다.
+    ORBIT: 0x800
 });
 
 export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
@@ -44,7 +47,8 @@ export const ENEMY_CAPABILITY_BIT_BY_ID = Object.freeze({
     [ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE]: ENEMY_CAPABILITY_BIT.PROJECTILE_CAPTURE,
     [ENEMY_CAPABILITY_ID.ROUTE_CLOSURE]: ENEMY_CAPABILITY_BIT.ROUTE_CLOSURE,
     [ENEMY_CAPABILITY_ID.CORE_IMPACT]: ENEMY_CAPABILITY_BIT.CORE_IMPACT,
-    [ENEMY_CAPABILITY_ID.CHARGE]: ENEMY_CAPABILITY_BIT.CHARGE
+    [ENEMY_CAPABILITY_ID.CHARGE]: ENEMY_CAPABILITY_BIT.CHARGE,
+    [ENEMY_CAPABILITY_ID.ORBIT]: ENEMY_CAPABILITY_BIT.ORBIT
 });
 
 export const ENEMY_CAPABILITY_ALL_MASK = Object.values(ENEMY_CAPABILITY_BIT)

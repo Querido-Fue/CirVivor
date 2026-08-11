@@ -26,6 +26,7 @@ const {
 } = await loadGameModule('data/object/enemy/enemy_effect_catalog_data.js');
 const {
     BASIC_ARROW_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
@@ -332,7 +333,8 @@ test('EnemyDefinition EFFECT_EMITTER/profile은 양방향이고 P behavior union
         CHARGE: 3,
         CONTACT_RECOIL: 4,
         RECOVER: 5,
-        CORE_FALLBACK: 6
+        CORE_FALLBACK: 6,
+        ORBIT_TOWER: 7
     });
 });
 
@@ -466,12 +468,13 @@ test('P spawn은 string authority를 GPU codes로 한 번 materialize하고 regi
     }), /canonical sentinel/);
 });
 
-test('C/T/A/M spawn은 Effect runtime metadata나 P behavior state를 획득하지 않는다', () => {
+test('C/T/A/M/O spawn은 Effect runtime metadata나 P behavior state를 획득하지 않는다', () => {
     const definitions = [
         BASIC_SQUARE_ENEMY_DATA,
         BASIC_TRIANGLE_ENEMY_DATA,
         BASIC_ARROW_ENEMY_DATA,
-        BASIC_RHOM_ENEMY_DATA
+        BASIC_RHOM_ENEMY_DATA,
+        BASIC_OCTA_ENEMY_DATA
     ];
     for (let index = 0; index < definitions.length; index++) {
         const intent = createGpuEnemySpawnIntent({

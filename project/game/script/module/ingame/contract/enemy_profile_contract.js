@@ -6,6 +6,10 @@ import {
     ENEMY_FORMATION_POLICY,
     normalizeEnemyFormationPolicyId
 } from './enemy_formation_contract.js';
+import {
+    normalizeEnemyDirectionalDefenseProfile,
+    normalizeEnemyOrbitProfile
+} from './enemy_orbit_directional_defense_contract.js';
 
 export { ENEMY_FORMATION_POLICY } from './enemy_formation_contract.js';
 
@@ -41,7 +45,9 @@ const BEHAVIOR_PROFILE_KEYS = new Set([
     'attackDefinitionId',
     'coreImpactPolicy',
     'formationPolicy',
-    'charge'
+    'charge',
+    'orbit',
+    'directionalDefense'
 ]);
 const CHARGE_PROFILE_KEYS = new Set([
     'windupTicks',
@@ -276,7 +282,12 @@ function normalizeBehaviorProfile(source, label) {
             `${label}.coreImpactPolicy`
         ),
         formationPolicy,
-        charge: normalizeChargeProfile(profile.charge, `${label}.charge`)
+        charge: normalizeChargeProfile(profile.charge, `${label}.charge`),
+        orbit: normalizeEnemyOrbitProfile(profile.orbit, `${label}.orbit`),
+        directionalDefense: normalizeEnemyDirectionalDefenseProfile(
+            profile.directionalDefense,
+            `${label}.directionalDefense`
+        )
     });
 }
 
@@ -373,7 +384,7 @@ export function resolveEnemyDefinitionProfiles(
 
 /**
  * Profile가 실제 runtime capability 선언과 양방향으로 일치하는지 검증합니다.
- * attack-linked behavior는 TARGETING을, positive contact damage는 CONTACT_COMBAT을,
+ * attack/orbit target behavior는 TARGETING을, positive contact damage는 CONTACT_COMBAT을,
  * route navigation mode는 NAVIGATION을, positive Core impact와 its policy는
  * CORE_IMPACT를 반드시 선언해야 합니다.
  */
@@ -391,9 +402,28 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
     const profiles = resolveEnemyDefinitionProfiles(source, profileCatalog, label);
     const hasTargeting = capabilityIdSet.has(ENEMY_CAPABILITY_ID.TARGETING);
     const hasAttackDefinition = profiles.behavior.attackDefinitionId !== null;
-    if (hasTargeting !== hasAttackDefinition) {
+    const hasOrbit = capabilityIdSet.has(ENEMY_CAPABILITY_ID.ORBIT);
+    const hasOrbitProfile = profiles.behavior.orbit !== null;
+    if (hasTargeting !== (hasAttackDefinition || hasOrbitProfile)) {
         throw new RangeError(
-            `${label}의 TARGETING capability와 behavior attackDefinitionId가 일치해야 합니다.`
+            `${label}의 TARGETING capability와 behavior attack/orbit target이 일치해야 합니다.`
+        );
+    }
+    if (hasAttackDefinition && hasOrbitProfile) {
+        throw new RangeError(
+            `${label}의 exclusive basic behavior는 attack과 orbit을 동시에 선언할 수 없습니다.`
+        );
+    }
+    if (hasOrbit !== hasOrbitProfile) {
+        throw new RangeError(
+            `${label}의 ORBIT capability와 behavior orbit profile이 일치해야 합니다.`
+        );
+    }
+    if (hasOrbit && (!hasTargeting
+        || !capabilityIdSet.has(ENEMY_CAPABILITY_ID.NAVIGATION)
+        || !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CORE_IMPACT))) {
+        throw new RangeError(
+            `${label}의 ORBIT capability에는 TARGETING/NAVIGATION/CORE_IMPACT가 필요합니다.`
         );
     }
     const hasCharge = capabilityIdSet.has(ENEMY_CAPABILITY_ID.CHARGE);
@@ -406,6 +436,27 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
     if (hasCharge && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)) {
         throw new RangeError(
             `${label}의 CHARGE capability에는 CONTACT_COMBAT capability가 필요합니다.`
+        );
+    }
+    if (hasChargeProfile && hasOrbitProfile) {
+        throw new RangeError(
+            `${label}의 exclusive basic behavior는 charge와 orbit을 동시에 선언할 수 없습니다.`
+        );
+    }
+    const hasDirectionalDefense = capabilityIdSet.has(
+        ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE
+    );
+    const hasDirectionalDefenseProfile
+        = profiles.behavior.directionalDefense !== null;
+    if (hasDirectionalDefense !== hasDirectionalDefenseProfile) {
+        throw new RangeError(
+            `${label}의 DIRECTIONAL_DEFENSE capability와 behavior profile이 일치해야 합니다.`
+        );
+    }
+    if (hasDirectionalDefense
+        && !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)) {
+        throw new RangeError(
+            `${label}의 DIRECTIONAL_DEFENSE capability에는 CONTACT_COMBAT이 필요합니다.`
         );
     }
     const effectEmitterProfileId = source.effectEmitterProfileId === undefined
@@ -445,6 +496,11 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
         throw new RangeError(
             `${label}의 FORMATION capability, formationDefinitionId, `
                 + 'behavior formationPolicy가 양방향으로 일치해야 합니다.'
+        );
+    }
+    if (hasOrbit && hasFormationCapability) {
+        throw new RangeError(
+            `${label}의 ORBIT basic behavior와 persistent FORMATION은 동시에 선언할 수 없습니다.`
         );
     }
     if (profiles.combat.towerContactDamage > 0

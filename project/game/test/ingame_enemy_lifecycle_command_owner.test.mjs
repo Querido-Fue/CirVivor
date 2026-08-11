@@ -9,9 +9,24 @@ const { WorldRegistry } = await loadGameModule(
 const { EnemyLifecycleCommandOwner } = await loadGameModule(
     'ingame/object/enemy/enemy_lifecycle_command_owner.js'
 );
+const {
+    ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE,
+    ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE
+} = await loadGameModule(
+    'ingame/object/enemy/enemy_lifecycle_command_owner.js'
+);
 const { createGpuEnemySpawnIntent } = await loadGameModule(
     'ingame/object/enemy/gpu_enemy_spawn_adapter.js'
 );
+const { createGpuRegistryMetadata, normalizeGpuSpawnIntent } = await loadGameModule(
+    'ingame/object/gpu_spawn_intent.js'
+);
+const {
+    BASIC_OCTA_ENEMY_CAPABILITY_MASK,
+    BASIC_OCTA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DEFINITION_ID,
+    BASIC_OCTA_ORBIT_SLOT_FILL_ORDER
+} = await loadGameModule('data/object/enemy/basic_octa_enemy_data.js');
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
@@ -56,6 +71,65 @@ function createSpawnIntent(spawnSequence = 0) {
         policyId: 'corebound',
         laneOffsetTiles: 0
     });
+}
+
+function createOctaSpawnIntent(spawnSequence = 0) {
+    return createGpuEnemySpawnIntent({
+        definition: BASIC_OCTA_ENEMY_DATA,
+        route: {
+            gateId: 'octagon-west-gate',
+            pathId: 'octagon-tower-orbit-path',
+            waypoints: [
+                { x: 2, y: 3 },
+                { x: 3, y: 3 }
+            ]
+        },
+        spawnSequence,
+        waveId: 'octagon-lifecycle-fixture',
+        policyId: 'corebound',
+        laneOffsetTiles: 0
+    });
+}
+
+function materializeOctaIntent(spawnSequence, orbitSlotIndex) {
+    const raw = createOctaSpawnIntent(spawnSequence);
+    return Object.freeze({
+        ...raw,
+        orbitSlotIndex,
+        enemyBehaviorState: Object.freeze({
+            ...raw.enemyBehaviorState,
+            orbitSlotIndex
+        })
+    });
+}
+
+function activateRegistryOcta(registry, intent, metadataOverrides = {}) {
+    const handle = registry.reserveEntity({
+        kindId: 'enemy',
+        definitionId: BASIC_OCTA_ENEMY_DEFINITION_ID,
+        createdAtTick: 1
+    });
+    assert.ok(handle);
+    const metadata = {
+        ...createGpuRegistryMetadata(intent),
+        ...metadataOverrides
+    };
+    assert.equal(registry.activateReserved(handle, metadata), true);
+    return handle;
+}
+
+function activateRegistryEnemy(registry, intent, metadataOverrides = {}) {
+    const handle = registry.reserveEntity({
+        kindId: 'enemy',
+        definitionId: intent.definitionId,
+        createdAtTick: 1
+    });
+    assert.ok(handle);
+    assert.equal(registry.activateReserved(handle, {
+        ...createGpuRegistryMetadata(intent),
+        ...metadataOverrides
+    }), true);
+    return handle;
 }
 
 function createProjectileIntent(overrides = {}) {
@@ -249,6 +323,348 @@ test('spawn batch는 preflight 뒤 전부 queue하고 같은 fixed 경계에서 
         ),
         [20, 21]
     );
+});
+
+test('natural O lifecycle은 fixed boundary에서 deterministic 8-slot lease를 한 번 materialize한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 12 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+    const requests = Array.from({ length: 8 }, (_, index) => ({
+        intent: createOctaSpawnIntent(index),
+        targetFixedTick: 1,
+        commandId: `octagon:lease:${index}`
+    }));
+
+    assert.deepEqual({ ...owner.requestSpawnBatch(requests) }, {
+        accepted: true,
+        requestedCount: 8,
+        queuedCount: 8
+    });
+    const committed = owner.commitAtFixedBoundary(1);
+    assert.equal(committed.state, 'committed');
+    assert.equal(committed.recoveryRequired, false);
+    assert.equal(committed.spawned.length, 8);
+    assert.equal(committed.rejected.length, 0);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(registry.getActiveCount('enemy'), 8);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(backend.events.length, 1);
+    assert.equal(backend.events[0].type, 'spawn');
+    assert.deepEqual(
+        backend.events[0].bodies.map(({ orbitSlotIndex }) => orbitSlotIndex),
+        Array.from(BASIC_OCTA_ORBIT_SLOT_FILL_ORDER)
+    );
+    assert.deepEqual(
+        backend.events[0].bodies.map(
+            ({ enemyBehaviorState }) => enemyBehaviorState.orbitSlotIndex
+        ),
+        Array.from(BASIC_OCTA_ORBIT_SLOT_FILL_ORDER)
+    );
+    const handles = committed.spawned.map(({ handle }) => handle);
+    assert.equal(new Set(handles.map(handleKey)).size, 8);
+    for (let index = 0; index < handles.length; index++) {
+        const beforeIdle = registry.copyEntityView(handles[index], {});
+        assert.equal(beforeIdle.metadata.capabilityMask,
+            BASIC_OCTA_ENEMY_CAPABILITY_MASK);
+        assert.equal(beforeIdle.metadata.enemyDefinitionId,
+            BASIC_OCTA_ENEMY_DEFINITION_ID);
+        assert.equal(beforeIdle.metadata.orbitCoordinateSystemId, 'RING_SLOTS');
+        assert.equal(beforeIdle.metadata.orbitCoordinateSystemCode, 4);
+        assert.equal(beforeIdle.metadata.orbitSlotIndex,
+            BASIC_OCTA_ORBIT_SLOT_FILL_ORDER[index]);
+        assert.equal(beforeIdle.metadata.orbitSlotCapacity, 8);
+        assert.equal('orbitDirectorStatus' in beforeIdle.metadata, false);
+    }
+    const idle = owner.commitAtFixedBoundary(2);
+    assert.equal(idle.state, 'committed');
+    assert.equal(idle.spawned.length, 0);
+    assert.deepEqual(
+        handles.map((handle) => (
+            registry.copyEntityView(handle, {}).metadata.orbitSlotIndex
+        )),
+        Array.from(BASIC_OCTA_ORBIT_SLOT_FILL_ORDER)
+    );
+});
+
+test('same-boundary O despawn은 canonical freed slot을 뒤이은 spawn에 재사용한다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 12 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+    assert.equal(owner.requestSpawnBatch(Array.from({ length: 8 }, (_, index) => ({
+        intent: createOctaSpawnIntent(index),
+        targetFixedTick: 1,
+        commandId: `octagon:reuse:seed:${index}`
+    }))).accepted, true);
+    const seeded = owner.commitAtFixedBoundary(1);
+    assert.equal(seeded.spawned.length, 8);
+    const released = seeded.spawned[1].handle;
+    assert.equal(
+        registry.copyEntityView(released, {}).metadata.orbitSlotIndex,
+        4
+    );
+
+    backend.events.length = 0;
+    assert.equal(owner.requestDespawn(
+        released,
+        'octagon-slot-reuse-fixture',
+        2,
+        'octagon:reuse:despawn'
+    ).accepted, true);
+    assert.equal(owner.requestSpawn(
+        createOctaSpawnIntent(99),
+        2,
+        'octagon:reuse:spawn'
+    ).accepted, true);
+    const reused = owner.commitAtFixedBoundary(2);
+    assert.equal(reused.state, 'committed');
+    assert.equal(reused.recoveryRequired, false);
+    assert.equal(reused.despawned.length, 1);
+    assert.equal(reused.spawned.length, 1);
+    assert.equal(reused.rejected.length, 0);
+    assert.deepEqual(
+        backend.events.map(({ type }) => type),
+        ['despawn', 'spawn']
+    );
+    assert.equal(backend.events[1].bodies[0].orbitSlotIndex, 4);
+    assert.equal(
+        backend.events[1].bodies[0].enemyBehaviorState.orbitSlotIndex,
+        4
+    );
+    const replacement = reused.spawned[0].handle;
+    assert.equal(registry.has(released), false);
+    assert.equal(registry.has(replacement), true);
+    assert.equal(
+        registry.copyEntityView(replacement, {}).metadata.orbitSlotIndex,
+        4
+    );
+    assert.equal(registry.getActiveCount('enemy'), 8);
+    assert.equal(registry.getReservedCount(), 0);
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.requestDespawn(
+        replacement,
+        'duplicate-proof',
+        3,
+        'octagon:reuse:despawn'
+    ).reason, 'duplicate-command');
+    assert.equal(owner.requestSpawn(
+        createOctaSpawnIntent(100),
+        3,
+        'octagon:reuse:spawn'
+    ).reason, 'duplicate-command');
+});
+
+test('O slot 부족은 due spawn batch 전체를 normal rejection으로 소비하고 zero-mutation이다', () => {
+    const backend = createFakeBackend();
+    const registry = new WorldRegistry({ capacity: 16 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry);
+    assert.equal(owner.requestSpawnBatch(Array.from({ length: 8 }, (_, index) => ({
+        intent: createOctaSpawnIntent(index),
+        targetFixedTick: 1,
+        commandId: `octagon:capacity:seed:${index}`
+    }))).accepted, true);
+    assert.equal(owner.commitAtFixedBoundary(1).spawned.length, 8);
+
+    const activeCountBefore = registry.getActiveCount();
+    const reservedCountBefore = registry.getReservedCount();
+    const revisionBefore = registry.getRevision();
+    const backendBodyCountBefore = backend.bodies.size;
+    const backendEventCountBefore = backend.events.length;
+    assert.equal(owner.requestSpawnBatch([
+        {
+            intent: createProjectileIntent({ spawnSequence: 80 }),
+            targetFixedTick: 2,
+            commandId: 'octagon:capacity:normal-prefix'
+        },
+        {
+            intent: createOctaSpawnIntent(81),
+            targetFixedTick: 2,
+            commandId: 'octagon:capacity:overflow'
+        }
+    ]).accepted, true);
+
+    const rejected = owner.commitAtFixedBoundary(2);
+    assert.equal(rejected.state, 'committed-with-rejections');
+    assert.equal(rejected.recoveryRequired, false);
+    assert.equal(rejected.spawned.length, 0);
+    assert.deepEqual(
+        rejected.rejected.map(({ commandId, code }) => ({ commandId, code })),
+        [
+            {
+                commandId: 'octagon:capacity:normal-prefix',
+                code: ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE
+            },
+            {
+                commandId: 'octagon:capacity:overflow',
+                code: ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE
+            }
+        ]
+    );
+    assert.equal(ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE,
+        'orbit-slot-capacity');
+    assert.equal(owner.getPendingCount(), 0);
+    assert.equal(owner.getStatus().recoveryRequired, false);
+    assert.equal(registry.getActiveCount(), activeCountBefore);
+    assert.equal(registry.getReservedCount(), reservedCountBefore);
+    assert.equal(registry.getRevision(), revisionBefore);
+    assert.equal(backend.bodies.size, backendBodyCountBefore);
+    assert.equal(backend.events.length, backendEventCountBefore);
+    assert.equal(owner.requestSpawn(
+        createProjectileIntent({ spawnSequence: 82 }),
+        3,
+        'octagon:capacity:normal-prefix'
+    ).reason, 'duplicate-command');
+    assert.equal(owner.requestSpawn(
+        createOctaSpawnIntent(83),
+        3,
+        'octagon:capacity:overflow'
+    ).reason, 'duplicate-command');
+    assert.equal(owner.getPendingCount(), 0);
+});
+
+test('non-O Enemy와 non-Enemy의 nested program3 forge는 request 전에 zero-mutation 거절된다', () => {
+    const octa = createOctaSpawnIntent(700);
+    const forgedProgram3 = Object.freeze({
+        ...octa.enemyBehaviorState,
+        orbitSlotIndex: 0
+    });
+    const cases = [{
+        label: 'non-O-enemy',
+        errorPattern: /O definition|ORBIT capability|OCTAGON_TOWER_ORBIT/,
+        intent: Object.freeze({
+            ...createSpawnIntent(701),
+            enemyBehaviorState: forgedProgram3
+        })
+    }, {
+        label: 'projectile',
+        errorPattern: /Enemy capability metadata\/state/,
+        intent: Object.freeze({
+            ...createProjectileIntent({ spawnSequence: 702 }),
+            enemyBehaviorState: forgedProgram3
+        })
+    }];
+
+    for (const { label, intent, errorPattern } of cases) {
+        const backend = createFakeBackend();
+        const registry = new WorldRegistry({ capacity: 4 });
+        const owner = new EnemyLifecycleCommandOwner(backend, registry);
+        const before = Object.freeze({
+            active: registry.getActiveCount(),
+            reserved: registry.getReservedCount(),
+            revision: registry.getRevision(),
+            pending: owner.getPendingCount(),
+            events: backend.events.length,
+            bodies: backend.bodies.size
+        });
+        const commandId = `octagon:program3-forge:${label}`;
+        assert.throws(() => normalizeGpuSpawnIntent(intent), errorPattern);
+        assert.throws(() => owner.requestSpawn(intent, 1, commandId), errorPattern);
+        assert.deepEqual({
+            active: registry.getActiveCount(),
+            reserved: registry.getReservedCount(),
+            revision: registry.getRevision(),
+            pending: owner.getPendingCount(),
+            events: backend.events.length,
+            bodies: backend.bodies.size
+        }, before);
+        assert.equal(
+            owner.requestSpawn(createSpawnIntent(703), 1, commandId).accepted,
+            true,
+            `${label} malformed request가 command ID를 소비하면 안 됩니다.`
+        );
+    }
+});
+
+test('active O lease 및 non-O definition alias corruption은 reservation/backend spawn 전에 fail-closed한다', () => {
+    const corruptions = [
+        {
+            label: 'partial-null',
+            seeds: [{ slot: 0, override: { orbitSlotCapacity: null } }]
+        },
+        {
+            label: 'range',
+            seeds: [{ slot: 0, override: { orbitSlotIndex: 8 } }]
+        },
+        {
+            label: 'capacity',
+            seeds: [{ slot: 0, override: { orbitSlotCapacity: 7 } }]
+        },
+        {
+            label: 'duplicate',
+            seeds: [
+                { slot: 0, override: {} },
+                { slot: 0, override: {} }
+            ]
+        },
+        {
+            label: 'definition-capability',
+            seeds: [{
+                slot: 0,
+                override: {
+                    enemyDefinitionId: 'basic_square_01',
+                    capabilityMask: BASIC_OCTA_ENEMY_CAPABILITY_MASK
+                }
+            }]
+        },
+        {
+            label: 'non-o-definition-alias',
+            seeds: [{
+                kind: 'non-o',
+                override: { definitionId: 'forged-square-alias' }
+            }]
+        },
+        {
+            label: 'non-o-enemy-definition-alias',
+            seeds: [{
+                kind: 'non-o',
+                override: { enemyDefinitionId: 'forged-square-alias' }
+            }]
+        }
+    ];
+
+    for (const { label, seeds } of corruptions) {
+        const backend = createFakeBackend();
+        const registry = new WorldRegistry({ capacity: 8 });
+        const owner = new EnemyLifecycleCommandOwner(backend, registry);
+        for (let index = 0; index < seeds.length; index++) {
+            const seed = seeds[index];
+            if (seed.kind === 'non-o') {
+                activateRegistryEnemy(
+                    registry,
+                    createSpawnIntent(index),
+                    seed.override
+                );
+            } else {
+                activateRegistryOcta(
+                    registry,
+                    materializeOctaIntent(index, seed.slot),
+                    seed.override
+                );
+            }
+        }
+        const activeCountBefore = registry.getActiveCount();
+        const revisionBefore = registry.getRevision();
+        assert.equal(owner.requestSpawn(
+            createOctaSpawnIntent(90),
+            1,
+            `octagon:corrupt:${label}`
+        ).accepted, true);
+        const failed = owner.commitAtFixedBoundary(1);
+        assert.equal(failed.state, 'failed', label);
+        assert.equal(failed.recoveryRequired, true, label);
+        assert.equal(failed.spawned.length, 0, label);
+        assert.equal(failed.rejected.length, 1, label);
+        assert.equal(failed.rejected[0].code,
+            ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE, label);
+        assert.equal(ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE,
+            'orbit-slot-metadata-corruption');
+        assert.equal(owner.getStatus().recoveryRequired, true, label);
+        assert.equal(owner.getPendingCount(), 1, label);
+        assert.equal(registry.getActiveCount(), activeCountBefore, label);
+        assert.equal(registry.getReservedCount(), 0, label);
+        assert.equal(registry.getRevision(), revisionBefore, label);
+        assert.equal(backend.events.length, 0, label);
+        assert.equal(backend.bodies.size, 0, label);
+    }
 });
 
 test('spawn batch preflight 실패는 prefix command ID와 sequence를 소비하지 않는다', () => {

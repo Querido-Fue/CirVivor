@@ -13,6 +13,12 @@ import {
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
 import {
+    ENEMY_ORBIT_FIXED_TICKS_PER_SECOND,
+    ENEMY_ORBIT_SLOT_CAPACITY,
+    ENEMY_ORBIT_SLOT_UNASSIGNED,
+    encodeEnemyOrbitAngularStepQ32
+} from '../../contract/enemy_orbit_directional_defense_contract.js';
+import {
     assertEnemyDefinitionCapabilityImplementations,
     assertEnemyFixedCommandProducer,
     assertEnemyGameplayEventConsumer,
@@ -92,7 +98,8 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
     penta: GPU_CIRCLE_BODY_RENDER_SHAPE.PENTA,
     hexa: GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA,
     gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN,
-    rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
+    rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM,
+    octa: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -144,6 +151,54 @@ function assertChargeCapabilityDefinition(definition) {
             'enemy-charge capability에는 실제 charge behavior profile이 필요합니다.'
         );
     }
+}
+
+function assertOctagonOrbitDirectionalProfile(definition, capabilityId, counterpartId) {
+    const behaviorProfileId = requireNonEmptyString(
+        definition.behaviorProfileId,
+        `enemy ${capabilityId} behaviorProfileId`
+    );
+    const behaviorProfile = ENEMY_PROFILE_CATALOG.behaviorById[behaviorProfileId];
+    const capabilityMask = createEnemyCapabilityMask(
+        definition.capabilityIds,
+        `enemy ${capabilityId} capabilityIds`
+    );
+    const shapeCode = resolveEnemyRenderShapeCode(
+        Object.prototype.hasOwnProperty.call(definition, 'shapeDefinitionId')
+            ? definition.shapeDefinitionId
+            : definition.shapeType
+    );
+    if (!behaviorProfile?.orbit
+        || !behaviorProfile?.directionalDefense
+        || !hasEnemyCapability(capabilityMask, counterpartId)
+        || behaviorProfile.charge
+        || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
+        || behaviorProfile.orbit.fixedTicksPerSecond
+            !== ENEMY_ORBIT_FIXED_TICKS_PER_SECOND
+        || behaviorProfile.orbit.slotCapacity !== ENEMY_ORBIT_SLOT_CAPACITY
+        || behaviorProfile.directionalDefense.armoredFacetCount !== 3
+        || behaviorProfile.directionalDefense.totalFacetCount
+            !== ENEMY_ORBIT_SLOT_CAPACITY) {
+        throw new RangeError(
+            `${capabilityId} capability에는 counterpart와 exact orbit/directionalDefense profile이 필요합니다.`
+        );
+    }
+}
+
+function assertDirectionalDefenseCapabilityDefinition(definition) {
+    assertOctagonOrbitDirectionalProfile(
+        definition,
+        ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE,
+        ENEMY_CAPABILITY_ID.ORBIT
+    );
+}
+
+function assertOrbitCapabilityDefinition(definition) {
+    assertOctagonOrbitDirectionalProfile(
+        definition,
+        ENEMY_CAPABILITY_ID.ORBIT,
+        ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE
+    );
 }
 
 function assertEffectEmitterCapabilityDefinition(definition) {
@@ -294,6 +349,16 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             capabilityId: ENEMY_CAPABILITY_ID.CHARGE,
             implementationId: 'gpu-exact-tower-charge',
             assertDefinition: assertChargeCapabilityDefinition
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE,
+            implementationId: 'gpu-octagon-directional-flat-defense',
+            assertDefinition: assertDirectionalDefenseCapabilityDefinition
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.ORBIT,
+            implementationId: 'gpu-octagon-tower-orbit',
+            assertDefinition: assertOrbitCapabilityDefinition
         }),
         Object.freeze({
             capabilityId: ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
@@ -801,6 +866,16 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.CHARGE,
         'enemy capabilityMask'
     );
+    const hasDirectionalDefense = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE,
+        'enemy capabilityMask'
+    );
+    const hasOrbit = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.ORBIT,
+        'enemy capabilityMask'
+    );
     const hasEffectEmitter = hasEnemyCapability(
         capabilityMask,
         ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
@@ -851,12 +926,51 @@ export function createGpuEnemySpawnIntent(options) {
         ),
         'collisionRadiusTiles'
     );
+    const behaviorProfile = canonicalDefinition
+        ? ENEMY_PROFILE_CATALOG.behaviorById[definition.behaviorProfileId]
+        : null;
     const chargeProfile = hasCharge
-        ? ENEMY_PROFILE_CATALOG.behaviorById[definition.behaviorProfileId]?.charge
+        ? behaviorProfile?.charge
         : null;
     if (hasCharge && !chargeProfile) {
         throw new RangeError('enemy-charge spawn에는 charge behavior profile이 필요합니다.');
     }
+    const orbitProfile = hasOrbit ? behaviorProfile?.orbit : null;
+    const directionalDefenseProfile = hasDirectionalDefense
+        ? behaviorProfile?.directionalDefense
+        : null;
+    if ((hasOrbit || hasDirectionalDefense)
+        && (!orbitProfile
+            || !directionalDefenseProfile
+            || !hasOrbit
+            || !hasDirectionalDefense
+            || hasCharge
+            || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
+            || orbitProfile.fixedTicksPerSecond
+                !== ENEMY_ORBIT_FIXED_TICKS_PER_SECOND
+            || orbitProfile.slotCapacity !== ENEMY_ORBIT_SLOT_CAPACITY)) {
+        throw new RangeError(
+            'directional O spawn에는 exclusive OCTA orbit/defense exact profile이 필요합니다.'
+        );
+    }
+    const octagonOrbitBehaviorState = orbitProfile && directionalDefenseProfile
+        ? Object.freeze({
+            programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+            coordinateSystemCode: orbitProfile.coordinateSystemCode,
+            orbitRadiusTiles: orbitProfile.orbitRadiusTiles,
+            angularStepQ32: encodeEnemyOrbitAngularStepQ32(
+                orbitProfile.angularSpeedRadiansPerSecond,
+                orbitProfile.fixedTicksPerSecond
+            ),
+            // Lifecycle lease owner가 registry commit 전에 exact 0..7로 materialize합니다.
+            orbitSlotIndex: ENEMY_ORBIT_SLOT_UNASSIGNED,
+            orbitSlotCapacity: orbitProfile.slotCapacity,
+            flatReductionFixedPoint:
+                directionalDefenseProfile.flatReductionFixedPoint,
+            armoredFacetCount: directionalDefenseProfile.armoredFacetCount,
+            totalFacetCount: directionalDefenseProfile.totalFacetCount
+        })
+        : null;
     const effectEmitterProfile = hasEffectEmitter
         ? ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[definition.effectEmitterProfileId]
         : null;
@@ -887,6 +1001,12 @@ export function createGpuEnemySpawnIntent(options) {
         waveId,
         policyId,
         capabilityMask,
+        ...(octagonOrbitBehaviorState ? {
+            orbitCoordinateSystemId: orbitProfile.coordinateSystemId,
+            orbitCoordinateSystemCode: orbitProfile.coordinateSystemCode,
+            orbitSlotIndex: ENEMY_ORBIT_SLOT_UNASSIGNED,
+            orbitSlotCapacity: orbitProfile.slotCapacity
+        } : {}),
         ...(formationFacts ?? {}),
         ...formationProvenance,
         position: Object.freeze({
@@ -931,10 +1051,12 @@ export function createGpuEnemySpawnIntent(options) {
         lifetime: -1,
         alive: true,
         flowSpeed,
-        ...(chargeProfile ? {
+        ...(chargeProfile || octagonOrbitBehaviorState ? {
             enemyBehaviorState: Object.freeze({
-                programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
-                ...chargeProfile
+                ...(chargeProfile ? {
+                    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
+                    ...chargeProfile
+                } : octagonOrbitBehaviorState)
             })
         } : {}),
         ...(effectEmitterProfile ? {

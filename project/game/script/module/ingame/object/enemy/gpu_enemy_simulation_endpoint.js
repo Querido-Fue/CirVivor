@@ -2109,8 +2109,25 @@ export class GpuEnemySimulationEndpoint {
                 'Maximum Damage Window event flag와 public marker가 일치하지 않습니다.'
             );
         }
+        const directionalDefense = event.directionalDefense === true;
+        const encodedDirectionalDefense = (
+            flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE
+        ) !== 0;
+        if (directionalDefense !== encodedDirectionalDefense) {
+            throw new RangeError(
+                'Directional Defense event flag와 public marker가 일치하지 않습니다.'
+            );
+        }
+        if (maximumDamageWindow && directionalDefense) {
+            throw new RangeError(
+                'Maximum Damage Window와 Directional Defense event는 상호 배타적이어야 합니다.'
+            );
+        }
+        const targetDied = (
+            flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
+        ) !== 0;
         const allowsZeroDamage = eventType === 'damage-applied'
-            && maximumDamageWindow;
+            && (maximumDamageWindow || directionalDefense);
         const isChargeBehaviorEvent = eventType === 'enemy-charge-windup-started'
             || eventType === 'enemy-charge-contact-recoil-started';
         const isCoreDamageRequest = eventType === 'core-damage-request';
@@ -2118,12 +2135,17 @@ export class GpuEnemySimulationEndpoint {
             || (eventType === 'damage-applied' && (
                 valueFixedPoint < 0
                 || (valueFixedPoint === 0 && !allowsZeroDamage)
+                || (valueFixedPoint === 0 && targetDied)
             ))
             || (eventType !== 'damage-applied' && !isCoreDamageRequest && (
-                valueFixedPoint !== 0 || maximumDamageWindow
+                valueFixedPoint !== 0
+                || maximumDamageWindow
+                || directionalDefense
             ))
             || (isCoreDamageRequest && (
-                valueFixedPoint <= 0 || maximumDamageWindow
+                valueFixedPoint <= 0
+                || maximumDamageWindow
+                || directionalDefense
             ))
             || ((isChargeBehaviorEvent || isCoreDamageRequest) && flags !== 0)) {
             throw new RangeError(
@@ -2177,6 +2199,7 @@ export class GpuEnemySimulationEndpoint {
                 : 0,
             flags,
             maximumDamageWindow,
+            directionalDefense,
             reasonFlags: toNonNegativeSafeInteger(
                 event.reasonFlags ?? (type === 'death' ? event.flags : 0)
             ),
@@ -2193,6 +2216,7 @@ export class GpuEnemySimulationEndpoint {
             normalized.valueFixedPoint,
             normalized.flags,
             normalized.maximumDamageWindow,
+            normalized.directionalDefense,
             normalized.reasonFlags,
             normalized.position?.x ?? null,
             normalized.position?.y ?? null

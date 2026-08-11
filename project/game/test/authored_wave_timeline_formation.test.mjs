@@ -552,7 +552,8 @@ test('persistent H HEX_AXIAL formation은 six-ring provenance를 exact compile�
     assert.deepEqual({ ...AUTHORED_FORMATION_COORDINATE_SYSTEM }, {
         LINEAR_GRID: 'LINEAR_GRID',
         HEX_AXIAL: 'HEX_AXIAL',
-        PATH_RELATIVE: 'PATH_RELATIVE'
+        PATH_RELATIVE: 'PATH_RELATIVE',
+        RING_SLOTS: 'RING_SLOTS'
     });
     const keepFormationWave = createWave('keep-formation-wave', [{
         timelineEntryId: 'keep',
@@ -701,6 +702,25 @@ test('persistent formation은 non-H/even-center/disconnected/out-of-ring을 publ
             .init(createFixtureTileMap()),
         /알려진 vocabulary/
     );
+
+    const ringSlotsWave = createWave('ring-slots-coordinate-wave', [{
+        timelineEntryId: 'ring-slots-coordinate',
+        type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_FORMATION,
+        formation: createFormation({
+            coordinateSystem: AUTHORED_FORMATION_COORDINATE_SYSTEM.RING_SLOTS
+        })
+    }]);
+    const ringSlotsDirector = new WaveDirector({
+        waveDefinition: ringSlotsWave
+    });
+    assert.throws(
+        () => ringSlotsDirector.init(createFixtureTileMap()),
+        (error) => error?.code
+            === AUTHORED_WAVE_COMPILE_ERROR_CODE.UNSUPPORTED_COORDINATE_SYSTEM
+    );
+    assert.equal(ringSlotsDirector.schedule.length, 0);
+    assert.equal(ringSlotsDirector.getStatus().queuedSpawnCount, 0);
+    ringSlotsDirector.destroy();
 });
 
 test('authored/injected catalog는 transform-private H group/HX natural spawn을 거절한다', () => {

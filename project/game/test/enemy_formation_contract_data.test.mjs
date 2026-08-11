@@ -6,6 +6,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
@@ -132,13 +133,15 @@ test('Formation coordinate/policy/interface vocabulary는 exact frozen identity�
     assert.deepEqual({ ...FORMATION_COORDINATE_SYSTEM }, {
         LINEAR_GRID: 'LINEAR_GRID',
         HEX_AXIAL: 'HEX_AXIAL',
-        PATH_RELATIVE: 'PATH_RELATIVE'
+        PATH_RELATIVE: 'PATH_RELATIVE',
+        RING_SLOTS: 'RING_SLOTS'
     });
     assert.deepEqual({ ...FORMATION_COORDINATE_SYSTEM_CODE }, {
         NONE: 0,
         LINEAR_GRID: 1,
         HEX_AXIAL: 2,
-        PATH_RELATIVE: 3
+        PATH_RELATIVE: 3,
+        RING_SLOTS: 4
     });
     assert.deepEqual({ ...ENEMY_FORMATION_POLICY }, {
         NONE: 'none',
@@ -801,7 +804,8 @@ test('C/T/A/M/P, render shape, 80-byte exclusive behavior union은 Formation과 
         BASIC_TRIANGLE_ENEMY_DATA,
         BASIC_ARROW_ENEMY_DATA,
         BASIC_RHOM_ENEMY_DATA,
-        BASIC_PENTA_ENEMY_DATA
+        BASIC_PENTA_ENEMY_DATA,
+        BASIC_OCTA_ENEMY_DATA
     ]) {
         assert.equal(definition.spawnPolicy, ENEMY_SPAWN_POLICY.NATURAL);
         assert.equal(definition.formationDefinitionId, null);
@@ -810,7 +814,8 @@ test('C/T/A/M/P, render shape, 80-byte exclusive behavior union은 Formation과 
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM }, {
         NONE: 0,
         ARROW_TOWER_CHARGE: 1,
-        SELECTED_TARGET_PROJECTILE: 2
+        SELECTED_TARGET_PROJECTILE: 2,
+        OCTAGON_TOWER_ORBIT: 3
     });
     assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
     assert.equal(GPU_FORMATION_RUNTIME_ABI_VERSION, 1);

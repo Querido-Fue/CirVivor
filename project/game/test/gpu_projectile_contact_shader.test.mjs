@@ -155,6 +155,9 @@ for (const entryPoint of [
     'validate_body_control_commands',
     'apply_body_control_commands',
     'apply_controlled_motion',
+    'advance_octagon_orbit',
+    'advance_enemy_charge',
+    'classify_directional_defense_contacts',
     'preflight_core_damage_requests',
     'finalize_core_damage_request_preflight',
     'resolve_core_damage_requests',
@@ -472,21 +475,39 @@ assert.match(compute, /deterministic_separation_normal/);
 assert.match(compute, /if \(atomicLoad\(&contact_state\.contact_overflow\) != 0u\) \{\s*return;/);
 assert.match(compute, /contact_index >= params\.max_contacts[\s\S]*?contact_state\.contact_overflow/);
 
-// final damage=0 처리 뒤 target-layer/team gate는 budget reservation보다 먼저 실행합니다.
-const zeroDamageBranch = compute.indexOf('if (final_damage <= 0)');
-const targetLayerGate = compute.indexOf('if (!contact_handler_accepts_target(', zeroDamageBranch);
+// zero authored damage와 target-layer/team/stale gate는 budget reservation보다
+// 먼저이고, directional mitigation/fully-absorbed event는 valid budget 뒤입니다.
+const handleContactsStartForOrdering = compute.indexOf('fn handle_contacts(');
+const zeroSourceDamageBranch = compute.indexOf(
+    'if (source_modified_damage <= 0)',
+    handleContactsStartForOrdering
+);
+const targetLayerGate = compute.indexOf(
+    'if (!contact_handler_accepts_target(',
+    zeroSourceDamageBranch
+);
 const gameplayDamageGate = compute.indexOf('if (!gameplay_damage_is_allowed(', targetLayerGate);
 const reserveCall = compute.indexOf(
     'let self_budget_reserved = reserve_self_hit_budget',
     gameplayDamageGate
 );
+const targetMitigationCall = compute.indexOf(
+    'let final_damage = resolve_contact_target_mitigation',
+    reserveCall
+);
+const zeroDamageBranch = compute.indexOf(
+    'if (final_damage <= 0)',
+    targetMitigationCall
+);
 const targetDamageCall = compute.indexOf('let damage = apply_target_damage', reserveCall);
 assert.ok(
     reciprocalCapabilityGate >= 0
-        && zeroDamageBranch > reciprocalCapabilityGate
-        && targetLayerGate > zeroDamageBranch
+        && zeroSourceDamageBranch > reciprocalCapabilityGate
+        && targetLayerGate > zeroSourceDamageBranch
         && gameplayDamageGate > targetLayerGate
         && reserveCall > gameplayDamageGate
+        && targetMitigationCall > reserveCall
+        && zeroDamageBranch > targetMitigationCall
         && targetDamageCall > reserveCall
 );
 const gameplayDamageGateBlock = compute.slice(gameplayDamageGate, reserveCall);

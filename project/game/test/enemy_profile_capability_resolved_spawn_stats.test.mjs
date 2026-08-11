@@ -8,6 +8,7 @@ const {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_CIRCLE_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
     INGAME_ENEMY_DEFINITION_BY_ID
@@ -141,7 +142,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         'enemy-projectile-capture',
         'enemy-route-closure',
         'enemy-core-impact',
-        'enemy-charge'
+        'enemy-charge',
+        'enemy-orbit'
     ]);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_ROSTER_PORT_METHOD), true);
     assert.equal(Object.isFrozen(ENEMY_CAPABILITY_BIT), true);
@@ -157,7 +159,8 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
         0x080,
         0x100,
         0x200,
-        0x400
+        0x400,
+        0x800
     ]);
     const archerCapabilityMask = createEnemyCapabilityMask(
         ARCHER_DEFINITION.capabilityIds
@@ -243,7 +246,7 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
 
 test('모든 production definition은 frozen profile/capability를 해석하고 shape와 behavior는 독립이다', () => {
     const definitions = Object.values(INGAME_ENEMY_DEFINITION_BY_ID);
-    assert.equal(definitions.length, 9);
+    assert.equal(definitions.length, 10);
     for (const definition of definitions) {
         const profiles = resolveEnemyDefinitionProfiles(definition, ENEMY_PROFILE_CATALOG);
         assert.equal(Object.isFrozen(definition), true);
@@ -272,6 +275,19 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
     assert.equal(BASIC_ARROW_ENEMY_DATA.capabilityIds.includes(ENEMY_CAPABILITY_ID.TARGETING), false);
     assert.ok(BASIC_ARROW_ENEMY_DATA.capabilityIds.includes(ENEMY_CAPABILITY_ID.CHARGE));
     assert.equal(ARCHER_DEFINITION.capabilityIds.includes(ENEMY_CAPABILITY_ID.CHARGE), false);
+    assert.equal(BASIC_OCTA_ENEMY_DATA.capabilityIds.includes(
+        ENEMY_CAPABILITY_ID.TARGETING
+    ), true);
+    assert.equal(BASIC_OCTA_ENEMY_DATA.capabilityIds.includes(
+        ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE
+    ), true);
+    assert.equal(BASIC_OCTA_ENEMY_DATA.capabilityIds.includes(
+        ENEMY_CAPABILITY_ID.ORBIT
+    ), true);
+    assert.equal(
+        createEnemyCapabilityMask(BASIC_OCTA_ENEMY_DATA.capabilityIds),
+        0xA47
+    );
     const arrowBehavior = resolveEnemyDefinitionProfiles(
         BASIC_ARROW_ENEMY_DATA,
         ENEMY_PROFILE_CATALOG

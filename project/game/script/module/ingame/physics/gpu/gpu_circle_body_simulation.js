@@ -189,7 +189,8 @@ const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_KILL
     | APPLIED_EVENT_POLICY_FLAGS
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT
-    | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW;
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE;
 
 const EFFECT_READBACK_POOL_STATE_OFFSET = 0;
 const EFFECT_READBACK_PROGRAM_OFFSET = GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE;
@@ -206,6 +207,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'validate_body_control_commands',
     'apply_body_control_commands',
     'apply_controlled_motion',
+    'advance_octagon_orbit',
     'advance_enemy_charge',
     'prepare_bodies',
     'clear_grid',
@@ -215,6 +217,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'emit_enemy_charge_telegraphs',
     'generate_body_contacts',
     'generate_world_contacts',
+    'classify_directional_defense_contacts',
     'handle_contacts',
     'preflight_core_damage_requests',
     'finalize_core_damage_request_preflight',
@@ -244,6 +247,7 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     FIXED_CONTROL: 'fixed-control',
     SOURCE_RESOLVE: 'source-resolve',
     ENEMY_BEHAVIOR: 'enemy-behavior',
+    DIRECTIONAL_DEFENSE_CLASSIFIER: 'directional-defense-classifier',
     TRACKED_POSE: 'tracked-pose'
 });
 const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
@@ -255,6 +259,7 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     validate_body_control_commands: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
     apply_body_control_commands: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
     apply_controlled_motion: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
+    advance_octagon_orbit: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     advance_enemy_charge: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     prepare_bodies: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
@@ -264,6 +269,8 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     emit_enemy_charge_telegraphs: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     generate_body_contacts: COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS,
     generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
+    classify_directional_defense_contacts:
+        COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER,
     handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
     preflight_core_damage_requests:
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
@@ -478,6 +485,9 @@ function decodeAppliedEvent(view, offset, sequence) {
     const maximumDamageWindow = (
         flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
     ) !== 0;
+    const directionalDefense = (
+        flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE
+    ) !== 0;
     const policyFlags = flags & APPLIED_EVENT_POLICY_FLAGS;
     const expectedPolicyFlags = eventTypeCode
         === GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER
@@ -490,9 +500,11 @@ function decodeAppliedEvent(view, offset, sequence) {
         (policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
             && policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY)
         || policyFlags !== expectedPolicyFlags
+        || (maximumDamageWindow && directionalDefense)
         || (!isDamage
             && ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0
-                || maximumDamageWindow))
+                || maximumDamageWindow
+                || directionalDefense))
     );
     if (unknownFlags !== 0
         || contactFlagsInvalid
@@ -504,7 +516,11 @@ function decodeAppliedEvent(view, offset, sequence) {
     if ((!isDamage && !isCoreDamageRequest && valueFixedPoint !== 0)
         || (isCoreDamageRequest && valueFixedPoint <= 0)
         || (isDamage && (valueFixedPoint < 0
-            || (valueFixedPoint === 0 && !maximumDamageWindow)))) {
+            || (valueFixedPoint === 0
+                && (flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0)
+            || (valueFixedPoint === 0
+                && !maximumDamageWindow
+                && !directionalDefense)))) {
         throw new RangeError(
             `GPU applied event value/type contract가 잘못되었습니다: type=${eventTypeCode}, value=${valueFixedPoint}`
         );
@@ -542,6 +558,7 @@ function decodeAppliedEvent(view, offset, sequence) {
         eventMeta,
         flags,
         maximumDamageWindow,
+        directionalDefense,
         reason: appliedEventReason(eventTypeCode, flags)
     });
 }
@@ -4301,6 +4318,7 @@ export class GpuCircleBodySimulation {
                     pass,
                     COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR
                 );
+                this.#dispatchBodies(pass, 'advance_octagon_orbit');
                 this.#dispatchBodies(pass, 'advance_enemy_charge');
             }
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
@@ -4358,6 +4376,16 @@ export class GpuCircleBodySimulation {
                     COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS
                 );
                 this.#dispatchBodies(pass, 'generate_world_contacts');
+                this.#setComputeProfile(
+                    pass,
+                    COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER
+                );
+                pass.setPipeline(
+                    this.pipelines.compute.classify_directional_defense_contacts
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    this.contactCapacity / BODY_WORKGROUP_SIZE
+                ));
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING
@@ -5357,6 +5385,15 @@ export class GpuCircleBodySimulation {
                     selectedTargetProjectileProgramId:
                         GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
                             .SELECTED_TARGET_PROJECTILE,
+                    octagonTowerOrbitProgramId:
+                        GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+                    directionalDefenseClassifier: Object.freeze({
+                        entryPoint: 'classify_directional_defense_contacts',
+                        pipelineProfile:
+                            COMPUTE_PIPELINE_PROFILE
+                                .DIRECTIONAL_DEFENSE_CLASSIFIER,
+                        storageBuffersPerStage: 8
+                    }),
                     stateStride:
                         GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
                     storageBuffersPerStage: 8
@@ -5374,6 +5411,7 @@ export class GpuCircleBodySimulation {
                     fixedControl: 5,
                     sourceResolve: 9,
                     enemyBehavior: 8,
+                    directionalDefenseClassifier: 8,
                     coreDamageRequest: 9,
                     trackedPose: 6,
                     requiredMaximum: REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE
@@ -8098,6 +8136,17 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(13, 'read-only-storage')
             ]
         });
+        const computeDirectionalDefenseBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-directional-defense-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(3),
+                storageLayoutEntry(11),
+                storageLayoutEntry(13, 'read-only-storage')
+            ]
+        });
         const computeWorldFullLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-world-full-layout',
             entries: [
@@ -8147,6 +8196,10 @@ export class GpuCircleBodySimulation {
         const computeEnemyBehaviorEventsLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-enemy-behavior-events-layout',
             entries: [0, 1, 2].map((binding) => storageLayoutEntry(binding))
+        });
+        const computeDirectionalDefenseEventsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-directional-defense-events-layout',
+            entries: [0, 1].map((binding) => storageLayoutEntry(binding))
         });
         const computeFixedControlLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-fixed-control-layout',
@@ -8263,6 +8316,12 @@ export class GpuCircleBodySimulation {
                 computeEmptyLayout,
                 computeParamsLayout,
                 computeEnemyBehaviorEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER]: [
+                computeDirectionalDefenseBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeDirectionalDefenseEventsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                 computeTrackedPoseLayout
@@ -8783,6 +8842,21 @@ export class GpuCircleBodySimulation {
                 }
             ]
         });
+        const computeDirectionalDefenseBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-directional-defense-bodies',
+            layout: computeDirectionalDefenseBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.temporary) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) },
+                {
+                    binding: 13,
+                    resource: resource(this.buffers.towerGameplayTargetConfig)
+                }
+            ]
+        });
         const computeWorldFull = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-world-full',
             layout: computeWorldFullLayout,
@@ -8854,6 +8928,14 @@ export class GpuCircleBodySimulation {
                 { binding: 0, resource: resource(this.buffers.contactState) },
                 { binding: 1, resource: resource(this.buffers.contacts) },
                 { binding: 2, resource: resource(this.buffers.appliedEvents) }
+            ]
+        });
+        const computeDirectionalDefenseEvents = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-directional-defense-events',
+            layout: computeDirectionalDefenseEventsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.contactState) },
+                { binding: 1, resource: resource(this.buffers.contacts) }
             ]
         });
         const computeFixedControl = device.createBindGroup({
@@ -8948,6 +9030,12 @@ export class GpuCircleBodySimulation {
                     computeEmpty,
                     computeParams,
                     computeEnemyBehaviorEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER]: [
+                    computeDirectionalDefenseBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeDirectionalDefenseEvents
                 ],
                 [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                     computeTrackedPose

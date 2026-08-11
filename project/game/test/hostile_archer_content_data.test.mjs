@@ -44,7 +44,8 @@ const CATALOG_DEFINITION_IDS = Object.freeze([
     basicEnemyData.BASIC_PENTA_ENEMY_DATA.id,
     basicEnemyData.BASIC_HEXA_ENEMY_DATA.id,
     basicEnemyData.BASIC_GEN_ENEMY_DATA.id,
-    basicEnemyData.BASIC_RHOM_ENEMY_DATA.id
+    basicEnemyData.BASIC_RHOM_ENEMY_DATA.id,
+    basicEnemyData.BASIC_OCTA_ENEMY_DATA.id
 ]);
 const PRODUCTION_WAVE_DEFINITION_IDS = Object.freeze([
     basicEnemyData.BASIC_CIRCLE_ENEMY_DATA.id,
@@ -95,7 +96,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA), true);
     assert.equal(Object.isFrozen(ARCHER_ENEMY_DATA.colorRgba), true);
 
-    assert.equal(basicEnemyData.INGAME_ENEMY_DEFINITIONS.length, 7);
+    assert.equal(basicEnemyData.INGAME_ENEMY_DEFINITIONS.length, 8);
     assert.deepEqual(
         Array.from(
             basicEnemyData.INGAME_ENEMY_DEFINITIONS,
@@ -110,7 +111,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     const catalogIds = Object.keys(
         basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID
     );
-    assert.equal(catalogIds.length, 9);
+    assert.equal(catalogIds.length, 10);
     assert.equal(new Set(catalogIds).size, catalogIds.length);
     assert.equal(
         Object.isFrozen(basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID),

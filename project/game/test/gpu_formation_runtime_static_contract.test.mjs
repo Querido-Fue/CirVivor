@@ -46,7 +46,8 @@ test('Formation은 80-byte behavior union과 독립된 versioned ABI/state domai
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM }, {
         NONE: 0,
         ARROW_TOWER_CHARGE: 1,
-        SELECTED_TARGET_PROJECTILE: 2
+        SELECTED_TARGET_PROJECTILE: 2,
+        OCTAGON_TOWER_ORBIT: 3
     });
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_STATE }, {
         NONE: 0,
@@ -55,7 +56,8 @@ test('Formation은 80-byte behavior union과 독립된 versioned ABI/state domai
         CHARGE: 3,
         CONTACT_RECOIL: 4,
         RECOVER: 5,
-        CORE_FALLBACK: 6
+        CORE_FALLBACK: 6,
+        ORBIT_TOWER: 7
     });
     assert.equal(GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE, 80);
     assert.equal(GPU_FORMATION_RUNTIME_ABI.CANDIDATE_STATE.STRIDE, 48);

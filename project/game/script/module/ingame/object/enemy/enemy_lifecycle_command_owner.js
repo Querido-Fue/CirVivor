@@ -12,6 +12,16 @@ import {
     createFormationLineageHash
 } from '../../contract/enemy_formation_contract.js';
 import {
+    ENEMY_CAPABILITY_ID,
+    hasEnemyCapability,
+    normalizeEnemyCapabilityMask
+} from '../../contract/enemy_capability_contract.js';
+import {
+    ENEMY_ORBIT_SLOT_UNASSIGNED,
+    hasAnyEnemyOrbitLeaseMetadata,
+    normalizeEnemyOrbitSlotLease
+} from '../../contract/enemy_orbit_directional_defense_contract.js';
+import {
     createGpuPrivateHexaTransformDestinationIntent,
     materializeNaturalHexaFormationActivation,
     normalizeGpuPrivateHexaTransformDestinationIntent
@@ -20,12 +30,22 @@ import {
     BASIC_HEXA_ENEMY_DEFINITION_ID
 } from 'data/object/enemy/basic_hexa_enemy_data.js';
 import {
+    BASIC_OCTA_ENEMY_CAPABILITY_MASK,
+    BASIC_OCTA_ENEMY_DEFINITION_ID,
+    BASIC_OCTA_ORBIT_SLOT_CAPACITY,
+    BASIC_OCTA_ORBIT_SLOT_FILL_ORDER
+} from 'data/object/enemy/basic_octa_enemy_data.js';
+import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
+export const ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE = 'orbit-slot-capacity';
+export const ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE = (
+    'orbit-slot-metadata-corruption'
+);
 // 외부 options/reason이나 reflection으로 재현할 수 없는 command identity marker입니다.
 // fixed commit payload에는 노출하지 않고 terminal close의 보존 여부만 지배합니다.
 const AUTHENTIC_TERMINAL_CLEANUP_COMMANDS = new WeakSet();
@@ -88,6 +108,81 @@ function handleKey(handle) {
 function compareHandles(left, right) {
     return left.entityId - right.entityId
         || left.incarnation - right.incarnation;
+}
+
+function createOrbitSlotMetadataCorruption(message) {
+    const error = new Error(message);
+    error.code = ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE;
+    return error;
+}
+
+function requireNaturalOctaOrbitIntent(intent, label, options = {}) {
+    const isOctaDefinition = intent?.kindId === 'enemy'
+        && intent.definitionId === BASIC_OCTA_ENEMY_DEFINITION_ID;
+    const isOctaEnemyDefinitionAlias = intent?.enemyDefinitionId
+        === BASIC_OCTA_ENEMY_DEFINITION_ID;
+    const capabilityMask = intent?.capabilityMask === undefined
+        || intent.capabilityMask === null
+        ? null
+        : normalizeEnemyCapabilityMask(
+            intent.capabilityMask,
+            `${label}.capabilityMask`
+        );
+    const hasOrbit = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.ORBIT,
+            `${label}.capabilityMask`
+        );
+    const hasLease = hasAnyEnemyOrbitLeaseMetadata(intent);
+    const hasOrbitBehaviorProgram = intent?.enemyBehaviorState?.programId
+        === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT;
+    const requireBehaviorProgram = options.requireBehaviorProgram !== false;
+    if (isOctaDefinition !== isOctaEnemyDefinitionAlias
+        || isOctaDefinition !== hasOrbit
+        || isOctaDefinition !== hasLease
+        || (requireBehaviorProgram
+            && isOctaDefinition !== hasOrbitBehaviorProgram)
+        || (hasOrbit && capabilityMask !== BASIC_OCTA_ENEMY_CAPABILITY_MASK)) {
+        throw createOrbitSlotMetadataCorruption(
+            `${label}의 O definition/capability/lease/program이 exact contract와 다릅니다.`
+        );
+    }
+    return isOctaDefinition;
+}
+
+function materializeNaturalOctaOrbitActivation(intent, orbitSlotIndex) {
+    const lease = normalizeEnemyOrbitSlotLease(intent, {
+        label: 'natural O raw orbit lease',
+        allowUnassigned: true,
+        expectedSlotCapacity: BASIC_OCTA_ORBIT_SLOT_CAPACITY
+    });
+    const behaviorState = intent.enemyBehaviorState;
+    if (lease.orbitSlotIndex !== ENEMY_ORBIT_SLOT_UNASSIGNED
+        || !behaviorState
+        || typeof behaviorState !== 'object'
+        || Array.isArray(behaviorState)
+        || behaviorState.programId
+            !== GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
+        || behaviorState.orbitSlotIndex !== ENEMY_ORBIT_SLOT_UNASSIGNED
+        || behaviorState.orbitSlotCapacity !== BASIC_OCTA_ORBIT_SLOT_CAPACITY
+        || behaviorState.coordinateSystemCode
+            !== lease.orbitCoordinateSystemCode) {
+        throw createOrbitSlotMetadataCorruption(
+            'natural O raw lease/behavior sentinel가 exact contract와 다릅니다.'
+        );
+    }
+    const materialized = Object.freeze({
+        ...intent,
+        orbitSlotIndex,
+        enemyBehaviorState: Object.freeze({
+            ...behaviorState,
+            orbitSlotIndex
+        })
+    });
+    // Reservation/backend mutation 전 registry metadata 경계까지 미리 검증합니다.
+    createRegistryMetadata(materialized);
+    return materialized;
 }
 
 function assertAtomicTransformTransactionPort(source) {
@@ -1461,8 +1556,137 @@ export class EnemyLifecycleCommandOwner {
         return 'complete';
     }
 
+    #preflightOrbitSpawnActivations(commands) {
+        const orbitCommands = [];
+        for (let index = 0; index < commands.length; index++) {
+            const command = commands[index];
+            if (requireNaturalOctaOrbitIntent(
+                command.intent,
+                `spawnCommands[${index}].intent`
+            )) {
+                orbitCommands.push(command);
+            }
+        }
+        if (orbitCommands.length === 0) {
+            return Object.freeze({
+                capacityExceeded: false,
+                activationIntentByCommandId: new Map()
+            });
+        }
+        if (typeof this.registry.copyActiveHandlesInto !== 'function'
+            || typeof this.registry.copyEntityView !== 'function') {
+            throw createOrbitSlotMetadataCorruption(
+                'WorldRegistry orbit lease snapshot port가 필요합니다.'
+            );
+        }
+
+        const activeEnemyHandles = [];
+        this.registry.copyActiveHandlesInto(activeEnemyHandles, {
+            kindId: 'enemy'
+        });
+        activeEnemyHandles.sort(compareHandles);
+        const occupiedSlots = new Set();
+        for (let index = 0; index < activeEnemyHandles.length; index++) {
+            const handle = activeEnemyHandles[index];
+            const view = this.registry.copyEntityView(handle, {});
+            if (!view || view.kindId !== 'enemy') {
+                throw createOrbitSlotMetadataCorruption(
+                    `active Enemy registry view가 유실되었습니다: ${handleKey(handle)}`
+                );
+            }
+            const metadata = view.metadata;
+            if (metadata?.definitionId !== view.definitionId
+                || metadata?.enemyDefinitionId !== view.definitionId) {
+                throw createOrbitSlotMetadataCorruption(
+                    `active Enemy registry definition alias가 다릅니다: ${handleKey(handle)}`
+                );
+            }
+            const activeDescriptor = {
+                ...(metadata ?? {}),
+                kindId: view.kindId,
+                definitionId: view.definitionId
+            };
+            const isOcta = requireNaturalOctaOrbitIntent(
+                activeDescriptor,
+                `activeEnemy[${index}]`,
+                { requireBehaviorProgram: false }
+            );
+            if (!isOcta) {
+                continue;
+            }
+            const lease = normalizeEnemyOrbitSlotLease(metadata, {
+                label: `activeEnemy[${index}].metadata.orbitLease`,
+                expectedSlotCapacity: BASIC_OCTA_ORBIT_SLOT_CAPACITY
+            });
+            if (occupiedSlots.has(lease.orbitSlotIndex)) {
+                throw createOrbitSlotMetadataCorruption(
+                    `active O orbit slot이 중복됩니다: ${lease.orbitSlotIndex}`
+                );
+            }
+            occupiedSlots.add(lease.orbitSlotIndex);
+        }
+
+        if (orbitCommands.length
+            > BASIC_OCTA_ORBIT_SLOT_CAPACITY - occupiedSlots.size) {
+            return Object.freeze({
+                capacityExceeded: true,
+                activationIntentByCommandId: new Map()
+            });
+        }
+
+        const activationIntentByCommandId = new Map();
+        const orderedOrbitCommands = [...orbitCommands].sort((left, right) => (
+            left.sequence - right.sequence
+        ));
+        for (const command of orderedOrbitCommands) {
+            const orbitSlotIndex = BASIC_OCTA_ORBIT_SLOT_FILL_ORDER.find(
+                (candidate) => !occupiedSlots.has(candidate)
+            );
+            if (orbitSlotIndex === undefined) {
+                throw createOrbitSlotMetadataCorruption(
+                    'preflighted O slot capacity와 fill order가 불일치합니다.'
+                );
+            }
+            occupiedSlots.add(orbitSlotIndex);
+            activationIntentByCommandId.set(
+                command.commandId,
+                materializeNaturalOctaOrbitActivation(
+                    command.intent,
+                    orbitSlotIndex
+                )
+            );
+        }
+        return Object.freeze({
+            capacityExceeded: false,
+            activationIntentByCommandId
+        });
+    }
+
     #commitSpawns(commands, result, consumedCommandIds) {
         if (commands.length === 0 || result.recoveryRequired) {
+            return;
+        }
+        let orbitPreflight;
+        try {
+            orbitPreflight = this.#preflightOrbitSpawnActivations(commands);
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: commands[0].commandId,
+                code: error?.code ?? ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE,
+                message: String(error?.message ?? error)
+            });
+            return;
+        }
+        if (orbitPreflight.capacityExceeded) {
+            for (const command of commands) {
+                result.rejected.push({
+                    commandId: command.commandId,
+                    code: ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE
+                });
+                consumedCommandIds.add(command.commandId);
+            }
             return;
         }
         const reservations = [];
@@ -1486,7 +1710,8 @@ export class EnemyLifecycleCommandOwner {
                 result.recoveryRequired = true;
                 return;
             }
-            let activationIntent = command.intent;
+            let activationIntent = orbitPreflight.activationIntentByCommandId
+                .get(command.commandId) ?? command.intent;
             try {
                 if (command.intent.kindId === 'enemy'
                     && command.intent.definitionId

@@ -205,6 +205,9 @@ export const ENEMY_NORMALIZED_RENDER_GEOMETRY = Object.freeze({
     rhom: Object.freeze({
         points: normalizePolygon('rhom', ENEMY_SHAPE_GEOMETRY.rhom.paths[0])
     }),
+    octa: Object.freeze({
+        points: normalizePolygon('octa', ENEMY_SHAPE_GEOMETRY.octa.paths[0], true)
+    }),
     gen: Object.freeze({
         outerBox: normalizeRect('gen', generatorRingPaths[0]),
         innerBox: normalizeRect('gen', generatorRingPaths[1]),

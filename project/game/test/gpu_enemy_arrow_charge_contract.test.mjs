@@ -123,7 +123,8 @@ test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정
         CHARGE: 3,
         CONTACT_RECOIL: 4,
         RECOVER: 5,
-        CORE_FALLBACK: 6
+        CORE_FALLBACK: 6,
+        ORBIT_TOWER: 7
     });
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
         TARGET_VALID: 1,
@@ -131,7 +132,8 @@ test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정
         RECOIL_PENDING: 4,
         SELECTED_TARGET_VALID: 8,
         SELECTED_TARGET_CORE: 16,
-        SELECTED_TARGET_TOWER: 32
+        SELECTED_TARGET_TOWER: 32,
+        DIRECTIONAL_DEFENSE_ACTIVE: 64
     });
     assert.equal(GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED, 4);
     assert.equal(

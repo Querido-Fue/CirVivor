@@ -5,6 +5,12 @@ import {
     normalizeGameplayDamageResolutionPolicyId,
     normalizeGameplayTeamId
 } from '../../contract/gameplay_team_contract.js';
+import {
+    ENEMY_ORBIT_SLOT_CAPACITY
+} from '../../contract/enemy_orbit_directional_defense_contract.js';
+import {
+    FORMATION_COORDINATE_SYSTEM_CODE
+} from '../../contract/enemy_formation_contract.js';
 
 const UINT8_MAX = 0xff;
 const UINT16_MAX = 0xffff;
@@ -176,7 +182,8 @@ export const GPU_CIRCLE_BODY_RENDER_SHAPE = Object.freeze({
     PENTA: 4,
     HEXA: 5,
     GEN: 6,
-    RHOM: 7
+    RHOM: 7,
+    OCTA: 8
 });
 
 export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
@@ -278,7 +285,9 @@ export const GPU_CIRCLE_APPLIED_EVENT_FLAG = Object.freeze({
     CONTINUOUS_POLICY: 1 << 11,
     TERRAIN_CONTACT: 1 << 12,
     /** Maximum Damage Window winner; value 0은 억제된 valid winner의 actual HP delta입니다. */
-    MAXIMUM_DAMAGE_WINDOW: 1 << 13
+    MAXIMUM_DAMAGE_WINDOW: 1 << 13,
+    /** Directional flat defense가 이 valid hit의 final damage를 줄였습니다. */
+    DIRECTIONAL_DEFENSE: 1 << 14
 });
 
 export const GPU_CIRCLE_BODY_FIXED_POINT = Object.freeze({
@@ -289,12 +298,14 @@ export const GPU_CIRCLE_BODY_LIFETIME = Object.freeze({
     IMMORTAL: -1
 });
 
-/** GPU behavior side-plane의 실제 Turn 2 program vocabulary입니다. */
+/** GPU behavior side-plane의 append-only basic behavior program vocabulary입니다. */
 export const GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM = Object.freeze({
     NONE: 0,
     ARROW_TOWER_CHARGE: 1,
     /** GPU-selected Rhom projectile의 exact target/core damage runtime state입니다. */
-    SELECTED_TARGET_PROJECTILE: 2
+    SELECTED_TARGET_PROJECTILE: 2,
+    /** Exact Tower 중심의 tidal-locked eight-slot orbit입니다. */
+    OCTAGON_TOWER_ORBIT: 3
 });
 
 export const GPU_CIRCLE_ENEMY_BEHAVIOR_STATE = Object.freeze({
@@ -304,7 +315,8 @@ export const GPU_CIRCLE_ENEMY_BEHAVIOR_STATE = Object.freeze({
     CHARGE: 3,
     CONTACT_RECOIL: 4,
     RECOVER: 5,
-    CORE_FALLBACK: 6
+    CORE_FALLBACK: 6,
+    ORBIT_TOWER: 7
 });
 
 export const GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG = Object.freeze({
@@ -313,7 +325,44 @@ export const GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG = Object.freeze({
     RECOIL_PENDING: 1 << 2,
     SELECTED_TARGET_VALID: 1 << 3,
     SELECTED_TARGET_CORE: 1 << 4,
-    SELECTED_TARGET_TOWER: 1 << 5
+    SELECTED_TARGET_TOWER: 1 << 5,
+    DIRECTIONAL_DEFENSE_ACTIVE: 1 << 6
+});
+
+/**
+ * 80-byte behavior side-plane의 program 3 overlay입니다. 기존 Arrow/program 2
+ * byte를 이동하지 않으며 facing +32/+36은 orbit/render/defense의 단일 권위입니다.
+ */
+export const GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI = Object.freeze({
+    STRIDE: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+    PROGRAM_ID: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.PROGRAM_ID,
+    STATE: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE,
+    STATE_ENTERED_FIXED_TICK:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_ENTERED_FIXED_TICK,
+    STATE_EXPIRES_AT_FIXED_TICK:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE_EXPIRES_AT_FIXED_TICK,
+    TARGET_SLOT: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_SLOT,
+    TARGET_ENTITY_ID: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_ENTITY_ID,
+    TARGET_INCARNATION:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TARGET_INCARNATION,
+    FLAGS: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.FLAGS,
+    FACING_X: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_X,
+    FACING_Y: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_Y,
+    ORBIT_RADIUS_TILES: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_RANGE,
+    RESERVED_FLOAT_0: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_SPEED,
+    RESERVED_FLOAT_1: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_IMPULSE,
+    COORDINATE_SYSTEM_CODE: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_TICKS,
+    ORBIT_SLOT_INDEX: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_MAX_TICKS,
+    ORBIT_SLOT_CAPACITY: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_TICKS,
+    ANGULAR_STEP_Q32: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOVER_TICKS,
+    FLAT_REDUCTION_FIXED_POINT:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_STYLE_CODE,
+    FACET_CONFIG: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_COLOR_RGBA8,
+    ARMORED_FACET_COUNT_SHIFT: 0,
+    TOTAL_FACET_COUNT_SHIFT: 16,
+    FACET_COUNT_MASK: UINT16_MAX,
+    RESERVED_FLOAT_2:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_RADIUS_SCALE
 });
 
 /**
@@ -707,6 +756,7 @@ export function normalizeGpuCircleBodyRenderShapeCode(
         case GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.GEN:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA:
             return shapeCode;
         default:
             throw new RangeError(`${fieldName}에 지원하지 않는 shape code가 있습니다: ${shapeCode}`);
@@ -1716,6 +1766,14 @@ export function readGpuCircleBodyCombatState(storage, index) {
 const ENEMY_BEHAVIOR_INPUT_KEYS = new Set([
     'programId',
     'coreDamageFixedPoint',
+    'coordinateSystemCode',
+    'orbitRadiusTiles',
+    'angularStepQ32',
+    'orbitSlotIndex',
+    'orbitSlotCapacity',
+    'flatReductionFixedPoint',
+    'armoredFacetCount',
+    'totalFacetCount',
     'windupTicks',
     'windupRangeTiles',
     'chargeSpeedTilesPerSecond',
@@ -1825,13 +1883,163 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
         );
         return slot;
     }
+    if (programId === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT) {
+        const allowedKeys = new Set([
+            'programId',
+            'coordinateSystemCode',
+            'orbitRadiusTiles',
+            'angularStepQ32',
+            'orbitSlotIndex',
+            'orbitSlotCapacity',
+            'flatReductionFixedPoint',
+            'armoredFacetCount',
+            'totalFacetCount'
+        ]);
+        for (const key of Object.keys(source)) {
+            if (!allowedKeys.has(key)) {
+                throw new RangeError(
+                    `OCTAGON_TOWER_ORBIT에 사용할 수 없는 config입니다: ${key}`
+                );
+            }
+        }
+        const orbitAbi = GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI;
+        const coordinateSystemCode = requirePositiveUint32(
+            source.coordinateSystemCode,
+            'enemyBehaviorState.coordinateSystemCode'
+        );
+        if (coordinateSystemCode !== FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS) {
+            throw new RangeError(
+                'enemyBehaviorState.coordinateSystemCode는 exact RING_SLOTS여야 합니다.'
+            );
+        }
+        const orbitRadiusTiles = requireNonNegativeFloat32(
+            source.orbitRadiusTiles,
+            'enemyBehaviorState.orbitRadiusTiles'
+        );
+        if (orbitRadiusTiles <= 0) {
+            throw new RangeError('enemyBehaviorState.orbitRadiusTiles는 양수여야 합니다.');
+        }
+        const angularStepQ32 = requirePositiveUint32(
+            source.angularStepQ32,
+            'enemyBehaviorState.angularStepQ32'
+        );
+        const orbitSlotCapacity = requirePositiveUint32(
+            source.orbitSlotCapacity,
+            'enemyBehaviorState.orbitSlotCapacity'
+        );
+        if (orbitSlotCapacity !== ENEMY_ORBIT_SLOT_CAPACITY) {
+            throw new RangeError(
+                `enemyBehaviorState.orbitSlotCapacity는 exact ${ENEMY_ORBIT_SLOT_CAPACITY}이어야 합니다.`
+            );
+        }
+        const orbitSlotIndex = requireUint32(
+            source.orbitSlotIndex,
+            'enemyBehaviorState.orbitSlotIndex'
+        );
+        if (orbitSlotIndex >= orbitSlotCapacity) {
+            throw new RangeError(
+                'enemyBehaviorState.orbitSlotIndex는 materialized 0..7이어야 합니다.'
+            );
+        }
+        const flatReductionFixedPoint = requireInt32(
+            source.flatReductionFixedPoint,
+            'enemyBehaviorState.flatReductionFixedPoint'
+        );
+        if (flatReductionFixedPoint <= 0) {
+            throw new RangeError(
+                'enemyBehaviorState.flatReductionFixedPoint는 양의 int32여야 합니다.'
+            );
+        }
+        const armoredFacetCount = requireUint16(
+            source.armoredFacetCount,
+            'enemyBehaviorState.armoredFacetCount'
+        );
+        const totalFacetCount = requireUint16(
+            source.totalFacetCount,
+            'enemyBehaviorState.totalFacetCount'
+        );
+        if (armoredFacetCount !== 3
+            || totalFacetCount !== ENEMY_ORBIT_SLOT_CAPACITY) {
+            throw new RangeError(
+                'OCTAGON_TOWER_ORBIT directional defense는 exact 3/8 facet이어야 합니다.'
+            );
+        }
+        const facetConfig = (
+            armoredFacetCount
+            | (totalFacetCount << orbitAbi.TOTAL_FACET_COUNT_SHIFT)
+        ) >>> 0;
+        view.setUint32(offset + orbitAbi.PROGRAM_ID, programId, LITTLE_ENDIAN);
+        view.setUint32(
+            offset + orbitAbi.STATE,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+            LITTLE_ENDIAN
+        );
+        for (const targetField of [
+            orbitAbi.TARGET_SLOT,
+            orbitAbi.TARGET_ENTITY_ID,
+            orbitAbi.TARGET_INCARNATION
+        ]) {
+            view.setUint32(
+                offset + targetField,
+                GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+                LITTLE_ENDIAN
+            );
+        }
+        view.setFloat32(
+            offset + orbitAbi.ORBIT_RADIUS_TILES,
+            orbitRadiusTiles,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + orbitAbi.COORDINATE_SYSTEM_CODE,
+            coordinateSystemCode,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + orbitAbi.ORBIT_SLOT_INDEX,
+            orbitSlotIndex,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + orbitAbi.ORBIT_SLOT_CAPACITY,
+            orbitSlotCapacity,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            offset + orbitAbi.ANGULAR_STEP_Q32,
+            angularStepQ32,
+            LITTLE_ENDIAN
+        );
+        view.setInt32(
+            offset + orbitAbi.FLAT_REDUCTION_FIXED_POINT,
+            flatReductionFixedPoint,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(offset + orbitAbi.FACET_CONFIG, facetConfig, LITTLE_ENDIAN);
+        return slot;
+    }
     if (programId !== GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE) {
         throw new RangeError(`지원하지 않는 enemy behavior program입니다: ${programId}`);
     }
-    if (Object.prototype.hasOwnProperty.call(source, 'coreDamageFixedPoint')) {
-        throw new RangeError(
-            'ARROW_TOWER_CHARGE에는 coreDamageFixedPoint를 사용할 수 없습니다.'
-        );
+    const allowedArrowKeys = new Set([
+        'programId',
+        'windupTicks',
+        'windupRangeTiles',
+        'chargeSpeedTilesPerSecond',
+        'chargeMaxTicks',
+        'recoilImpulseTilesPerSecond',
+        'recoilTicks',
+        'recoverTicks',
+        'telegraphStyleCode',
+        'telegraphColorRgba',
+        'telegraphRadiusScale'
+    ]);
+    for (const key of Object.keys(source)) {
+        if (!allowedArrowKeys.has(key)) {
+            throw new RangeError(
+                `ARROW_TOWER_CHARGE에 사용할 수 없는 config입니다: ${key}`
+            );
+        }
     }
     view.setUint32(offset + abi.PROGRAM_ID, programId, LITTLE_ENDIAN);
     view.setUint32(
@@ -1970,6 +2178,69 @@ export function readGpuCircleEnemyBehaviorState(storage, index) {
                 offset + selectedAbi.CORE_DAMAGE_FIXED_POINT,
                 LITTLE_ENDIAN
             )
+        };
+    }
+    if (programId === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT) {
+        const orbitAbi = GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI;
+        const facetConfig = view.getUint32(
+            offset + orbitAbi.FACET_CONFIG,
+            LITTLE_ENDIAN
+        );
+        return {
+            programId,
+            state: view.getUint32(offset + orbitAbi.STATE, LITTLE_ENDIAN),
+            stateEnteredFixedTick: view.getUint32(
+                offset + orbitAbi.STATE_ENTERED_FIXED_TICK,
+                LITTLE_ENDIAN
+            ),
+            stateExpiresAtFixedTick: view.getUint32(
+                offset + orbitAbi.STATE_EXPIRES_AT_FIXED_TICK,
+                LITTLE_ENDIAN
+            ),
+            targetSlot: view.getUint32(offset + orbitAbi.TARGET_SLOT, LITTLE_ENDIAN),
+            targetEntityId: view.getUint32(
+                offset + orbitAbi.TARGET_ENTITY_ID,
+                LITTLE_ENDIAN
+            ),
+            targetIncarnation: view.getUint32(
+                offset + orbitAbi.TARGET_INCARNATION,
+                LITTLE_ENDIAN
+            ),
+            flags: view.getUint32(offset + orbitAbi.FLAGS, LITTLE_ENDIAN),
+            facing: Object.freeze({
+                x: view.getFloat32(offset + orbitAbi.FACING_X, LITTLE_ENDIAN),
+                y: view.getFloat32(offset + orbitAbi.FACING_Y, LITTLE_ENDIAN)
+            }),
+            orbitRadiusTiles: view.getFloat32(
+                offset + orbitAbi.ORBIT_RADIUS_TILES,
+                LITTLE_ENDIAN
+            ),
+            coordinateSystemCode: view.getUint32(
+                offset + orbitAbi.COORDINATE_SYSTEM_CODE,
+                LITTLE_ENDIAN
+            ),
+            orbitSlotIndex: view.getUint32(
+                offset + orbitAbi.ORBIT_SLOT_INDEX,
+                LITTLE_ENDIAN
+            ),
+            orbitSlotCapacity: view.getUint32(
+                offset + orbitAbi.ORBIT_SLOT_CAPACITY,
+                LITTLE_ENDIAN
+            ),
+            angularStepQ32: view.getUint32(
+                offset + orbitAbi.ANGULAR_STEP_Q32,
+                LITTLE_ENDIAN
+            ),
+            flatReductionFixedPoint: view.getInt32(
+                offset + orbitAbi.FLAT_REDUCTION_FIXED_POINT,
+                LITTLE_ENDIAN
+            ),
+            armoredFacetCount: (
+                facetConfig >>> orbitAbi.ARMORED_FACET_COUNT_SHIFT
+            ) & orbitAbi.FACET_COUNT_MASK,
+            totalFacetCount: (
+                facetConfig >>> orbitAbi.TOTAL_FACET_COUNT_SHIFT
+            ) & orbitAbi.FACET_COUNT_MASK
         };
     }
     const packedColor = view.getUint32(

@@ -24,11 +24,20 @@ import { GAME_MAP_DATA } from 'data/scene/game/game_map_data.js';
 import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 ```
 
-`data/` 파일은 `module/`을 import하지 않습니다. 데이터 조합을 위한 `data/` 간 import는 허용하지만 lookup, coercion, migration, fallback과 런타임 적용은 코드 모듈이 담당합니다.
+`data/` 파일은 DOM/Canvas, mutable system, scene, runtime owner를 import하지 않습니다. 데이터 조합을
+위한 `data/` 간 import와 부작용 없는 `module/ingame/contract/` normalizer·stable vocabulary import는
+허용합니다. Lookup, migration, fallback, GPU packing과 런타임 적용은 실행 코드가 담당합니다.
 
 적의 부작용 없는 숫자 path descriptor와 aspect/height 배율은
 `object/enemy/enemy_shape_geometry_data.js`가 소유합니다. SVG path 문자열과 GPU
 analytic mask는 이 선언 데이터를 각각 변환하며 별도 좌표 사본을 두지 않습니다.
+
+O의 profile/data authority는 `basic_octa_enemy_data.js`와 profile catalog에 있습니다. Tower 반지름 × 12,
+각속도, 60Hz 계약, 8슬롯 분산 순서, 무게, 고정 피해 감소량, 3/8 장갑 면 인덱스는 데이터가 소유합니다.
+GPU Q32/fixed-point 인코딩, 접근·포획 상태 전이, 서쪽 기준 슬롯 위상 매핑, 슬롯 lifecycle, facing,
+contact 분류와 rendering은 module이 소유합니다. 이 정의를 wave에 authoring하려면 exact Tower 주위의
+반지름 6 슬롯 8개가 모두 walkable/SDF-clear여야 합니다. 현재 corridor wave는 이 조건을 충족하지
+않으므로 O를 포함하지 않으며, 그 map enablement는 Turn 9 acceptance 전까지 금지됩니다.
 
 Wave spawn group은 호환 fallback인 단일 `enemyDefinitionId`를 항상 유지하고,
 여러 archetype을 같은 phase/group에서 순환할 때 선택적으로 `enemyDefinitionIds`

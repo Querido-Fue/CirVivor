@@ -24,6 +24,7 @@ const {
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
+    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI,
     GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI,
     appendGpuCircleBodySpawn,
     assertGpuCircleBodyAbiVersion,
@@ -206,10 +207,37 @@ assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOVER_TICKS, 64);
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_STYLE_CODE, 68);
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_COLOR_RGBA8, 72);
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.TELEGRAPH_RADIUS_SCALE, 76);
+assert.deepEqual({ ...GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI }, {
+    STRIDE: 80,
+    PROGRAM_ID: 0,
+    STATE: 4,
+    STATE_ENTERED_FIXED_TICK: 8,
+    STATE_EXPIRES_AT_FIXED_TICK: 12,
+    TARGET_SLOT: 16,
+    TARGET_ENTITY_ID: 20,
+    TARGET_INCARNATION: 24,
+    FLAGS: 28,
+    FACING_X: 32,
+    FACING_Y: 36,
+    ORBIT_RADIUS_TILES: 40,
+    RESERVED_FLOAT_0: 44,
+    RESERVED_FLOAT_1: 48,
+    COORDINATE_SYSTEM_CODE: 52,
+    ORBIT_SLOT_INDEX: 56,
+    ORBIT_SLOT_CAPACITY: 60,
+    ANGULAR_STEP_Q32: 64,
+    FLAT_REDUCTION_FIXED_POINT: 68,
+    FACET_CONFIG: 72,
+    ARMORED_FACET_COUNT_SHIFT: 0,
+    TOTAL_FACET_COUNT_SHIFT: 16,
+    FACET_COUNT_MASK: 0xffff,
+    RESERVED_FLOAT_2: 76
+});
 assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM }, {
     NONE: 0,
     ARROW_TOWER_CHARGE: 1,
-    SELECTED_TARGET_PROJECTILE: 2
+    SELECTED_TARGET_PROJECTILE: 2,
+    OCTAGON_TOWER_ORBIT: 3
 });
 assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
     TARGET_VALID: 1,
@@ -217,7 +245,8 @@ assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG }, {
     RECOIL_PENDING: 4,
     SELECTED_TARGET_VALID: 8,
     SELECTED_TARGET_CORE: 16,
-    SELECTED_TARGET_TOWER: 32
+    SELECTED_TARGET_TOWER: 32,
+    DIRECTIONAL_DEFENSE_ACTIVE: 64
 });
 assert.deepEqual({ ...GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI }, {
     STRIDE: 80,
@@ -239,7 +268,8 @@ assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_STATE }, {
     CHARGE: 3,
     CONTACT_RECOIL: 4,
     RECOVER: 5,
-    CORE_FALLBACK: 6
+    CORE_FALLBACK: 6,
+    ORBIT_TOWER: 7
 });
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE, 32);
 assert.equal(GPU_CIRCLE_BODY_ABI.RENDER_STYLE.COLOR_RED, 0);
@@ -258,7 +288,8 @@ assert.deepEqual({ ...GPU_CIRCLE_BODY_RENDER_SHAPE }, {
     PENTA: 4,
     HEXA: 5,
     GEN: 6,
-    RHOM: 7
+    RHOM: 7,
+    OCTA: 8
 });
 assert.equal(
     normalizeGpuCircleBodyRenderShapeCode(),
@@ -445,6 +476,16 @@ assert.deepEqual({ ...packedBody.combatState }, {
     peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
     peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
 });
+assert.deepEqual(
+    [...new Uint8Array(
+        storage.combatStateBuffer,
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION + 4,
+        16
+    )],
+    Array(16).fill(0),
+    'CombatState +24..+39는 directional defense가 재사용하지 않는 reserved zero입니다.'
+);
 assert.deepEqual({
     ...packedBody.enemyBehaviorState,
     chargeDirection: { ...packedBody.enemyBehaviorState.chargeDirection },
@@ -518,6 +559,81 @@ assert.deepEqual(
     [...new Uint8Array(selectedProjectileStorage.enemyBehaviorStateBuffer)],
     Array(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE).fill(0),
     'slot reuse/replacement는 program2 exact target/core damage를 포함해 full zero reset합니다.'
+);
+
+// Program 3는 lifecycle이 materialize한 0..7 slot과 defense config만 쓰고,
+// raw SEEK의 facing +32/+36/target/flags는 capture 전 zero인 단일 authority입니다.
+const octagonOrbitStorage = createGpuCircleBodyAbiStorage(1);
+new Uint8Array(octagonOrbitStorage.enemyBehaviorStateBuffer).fill(0xff);
+writeGpuCircleEnemyBehaviorState(octagonOrbitStorage, 0, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+    coordinateSystemCode: 4,
+    orbitRadiusTiles: 6,
+    angularStepQ32: 2_848_189,
+    orbitSlotIndex: 4,
+    orbitSlotCapacity: 8,
+    flatReductionFixedPoint: 50,
+    armoredFacetCount: 3,
+    totalFacetCount: 8
+});
+const octagonOrbitState = readGpuCircleEnemyBehaviorState(
+    octagonOrbitStorage,
+    0
+);
+assert.deepEqual({
+    ...octagonOrbitState,
+    facing: { ...octagonOrbitState.facing }
+}, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+    state: GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER,
+    stateEnteredFixedTick: 0,
+    stateExpiresAtFixedTick: 0,
+    targetSlot: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    targetEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    targetIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    flags: 0,
+    facing: { x: 0, y: 0 },
+    orbitRadiusTiles: 6,
+    coordinateSystemCode: 4,
+    orbitSlotIndex: 4,
+    orbitSlotCapacity: 8,
+    angularStepQ32: 2_848_189,
+    flatReductionFixedPoint: 50,
+    armoredFacetCount: 3,
+    totalFacetCount: 8
+});
+const octagonOrbitView = new DataView(
+    octagonOrbitStorage.enemyBehaviorStateBuffer
+);
+for (const reservedOffset of [
+    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.RESERVED_FLOAT_0,
+    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.RESERVED_FLOAT_1,
+    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.RESERVED_FLOAT_2
+]) {
+    assert.equal(octagonOrbitView.getUint32(reservedOffset, true), 0);
+}
+assertThrowsNamed(() => writeGpuCircleEnemyBehaviorState(
+    octagonOrbitStorage,
+    0,
+    {
+        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+        coordinateSystemCode: 4,
+        orbitRadiusTiles: 6,
+        angularStepQ32: 2_848_189,
+        orbitSlotIndex: 0xffffffff,
+        orbitSlotCapacity: 8,
+        flatReductionFixedPoint: 50,
+        armoredFacetCount: 3,
+        totalFacetCount: 8
+    }
+), 'RangeError');
+writeGpuCircleEnemyBehaviorState(octagonOrbitStorage, 0, {
+    programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.NONE
+});
+assert.deepEqual(
+    [...new Uint8Array(octagonOrbitStorage.enemyBehaviorStateBuffer)],
+    Array(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE).fill(0),
+    'replacement/reset은 program3 slot/facing/config를 포함해 full zero reset합니다.'
 );
 const physicsView = new DataView(storage.physicsBuffer);
 const simulationView = new DataView(storage.simulationBuffer);
@@ -605,6 +721,16 @@ assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
     peakSourceEntityId: 9,
     peakSourceIncarnation: 3
 });
+assert.deepEqual(
+    [...new Uint8Array(
+        storage.combatStateBuffer,
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION + 4,
+        16
+    )],
+    Array(16).fill(0),
+    'maximum-damage write 뒤에도 CombatState reserved words는 zero입니다.'
+);
 writeGpuCircleBodySpawn(storage, 1, {
     position: { x: 12.25, y: -3.5 },
     radius: 1.125,
@@ -1193,7 +1319,7 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(0x10000, 1), 'RangeError');
 assertThrowsNamed(() => packGpuCircleInteractionMeta(1, 0x10000), 'RangeError');
 assertThrowsNamed(() => packGpuCircleSimulationMeta(-1), 'RangeError');
-assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(8), 'RangeError');
+assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(9), 'RangeError');
 assertThrowsNamed(() => normalizeGpuCircleBodyLifetime(-2), 'RangeError');
 assertThrowsNamed(
     () => normalizeGpuCircleBodyLifetime(Number.POSITIVE_INFINITY),
@@ -1374,6 +1500,7 @@ const appliedMeta = packGpuCircleAppliedEventMeta(
     GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
     GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
 );
+assert.equal(GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE, 1 << 14);
 assert.deepEqual({ ...unpackGpuCircleAppliedEventMeta(appliedMeta) }, {
     type: GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED,
     flags: GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED

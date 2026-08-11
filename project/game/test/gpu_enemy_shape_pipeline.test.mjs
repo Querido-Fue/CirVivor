@@ -8,6 +8,7 @@ const {
     BASIC_CIRCLE_ENEMY_DATA,
     BASIC_GEN_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
@@ -86,6 +87,11 @@ const EXPECTED_ARCHETYPES = Object.freeze([
         definition: BASIC_RHOM_ENEMY_DATA,
         shapeType: 'rhom',
         shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
+    }),
+    Object.freeze({
+        definition: BASIC_OCTA_ENEMY_DATA,
+        shapeType: 'octa',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
     })
 ]);
 const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([
@@ -271,6 +277,11 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(normalized.rhom.points.length, 4);
     assertClose(normalized.rhom.points[0].y, -0.7576144084141581);
     assertClose(normalized.rhom.points[1].x, 0.41729401615451833);
+    assert.equal(normalized.octa.points.length, 8);
+    assertClose(Math.hypot(
+        normalized.octa.points[0].x,
+        normalized.octa.points[0].y
+    ), 0.598212336883819);
     assertClose(normalized.gen.outerBox.halfSize.x, 0.47729707730091964);
     assertClose(normalized.gen.outerBox.halfSize.y, 0.45456864504849487);
     assertClose(normalized.gen.innerBox.halfSize.x, 0.35001785668734103);
@@ -324,7 +335,7 @@ test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달�
     assert.throws(() => createGpuEnemySpawnIntent({
         definition: {
             ...BASIC_SQUARE_ENEMY_DATA,
-            shapeDefinitionId: 'octa'
+            shapeDefinitionId: 'nonagon'
         },
         route: FIXTURE_ROUTE,
         spawnSequence: 99
@@ -494,6 +505,20 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.match(
         GPU_COLLISION_RENDER_WGSL,
         /shape_code == RENDER_SHAPE_RHOM[\s\S]*polygon_distance\(point, RHOM_POINTS, 4u\)/
+    );
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes(
+        'const OCTA_POINTS = array<vec2f, 8>('
+    ));
+    for (const point of normalized.octa.points) {
+        assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(point)));
+    }
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /shape_code == RENDER_SHAPE_OCTA[\s\S]*directional_local_position\(point, velocity\)[\s\S]*OCTA_POINTS,[\s\S]*8u/
+    );
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /directional_defense_active[\s\S]*behavior\.charge_direction/
     );
     assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(
         normalized.penta.points[0]

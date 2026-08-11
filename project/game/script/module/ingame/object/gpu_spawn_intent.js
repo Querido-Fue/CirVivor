@@ -1,7 +1,8 @@
 import {
     normalizeGpuCircleBodyContactHandler,
     normalizeGpuCircleBodyMetadata,
-    encodeGpuCircleBodyFixedPoint
+    encodeGpuCircleBodyFixedPoint,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../physics/gpu/gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_LAST_PULSE_TICK_INVALID,
@@ -34,6 +35,12 @@ import {
     ENEMY_SPAWN_POLICY
 } from '../contract/enemy_profile_contract.js';
 import {
+    ENEMY_ORBIT_SLOT_UNASSIGNED,
+    encodeEnemyOrbitAngularStepQ32,
+    hasAnyEnemyOrbitLeaseMetadata,
+    normalizeEnemyOrbitSlotLease
+} from '../contract/enemy_orbit_directional_defense_contract.js';
+import {
     ENEMY_FORMATION_POLICY,
     ENEMY_FORMATION_POLICY_CODE_BY_ID,
     FORMATION_COORDINATE_SYSTEM_CODE_BY_ID,
@@ -51,6 +58,13 @@ import {
     resolveBasicHexaFormationStats,
     resolveBasicHexaTransformPrivateDefinition
 } from 'data/object/enemy/basic_hexa_enemy_data.js';
+import {
+    BASIC_OCTA_ENEMY_CAPABILITY_MASK,
+    BASIC_OCTA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DEFINITION_ID,
+    BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE,
+    BASIC_OCTA_ORBIT_SLOT_CAPACITY
+} from 'data/object/enemy/basic_octa_enemy_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
@@ -133,6 +147,93 @@ function copyOptionalEnemyCapabilityMetadata(intent) {
             'spawnIntent.capabilityMask'
         )
     };
+}
+
+function hasEnemyOrbitCapability(capabilityMask) {
+    return capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.ORBIT,
+            'spawnIntent.capabilityMask'
+        );
+}
+
+function hasEnemyOrbitBehaviorProgram(intent) {
+    return intent?.enemyBehaviorState?.programId
+        === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT;
+}
+
+function requireEnemyOrbitBehaviorState(intent, lease, label) {
+    const state = intent.enemyBehaviorState;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        throw new TypeError(`${label}.enemyBehaviorState가 필요합니다.`);
+    }
+    if (state.programId
+            !== GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
+        || state.orbitSlotIndex !== lease.orbitSlotIndex
+        || state.orbitSlotCapacity !== lease.orbitSlotCapacity
+        || state.coordinateSystemCode !== lease.orbitCoordinateSystemCode) {
+        throw new RangeError(
+            `${label}의 orbit lease와 EnemyBehaviorState가 exact 동기화되어야 합니다.`
+        );
+    }
+    return state;
+}
+
+function validateOptionalEnemyOrbitIngress(intent, capabilityMask, definitionId) {
+    const hasOrbit = hasEnemyOrbitCapability(capabilityMask);
+    const hasLeaseMetadata = hasAnyEnemyOrbitLeaseMetadata(intent);
+    const hasOrbitBehaviorProgram = hasEnemyOrbitBehaviorProgram(intent);
+    const isNaturalOctaDefinition = definitionId === BASIC_OCTA_ENEMY_DEFINITION_ID;
+    if (isNaturalOctaDefinition !== hasOrbit
+        || isNaturalOctaDefinition !== hasLeaseMetadata
+        || isNaturalOctaDefinition !== hasOrbitBehaviorProgram) {
+        throw new RangeError(
+            'O definition, ORBIT capability, orbit lease metadata, '
+                + 'OCTAGON_TOWER_ORBIT program이 일치해야 합니다.'
+        );
+    }
+    if (!hasOrbit) {
+        return null;
+    }
+    const lease = normalizeEnemyOrbitSlotLease(intent, {
+        label: 'spawnIntent.orbitLease',
+        allowUnassigned: true,
+        expectedSlotCapacity: BASIC_OCTA_ORBIT_SLOT_CAPACITY
+    });
+    if (lease.orbitSlotIndex !== ENEMY_ORBIT_SLOT_UNASSIGNED) {
+        throw new RangeError(
+            'raw ORBIT Enemy spawn의 slot은 lifecycle sentinel이어야 합니다.'
+        );
+    }
+    requireEnemyOrbitBehaviorState(intent, lease, 'spawnIntent');
+    return lease;
+}
+
+function copyOptionalEnemyOrbitMetadata(intent) {
+    const capabilityMask = intent.capabilityMask === undefined
+        || intent.capabilityMask === null
+        ? null
+        : normalizeEnemyCapabilityMask(
+            intent.capabilityMask,
+            'spawnIntent.capabilityMask'
+        );
+    const hasOrbit = hasEnemyOrbitCapability(capabilityMask);
+    const hasLeaseMetadata = hasAnyEnemyOrbitLeaseMetadata(intent);
+    if (hasOrbit !== hasLeaseMetadata) {
+        throw new RangeError(
+            'ORBIT capability와 activated orbit lease metadata가 일치해야 합니다.'
+        );
+    }
+    if (!hasOrbit) {
+        return {};
+    }
+    const lease = normalizeEnemyOrbitSlotLease(intent, {
+        label: 'activatedSpawnIntent.orbitLease',
+        expectedSlotCapacity: BASIC_OCTA_ORBIT_SLOT_CAPACITY
+    });
+    requireEnemyOrbitBehaviorState(intent, lease, 'activatedSpawnIntent');
+    return lease;
 }
 
 function requireUint32(value, label, allowZero = true) {
@@ -561,6 +662,38 @@ function assertNaturalHexaRawIntent(
         throw new RangeError(
             'natural H contact damage는 fixed n1 table과 같아야 합니다.'
         );
+    }
+}
+
+function assertNaturalOctaRawIntent(
+    intent,
+    capabilityMask,
+    orbitLease
+) {
+    const orbitProfile = BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE.orbit;
+    const directionalDefense
+        = BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE.directionalDefense;
+    const behaviorState = requireEnemyOrbitBehaviorState(
+        intent,
+        orbitLease,
+        'natural O spawnIntent'
+    );
+    if (capabilityMask !== BASIC_OCTA_ENEMY_CAPABILITY_MASK
+        || intent.physicsProfileId !== BASIC_OCTA_ENEMY_DATA.physicsProfileId
+        || intent.combatProfileId !== BASIC_OCTA_ENEMY_DATA.combatProfileId
+        || intent.behaviorProfileId !== BASIC_OCTA_ENEMY_DATA.behaviorProfileId
+        || behaviorState.orbitRadiusTiles !== orbitProfile.orbitRadiusTiles
+        || behaviorState.angularStepQ32 !== encodeEnemyOrbitAngularStepQ32(
+            orbitProfile.angularSpeedRadiansPerSecond,
+            orbitProfile.fixedTicksPerSecond
+        )
+        || behaviorState.flatReductionFixedPoint
+            !== directionalDefense.flatReductionFixedPoint
+        || behaviorState.armoredFacetCount
+            !== directionalDefense.armoredFacetCount
+        || behaviorState.totalFacetCount
+            !== directionalDefense.totalFacetCount) {
+        throw new RangeError('natural O raw intent가 exact public catalog와 다릅니다.');
     }
 }
 
@@ -1161,6 +1294,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
         requireNonNegativeSafeInteger(snapshot.spawnSequence, 'spawnIntent.spawnSequence');
     }
     let normalizedEffectEmitterState = null;
+    let normalizedOrbitLease = null;
     if (kindId === 'enemy') {
         const spawnPolicy = requireNonEmptyString(
             snapshot.spawnPolicy,
@@ -1190,6 +1324,11 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
             snapshot,
             capabilityMask
         );
+        normalizedOrbitLease = validateOptionalEnemyOrbitIngress(
+            snapshot,
+            capabilityMask,
+            definitionId
+        );
         const formationIngress = assertRawEnemyFormationIngress(
             snapshot,
             capabilityMask
@@ -1202,9 +1341,23 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
                 contactHandler
             );
         }
+        if (definitionId === BASIC_OCTA_ENEMY_DEFINITION_ID) {
+            if (normalizedOrbitLease === null) {
+                throw new RangeError('natural O spawn에는 ORBIT lease ingress가 필요합니다.');
+            }
+            assertNaturalOctaRawIntent(
+                snapshot,
+                capabilityMask,
+                normalizedOrbitLease
+            );
+        } else if (normalizedOrbitLease !== null) {
+            throw new RangeError('ORBIT capability은 current natural O definition에만 허용됩니다.');
+        }
     } else if (hasAnyEnemyEffectMetadata(snapshot)
-        || snapshot.effectEmitterState !== undefined) {
-        throw new TypeError('Effect emitter metadata/state는 Enemy spawn에만 허용됩니다.');
+        || snapshot.effectEmitterState !== undefined
+        || hasAnyEnemyOrbitLeaseMetadata(snapshot)
+        || hasEnemyOrbitBehaviorProgram(snapshot)) {
+        throw new TypeError('Enemy capability metadata/state는 Enemy spawn에만 허용됩니다.');
     }
     const {
         layerMask: _legacyLayerMask,
@@ -1257,6 +1410,7 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             // capability ID 배열이나 content object는 registry에 직렬화하지 않습니다.
             ...copyOptionalEnemyCapabilityMetadata(intent),
             ...copyOptionalEnemyProfileMetadata(intent),
+            ...copyOptionalEnemyOrbitMetadata(intent),
             ...copyOptionalEnemyEffectMetadata(intent),
             ...copyOptionalEnemyFormationMetadata(intent),
             ...copyOptionalResolvedEnemyStatMetadata(intent)
