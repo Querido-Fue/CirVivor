@@ -32,6 +32,9 @@ import {
 import {
     BASIC_OCTA_ENEMY_DATA
 } from './basic_octa_enemy_data.js';
+import {
+    BASIC_JORANG_ENEMY_DATA
+} from './basic_jorang_enemy_data.js';
 
 export {
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
@@ -41,6 +44,12 @@ export {
 export { BASIC_PENTA_ENEMY_DATA } from './basic_penta_enemy_data.js';
 export { BASIC_HEXA_ENEMY_DATA } from './basic_hexa_enemy_data.js';
 export { BASIC_OCTA_ENEMY_DATA } from './basic_octa_enemy_data.js';
+export {
+    BASIC_JORANG_ENEMY_DATA,
+    BASIC_JORANG_ENEMY_DEFINITION_ID,
+    BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
+    resolveBasicCirclePrimeTransformPrivateDefinition
+} from './basic_jorang_enemy_data.js';
 
 /** main GPU enemy catalog에서 사용하는 시각 archetype 8종의 불변 선언입니다. */
 export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
@@ -77,10 +86,8 @@ export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
         ])
     }
 );
-export const BASIC_GEN_ENEMY_DATA = createMainGpuEnemyDefinition(
-    'basic_gen_01',
-    'gen'
-);
+/** @deprecated Turn 6부터 같은 content identity의 J definition alias입니다. */
+export const BASIC_GEN_ENEMY_DATA = BASIC_JORANG_ENEMY_DATA;
 export const BASIC_RHOM_ENEMY_DATA = normalizeEnemyDefinition(
     BASIC_RHOM_ENEMY_DEFINITION_SOURCE,
     ENEMY_PROFILE_CATALOG
@@ -101,7 +108,7 @@ export const INGAME_ENEMY_DEFINITIONS = Object.freeze([
     BASIC_ARROW_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
-    BASIC_GEN_ENEMY_DATA,
+    BASIC_JORANG_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_OCTA_ENEMY_DATA
 ]);

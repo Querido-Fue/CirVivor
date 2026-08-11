@@ -23,6 +23,9 @@ import {
 import {
     BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE
 } from './basic_rhom_profile_data.js';
+import {
+    JORANG_NATURAL_BOUNTY_BUDGET
+} from './enemy_jorang_split_runtime_data.js';
 
 /** main GPU enemy의 legacy geometry에서 유도한 단일 원형 collider 반경입니다. */
 export const MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES = (
@@ -42,6 +45,9 @@ export const MAIN_GPU_ENEMY_COLOR_RGBA = Object.freeze([
 
 export const MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID = 'main-gpu-enemy-physics-01';
 export const MAIN_GPU_ENEMY_COMBAT_PROFILE_ID = 'main-gpu-enemy-combat-01';
+export const JORANG_NATURAL_ENEMY_COMBAT_PROFILE_ID = (
+    'jorang-natural-enemy-combat-01'
+);
 export const CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'core-route-contact-01';
 export const TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID = (
     'triangle-fast-light-physics-01'
@@ -117,6 +123,13 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             towerContactDamage: 0.1,
             coreImpactDamage: 1,
             bountyBudget: 1
+        }),
+        Object.freeze({
+            id: JORANG_NATURAL_ENEMY_COMBAT_PROFILE_ID,
+            maxHealth: 1,
+            towerContactDamage: 0.1,
+            coreImpactDamage: 1,
+            bountyBudget: JORANG_NATURAL_BOUNTY_BUDGET
         }),
         Object.freeze({
             id: TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,

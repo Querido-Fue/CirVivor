@@ -169,8 +169,8 @@ for (const entryPoint of [
     assert.match(compute, new RegExp(`fn\\s+${entryPoint}\\b`));
 }
 
-// ABI v6는 gameplay/combat state와 분리된 EnemyBehaviorState side-plane을 사용합니다.
-assert.match(compute, /const BODY_ABI_VERSION: u32 = 6u;/);
+// ABI v7은 기존 gameplay/combat/EnemyBehaviorState offset을 유지하고 Atomic Transform을 분리합니다.
+assert.match(compute, /const BODY_ABI_VERSION: u32 = 7u;/);
 assert.match(compute, /struct BodyCounts \{[\s\S]*?abi_version: u32,/);
 assert.match(compute, /struct BodyPhysics \{[\s\S]*?physical_meta: u32,[\s\S]*?interaction_meta: u32,/);
 assert.match(compute, /struct BodySimulation \{[\s\S]*?lifetime: f32,[\s\S]*?health: atomic<i32>,[\s\S]*?gameplay_meta: u32,[\s\S]*?flags: atomic<u32>,[\s\S]*?incarnation: u32,/);
@@ -219,12 +219,13 @@ assert.deepEqual(storageBindings, [
     '0:6:body_control_program', '0:7:spawn_program',
     '0:8:tracked_pose_config', '0:9:tracked_pose_output', '0:10:combat_states',
     '0:11:enemy_behavior_states', '0:12:effect_summaries',
-    '0:13:tower_gameplay_target',
+    '0:13:tower_gameplay_target', '0:14:atomic_transform_states',
+    '0:15:atomic_transform_candidates',
     '1:0:grid_counts', '1:1:grid_bodies', '1:2:sdf_values',
     '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
     '3:2:applied_events', '3:3:death_events'
 ]);
-assert.equal(storageBindings.length, 22);
+assert.equal(storageBindings.length, 24);
 assert.doesNotMatch(storageBindingBlock, /gameplay_team|damage_policy/i);
 assert.match(
     compute,

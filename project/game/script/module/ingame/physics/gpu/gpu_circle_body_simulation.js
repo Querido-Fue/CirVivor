@@ -8,6 +8,8 @@ import {
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     assertGpuCircleBodyAbiVersion,
     createGpuCircleBodyAbiStorage,
@@ -110,6 +112,31 @@ import {
     GPU_FORMATION_RUNTIME_STORAGE_PROFILE
 } from './gpu_formation_runtime_shaders.js';
 import {
+    GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_PREPARE_RESULT,
+    GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_RESULT,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_STORAGE_PROFILE,
+    GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_TOPOLOGY_CODE,
+    createGpuAtomicTransformPrepareStorage,
+    createGpuAtomicTransformProgramStorage,
+    readGpuAtomicTransformPrepareHeader,
+    readGpuAtomicTransformPrepareRecord,
+    readGpuAtomicTransformProgramHeader,
+    readGpuAtomicTransformProgramRecord,
+    writeGpuAtomicTransformPrepareHeader,
+    writeGpuAtomicTransformProgramHeader,
+    writeGpuAtomicTransformProgramRecord
+} from './gpu_atomic_transform_runtime_abi.js';
+import {
+    GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT
+} from './gpu_atomic_transform_runtime_shaders.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -147,7 +174,7 @@ const COMPUTE_PARAMS_FIXED_TICK_OFFSET = COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFS
 const COMPUTE_PARAMS_BYTE_SIZE = COMPUTE_PARAMS_FIXED_TICK_OFFSET + 16;
 const RENDER_PARAMS_BYTE_SIZE = 32;
 const GRID_OVERFLOW_BYTE_SIZE = 16;
-const CONTACT_STATE_BYTE_SIZE = 48;
+const CONTACT_STATE_BYTE_SIZE = 64;
 const CONTACT_RECORD_BYTE_SIZE = 32;
 const APPLIED_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.APPLIED_EVENT.STRIDE;
 const DEATH_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.DEATH_EVENT.STRIDE;
@@ -175,6 +202,10 @@ const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_EVENT_COUNT_OFFSET = 32;
 const CONTACT_STATE_MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OFFSET = 36;
 const CONTACT_STATE_CORE_DAMAGE_REQUEST_EVENT_COUNT_OFFSET = 40;
 const CONTACT_STATE_CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OFFSET = 44;
+const CONTACT_STATE_ATOMIC_TRANSFORM_CANDIDATE_COUNT_OFFSET = 48;
+const CONTACT_STATE_ATOMIC_TRANSFORM_EVENT_BASE_OFFSET = 52;
+const CONTACT_STATE_ATOMIC_TRANSFORM_PROTOCOL_STATUS_OFFSET = 56;
+const CONTACT_STATE_ATOMIC_TRANSFORM_COMMITTED_COUNT_OFFSET = 60;
 const CONTACT_STATE_ABI_STATUS_OK = 1;
 const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK = 0;
 const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK = 0;
@@ -190,7 +221,8 @@ const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
     | APPLIED_EVENT_POLICY_FLAGS
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_CONTACT
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.MAXIMUM_DAMAGE_WINDOW
-    | GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE;
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE
+    | GPU_CIRCLE_APPLIED_EVENT_FLAG.ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT;
 
 const EFFECT_READBACK_POOL_STATE_OFFSET = 0;
 const EFFECT_READBACK_PROGRAM_OFFSET = GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE;
@@ -218,6 +250,13 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'generate_body_contacts',
     'generate_world_contacts',
     'classify_directional_defense_contacts',
+    'clear_atomic_transform_first_hit_candidates',
+    'select_atomic_transform_first_hit_source',
+    'resolve_atomic_transform_first_hit_contact',
+    'seal_atomic_transform_first_hits',
+    'commit_atomic_transform_first_hits',
+    'finalize_atomic_transform_first_hits',
+    'shield_atomic_transform_first_hit_contacts',
     'handle_contacts',
     'preflight_core_damage_requests',
     'finalize_core_damage_request_preflight',
@@ -248,6 +287,7 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     SOURCE_RESOLVE: 'source-resolve',
     ENEMY_BEHAVIOR: 'enemy-behavior',
     DIRECTIONAL_DEFENSE_CLASSIFIER: 'directional-defense-classifier',
+    ATOMIC_TRANSFORM_FIRST_HIT: 'atomic-transform-first-hit',
     TRACKED_POSE: 'tracked-pose'
 });
 const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
@@ -271,6 +311,20 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
     classify_directional_defense_contacts:
         COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER,
+    clear_atomic_transform_first_hit_candidates:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    select_atomic_transform_first_hit_source:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    resolve_atomic_transform_first_hit_contact:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    seal_atomic_transform_first_hits:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    commit_atomic_transform_first_hits:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    finalize_atomic_transform_first_hits:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    shield_atomic_transform_first_hit_contacts:
+        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
     handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
     preflight_core_damage_requests:
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
@@ -427,6 +481,11 @@ function appliedEventTypeName(type) {
 }
 
 function appliedEventReason(type, flags) {
+    if ((flags
+            & GPU_CIRCLE_APPLIED_EVENT_FLAG.ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT)
+        !== 0) {
+        return 'atomic-transform-trigger-first-hit';
+    }
     if ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TERRAIN_KILL) !== 0) {
         return 'terrain-kill';
     }
@@ -488,6 +547,10 @@ function decodeAppliedEvent(view, offset, sequence) {
     const directionalDefense = (
         flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.DIRECTIONAL_DEFENSE
     ) !== 0;
+    const atomicTransformTriggerFirstHit = (
+        flags
+            & GPU_CIRCLE_APPLIED_EVENT_FLAG.ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT
+    ) !== 0;
     const policyFlags = flags & APPLIED_EVENT_POLICY_FLAGS;
     const expectedPolicyFlags = eventTypeCode
         === GPU_CIRCLE_APPLIED_EVENT_TYPE.INTERACTION_ENTER
@@ -500,11 +563,14 @@ function decodeAppliedEvent(view, offset, sequence) {
         (policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
             && policyFlags !== GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY)
         || policyFlags !== expectedPolicyFlags
-        || (maximumDamageWindow && directionalDefense)
+        || (Number(maximumDamageWindow)
+            + Number(directionalDefense)
+            + Number(atomicTransformTriggerFirstHit) > 1)
         || (!isDamage
             && ((flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0
                 || maximumDamageWindow
-                || directionalDefense))
+                || directionalDefense
+                || atomicTransformTriggerFirstHit))
     );
     if (unknownFlags !== 0
         || contactFlagsInvalid
@@ -515,12 +581,14 @@ function decodeAppliedEvent(view, offset, sequence) {
     }
     if ((!isDamage && !isCoreDamageRequest && valueFixedPoint !== 0)
         || (isCoreDamageRequest && valueFixedPoint <= 0)
+        || (atomicTransformTriggerFirstHit && valueFixedPoint !== 0)
         || (isDamage && (valueFixedPoint < 0
             || (valueFixedPoint === 0
                 && (flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) !== 0)
             || (valueFixedPoint === 0
                 && !maximumDamageWindow
-                && !directionalDefense)))) {
+                && !directionalDefense
+                && !atomicTransformTriggerFirstHit)))) {
         throw new RangeError(
             `GPU applied event value/type contract가 잘못되었습니다: type=${eventTypeCode}, value=${valueFixedPoint}`
         );
@@ -559,6 +627,7 @@ function decodeAppliedEvent(view, offset, sequence) {
         flags,
         maximumDamageWindow,
         directionalDefense,
+        atomicTransformTriggerFirstHit,
         reason: appliedEventReason(eventTypeCode, flags)
     });
 }
@@ -855,6 +924,10 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
         ['contactHandlerBuffer', GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE],
         ['combatStateBuffer', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE],
         [
+            'atomicTransformStateBuffer',
+            GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
+        ],
+        [
             'enemyBehaviorStateBuffer',
             GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
         ]
@@ -1076,6 +1149,14 @@ export class GpuCircleBodySimulation {
             Math.max(1, Math.floor(this.capacity / 2)),
             'formationTransformCapacity'
         );
+        this.atomicTransformPrepareCapacity = this.capacity;
+        this.atomicTransformCapacity = resolveCapacityOption(
+            options,
+            ['atomicTransformCapacity', 'atomicTransformCommandCapacity'],
+            Math.min(this.capacity, 4),
+            Math.min(this.capacity, 4),
+            'atomicTransformCapacity'
+        );
         this.effectInstanceCapacity = resolveCapacityOption(
             options,
             ['effectInstanceCapacity'],
@@ -1160,6 +1241,25 @@ export class GpuCircleBodySimulation {
             = createGpuFormationTransformProgramStorage(
                 this.formationTransformCapacity
             );
+        this.hostAtomicTransformPrepareProgram
+            = createGpuAtomicTransformPrepareStorage(
+                this.atomicTransformPrepareCapacity
+            );
+        this.hostAtomicTransformProgram = createGpuAtomicTransformProgramStorage(
+            this.atomicTransformCapacity
+        );
+        this.hostAtomicTransformTemplateStorage
+            = createGpuCircleBodyAbiStorage(this.capacity);
+        this.hostAtomicTransformTemplateEffectBodyState
+            = createGpuEffectBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateFormationBodyState
+            = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
+            BODY_RENDER_STYLE_STRIDE * this.capacity
+        );
+        this.hostAtomicTransformTemplateBodyControlStates = new ArrayBuffer(
+            BODY_CONTROL_STATE_STRIDE * this.capacity
+        );
         this.hostRenderStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * this.capacity);
         this.hostBodyControlStates = new ArrayBuffer(
             BODY_CONTROL_STATE_STRIDE * this.capacity
@@ -1188,12 +1288,16 @@ export class GpuCircleBodySimulation {
         this.stagedEffectPulseBatch = null;
         this.stagedFormationPrepareBatch = null;
         this.armedFormationTransform = null;
+        this.stagedAtomicTransformPrepareBatch = null;
+        this.armedAtomicTransform = null;
         this.fixedProgramIngressOpen = true;
         this.effectProgramIngressOpen = true;
         this.formationProgramIngressOpen = true;
+        this.atomicTransformProgramIngressOpen = true;
         this.terminalFixedProgramCancelStatus = null;
         this.terminalEffectProgramCancelStatus = null;
         this.terminalFormationProgramCancelStatus = null;
+        this.terminalAtomicTransformProgramCancelStatus = null;
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
@@ -1224,6 +1328,7 @@ export class GpuCircleBodySimulation {
         this.lastOverflowSampleCompletedTick = 0;
         this.overflowSampleOverdue = false;
         this.eventProducingBodyCount = 0;
+        this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
         this.eventReadbackSlots = [];
         this.eventReadbackLease = 0;
@@ -1294,6 +1399,21 @@ export class GpuCircleBodySimulation {
         this.lastFormationRuntimeStatus = GPU_FORMATION_RUNTIME_STATUS.OK;
         this.lastFormationTransformCompletion = null;
         this.authenticFormationPrepareByKey = new Map();
+        this.atomicTransformPrepareReadbackSlots = [];
+        this.atomicTransformPrepareReadbackLease = 0;
+        this.atomicTransformPrepareReadbackCursor = 0;
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        this.atomicTransformPrepareBatchQueue = [];
+        this.atomicTransformReadbackSlots = [];
+        this.atomicTransformReadbackLease = 0;
+        this.atomicTransformReadbackCursor = 0;
+        this.pendingAtomicTransformReadbacks = 0;
+        this.authenticAtomicTransformPrepareByFingerprint = new Map();
+        this.lastAtomicTransformPrepareSourceTick = 0;
+        this.lastAtomicTransformCommittedCount = 0;
+        this.lastAtomicTransformEffectRekeyCount = 0;
+        this.lastAtomicTransformRuntimeStatus
+            = GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK;
         this.towerGameplayTargetConfigBytes = new ArrayBuffer(
             TOWER_GAMEPLAY_TARGET_CONFIG_BYTE_SIZE
         );
@@ -1422,17 +1542,22 @@ export class GpuCircleBodySimulation {
         const styleView = new DataView(nextStyles);
         const nextSlotHandles = new Array(this.capacity).fill(null);
         const nextHandleToSlot = new Map();
+        const nextEntityIds = new Set();
         for (let index = 0; index < bodies.length; index++) {
             const body = bodies[index];
             this.#validateBody(body, index);
             const handle = normalizeEntityHandle(body, `body[${index}]`, false);
             if (handle) {
                 const key = entityHandleKey(handle);
-                if (nextHandleToSlot.has(key)) {
-                    throw new RangeError(`중복 enemy handle입니다: ${key}`);
+                if (nextHandleToSlot.has(key)
+                    || nextEntityIds.has(handle.entityId)) {
+                    throw new RangeError(
+                        `활성 body entityId는 incarnation과 무관하게 유일해야 합니다: ${handle.entityId}`
+                    );
                 }
                 nextSlotHandles[index] = handle;
                 nextHandleToSlot.set(key, index);
+                nextEntityIds.add(handle.entityId);
             }
             writeGpuCircleBodySpawn(nextStorage, index, body);
             writeGpuEffectBodyStateSpawn(nextEffectBodyState, index, body);
@@ -1459,14 +1584,20 @@ export class GpuCircleBodySimulation {
             || this.pendingEffectReadbacks > 0
             || this.pendingFormationPrepareReadbacks > 0
             || this.pendingFormationTransformReadbacks > 0
+            || this.pendingAtomicTransformPrepareReadbacks > 0
+            || this.pendingAtomicTransformReadbacks > 0
             || this.pendingTrackedPoseReadbacks > 0
             || this.eventBatchQueue.length > 0
             || this.bodyControlProgramBatchQueue.length > 0
             || this.spawnProgramBatchQueue.length > 0
             || this.effectProgramBatchQueue.length > 0
+            || this.atomicTransformPrepareBatchQueue.length > 0
             || this.stagedEffectPulseBatch !== null
             || this.stagedFormationPrepareBatch !== null
             || this.armedFormationTransform !== null
+            || this.stagedAtomicTransformPrepareBatch !== null
+            || this.armedAtomicTransform !== null
+            || this.authenticAtomicTransformPrepareByFingerprint.size > 0
             || this.requiresAuthoritativeRebuild;
         this.hostStorage = nextStorage;
         this.hostEffectBodyState = nextEffectBodyState;
@@ -1484,6 +1615,25 @@ export class GpuCircleBodySimulation {
             = createGpuFormationTransformProgramStorage(
                 this.formationTransformCapacity
             );
+        this.hostAtomicTransformPrepareProgram
+            = createGpuAtomicTransformPrepareStorage(
+                this.atomicTransformPrepareCapacity
+            );
+        this.hostAtomicTransformProgram = createGpuAtomicTransformProgramStorage(
+            this.atomicTransformCapacity
+        );
+        this.hostAtomicTransformTemplateStorage
+            = createGpuCircleBodyAbiStorage(this.capacity);
+        this.hostAtomicTransformTemplateEffectBodyState
+            = createGpuEffectBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateFormationBodyState
+            = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
+            BODY_RENDER_STYLE_STRIDE * this.capacity
+        );
+        this.hostAtomicTransformTemplateBodyControlStates = new ArrayBuffer(
+            BODY_CONTROL_STATE_STRIDE * this.capacity
+        );
         this.effectActivePoolIndex = 0;
         this.hostRenderStyles = nextStyles;
         this.bodyCount = bodies.length;
@@ -1503,6 +1653,8 @@ export class GpuCircleBodySimulation {
         this.stagedEffectPulseBatch = null;
         this.stagedFormationPrepareBatch = null;
         this.armedFormationTransform = null;
+        this.stagedAtomicTransformPrepareBatch = null;
+        this.armedAtomicTransform = null;
         this.effectProgramBatchQueue.length = 0;
         this.pendingEffectReadbacks = 0;
         this.lastEffectProtocolKey = null;
@@ -1528,11 +1680,23 @@ export class GpuCircleBodySimulation {
         this.lastFormationEffectRekeyCount = 0;
         this.lastFormationRuntimeStatus = GPU_FORMATION_RUNTIME_STATUS.OK;
         this.lastFormationTransformCompletion = null;
+        this.atomicTransformPrepareBatchQueue.length = 0;
+        this.authenticAtomicTransformPrepareByFingerprint.clear();
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        this.pendingAtomicTransformReadbacks = 0;
+        this.lastAtomicTransformPrepareSourceTick = 0;
+        this.lastAtomicTransformCommittedCount = 0;
+        this.lastAtomicTransformEffectRekeyCount = 0;
+        this.lastAtomicTransformRuntimeStatus
+            = GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK;
         if (this.terminalEffectProgramCancelStatus === null) {
             this.effectProgramIngressOpen = true;
         }
         if (this.terminalFormationProgramCancelStatus === null) {
             this.formationProgramIngressOpen = true;
+        }
+        if (this.terminalAtomicTransformProgramCancelStatus === null) {
+            this.atomicTransformProgramIngressOpen = true;
         }
         this.#invalidateTowerGameplayTarget();
         this.#invalidateTrackedPose('authoritative-replace');
@@ -1616,6 +1780,24 @@ export class GpuCircleBodySimulation {
         const stagingStyleView = new DataView(stagingStyles);
         const handles = new Array(bodies.length);
         const batchKeys = new Set();
+        const occupiedEntityIds = new Set();
+        for (let slot = 0; slot < this.bodyCount; slot++) {
+            const handle = this.slotActive[slot] === 1
+                ? this.slotHandles[slot]
+                : this.slotActive[slot] === 2
+                    ? this.pendingSlotHandles[slot]
+                    : null;
+            if (!handle) {
+                continue;
+            }
+            if (occupiedEntityIds.has(handle.entityId)) {
+                throw new Error(
+                    `GPU active/pending entityId mapping이 중복되었습니다: ${handle.entityId}`
+                );
+            }
+            occupiedEntityIds.add(handle.entityId);
+        }
+        const batchEntityIds = new Set();
         const startsNewAuthoritativeEpoch = this.activeBodyCount === 0;
         for (let index = 0; index < bodies.length; index++) {
             const body = bodies[index];
@@ -1624,10 +1806,13 @@ export class GpuCircleBodySimulation {
             const key = entityHandleKey(handle);
             if (batchKeys.has(key)
                 || this.handleToSlot.has(key)
-                || this.pendingHandleToSlot.has(key)) {
+                || this.pendingHandleToSlot.has(key)
+                || batchEntityIds.has(handle.entityId)
+                || occupiedEntityIds.has(handle.entityId)) {
                 throw new RangeError(`이미 활성 상태인 enemy handle입니다: ${key}`);
             }
             batchKeys.add(key);
+            batchEntityIds.add(handle.entityId);
             handles[index] = handle;
             writeGpuCircleBodySpawn(stagingStorage, index, body);
             writeGpuEffectBodyStateSpawn(stagingEffectBodyState, index, body);
@@ -3353,6 +3538,655 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    /** T submit 말단 GPU scan을 위한 bounded prepare program을 stage합니다. */
+    stageAtomicTransformPrepareBatch(request = {}) {
+        const reject = (reason, requiresRecovery = false) => Object.freeze({
+            abiVersion: GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+            accepted: false,
+            reason,
+            requiresRecovery
+        });
+        if (!this.atomicTransformProgramIngressOpen
+            || this.terminalAtomicTransformProgramCancelStatus) {
+            return reject('atomic-transform-ingress-closed');
+        }
+        if (request.abiVersion
+                !== GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION
+            || !Array.isArray(request.records)
+            || request.records.length > this.atomicTransformPrepareCapacity) {
+            return reject('atomic-transform-prepare-contract', true);
+        }
+        let sourceTick;
+        let targetFixedTick;
+        let batchIdFingerprint;
+        try {
+            sourceTick = requirePositiveInteger(request.sourceTick, 'sourceTick');
+            targetFixedTick = requirePositiveInteger(
+                request.targetFixedTick,
+                'targetFixedTick'
+            );
+            batchIdFingerprint = requirePositiveInteger(
+                request.batchIdFingerprint,
+                'batchIdFingerprint'
+            );
+        } catch (error) {
+            return reject(`atomic-transform-prepare-contract:${error.message}`, true);
+        }
+        if (targetFixedTick !== sourceTick + 1) {
+            return reject('atomic-transform-prepare-deadline', true);
+        }
+        const replayKey = JSON.stringify({
+            sourceTick,
+            targetFixedTick,
+            batchIdFingerprint,
+            records: request.records
+        });
+        if (this.stagedAtomicTransformPrepareBatch) {
+            return this.stagedAtomicTransformPrepareBatch.replayKey === replayKey
+                ? Object.freeze({
+                    accepted: true,
+                    sourceTick,
+                    targetFixedTick,
+                    batchIdFingerprint,
+                    replayed: true,
+                    requiresRecovery: false
+                })
+                : reject('atomic-transform-prepare-replay-conflict', true);
+        }
+        const readbackSlot = this.#claimAtomicTransformPrepareReadbackSlot();
+        if (!readbackSlot) {
+            return reject('atomic-transform-prepare-readback-capacity');
+        }
+        writeGpuAtomicTransformPrepareHeader(
+            this.hostAtomicTransformPrepareProgram,
+            { sourceTick, targetFixedTick, batchIdFingerprint }
+        );
+        this.stagedAtomicTransformPrepareBatch = Object.freeze({
+            sourceTick,
+            targetFixedTick,
+            batchIdFingerprint,
+            records: Object.freeze([...request.records]),
+            replayKey,
+            readbackSlot
+        });
+        return Object.freeze({
+            accepted: true,
+            sourceTick,
+            targetFixedTick,
+            batchIdFingerprint,
+            replayed: false,
+            requiresRecovery: false
+        });
+    }
+
+    drainCompletedAtomicTransformPrepareBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('AtomicTransform prepare drain 대상은 배열이어야 합니다.');
+        }
+        while (this.atomicTransformPrepareBatchQueue[0]?.completed === true) {
+            const entry = this.atomicTransformPrepareBatchQueue.shift();
+            if (entry.failure) {
+                this.requiresAuthoritativeRebuild = true;
+                out.push(Object.freeze({
+                    abiVersion:
+                        GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+                    sessionGeneration: entry.sessionGeneration,
+                    deviceGeneration: entry.deviceGeneration,
+                    authoritativeEpoch: entry.authoritativeEpoch,
+                    submittedTick: entry.submittedTick,
+                    sourceTick: entry.sourceTick,
+                    targetFixedTick: entry.targetFixedTick,
+                    batchIdFingerprint: entry.batchIdFingerprint,
+                    status: UINT32_MAX,
+                    records: Object.freeze([]),
+                    failure: entry.failure
+                }));
+                continue;
+            }
+            out.push(entry.completion);
+        }
+        return out;
+    }
+
+    discardPreparedAtomicTransformBatch({ batchIdFingerprint } = {}) {
+        const fingerprint = Number(batchIdFingerprint);
+        if (!Number.isSafeInteger(fingerprint)
+            || fingerprint <= 0 || fingerprint >= UINT32_MAX) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-discard-contract',
+                requiresRecovery: true
+            });
+        }
+        if (this.armedAtomicTransform?.batchIdFingerprint === fingerprint) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-discard-armed',
+                requiresRecovery: true
+            });
+        }
+        this.authenticAtomicTransformPrepareByFingerprint.delete(fingerprint);
+        this.#completeDeferredIdleRelease();
+        return Object.freeze({
+            accepted: true,
+            batchIdFingerprint: fingerprint,
+            requiresRecovery: false
+        });
+    }
+
+    /** Lifecycle registry preflight 뒤 authentic T-1 subset을 GPU transform으로 arm합니다. */
+    armPreparedAtomicTransformBatch(request = {}) {
+        const reject = (reason, requiresRecovery = false, retryable = false) => (
+            Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason,
+                requiresRecovery,
+                retryable,
+                receipt: null
+            })
+        );
+        if (!this.atomicTransformProgramIngressOpen
+            || this.terminalAtomicTransformProgramCancelStatus) {
+            return reject('atomic-transform-ingress-closed');
+        }
+        if (!Array.isArray(request.records)
+            || request.records.length === 0
+            || request.records.length > this.atomicTransformCapacity) {
+            return reject('atomic-transform-arm-contract', true);
+        }
+        let sourceTick;
+        let targetFixedTick;
+        let fingerprint;
+        try {
+            sourceTick = requirePositiveInteger(
+                request.prepareSourceTick,
+                'prepareSourceTick'
+            );
+            targetFixedTick = requirePositiveInteger(
+                request.targetFixedTick,
+                'targetFixedTick'
+            );
+            fingerprint = requirePositiveInteger(
+                request.batchIdFingerprint,
+                'batchIdFingerprint'
+            );
+        } catch (error) {
+            return reject(`atomic-transform-arm-contract:${error.message}`, true);
+        }
+        if (targetFixedTick !== sourceTick + 1
+            || request.transformFixedTick !== targetFixedTick
+            || this.lastSubmittedSourceTick !== sourceTick) {
+            return reject('atomic-transform-arm-stale');
+        }
+        const authentic = this.authenticAtomicTransformPrepareByFingerprint.get(
+            fingerprint
+        );
+        if (!authentic
+            || authentic.sourceTick !== sourceTick
+            || authentic.targetFixedTick !== targetFixedTick
+            || authentic.sessionGeneration !== this.sessionGeneration
+            || authentic.deviceGeneration !== this.deviceGeneration
+            || authentic.authoritativeEpoch !== this.authoritativeEpoch) {
+            return reject('atomic-transform-prepare-stale');
+        }
+        const occupiedEntityIdToSlot = new Map();
+        for (let slot = 0; slot < this.bodyCount; slot++) {
+            const handle = this.slotActive[slot] === 1
+                ? this.slotHandles[slot]
+                : this.slotActive[slot] === 2
+                    ? this.pendingSlotHandles[slot]
+                    : null;
+            if (!handle) {
+                continue;
+            }
+            if (occupiedEntityIdToSlot.has(handle.entityId)) {
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                return reject(
+                    `atomic-transform-active-entity-id-conflict:${handle.entityId}`,
+                    true
+                );
+            }
+            occupiedEntityIdToSlot.set(handle.entityId, slot);
+        }
+        this.authenticAtomicTransformPrepareByFingerprint.delete(fingerprint);
+        if (this.armedAtomicTransform) {
+            return reject('atomic-transform-already-armed', true);
+        }
+        const readbackSlot = this.#claimAtomicTransformReadbackSlot();
+        if (!readbackSlot) {
+            return reject('atomic-transform-readback-capacity', false, true);
+        }
+        const preparedByKey = new Map(authentic.records.map((record) => [
+            `${record.sourceEntityId}:${record.sourceIncarnation}`,
+            record
+        ]));
+        const claimedNewSlots = [];
+        const normalized = [];
+        const usedSlots = new Set();
+        const usedSourceEntityIds = new Set();
+        const claimedDestinationEntityIds = new Set();
+        const freeSlotsBeforeArm = [...this.freeSlots];
+        const availableFreeSlots = [...freeSlotsBeforeArm].sort(
+            (left, right) => left - right
+        );
+        try {
+            for (let index = 0; index < request.records.length; index++) {
+                const input = request.records[index];
+                const sourceHandle = normalizeEntityHandle(
+                    input.sourceHandles?.[0],
+                    `atomicTransform[${index}].source`
+                );
+                const sourceKey = entityHandleKey(sourceHandle);
+                const sourceSlot = this.handleToSlot.get(sourceKey);
+                const prepared = preparedByKey.get(sourceKey);
+                const evidence = input.prepareEvidence;
+                if (sourceSlot === undefined || this.slotActive[sourceSlot] !== 1
+                    || !prepared || !evidence
+                    || evidence.recordFingerprint !== prepared.recordFingerprint
+                    || evidence.commandGeneration !== prepared.commandGeneration
+                    || evidence.batchIdFingerprint !== fingerprint
+                    || evidence.triggerSourceTick
+                        !== prepared.triggerSourceTick
+                    || evidence.triggerSequence !== prepared.triggerSequence
+                    || usedSlots.has(sourceSlot)
+                    || usedSourceEntityIds.has(sourceHandle.entityId)
+                    || occupiedEntityIdToSlot.get(sourceHandle.entityId)
+                        !== sourceSlot) {
+                    throw new RangeError('authentic prepare/source slot이 일치하지 않습니다.');
+                }
+                usedSlots.add(sourceSlot);
+                usedSourceEntityIds.add(sourceHandle.entityId);
+                const split = input.topologyId === 'ONE_TO_MANY';
+                const delayed = input.topologyId === 'ONE_TO_ONE_DELAYED';
+                if ((!split && !delayed)
+                    || !Array.isArray(input.destinationHandles)
+                    || !Array.isArray(input.destinationIntents)
+                    || input.destinationHandles.length !== (split ? 2 : 1)
+                    || input.destinationIntents.length !== (split ? 2 : 1)
+                    || input.effectTransferDestinationIndex !== 0) {
+                    throw new RangeError('atomic transform topology/cardinality가 다릅니다.');
+                }
+                const destinationHandles = input.destinationHandles.map(
+                    (handle, destinationIndex) => normalizeEntityHandle(
+                        handle,
+                        `atomicTransform[${index}].destination[${destinationIndex}]`
+                    )
+                );
+                if (destinationHandles[0].entityId !== sourceHandle.entityId
+                    || destinationHandles[0].incarnation
+                        !== sourceHandle.incarnation + 1) {
+                    throw new RangeError('child0/return은 source slot incarnation+1이어야 합니다.');
+                }
+                if (split && (
+                    destinationHandles[1].entityId === sourceHandle.entityId
+                    || occupiedEntityIdToSlot.has(destinationHandles[1].entityId)
+                    || claimedDestinationEntityIds.has(
+                        destinationHandles[1].entityId
+                    )
+                )) {
+                    throw new RangeError(
+                        'child1 entityId는 모든 active/pending/source/destination ID와 달라야 합니다.'
+                    );
+                }
+                claimedDestinationEntityIds.add(destinationHandles[0].entityId);
+                if (split) {
+                    claimedDestinationEntityIds.add(
+                        destinationHandles[1].entityId
+                    );
+                }
+                const destinationSlots = [sourceSlot];
+                if (split) {
+                    let slot = availableFreeSlots.shift();
+                    if (slot === undefined) {
+                        if (this.bodyCount >= this.capacity) {
+                            throw new RangeError('atomic-transform-capacity');
+                        }
+                        slot = this.bodyCount++;
+                    }
+                    if (usedSlots.has(slot) || this.slotActive[slot] !== 0) {
+                        throw new RangeError('atomic transform free slot conflict');
+                    }
+                    usedSlots.add(slot);
+                    destinationSlots.push(slot);
+                    claimedNewSlots.push(slot);
+                    this.slotActive[slot] = 2;
+                    this.pendingSlotHandles[slot] = destinationHandles[1];
+                    this.pendingHandleToSlot.set(
+                        entityHandleKey(destinationHandles[1]),
+                        slot
+                    );
+                    this.pendingBodyCount++;
+                }
+                for (let destinationIndex = 0;
+                    destinationIndex < destinationSlots.length;
+                    destinationIndex++) {
+                    const slot = destinationSlots[destinationIndex];
+                    const handle = destinationHandles[destinationIndex];
+                    const intent = input.destinationIntents[destinationIndex];
+                    const template = Object.freeze({
+                        ...intent,
+                        entityId: handle.entityId,
+                        incarnation: handle.incarnation,
+                        atomicTransformState: Object.freeze({
+                            ...intent.atomicTransformState,
+                            entityId: handle.entityId,
+                            incarnation: handle.incarnation
+                        })
+                    });
+                    writeGpuCircleBodySpawn(
+                        this.hostAtomicTransformTemplateStorage,
+                        slot,
+                        template
+                    );
+                    writeGpuEffectBodyStateSpawn(
+                        this.hostAtomicTransformTemplateEffectBodyState,
+                        slot,
+                        template
+                    );
+                    writeGpuFormationBodyStateSpawn(
+                        this.hostAtomicTransformTemplateFormationBodyState,
+                        slot,
+                        template
+                    );
+                    writeRenderStyle(
+                        new DataView(this.hostAtomicTransformTemplateRenderStyles),
+                        slot,
+                        template
+                    );
+                    clearBodyControlStateSlot(
+                        this.hostAtomicTransformTemplateBodyControlStates,
+                        slot
+                    );
+                }
+                normalized.push(Object.freeze({
+                    topologyCode: split
+                        ? GPU_ATOMIC_TRANSFORM_TOPOLOGY_CODE.ONE_TO_MANY
+                        : GPU_ATOMIC_TRANSFORM_TOPOLOGY_CODE.ONE_TO_ONE_DELAYED,
+                    sourceSlot,
+                    sourceEntityId: sourceHandle.entityId,
+                    sourceIncarnation: sourceHandle.incarnation,
+                    sourceHandle,
+                    destinationHandles: Object.freeze(destinationHandles.map(
+                        (handle, destinationIndex) => Object.freeze({
+                            ...handle,
+                            slot: destinationSlots[destinationIndex]
+                        })
+                    )),
+                    destinationSlots: Object.freeze(destinationSlots),
+                    prepareRecordFingerprint: prepared.recordFingerprint,
+                    commandGeneration: prepared.commandGeneration,
+                    sourceCurrentHealthFixedPoint:
+                        prepared.currentHealthFixedPoint,
+                    sourceMaxHealthFixedPoint: prepared.maxHealthFixedPoint,
+                    triggerSourceTick: prepared.triggerSourceTick,
+                    triggerSequence: prepared.triggerSequence,
+                    effectTransferDestinationIndex: 0
+                }));
+            }
+        } catch (error) {
+            for (const slot of claimedNewSlots) {
+                const handle = this.pendingSlotHandles[slot];
+                if (handle) this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                this.pendingSlotHandles[slot] = null;
+                this.slotActive[slot] = 0;
+                this.pendingBodyCount--;
+            }
+            this.freeSlots = freeSlotsBeforeArm;
+            this.#releaseClaimedAtomicTransformReadbackSlot(readbackSlot);
+            while (this.bodyCount > 0 && this.slotActive[this.bodyCount - 1] === 0) {
+                this.bodyCount--;
+            }
+            return error.message === 'atomic-transform-capacity'
+                ? reject('atomic-transform-capacity', false, true)
+                : reject(`atomic-transform-arm-auth:${error.message}`, true);
+        }
+        const claimedSlotSet = new Set(claimedNewSlots);
+        this.freeSlots = freeSlotsBeforeArm.filter(
+            (slot) => !claimedSlotSet.has(slot)
+        );
+        let storage;
+        try {
+            storage = createGpuAtomicTransformProgramStorage(
+                this.atomicTransformCapacity
+            );
+            writeGpuAtomicTransformProgramHeader(storage, {
+                count: normalized.length,
+                batchIdFingerprint: fingerprint,
+                preparedSourceTick: sourceTick,
+                targetFixedTick
+            });
+            normalized.forEach((record, index) => (
+                writeGpuAtomicTransformProgramRecord(storage, index, record)
+            ));
+        } catch (error) {
+            for (const slot of claimedNewSlots) {
+                const handle = this.pendingSlotHandles[slot];
+                if (handle) {
+                    this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                }
+                this.pendingSlotHandles[slot] = null;
+                this.slotActive[slot] = 0;
+                this.pendingBodyCount--;
+            }
+            this.freeSlots = freeSlotsBeforeArm;
+            this.#releaseClaimedAtomicTransformReadbackSlot(readbackSlot);
+            while (this.bodyCount > 0
+                && this.slotActive[this.bodyCount - 1] === 0) {
+                this.bodyCount--;
+            }
+            return reject(
+                `atomic-transform-program-materialize:${error.message}`,
+                true
+            );
+        }
+        const receipt = Object.freeze({
+            receiptId: Object.freeze({}),
+            targetFixedTick,
+            batchIdFingerprint: fingerprint
+        });
+        this.hostAtomicTransformProgram = storage;
+        this.armedAtomicTransform = {
+            commandId: request.commandId,
+            sourceTick,
+            targetFixedTick,
+            batchIdFingerprint: fingerprint,
+            records: Object.freeze(normalized),
+            claimedNewSlots: Object.freeze(claimedNewSlots),
+            freeSlotsBeforeArm: Object.freeze(freeSlotsBeforeArm),
+            readbackSlot,
+            receipt,
+            commitRequested: false
+        };
+        return Object.freeze({
+            abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+            accepted: true,
+            receipt,
+            armedCount: normalized.length,
+            requiresRecovery: false
+        });
+    }
+
+    commitArmedAtomicTransformBatch(receipt) {
+        const armed = this.armedAtomicTransform;
+        if (!armed || armed.receipt !== receipt || armed.commitRequested) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-receipt-invalid',
+                requiresRecovery: true
+            });
+        }
+        for (const record of armed.records) {
+            const sourceKey = `${record.sourceEntityId}:${record.sourceIncarnation}`;
+            this.handleToSlot.delete(sourceKey);
+            for (let index = 0; index < record.destinationHandles.length; index++) {
+                const destination = record.destinationHandles[index];
+                const slot = destination.slot;
+                copyBodySlot(
+                    this.hostAtomicTransformTemplateStorage,
+                    slot,
+                    this.hostStorage,
+                    slot
+                );
+                copyEffectBodySlot(
+                    this.hostAtomicTransformTemplateEffectBodyState,
+                    slot,
+                    this.hostEffectBodyState,
+                    slot
+                );
+                copyFormationBodySlot(
+                    this.hostAtomicTransformTemplateFormationBodyState,
+                    slot,
+                    this.hostFormationBodyState,
+                    slot
+                );
+                copyRenderStyleSlot(
+                    this.hostAtomicTransformTemplateRenderStyles,
+                    slot,
+                    this.hostRenderStyles,
+                    slot
+                );
+                clearBodyControlStateSlot(this.hostBodyControlStates, slot);
+                this.slotActive[slot] = 1;
+                this.slotHandles[slot] = Object.freeze({
+                    entityId: destination.entityId,
+                    incarnation: destination.incarnation
+                });
+                this.handleToSlot.set(
+                    `${destination.entityId}:${destination.incarnation}`,
+                    slot
+                );
+                if (index > 0) {
+                    this.pendingHandleToSlot.delete(
+                        `${destination.entityId}:${destination.incarnation}`
+                    );
+                    this.pendingSlotHandles[slot] = null;
+                    this.pendingBodyCount--;
+                    this.activeBodyCount++;
+                }
+            }
+        }
+        writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
+        this.#refreshHostBodyDerivedState();
+        armed.commitRequested = true;
+        return Object.freeze({
+            abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+            accepted: true,
+            targetFixedTick: armed.targetFixedTick,
+            committedCount: armed.records.length,
+            requiresRecovery: false
+        });
+    }
+
+    cancelArmedAtomicTransformBatch(receipt) {
+        const armed = this.armedAtomicTransform;
+        if (!armed || armed.receipt !== receipt || armed.commitRequested) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-receipt-invalid',
+                requiresRecovery: false
+            });
+        }
+        for (const slot of armed.claimedNewSlots) {
+            const handle = this.pendingSlotHandles[slot];
+            if (handle) this.pendingHandleToSlot.delete(entityHandleKey(handle));
+            this.pendingSlotHandles[slot] = null;
+            this.slotActive[slot] = 0;
+            this.pendingBodyCount--;
+        }
+        this.freeSlots = [...armed.freeSlotsBeforeArm];
+        this.#releaseClaimedAtomicTransformReadbackSlot(armed.readbackSlot);
+        this.armedAtomicTransform = null;
+        while (this.bodyCount > 0 && this.slotActive[this.bodyCount - 1] === 0) {
+            this.bodyCount--;
+        }
+        return Object.freeze({ accepted: true, cancelled: true });
+    }
+
+    cancelPendingAtomicTransformProgramsForTerminal(request = {}) {
+        const finalFixedTick = Number(request.finalFixedTick);
+        if (request.abiVersion
+                !== GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+            || !Number.isSafeInteger(finalFixedTick) || finalFixedTick <= 0) {
+            return Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: 0,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: 0,
+                failure: 'atomic-transform-terminal-contract'
+            });
+        }
+        this.atomicTransformProgramIngressOpen = false;
+        if (this.stagedAtomicTransformPrepareBatch) {
+            this.#releaseClaimedAtomicTransformPrepareReadbackSlot(
+                this.stagedAtomicTransformPrepareBatch.readbackSlot
+            );
+        }
+        if (this.armedAtomicTransform && !this.armedAtomicTransform.commitRequested) {
+            this.cancelArmedAtomicTransformBatch(
+                this.armedAtomicTransform.receipt,
+                'terminal'
+            );
+        }
+        const committedReadbackSlot = this.armedAtomicTransform?.commitRequested
+            ? this.armedAtomicTransform.readbackSlot
+            : null;
+        this.#retireAtomicTransformReadbacks(committedReadbackSlot);
+        this.stagedAtomicTransformPrepareBatch = null;
+        this.authenticAtomicTransformPrepareByFingerprint.clear();
+        this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+            abiVersion: GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION,
+            state: 'armed',
+            finalFixedTick,
+            submittedTick: 0,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: this.authoritativeEpoch,
+            pendingPrepareCount: 0,
+            pendingTransformCount:
+                this.armedAtomicTransform?.commitRequested === true ? 1 : 0,
+            pendingReadbackCount:
+                this.pendingAtomicTransformPrepareReadbacks
+                + this.pendingAtomicTransformReadbacks,
+            failure: null
+        });
+        return this.terminalAtomicTransformProgramCancelStatus;
+    }
+
+    getAtomicTransformRuntimeStatus() {
+        return Object.freeze({
+            abiVersion: GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+            state: this.state,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: this.deviceGeneration,
+            authoritativeEpoch: this.authoritativeEpoch,
+            ingressOpen: this.atomicTransformProgramIngressOpen,
+            pendingPrepareCount:
+                Number(this.stagedAtomicTransformPrepareBatch !== null)
+                + this.atomicTransformPrepareBatchQueue.length
+                + this.authenticAtomicTransformPrepareByFingerprint.size,
+            pendingTransformCount: Number(this.armedAtomicTransform !== null),
+            pendingReadbackCount:
+                this.pendingAtomicTransformPrepareReadbacks
+                + this.pendingAtomicTransformReadbacks,
+            lastPrepareSourceTick: this.lastAtomicTransformPrepareSourceTick,
+            lastCommittedTransformCount:
+                this.lastAtomicTransformCommittedCount,
+            lastEffectRekeyCount: this.lastAtomicTransformEffectRekeyCount,
+            runtimeStatus: this.lastAtomicTransformRuntimeStatus,
+            storageProfile: GPU_ATOMIC_TRANSFORM_RUNTIME_STORAGE_PROFILE,
+            requiresRecovery: this.requiresAuthoritativeRebuild
+                || this.lastAtomicTransformRuntimeStatus
+                    !== GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
+                || this.terminalAtomicTransformProgramCancelStatus
+                    ?.state === 'failed',
+            failure: this.failure,
+            terminal: this.terminalAtomicTransformProgramCancelStatus
+        });
+    }
+
     /**
      * Terminal final submit 앞에서 unresolved destination programs를 exact-set으로
      * tombstone하고 모든 fixed-program/readback lease를 퇴역시킵니다. queue.writeBuffer
@@ -3846,15 +4680,20 @@ export class GpuCircleBodySimulation {
         const terminalEffectCancel = this.terminalEffectProgramCancelStatus;
         const terminalFormationCancel
             = this.terminalFormationProgramCancelStatus;
+        const terminalAtomicTransformCancel
+            = this.terminalAtomicTransformProgramCancelStatus;
         const terminalFinalSubmit = terminalCancel?.state === 'armed'
             || terminalEffectCancel?.state === 'armed'
-            || terminalFormationCancel?.state === 'armed';
+            || terminalFormationCancel?.state === 'armed'
+            || terminalAtomicTransformCancel?.state === 'armed';
         if (terminalCancel?.state === 'submitted'
             || terminalCancel?.state === 'failed'
             || terminalEffectCancel?.state === 'submitted'
             || terminalEffectCancel?.state === 'failed'
             || terminalFormationCancel?.state === 'submitted'
-            || terminalFormationCancel?.state === 'failed') {
+            || terminalFormationCancel?.state === 'failed'
+            || terminalAtomicTransformCancel?.state === 'submitted'
+            || terminalAtomicTransformCancel?.state === 'failed') {
             return false;
         }
         if (terminalCancel?.state === 'armed'
@@ -3885,10 +4724,23 @@ export class GpuCircleBodySimulation {
             });
             return false;
         }
+        if (terminalAtomicTransformCancel?.state === 'armed'
+            && requestedSourceTick
+                !== terminalAtomicTransformCancel.finalFixedTick) {
+            this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+                ...terminalAtomicTransformCancel,
+                state: 'failed',
+                failure: 'terminal-final-fixed-tick-mismatch'
+            });
+            return false;
+        }
         const stagedPrograms = this.stagedFixedPrograms;
         const stagedEffectBatch = this.stagedEffectPulseBatch;
         const stagedFormationPrepare = this.stagedFormationPrepareBatch;
         const armedFormationTransform = this.armedFormationTransform;
+        const stagedAtomicTransformPrepare
+            = this.stagedAtomicTransformPrepareBatch;
+        const armedAtomicTransform = this.armedAtomicTransform;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
@@ -3935,6 +4787,25 @@ export class GpuCircleBodySimulation {
             this.requiresAuthoritativeRebuild = true;
             return false;
         }
+        if (stagedAtomicTransformPrepare
+            && requestedSourceTick
+                !== stagedAtomicTransformPrepare.sourceTick) {
+            this.failure = captureFailure(
+                'atomic-transform-prepare-tick',
+                new Error('staged AtomicTransform prepare tick mismatch')
+            );
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            return false;
+        }
+        if (armedAtomicTransform?.commitRequested
+            && requestedSourceTick !== armedAtomicTransform.targetFixedTick) {
+            this.failure = captureFailure(
+                'atomic-transform-commit-tick',
+                new Error('armed AtomicTransform tick mismatch')
+            );
+            this.requiresAuthoritativeRebuild = true;
+            return false;
+        }
         this.lastFixedDelta = delta;
         try {
             assertGpuCircleBodyAbiVersion(this.hostStorage);
@@ -3953,7 +4824,9 @@ export class GpuCircleBodySimulation {
             && !terminalFinalSubmit
             && !stagedEffectBatch
             && !stagedFormationPrepare
-            && !armedFormationTransform?.commitRequested) {
+            && !armedFormationTransform?.commitRequested
+            && !stagedAtomicTransformPrepare
+            && !armedAtomicTransform?.commitRequested) {
             return false;
         }
         if (this.state === 'telemetry-backpressure') {
@@ -4048,6 +4921,9 @@ export class GpuCircleBodySimulation {
         const effectProgramLease = this.effectProgramReadbackLease;
         const formationPrepareLease = this.formationPrepareReadbackLease;
         const formationTransformLease = this.formationTransformReadbackLease;
+        const atomicTransformPrepareLease
+            = this.atomicTransformPrepareReadbackLease;
+        const atomicTransformLease = this.atomicTransformReadbackLease;
         const trackedPoseLease = this.trackedPoseReadbackLease;
         let encoder;
         try {
@@ -4135,6 +5011,64 @@ export class GpuCircleBodySimulation {
                     GPU_FORMATION_RUNTIME_ABI.TRANSFORM_HEADER.STRIDE
                 );
             }
+            if (!terminalFinalSubmit && stagedAtomicTransformPrepare) {
+                this.device.queue.writeBuffer(
+                    this.buffers.atomicTransformPrepareProgram,
+                    0,
+                    this.hostAtomicTransformPrepareProgram.buffer
+                );
+            } else {
+                writeGpuAtomicTransformPrepareHeader(
+                    this.hostAtomicTransformPrepareProgram,
+                    {}
+                );
+                this.device.queue.writeBuffer(
+                    this.buffers.atomicTransformPrepareProgram,
+                    0,
+                    this.hostAtomicTransformPrepareProgram.buffer,
+                    0,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI.PREPARE_HEADER.STRIDE
+                );
+            }
+            if (armedAtomicTransform?.commitRequested) {
+                // commitArmed already published registry/host identities. Only the
+                // counts/indirect headers may be uploaded here; uploading the live
+                // body planes would overwrite the still-authoritative GPU pose.
+                this.#uploadBodyCountState();
+                this.device.queue.writeBuffer(
+                    this.buffers.atomicTransformProgram,
+                    0,
+                    this.hostAtomicTransformProgram.buffer
+                );
+                for (const [bufferKey, source] of [
+                    ['atomicTransformTemplatePhysics', this.hostAtomicTransformTemplateStorage.physicsBuffer],
+                    ['atomicTransformTemplateSimulation', this.hostAtomicTransformTemplateStorage.simulationBuffer],
+                    ['atomicTransformTemplateTemporary', this.hostAtomicTransformTemplateStorage.temporaryBuffer],
+                    ['atomicTransformTemplateContactHandlers', this.hostAtomicTransformTemplateStorage.contactHandlerBuffer],
+                    ['atomicTransformTemplateCombatStates', this.hostAtomicTransformTemplateStorage.combatStateBuffer],
+                    ['atomicTransformTemplateStates', this.hostAtomicTransformTemplateStorage.atomicTransformStateBuffer],
+                    ['atomicTransformTemplateEffectSummaries', this.hostAtomicTransformTemplateEffectBodyState.summaryBuffer],
+                    ['atomicTransformTemplateEffectEmitters', this.hostAtomicTransformTemplateEffectBodyState.emitterStateBuffer],
+                    ['atomicTransformTemplateFormationStates', this.hostAtomicTransformTemplateFormationBodyState],
+                    ['atomicTransformTemplateRenderStyles', this.hostAtomicTransformTemplateRenderStyles],
+                    ['atomicTransformTemplateEnemyBehaviorStates', this.hostAtomicTransformTemplateStorage.enemyBehaviorStateBuffer],
+                    ['atomicTransformTemplateBodyControlStates', this.hostAtomicTransformTemplateBodyControlStates]
+                ]) {
+                    this.device.queue.writeBuffer(this.buffers[bufferKey], 0, source);
+                }
+            } else {
+                writeGpuAtomicTransformProgramHeader(
+                    this.hostAtomicTransformProgram,
+                    {}
+                );
+                this.device.queue.writeBuffer(
+                    this.buffers.atomicTransformProgram,
+                    0,
+                    this.hostAtomicTransformProgram.buffer,
+                    0,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI.TRANSFORM_HEADER.STRIDE
+                );
+            }
             encoder = device.createCommandEncoder({
                 label: 'cirvivor-gpu-circle-fixed-step'
             });
@@ -4145,6 +5079,54 @@ export class GpuCircleBodySimulation {
             pass.setPipeline(this.pipelines.updateIndirectArgs);
             pass.setBindGroup(0, this.bindGroups.indirect);
             pass.dispatchWorkgroups(1);
+
+            if (armedAtomicTransform?.commitRequested) {
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.CLEAR_TRANSFORM
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORM
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    armedAtomicTransform.records.length / BODY_WORKGROUP_SIZE
+                ));
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT
+                        .PREFLIGHT_EFFECT_REKEYS
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.SEAL_TRANSFORM
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.REKEY_EFFECTS
+                );
+                pass.dispatchWorkgroups(1);
+                for (const entryPoint of [
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_BODIES,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_STATE,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_CONTROL
+                ]) {
+                    this.#setAtomicTransformEntry(pass, entryPoint);
+                    pass.dispatchWorkgroups(Math.ceil(
+                        armedAtomicTransform.records.length
+                            / BODY_WORKGROUP_SIZE
+                    ));
+                }
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.FINALIZE_TRANSFORM
+                );
+                pass.dispatchWorkgroups(1);
+            }
 
             // Authenticated N prepare는 N+1 submit 시작에서 Effect retain보다
             // 먼저 exact rekey/body transform으로 원자 commit됩니다.
@@ -4386,6 +5368,46 @@ export class GpuCircleBodySimulation {
                 pass.dispatchWorkgroups(Math.ceil(
                     this.contactCapacity / BODY_WORKGROUP_SIZE
                 ));
+                if (this.atomicTransformFirstHitBodyCount > 0) {
+                    this.#setComputeProfile(
+                        pass,
+                        COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT
+                    );
+                    this.#dispatchBodies(
+                        pass,
+                        'clear_atomic_transform_first_hit_candidates'
+                    );
+                    pass.setPipeline(
+                        this.pipelines.compute.select_atomic_transform_first_hit_source
+                    );
+                    pass.dispatchWorkgroups(Math.ceil(
+                        this.contactCapacity / BODY_WORKGROUP_SIZE
+                    ));
+                    pass.setPipeline(
+                        this.pipelines.compute.resolve_atomic_transform_first_hit_contact
+                    );
+                    pass.dispatchWorkgroups(Math.ceil(
+                        this.contactCapacity / BODY_WORKGROUP_SIZE
+                    ));
+                    pass.setPipeline(
+                        this.pipelines.compute.seal_atomic_transform_first_hits
+                    );
+                    pass.dispatchWorkgroups(1);
+                    this.#dispatchBodies(
+                        pass,
+                        'commit_atomic_transform_first_hits'
+                    );
+                    pass.setPipeline(
+                        this.pipelines.compute.finalize_atomic_transform_first_hits
+                    );
+                    pass.dispatchWorkgroups(1);
+                    pass.setPipeline(
+                        this.pipelines.compute.shield_atomic_transform_first_hit_contacts
+                    );
+                    pass.dispatchWorkgroups(Math.ceil(
+                        this.contactCapacity / BODY_WORKGROUP_SIZE
+                    ));
+                }
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING
@@ -4514,6 +5536,21 @@ export class GpuCircleBodySimulation {
                 );
                 pass.dispatchWorkgroups(1);
             }
+            // T submit의 모든 damage/death/transform mutation 뒤 live GPU state를
+            // scan하여 T+1 publication proof를 만듭니다. Host candidate 목록은
+            // fingerprint seed일 뿐 eligibility authority가 아닙니다.
+            if (!terminalFinalSubmit && stagedAtomicTransformPrepare) {
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.CLEAR_PREPARE
+                );
+                pass.dispatchWorkgroups(1);
+                this.#setAtomicTransformEntry(
+                    pass,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREPARE
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
             if (trackedPoseSlot) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.TRACKED_POSE);
                 pass.setPipeline(this.pipelines.compute.pack_tracked_pose);
@@ -4528,6 +5565,24 @@ export class GpuCircleBodySimulation {
                     overflowSlot.buffer,
                     0,
                     GRID_OVERFLOW_BYTE_SIZE
+                );
+            }
+            if (!terminalFinalSubmit && stagedAtomicTransformPrepare) {
+                encoder.copyBufferToBuffer(
+                    this.buffers.atomicTransformPrepareProgram,
+                    0,
+                    stagedAtomicTransformPrepare.readbackSlot.buffer,
+                    0,
+                    this.hostAtomicTransformPrepareProgram.buffer.byteLength
+                );
+            }
+            if (armedAtomicTransform?.commitRequested) {
+                encoder.copyBufferToBuffer(
+                    this.buffers.atomicTransformProgram,
+                    0,
+                    armedAtomicTransform.readbackSlot.buffer,
+                    0,
+                    this.hostAtomicTransformProgram.buffer.byteLength
                 );
             }
             if (eventSlot) {
@@ -4650,6 +5705,14 @@ export class GpuCircleBodySimulation {
                     armedFormationTransform.readbackSlot
                 );
             }
+            this.#releaseClaimedAtomicTransformPrepareReadbackSlot(
+                stagedAtomicTransformPrepare?.readbackSlot ?? null
+            );
+            if (armedAtomicTransform?.commitRequested) {
+                this.#releaseClaimedAtomicTransformReadbackSlot(
+                    armedAtomicTransform.readbackSlot
+                );
+            }
             this.failure = captureFailure('fixed-submit', error);
             if (terminalCancel?.state === 'armed') {
                 this.terminalFixedProgramCancelStatus = Object.freeze({
@@ -4669,6 +5732,13 @@ export class GpuCircleBodySimulation {
             if (terminalFormationCancel?.state === 'armed') {
                 this.terminalFormationProgramCancelStatus = Object.freeze({
                     ...terminalFormationCancel,
+                    state: 'failed',
+                    failure: 'terminal-final-fixed-submit-failed'
+                });
+            }
+            if (terminalAtomicTransformCancel?.state === 'armed') {
+                this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+                    ...terminalAtomicTransformCancel,
                     state: 'failed',
                     failure: 'terminal-final-fixed-submit-failed'
                 });
@@ -4831,6 +5901,28 @@ export class GpuCircleBodySimulation {
                 formationPrepareLease
             );
         }
+        if (!terminalFinalSubmit && stagedAtomicTransformPrepare) {
+            const prepareQueueEntry = {
+                sessionGeneration: this.sessionGeneration,
+                sourceTick: resolvedSourceTick,
+                targetFixedTick: stagedAtomicTransformPrepare.targetFixedTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch,
+                batchIdFingerprint:
+                    stagedAtomicTransformPrepare.batchIdFingerprint,
+                completed: false,
+                completion: null,
+                failure: null
+            };
+            this.atomicTransformPrepareBatchQueue.push(prepareQueueEntry);
+            this.lastAtomicTransformPrepareSourceTick = resolvedSourceTick;
+            this.#beginAtomicTransformPrepareReadback(
+                stagedAtomicTransformPrepare.readbackSlot,
+                prepareQueueEntry,
+                atomicTransformPrepareLease
+            );
+        }
         if (!terminalFinalSubmit
             && armedFormationTransform?.commitRequested) {
             const transformQueueEntry = {
@@ -4867,6 +5959,24 @@ export class GpuCircleBodySimulation {
                 this.activeBodyCount--;
             }
         }
+        if (armedAtomicTransform?.commitRequested) {
+            this.#beginAtomicTransformReadback(
+                armedAtomicTransform.readbackSlot,
+                {
+                    sourceTick: armedAtomicTransform.sourceTick,
+                    targetFixedTick: armedAtomicTransform.targetFixedTick,
+                    submittedTick: tick,
+                    sessionGeneration: this.sessionGeneration,
+                    deviceGeneration: generation,
+                    authoritativeEpoch,
+                    expectedCount: armedAtomicTransform.records.length,
+                    batchIdFingerprint:
+                        armedAtomicTransform.batchIdFingerprint,
+                    records: armedAtomicTransform.records
+                },
+                atomicTransformLease
+            );
+        }
         if (trackedPoseSlot) {
             this.#beginTrackedPoseReadback(trackedPoseSlot, {
                 sourceTick: resolvedSourceTick,
@@ -4883,6 +5993,7 @@ export class GpuCircleBodySimulation {
         this.stagedFixedPrograms = null;
         this.stagedEffectPulseBatch = null;
         this.stagedFormationPrepareBatch = null;
+        this.stagedAtomicTransformPrepareBatch = null;
         if (armedFormationTransform?.commitRequested) {
             this.armedFormationTransform = null;
         } else if (armedFormationTransform
@@ -4891,6 +6002,15 @@ export class GpuCircleBodySimulation {
                 armedFormationTransform.readbackSlot
             );
             this.armedFormationTransform = null;
+        }
+        if (armedAtomicTransform?.commitRequested) {
+            this.armedAtomicTransform = null;
+        } else if (armedAtomicTransform
+            && resolvedSourceTick >= armedAtomicTransform.targetFixedTick) {
+            this.#releaseClaimedAtomicTransformReadbackSlot(
+                armedAtomicTransform.readbackSlot
+            );
+            this.armedAtomicTransform = null;
         }
         if (!terminalFinalSubmit) {
             this.effectActivePoolIndex = this.effectActivePoolIndex === 0 ? 1 : 0;
@@ -4923,6 +6043,19 @@ export class GpuCircleBodySimulation {
                 submittedTick: resolvedSourceTick,
                 pendingPrepareProgramCount: 0,
                 pendingPrepareReadbackCount: 0,
+                failure: null
+            });
+        }
+        if (terminalAtomicTransformCancel?.state === 'armed') {
+            const terminalTransformReadbackPending
+                = this.pendingAtomicTransformReadbacks;
+            this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+                ...terminalAtomicTransformCancel,
+                state: 'submitted',
+                submittedTick: resolvedSourceTick,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: terminalTransformReadbackPending,
                 failure: null
             });
         }
@@ -5200,6 +6333,11 @@ export class GpuCircleBodySimulation {
             ['temporaryBuffer', 'temporary', GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE],
             ['combatStateBuffer', 'combatStates', GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE],
             [
+                'atomicTransformStateBuffer',
+                'atomicTransformStates',
+                GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
+            ],
+            [
                 'enemyBehaviorStateBuffer',
                 'enemyBehaviorStates',
                 GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
@@ -5301,6 +6439,10 @@ export class GpuCircleBodySimulation {
             flowFieldCount: this.flowFieldAtlas.fieldCount,
             sourceWorldUnitScale: this.sourceWorldUnitScale,
             maximumBodyRadius: this.maximumBodyRadius,
+            atomicTransformFirstHitBodyCount:
+                this.atomicTransformFirstHitBodyCount,
+            atomicTransformFirstHitTriggerScope:
+                'positive-damage-closest-only-projectile-contact-with-positive-self-hit-budget',
             uploadedMaximumBodyRadius: this.uploadedMaximumBodyRadius,
             submittedTickCount: this.submittedTickCount,
             hasGpuAuthoritativeState: this.hasGpuAuthoritativeState,
@@ -5401,6 +6543,27 @@ export class GpuCircleBodySimulation {
                 coreDamageRequest: Object.freeze({
                     storageBuffersPerStage: 9
                 }),
+                atomicTransformFirstHit: Object.freeze({
+                    entryPoints: Object.freeze([
+                        'clear_atomic_transform_first_hit_candidates',
+                        'select_atomic_transform_first_hit_source',
+                        'resolve_atomic_transform_first_hit_contact',
+                        'seal_atomic_transform_first_hits',
+                        'commit_atomic_transform_first_hits',
+                        'finalize_atomic_transform_first_hits',
+                        'shield_atomic_transform_first_hit_contacts'
+                    ]),
+                    admissionPolicy: 'all-exact-winners-within-event-capacity',
+                    winnerIdentityPolicy:
+                        'active-entity-id-unique/source-entity-id-asc/exact-contact-unique',
+                    triggerScope:
+                        'positive-damage-closest-only-projectile-with-positive-self-hit-budget',
+                    stateStride:
+                        GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE,
+                    candidateStride:
+                        GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE.STRIDE,
+                    storageBuffersPerStage: 9
+                }),
                 windowStorageBuffersPerStage: 9,
                 storageProfile: Object.freeze({
                     physics: 8,
@@ -5413,6 +6576,7 @@ export class GpuCircleBodySimulation {
                     enemyBehavior: 8,
                     directionalDefenseClassifier: 8,
                     coreDamageRequest: 9,
+                    atomicTransformFirstHit: 9,
                     trackedPose: 6,
                     requiredMaximum: REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE
                 })
@@ -5499,6 +6663,7 @@ export class GpuCircleBodySimulation {
         this.slotActive.fill(0);
         this.slotEventProducing.fill(0);
         this.eventProducingBodyCount = 0;
+        this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
         this.slotHandles.fill(null);
         this.handleToSlot.clear();
@@ -5650,11 +6815,35 @@ export class GpuCircleBodySimulation {
             this.hostStorage.contactHandlerBuffer
         );
         let eventProducingBodyCount = 0;
+        let atomicTransformFirstHitBodyCount = 0;
         let maximumBodyRadius = 0;
+        const activeEntityIds = new Set();
         this.slotEventProducing.fill(0);
+        const atomicTransformStateView = new DataView(
+            this.hostStorage.atomicTransformStateBuffer
+        );
         for (let slot = 0; slot < this.bodyCount; slot++) {
             if (this.slotActive[slot] !== 1) {
                 continue;
+            }
+            const activeHandle = this.slotHandles[slot];
+            if (activeHandle) {
+                if (activeEntityIds.has(activeHandle.entityId)) {
+                    const error = new Error(
+                        `GPU active entityId가 둘 이상의 slot에 존재합니다: ${activeHandle.entityId}`
+                    );
+                    this.requiresAuthoritativeRebuild
+                        = this.activeBodyCount > 0;
+                    this.failure = captureFailure(
+                        'active-entity-id-uniqueness',
+                        error
+                    );
+                    this.state = this.requiresAuthoritativeRebuild
+                        ? 'requires-rebuild'
+                        : 'failed';
+                    throw error;
+                }
+                activeEntityIds.add(activeHandle.entityId);
             }
             const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
             const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
@@ -5686,6 +6875,13 @@ export class GpuCircleBodySimulation {
                 this.slotEventProducing[slot] = 1;
                 eventProducingBodyCount++;
             }
+            if (atomicTransformStateView.getUint32(
+                (slot * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE)
+                    + GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.PROGRAM_ID,
+                LITTLE_ENDIAN
+            ) === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT) {
+                atomicTransformFirstHitBodyCount++;
+            }
             maximumBodyRadius = Math.max(
                 maximumBodyRadius,
                 physicsView.getFloat32(
@@ -5695,6 +6891,8 @@ export class GpuCircleBodySimulation {
             );
         }
         this.eventProducingBodyCount = eventProducingBodyCount;
+        this.atomicTransformFirstHitBodyCount
+            = atomicTransformFirstHitBodyCount;
         this.maximumBodyRadius = maximumBodyRadius;
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
@@ -5719,6 +6917,11 @@ export class GpuCircleBodySimulation {
                     'combatStates',
                     'combatStateBuffer',
                     GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+                ],
+                [
+                    'atomicTransformStates',
+                    'atomicTransformStateBuffer',
+                    GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
                 ],
                 [
                     'enemyBehaviorStates',
@@ -6368,7 +7571,7 @@ export class GpuCircleBodySimulation {
                     error
                 );
                 queueEntry.completed = true;
-                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.requiresAuthoritativeRebuild = true;
                 this.failure = queueEntry.failure;
             } finally {
                 slot.buffer.unmap();
@@ -6492,6 +7695,415 @@ export class GpuCircleBodySimulation {
             this.requiresAuthoritativeRebuild = true;
             this.failure = captureFailure('formation-transform-map', error);
             this.#releaseClaimedFormationTransformReadbackSlot(slot);
+        });
+    }
+
+    #claimAtomicTransformPrepareReadbackSlot() {
+        for (let offset = 0;
+            offset < this.atomicTransformPrepareReadbackSlots.length;
+            offset++) {
+            const index = (this.atomicTransformPrepareReadbackCursor + offset)
+                % this.atomicTransformPrepareReadbackSlots.length;
+            const slot = this.atomicTransformPrepareReadbackSlots[index];
+            if (slot.inFlight) { continue; }
+            slot.inFlight = true;
+            slot.lease = this.atomicTransformPrepareReadbackLease;
+            this.pendingAtomicTransformPrepareReadbacks++;
+            this.atomicTransformPrepareReadbackCursor = (index + 1)
+                % this.atomicTransformPrepareReadbackSlots.length;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedAtomicTransformPrepareReadbackSlot(slot) {
+        if (!slot?.inFlight) { return; }
+        slot.inFlight = false;
+        this.pendingAtomicTransformPrepareReadbacks = Math.max(
+            0,
+            this.pendingAtomicTransformPrepareReadbacks - 1
+        );
+    }
+
+    #claimAtomicTransformReadbackSlot() {
+        for (let offset = 0;
+            offset < this.atomicTransformReadbackSlots.length;
+            offset++) {
+            const index = (this.atomicTransformReadbackCursor + offset)
+                % this.atomicTransformReadbackSlots.length;
+            const slot = this.atomicTransformReadbackSlots[index];
+            if (slot.inFlight) { continue; }
+            slot.inFlight = true;
+            slot.lease = this.atomicTransformReadbackLease;
+            this.pendingAtomicTransformReadbacks++;
+            this.atomicTransformReadbackCursor = (index + 1)
+                % this.atomicTransformReadbackSlots.length;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedAtomicTransformReadbackSlot(slot) {
+        if (!slot?.inFlight) { return; }
+        slot.inFlight = false;
+        this.pendingAtomicTransformReadbacks = Math.max(
+            0,
+            this.pendingAtomicTransformReadbacks - 1
+        );
+    }
+
+    #retireAtomicTransformReadbacks(preservedTransformSlot = null) {
+        this.atomicTransformPrepareReadbackLease++;
+        for (const slot of this.atomicTransformPrepareReadbackSlots) {
+            slot.inFlight = false;
+            slot.lease = this.atomicTransformPrepareReadbackLease;
+        }
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        this.atomicTransformPrepareBatchQueue.length = 0;
+        // Registry/host publication already occurred for every claimed transform
+        // slot. Preserve all earlier submitted readbacks across terminal close;
+        // otherwise a late GPU mismatch could be hidden behind pending=0.
+        if (preservedTransformSlot) {
+            preservedTransformSlot.inFlight = true;
+            preservedTransformSlot.lease = this.atomicTransformReadbackLease;
+        }
+        this.pendingAtomicTransformReadbacks
+            = this.atomicTransformReadbackSlots.reduce(
+                (count, slot) => count + Number(slot.inFlight),
+                0
+            );
+    }
+
+    #beginAtomicTransformPrepareReadback(slot, queueEntry, lease) {
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            if (!slot.inFlight || slot.lease !== lease
+                || this.atomicTransformPrepareReadbackLease !== lease
+                || this.deviceGeneration !== queueEntry.deviceGeneration
+                || this.authoritativeEpoch !== queueEntry.authoritativeEpoch) {
+                try { slot.buffer.unmap(); } catch { /* retired */ }
+                this.#releaseClaimedAtomicTransformPrepareReadbackSlot(slot);
+                return;
+            }
+            try {
+                const bytes = slot.buffer.getMappedRange().slice(0);
+                const storage = {
+                    capacity: this.atomicTransformPrepareCapacity,
+                    buffer: bytes,
+                    view: new DataView(bytes)
+                };
+                const header = readGpuAtomicTransformPrepareHeader(storage);
+                if (header.abiVersion
+                        !== GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION
+                    || header.capacity !== this.atomicTransformPrepareCapacity
+                    || header.sourceTick !== queueEntry.sourceTick
+                    || header.targetFixedTick !== queueEntry.targetFixedTick
+                    || header.batchIdFingerprint
+                        !== queueEntry.batchIdFingerprint
+                    || header.recordCount > header.capacity
+                    || header.status !== GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK) {
+                    throw new RangeError(
+                        `AtomicTransform prepare header mismatch/status=${header.status}`
+                    );
+                }
+                const records = [];
+                const seenSources = new Set();
+                for (let index = 0; index < header.recordCount; index++) {
+                    const record = readGpuAtomicTransformPrepareRecord(
+                        storage,
+                        index
+                    );
+                    const sourceKey = `${record.sourceEntityId}:${record.sourceIncarnation}`;
+                    const split = record.topologyCode
+                        === GPU_ATOMIC_TRANSFORM_TOPOLOGY_CODE.ONE_TO_MANY;
+                    const delayed = record.topologyCode
+                        === GPU_ATOMIC_TRANSFORM_TOPOLOGY_CODE.ONE_TO_ONE_DELAYED;
+                    const splitStateIsExact = split
+                        && record.programId
+                            === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM
+                                .J_SPLIT_FIRST_HIT
+                        && record.phase
+                            === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING
+                        && record.dueFixedTick === 0
+                        && record.triggerSourceTick > 0
+                        && record.triggerSourceTick < UINT32_MAX
+                        && record.triggerSequence < UINT32_MAX;
+                    const delayedStateIsExact = delayed
+                        && record.programId
+                            === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM
+                                .C_PRIME_DELAYED_RECOMBINE
+                        && record.phase
+                            === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.CHILD_DELAYED
+                        && record.dueFixedTick > 0
+                        && record.dueFixedTick < UINT32_MAX
+                        && record.dueFixedTick <= header.targetFixedTick
+                        && record.triggerSourceTick === 0
+                        && record.triggerSequence === 0;
+                    if ((!split && !delayed)
+                        || (!splitStateIsExact && !delayedStateIsExact)
+                        || seenSources.has(sourceKey)
+                        || record.sourceEntityId <= 0
+                        || record.sourceEntityId >= UINT32_MAX
+                        || record.sourceIncarnation <= 0
+                        || record.sourceIncarnation >= UINT32_MAX
+                        || record.lineageRootEntityId <= 0
+                        || record.lineageRootEntityId >= UINT32_MAX
+                        || record.lineageRootIncarnation <= 0
+                        || record.lineageRootIncarnation >= UINT32_MAX
+                        || record.branchIndex > 1
+                        || record.commandGeneration <= 0
+                        || record.commandGeneration >= UINT32_MAX
+                        || record.currentHealthFixedPoint <= 0
+                        || record.maxHealthFixedPoint <= 0
+                        || record.currentHealthFixedPoint
+                            > record.maxHealthFixedPoint
+                        || record.result
+                            !== GPU_ATOMIC_TRANSFORM_PREPARE_RESULT.AUTHENTIC
+                        || record.recordFingerprint <= 0
+                        || record.recordFingerprint >= UINT32_MAX) {
+                        throw new RangeError(
+                            `AtomicTransform prepare record invalid: ${index}`
+                        );
+                    }
+                    seenSources.add(sourceKey);
+                    records.push(Object.freeze({
+                        topologyId: split
+                            ? 'ONE_TO_MANY'
+                            : 'ONE_TO_ONE_DELAYED',
+                        sourceSlot: record.sourceSlot,
+                        sourceEntityId: record.sourceEntityId,
+                        sourceIncarnation: record.sourceIncarnation,
+                        sourceHandle: Object.freeze({
+                            entityId: record.sourceEntityId,
+                            incarnation: record.sourceIncarnation
+                        }),
+                        programId: record.programId,
+                        phase: record.phase,
+                        dueFixedTick: record.dueFixedTick,
+                        lineageRootEntityId: record.lineageRootEntityId,
+                        lineageRootIncarnation:
+                            record.lineageRootIncarnation,
+                        branchIndex: record.branchIndex,
+                        bountyBudget: record.bountyBudget,
+                        commandGeneration: record.commandGeneration,
+                        currentHealthFixedPoint:
+                            record.currentHealthFixedPoint,
+                        maxHealthFixedPoint: record.maxHealthFixedPoint,
+                        triggerSourceTick: record.triggerSourceTick,
+                        triggerSequence: record.triggerSequence,
+                        recordFingerprint: record.recordFingerprint
+                    }));
+                }
+                const completion = Object.freeze({
+                    abiVersion:
+                        GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+                    sessionGeneration: queueEntry.sessionGeneration,
+                    deviceGeneration: queueEntry.deviceGeneration,
+                    authoritativeEpoch: queueEntry.authoritativeEpoch,
+                    submittedTick: queueEntry.submittedTick,
+                    sourceTick: queueEntry.sourceTick,
+                    targetFixedTick: queueEntry.targetFixedTick,
+                    batchIdFingerprint: queueEntry.batchIdFingerprint,
+                    status: header.status,
+                    records: Object.freeze(records)
+                });
+                queueEntry.completion = completion;
+                queueEntry.completed = true;
+                if (this.authenticAtomicTransformPrepareByFingerprint.size
+                        >= this.atomicTransformPrepareCapacity
+                    && !this.authenticAtomicTransformPrepareByFingerprint.has(
+                        queueEntry.batchIdFingerprint
+                    )) {
+                    throw new RangeError(
+                        'AtomicTransform backend authentic proof capacity를 초과했습니다.'
+                    );
+                }
+                this.authenticAtomicTransformPrepareByFingerprint.set(
+                    queueEntry.batchIdFingerprint,
+                    completion
+                );
+                this.lastAtomicTransformPrepareSourceTick
+                    = queueEntry.sourceTick;
+                this.lastAtomicTransformRuntimeStatus = header.status;
+            } catch (error) {
+                queueEntry.failure = captureFailure(
+                    'atomic-transform-prepare-readback',
+                    error
+                );
+                queueEntry.completed = true;
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.failure = queueEntry.failure;
+            } finally {
+                slot.buffer.unmap();
+                this.#releaseClaimedAtomicTransformPrepareReadbackSlot(slot);
+            }
+        }).catch((error) => {
+            if (this.destroyed || slot.lease !== lease
+                || this.atomicTransformPrepareReadbackLease !== lease) {
+                slot.inFlight = false;
+                return;
+            }
+            queueEntry.failure = captureFailure(
+                'atomic-transform-prepare-map',
+                error
+            );
+            queueEntry.completed = true;
+            this.requiresAuthoritativeRebuild = true;
+            this.failure = queueEntry.failure;
+            this.#releaseClaimedAtomicTransformPrepareReadbackSlot(slot);
+        });
+    }
+
+    #beginAtomicTransformReadback(slot, queueEntry, lease) {
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            let readbackFailure = null;
+            if (!slot.inFlight || slot.lease !== lease
+                || this.atomicTransformReadbackLease !== lease
+                || this.deviceGeneration !== queueEntry.deviceGeneration
+                || this.authoritativeEpoch !== queueEntry.authoritativeEpoch) {
+                try { slot.buffer.unmap(); } catch { /* retired */ }
+                this.#releaseClaimedAtomicTransformReadbackSlot(slot);
+                return;
+            }
+            try {
+                const bytes = slot.buffer.getMappedRange().slice(0);
+                const storage = {
+                    capacity: this.atomicTransformCapacity,
+                    buffer: bytes,
+                    view: new DataView(bytes)
+                };
+                const header = readGpuAtomicTransformProgramHeader(storage);
+                if (header.abiVersion !== GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION
+                    || header.capacity !== this.atomicTransformCapacity
+                    || header.count > header.capacity
+                    || header.count !== queueEntry.expectedCount
+                    || header.batchIdFingerprint
+                        !== queueEntry.batchIdFingerprint
+                    || header.preparedSourceTick !== queueEntry.sourceTick
+                    || header.targetFixedTick !== queueEntry.targetFixedTick
+                    || header.status !== GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
+                    || header.batchAccepted !== 1
+                    || header.committedCount !== header.count
+                    || header.failureRecordIndex !== UINT32_MAX
+                    || header.expectedEffectRekeyCount
+                        !== header.effectRekeyCount) {
+                    throw new RangeError(
+                        `AtomicTransform completion header mismatch/status=${header.status}`
+                    );
+                }
+                let recordEffectCount = 0;
+                for (let index = 0; index < header.count; index++) {
+                    const actual = readGpuAtomicTransformProgramRecord(
+                        storage,
+                        index
+                    );
+                    const expected = queueEntry.records[index];
+                    if (actual.topologyCode !== expected.topologyCode
+                        || actual.sourceSlot !== expected.sourceSlot
+                        || actual.sourceEntityId !== expected.sourceEntityId
+                        || actual.sourceIncarnation
+                            !== expected.sourceIncarnation
+                        || actual.destinationCount
+                            !== expected.destinationHandles.length
+                        || actual.effectTransferDestinationIndex !== 0
+                        || actual.prepareRecordFingerprint
+                            !== expected.prepareRecordFingerprint
+                        || actual.commandGeneration
+                            !== expected.commandGeneration
+                        || actual.sourceCurrentHealthFixedPoint
+                            !== expected.sourceCurrentHealthFixedPoint
+                        || actual.sourceMaxHealthFixedPoint
+                            !== expected.sourceMaxHealthFixedPoint
+                        || actual.triggerSourceTick
+                            !== expected.triggerSourceTick
+                        || actual.triggerSequence
+                            !== expected.triggerSequence
+                        || actual.result
+                            !== GPU_ATOMIC_TRANSFORM_RESULT.COMMITTED) {
+                        throw new RangeError(
+                            `AtomicTransform completion record mismatch: ${index}`
+                        );
+                    }
+                    for (let destinationIndex = 0;
+                        destinationIndex < expected.destinationHandles.length;
+                        destinationIndex++) {
+                        const actualHandle = actual.destinationHandles[
+                            destinationIndex
+                        ];
+                        const expectedHandle = expected.destinationHandles[
+                            destinationIndex
+                        ];
+                        if (actualHandle.slot !== expectedHandle.slot
+                            || actualHandle.entityId !== expectedHandle.entityId
+                            || actualHandle.incarnation
+                                !== expectedHandle.incarnation) {
+                            throw new RangeError(
+                                `AtomicTransform destination mismatch: ${index}:${destinationIndex}`
+                            );
+                        }
+                    }
+                    const unusedDestination = actual.destinationHandles[1];
+                    if (expected.destinationHandles.length === 1
+                        && (unusedDestination.slot !== UINT32_MAX
+                            || unusedDestination.entityId !== UINT32_MAX
+                            || unusedDestination.incarnation !== UINT32_MAX)) {
+                        throw new RangeError(
+                            `AtomicTransform unused destination mismatch: ${index}`
+                        );
+                    }
+                    recordEffectCount += actual.effectRekeyCount;
+                }
+                if (recordEffectCount !== header.effectRekeyCount) {
+                    throw new RangeError(
+                        'AtomicTransform per-record Effect count mismatch'
+                    );
+                }
+                this.lastAtomicTransformRuntimeStatus = header.status;
+                this.lastAtomicTransformCommittedCount = header.committedCount;
+                this.lastAtomicTransformEffectRekeyCount
+                    = header.effectRekeyCount;
+            } catch (error) {
+                readbackFailure = captureFailure(
+                    'atomic-transform-readback',
+                    error
+                );
+                this.requiresAuthoritativeRebuild = true;
+                this.failure = readbackFailure;
+            } finally {
+                slot.buffer.unmap();
+                this.#releaseClaimedAtomicTransformReadbackSlot(slot);
+                this.#completeDeferredIdleRelease();
+            }
+            const terminal = this.terminalAtomicTransformProgramCancelStatus;
+            if (terminal?.state === 'submitted' || terminal?.state === 'armed') {
+                this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+                    ...terminal,
+                    state: readbackFailure ? 'failed' : terminal.state,
+                    pendingReadbackCount:
+                        this.pendingAtomicTransformReadbacks,
+                    failure: readbackFailure
+                });
+            }
+        }).catch((error) => {
+            if (this.destroyed || slot.lease !== lease
+                || this.atomicTransformReadbackLease !== lease) {
+                slot.inFlight = false;
+                return;
+            }
+            const failure = captureFailure('atomic-transform-map', error);
+            this.requiresAuthoritativeRebuild = true;
+            this.failure = failure;
+            this.#releaseClaimedAtomicTransformReadbackSlot(slot);
+            this.#completeDeferredIdleRelease();
+            const terminal = this.terminalAtomicTransformProgramCancelStatus;
+            if (terminal?.state === 'submitted' || terminal?.state === 'armed') {
+                this.terminalAtomicTransformProgramCancelStatus = Object.freeze({
+                    ...terminal,
+                    state: 'failed',
+                    pendingReadbackCount:
+                        this.pendingAtomicTransformReadbacks,
+                    failure
+                });
+            }
         });
     }
 
@@ -6968,14 +8580,20 @@ export class GpuCircleBodySimulation {
             || this.pendingEffectReadbacks !== 0
             || this.pendingFormationPrepareReadbacks !== 0
             || this.pendingFormationTransformReadbacks !== 0
+            || this.pendingAtomicTransformPrepareReadbacks !== 0
+            || this.pendingAtomicTransformReadbacks !== 0
             || this.pendingTrackedPoseReadbacks !== 0
             || this.eventBatchQueue.length !== 0
             || this.bodyControlProgramBatchQueue.length !== 0
             || this.spawnProgramBatchQueue.length !== 0
             || this.effectProgramBatchQueue.length !== 0
             || this.formationPrepareBatchQueue.length !== 0
+            || this.atomicTransformPrepareBatchQueue.length !== 0
             || this.stagedFormationPrepareBatch !== null
             || this.armedFormationTransform !== null
+            || this.stagedAtomicTransformPrepareBatch !== null
+            || this.armedAtomicTransform !== null
+            || this.authenticAtomicTransformPrepareByFingerprint.size !== 0
             || this.pendingBodyCount !== 0
             || (this.state !== 'ready'
                 && this.state !== 'telemetry-backpressure'
@@ -7032,6 +8650,36 @@ export class GpuCircleBodySimulation {
         this.lastFormationRuntimeStatus = GPU_FORMATION_RUNTIME_STATUS.OK;
         this.lastFormationTransformCompletion = null;
         this.authenticFormationPrepareByKey.clear();
+        this.hostAtomicTransformPrepareProgram
+            = createGpuAtomicTransformPrepareStorage(
+                this.atomicTransformPrepareCapacity
+            );
+        this.hostAtomicTransformProgram = createGpuAtomicTransformProgramStorage(
+            this.atomicTransformCapacity
+        );
+        this.hostAtomicTransformTemplateStorage
+            = createGpuCircleBodyAbiStorage(this.capacity);
+        this.hostAtomicTransformTemplateEffectBodyState
+            = createGpuEffectBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateFormationBodyState
+            = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
+            BODY_RENDER_STYLE_STRIDE * this.capacity
+        );
+        this.hostAtomicTransformTemplateBodyControlStates = new ArrayBuffer(
+            BODY_CONTROL_STATE_STRIDE * this.capacity
+        );
+        this.stagedAtomicTransformPrepareBatch = null;
+        this.armedAtomicTransform = null;
+        this.atomicTransformPrepareBatchQueue.length = 0;
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        this.pendingAtomicTransformReadbacks = 0;
+        this.authenticAtomicTransformPrepareByFingerprint.clear();
+        this.lastAtomicTransformPrepareSourceTick = 0;
+        this.lastAtomicTransformCommittedCount = 0;
+        this.lastAtomicTransformEffectRekeyCount = 0;
+        this.lastAtomicTransformRuntimeStatus
+            = GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK;
         this.authoritativeEpoch = nextAuthoritativeEpoch;
         this.#releaseGpuResources();
         this.state = 'idle';
@@ -7087,6 +8735,10 @@ export class GpuCircleBodySimulation {
             let maximumDamageWindowProtocolStatus = MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK;
             let coreDamageRequestEventCount = 0;
             let coreDamageRequestProtocolStatus = CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK;
+            let atomicTransformCandidateCount = 0;
+            let atomicTransformEventBase = 0;
+            let atomicTransformProtocolStatus = 0;
+            let atomicTransformCommittedCount = 0;
             let priorityTargetControlOutcomes = Object.freeze([]);
             let events;
             try {
@@ -7132,6 +8784,31 @@ export class GpuCircleBodySimulation {
                     !== CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK) {
                     throw new RangeError(
                         `GPU Core damage request protocol failure: status=${coreDamageRequestProtocolStatus}, preflightEvents=${coreDamageRequestEventCount}`
+                    );
+                }
+                atomicTransformCandidateCount = view.getUint32(
+                    CONTACT_STATE_ATOMIC_TRANSFORM_CANDIDATE_COUNT_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                atomicTransformEventBase = view.getUint32(
+                    CONTACT_STATE_ATOMIC_TRANSFORM_EVENT_BASE_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                atomicTransformProtocolStatus = view.getUint32(
+                    CONTACT_STATE_ATOMIC_TRANSFORM_PROTOCOL_STATUS_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                atomicTransformCommittedCount = view.getUint32(
+                    CONTACT_STATE_ATOMIC_TRANSFORM_COMMITTED_COUNT_OFFSET,
+                    LITTLE_ENDIAN
+                );
+                if (atomicTransformProtocolStatus !== 0
+                    || atomicTransformCandidateCount
+                        !== atomicTransformCommittedCount
+                    || atomicTransformEventBase + atomicTransformCandidateCount
+                        > this.eventCapacity) {
+                    throw new RangeError(
+                        `GPU Atomic Transform first-hit protocol failure: status=${atomicTransformProtocolStatus}, candidates=${atomicTransformCandidateCount}, committed=${atomicTransformCommittedCount}, eventBase=${atomicTransformEventBase}`
                     );
                 }
                 if (queueEntry.expectedControlCount > 0) {
@@ -7374,7 +9051,11 @@ export class GpuCircleBodySimulation {
                         maximumDamageWindowEventCount,
                         maximumDamageWindowProtocolStatus,
                         coreDamageRequestEventCount,
-                        coreDamageRequestProtocolStatus
+                        coreDamageRequestProtocolStatus,
+                        atomicTransformCandidateCount,
+                        atomicTransformEventBase,
+                        atomicTransformProtocolStatus,
+                        atomicTransformCommittedCount
                     }
                 );
                 return;
@@ -7639,6 +9320,8 @@ export class GpuCircleBodySimulation {
             this.capacity * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
             this.contactCapacity * CONTACT_RECORD_BYTE_SIZE,
             this.eventCapacity * APPLIED_EVENT_BYTE_SIZE,
@@ -7654,7 +9337,11 @@ export class GpuCircleBodySimulation {
             this.capacity * GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE,
             this.capacity * GPU_FORMATION_RUNTIME_ABI.CANDIDATE_STATE.STRIDE,
             this.hostFormationPrepareProgram.buffer.byteLength,
-            this.hostFormationTransformProgram.buffer.byteLength
+            this.hostFormationTransformProgram.buffer.byteLength,
+            this.hostAtomicTransformPrepareProgram.buffer.byteLength,
+            this.hostAtomicTransformProgram.buffer.byteLength,
+            this.hostAtomicTransformTemplateStorage.enemyBehaviorStateBuffer
+                .byteLength
         );
         if (largestStorageBinding > Number(device.limits.maxStorageBufferBindingSize)
             || Math.max(
@@ -7737,6 +9424,19 @@ export class GpuCircleBodySimulation {
                 GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
+            atomicTransformStates: createBuffer(
+                device,
+                'cirvivor-gpu-circle-atomic-transform-states',
+                GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformCandidates: createBuffer(
+                device,
+                'cirvivor-gpu-circle-atomic-transform-candidates',
+                GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE.STRIDE
+                    * this.capacity,
+                storageUsage
+            ),
             enemyBehaviorStates: createBuffer(
                 device,
                 'cirvivor-gpu-circle-enemy-behavior-states',
@@ -7816,6 +9516,90 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-formation-transform-program',
                 this.hostFormationTransformProgram.buffer.byteLength,
+                storageUsage
+            ),
+            atomicTransformPrepareProgram: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-prepare-program',
+                this.hostAtomicTransformPrepareProgram.buffer.byteLength,
+                storageUsage
+            ),
+            atomicTransformProgram: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-program',
+                this.hostAtomicTransformProgram.buffer.byteLength,
+                storageUsage
+            ),
+            atomicTransformTemplatePhysics: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-physics',
+                GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateSimulation: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-simulation',
+                GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateTemporary: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-temporary',
+                GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateContactHandlers: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-contact-handlers',
+                GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateCombatStates: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-combat-states',
+                GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateStates: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-states',
+                GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateEffectSummaries: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-effect-summaries',
+                GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateEffectEmitters: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-effect-emitters',
+                GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateFormationStates: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-formation-states',
+                GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateRenderStyles: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-render-styles',
+                BODY_RENDER_STYLE_STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateEnemyBehaviorStates: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-enemy-behavior',
+                GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            atomicTransformTemplateBodyControlStates: createBuffer(
+                device,
+                'cirvivor-gpu-atomic-transform-template-body-control',
+                BODY_CONTROL_STATE_STRIDE * this.capacity,
                 storageUsage
             ),
             bodyControlStates: createBuffer(
@@ -8061,6 +9845,38 @@ export class GpuCircleBodySimulation {
         );
         this.formationTransformReadbackCursor = 0;
         this.pendingFormationTransformReadbacks = 0;
+        const atomicPrepareLease = ++this.atomicTransformPrepareReadbackLease;
+        this.atomicTransformPrepareReadbackSlots = Array.from(
+            { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
+            (_, index) => ({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-atomic-transform-prepare-readback-${index}`,
+                    this.hostAtomicTransformPrepareProgram.buffer.byteLength,
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                lease: atomicPrepareLease
+            })
+        );
+        this.atomicTransformPrepareReadbackCursor = 0;
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        const atomicTransformLease = ++this.atomicTransformReadbackLease;
+        this.atomicTransformReadbackSlots = Array.from(
+            { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
+            (_, index) => ({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-atomic-transform-readback-${index}`,
+                    this.hostAtomicTransformProgram.buffer.byteLength,
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                lease: atomicTransformLease
+            })
+        );
+        this.atomicTransformReadbackCursor = 0;
+        this.pendingAtomicTransformReadbacks = 0;
         const trackedPoseReadbackLease = ++this.trackedPoseReadbackLease;
         this.trackedPoseReadbackSlots = [];
         for (let index = 0; index < TRACKED_POSE_READBACK_SLOT_COUNT; index++) {
@@ -8145,6 +9961,17 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(3),
                 storageLayoutEntry(11),
                 storageLayoutEntry(13, 'read-only-storage')
+            ]
+        });
+        const computeAtomicTransformFirstHitBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-atomic-transform-first-hit-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(4, 'read-only-storage'),
+                storageLayoutEntry(14),
+                storageLayoutEntry(15)
             ]
         });
         const computeWorldFullLayout = device.createBindGroupLayout({
@@ -8322,6 +10149,12 @@ export class GpuCircleBodySimulation {
                 computeEmptyLayout,
                 computeParamsLayout,
                 computeDirectionalDefenseEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT]: [
+                computeAtomicTransformFirstHitBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeMaximumDamageWindowEventsLayout
             ],
             [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                 computeTrackedPoseLayout
@@ -8534,6 +10367,62 @@ export class GpuCircleBodySimulation {
             })];
         }));
 
+        const atomicTransformBindingPlan = Object.freeze({
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.CLEAR_PREPARE]: [7],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREPARE]: [0, 2, 6, 7, 9],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.CLEAR_TRANSFORM]: [8],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORM]: [
+                0, 2, 6, 8, 9, 18, 22, 23
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: [
+                8, 16, 29
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.SEAL_TRANSFORM]: [8],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.REKEY_EFFECTS]: [8, 16, 29],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_BODIES]: [
+                1, 2, 3, 8, 17, 18, 19
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_STATE]: [
+                4, 5, 6, 8, 20, 21, 22
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: [
+                8, 10, 11, 12, 13, 23, 24, 25, 26
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_CONTROL]: [
+                8, 14, 15, 27, 28
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.FINALIZE_TRANSFORM]: [8]
+        });
+        const atomicTransformReadOnlyBindings = new Set([
+            0, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28
+        ]);
+        const atomicTransformPipelineLayouts = Object.fromEntries(
+            Object.entries(atomicTransformBindingPlan).map(([
+                entryPoint,
+                bindings
+            ]) => {
+                if (new Set(bindings).size !== bindings.length
+                    || bindings.length
+                        > REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE) {
+                    throw new RangeError(
+                        `AtomicTransform ${entryPoint} storage profile이 <=9를 위반합니다.`
+                    );
+                }
+                return [entryPoint, device.createPipelineLayout({
+                    label: `cirvivor-gpu-atomic-transform-${entryPoint}-layout`,
+                    bindGroupLayouts: [device.createBindGroupLayout({
+                        label: `cirvivor-gpu-atomic-transform-${entryPoint}-bindings`,
+                        entries: bindings.map((binding) => storageLayoutEntry(
+                            binding,
+                            atomicTransformReadOnlyBindings.has(binding)
+                                ? 'read-only-storage'
+                                : 'storage'
+                        ))
+                    })]
+                })];
+            })
+        );
+
         const computeModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-compute-shader',
             code: GPU_COLLISION_COMPUTE_WGSL
@@ -8545,6 +10434,10 @@ export class GpuCircleBodySimulation {
         const formationModule = device.createShaderModule({
             label: 'cirvivor-gpu-formation-runtime-compute-shader',
             code: GPU_FORMATION_RUNTIME_COMPUTE_WGSL
+        });
+        const atomicTransformModule = device.createShaderModule({
+            label: 'cirvivor-gpu-atomic-transform-runtime-compute-shader',
+            code: GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
         });
         const indirectModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-indirect-shader',
@@ -8585,10 +10478,26 @@ export class GpuCircleBodySimulation {
                 })
             ])
         );
+        const atomicTransform = Object.fromEntries(
+            Object.values(GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT).map((
+                entryPoint
+            ) => [
+                entryPoint,
+                device.createComputePipeline({
+                    label: `cirvivor-gpu-atomic-transform-${entryPoint}`,
+                    layout: atomicTransformPipelineLayouts[entryPoint],
+                    compute: {
+                        module: atomicTransformModule,
+                        entryPoint
+                    }
+                })
+            ])
+        );
         this.pipelines = {
             compute,
             effect,
             formation,
+            atomicTransform,
             updateIndirectArgs: device.createComputePipeline({
                 label: 'cirvivor-gpu-circle-update-indirect-args',
                 layout: indirectPipelineLayout,
@@ -8772,6 +10681,62 @@ export class GpuCircleBodySimulation {
             createFormationBindGroupsForPool(0),
             createFormationBindGroupsForPool(1)
         ];
+        const atomicTransformCommonBuffers = {
+            0: this.buffers.counts,
+            1: this.buffers.physics,
+            2: this.buffers.simulation,
+            3: this.buffers.temporary,
+            4: this.buffers.contactHandlers,
+            5: this.buffers.combatStates,
+            6: this.buffers.atomicTransformStates,
+            7: this.buffers.atomicTransformPrepareProgram,
+            8: this.buffers.atomicTransformProgram,
+            9: this.buffers.effectSummaries,
+            10: this.buffers.effectSummaries,
+            11: this.buffers.effectEmitterStates,
+            12: this.buffers.formationStates,
+            13: this.buffers.renderStyles,
+            14: this.buffers.enemyBehaviorStates,
+            15: this.buffers.bodyControlStates,
+            17: this.buffers.atomicTransformTemplatePhysics,
+            18: this.buffers.atomicTransformTemplateSimulation,
+            19: this.buffers.atomicTransformTemplateTemporary,
+            20: this.buffers.atomicTransformTemplateContactHandlers,
+            21: this.buffers.atomicTransformTemplateCombatStates,
+            22: this.buffers.atomicTransformTemplateStates,
+            23: this.buffers.atomicTransformTemplateEffectSummaries,
+            24: this.buffers.atomicTransformTemplateEffectEmitters,
+            25: this.buffers.atomicTransformTemplateFormationStates,
+            26: this.buffers.atomicTransformTemplateRenderStyles,
+            27: this.buffers.atomicTransformTemplateEnemyBehaviorStates,
+            28: this.buffers.atomicTransformTemplateBodyControlStates,
+            29: this.buffers.effectPoolState
+        };
+        const createAtomicTransformBindGroupsForPool = (poolIndex) => {
+            const buffers = {
+                ...atomicTransformCommonBuffers,
+                16: poolIndex === 0
+                    ? this.buffers.effectInstancesA
+                    : this.buffers.effectInstancesB
+            };
+            return Object.fromEntries(Object.entries(
+                atomicTransformBindingPlan
+            ).map(([entryPoint, bindings]) => [
+                entryPoint,
+                device.createBindGroup({
+                    label: `cirvivor-gpu-atomic-transform-${entryPoint}-${poolIndex}`,
+                    layout: atomicTransform[entryPoint].getBindGroupLayout(0),
+                    entries: bindings.map((binding) => ({
+                        binding,
+                        resource: resource(buffers[binding])
+                    }))
+                })
+            ]));
+        };
+        const atomicTransformByPool = [
+            createAtomicTransformBindGroupsForPool(0),
+            createAtomicTransformBindGroupsForPool(1)
+        ];
         const computeBodiesBase = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-bodies-base',
             layout: computeBodiesBaseLayout,
@@ -8855,6 +10820,18 @@ export class GpuCircleBodySimulation {
                     binding: 13,
                     resource: resource(this.buffers.towerGameplayTargetConfig)
                 }
+            ]
+        });
+        const computeAtomicTransformFirstHitBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-atomic-transform-first-hit-bodies',
+            layout: computeAtomicTransformFirstHitBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 4, resource: resource(this.buffers.contactHandlers) },
+                { binding: 14, resource: resource(this.buffers.atomicTransformStates) },
+                { binding: 15, resource: resource(this.buffers.atomicTransformCandidates) }
             ]
         });
         const computeWorldFull = device.createBindGroup({
@@ -8979,6 +10956,7 @@ export class GpuCircleBodySimulation {
         this.bindGroups = {
             effectByPool,
             formationByPool,
+            atomicTransformByPool,
             computeProfiles: {
                 [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
                     computeBodiesBase,
@@ -9036,6 +11014,12 @@ export class GpuCircleBodySimulation {
                     computeEmpty,
                     computeParams,
                     computeDirectionalDefenseEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT]: [
+                    computeAtomicTransformFirstHitBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeMaximumDamageWindowEvents
                 ],
                 [COMPUTE_PIPELINE_PROFILE.TRACKED_POSE]: [
                     computeTrackedPose
@@ -9114,6 +11098,32 @@ export class GpuCircleBodySimulation {
             this.hostFormationTransformProgram.buffer
         );
         queue.writeBuffer(
+            this.buffers.atomicTransformPrepareProgram,
+            0,
+            this.hostAtomicTransformPrepareProgram.buffer
+        );
+        queue.writeBuffer(
+            this.buffers.atomicTransformProgram,
+            0,
+            this.hostAtomicTransformProgram.buffer
+        );
+        for (const [bufferKey, source] of [
+            ['atomicTransformTemplatePhysics', this.hostAtomicTransformTemplateStorage.physicsBuffer],
+            ['atomicTransformTemplateSimulation', this.hostAtomicTransformTemplateStorage.simulationBuffer],
+            ['atomicTransformTemplateTemporary', this.hostAtomicTransformTemplateStorage.temporaryBuffer],
+            ['atomicTransformTemplateContactHandlers', this.hostAtomicTransformTemplateStorage.contactHandlerBuffer],
+            ['atomicTransformTemplateCombatStates', this.hostAtomicTransformTemplateStorage.combatStateBuffer],
+            ['atomicTransformTemplateStates', this.hostAtomicTransformTemplateStorage.atomicTransformStateBuffer],
+            ['atomicTransformTemplateEffectSummaries', this.hostAtomicTransformTemplateEffectBodyState.summaryBuffer],
+            ['atomicTransformTemplateEffectEmitters', this.hostAtomicTransformTemplateEffectBodyState.emitterStateBuffer],
+            ['atomicTransformTemplateFormationStates', this.hostAtomicTransformTemplateFormationBodyState],
+            ['atomicTransformTemplateRenderStyles', this.hostAtomicTransformTemplateRenderStyles],
+            ['atomicTransformTemplateEnemyBehaviorStates', this.hostAtomicTransformTemplateStorage.enemyBehaviorStateBuffer],
+            ['atomicTransformTemplateBodyControlStates', this.hostAtomicTransformTemplateBodyControlStates]
+        ]) {
+            queue.writeBuffer(this.buffers[bufferKey], 0, source);
+        }
+        queue.writeBuffer(
             this.buffers.trackedPoseConfig,
             0,
             this.trackedPoseConfigBytes
@@ -9158,6 +11168,13 @@ export class GpuCircleBodySimulation {
                 this.hostStorage.combatStateBuffer,
                 0,
                 bodyCount * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            );
+            queue.writeBuffer(
+                this.buffers.atomicTransformStates,
+                0,
+                this.hostStorage.atomicTransformStateBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
             );
             queue.writeBuffer(
                 this.buffers.enemyBehaviorStates,
@@ -9368,6 +11385,20 @@ export class GpuCircleBodySimulation {
         }
     }
 
+    #setAtomicTransformEntry(pass, entryPoint) {
+        const pipeline = this.pipelines.atomicTransform[entryPoint];
+        const bindGroup = this.bindGroups.atomicTransformByPool[
+            this.effectActivePoolIndex
+        ]?.[entryPoint];
+        if (!pipeline || !bindGroup) {
+            throw new RangeError(
+                `등록되지 않은 AtomicTransform pipeline입니다: ${entryPoint}`
+            );
+        }
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, bindGroup);
+    }
+
     #releaseGpuResources() {
         this.idleReleasePending = false;
         this.overflowReadbackLease++;
@@ -9418,6 +11449,26 @@ export class GpuCircleBodySimulation {
         this.stagedFormationPrepareBatch = null;
         this.armedFormationTransform = null;
         this.authenticFormationPrepareByKey.clear();
+        this.atomicTransformPrepareReadbackLease++;
+        for (const slot of this.atomicTransformPrepareReadbackSlots) {
+            slot.inFlight = false;
+            try { slot.buffer?.destroy?.(); } catch { /* retired */ }
+        }
+        this.atomicTransformPrepareReadbackSlots = [];
+        this.pendingAtomicTransformPrepareReadbacks = 0;
+        this.atomicTransformPrepareReadbackCursor = 0;
+        this.atomicTransformPrepareBatchQueue.length = 0;
+        this.atomicTransformReadbackLease++;
+        for (const slot of this.atomicTransformReadbackSlots) {
+            slot.inFlight = false;
+            try { slot.buffer?.destroy?.(); } catch { /* retired */ }
+        }
+        this.atomicTransformReadbackSlots = [];
+        this.pendingAtomicTransformReadbacks = 0;
+        this.atomicTransformReadbackCursor = 0;
+        this.stagedAtomicTransformPrepareBatch = null;
+        this.armedAtomicTransform = null;
+        this.authenticAtomicTransformPrepareByFingerprint.clear();
         this.trackedPoseReadbackLease++;
         for (const slot of this.trackedPoseReadbackSlots) {
             slot.inFlight = false;

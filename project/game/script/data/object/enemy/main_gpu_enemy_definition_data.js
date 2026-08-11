@@ -39,8 +39,10 @@ export function createMainGpuEnemyDefinition(
 ) {
     const allowedOptionKeys = new Set([
         'spawnPolicy',
+        'combatProfileId',
         'behaviorProfileId',
         'formationDefinitionId',
+        'atomicTransformProfileId',
         'capabilityIds',
         'render'
     ]);
@@ -63,10 +65,12 @@ export function createMainGpuEnemyDefinition(
         spawnPolicy: options.spawnPolicy ?? ENEMY_SPAWN_POLICY.NATURAL,
         shapeDefinitionId,
         physicsProfileId: MAIN_GPU_ENEMY_PHYSICS_PROFILE_ID,
-        combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
+        combatProfileId: options.combatProfileId
+            ?? MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
         behaviorProfileId: options.behaviorProfileId
             ?? CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: options.formationDefinitionId ?? null,
+        atomicTransformProfileId: options.atomicTransformProfileId ?? null,
         capabilityIds: options.capabilityIds
             ?? MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render

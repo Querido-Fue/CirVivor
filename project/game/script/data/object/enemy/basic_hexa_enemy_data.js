@@ -22,6 +22,9 @@ export const BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID = 'basic_hexa_group_01';
 export const BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID = 'basic_hexa_hive_01';
 export const BASIC_HEXA_MINIMUM_MEMBER_COUNT = 1;
 export const BASIC_HEXA_MAXIMUM_MEMBER_COUNT = 6;
+export const HEXA_MANY_TO_ONE_ATOMIC_TRANSFORM_PROFILE_ID = (
+    'hexa-many-to-one-01'
+);
 
 export const BASIC_HEXA_FORMATION_CAPABILITY_IDS = Object.freeze([
     ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -208,6 +211,8 @@ export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
         spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
         behaviorProfileId: HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID,
+        atomicTransformProfileId:
+            HEXA_MANY_TO_ONE_ATOMIC_TRANSFORM_PROFILE_ID,
         capabilityIds: BASIC_HEXA_FORMATION_CAPABILITY_IDS
     }
 );
@@ -219,6 +224,8 @@ const BASIC_HEXA_GROUP_ENEMY_DATA = createMainGpuEnemyDefinition(
         spawnPolicy: ENEMY_SPAWN_POLICY.TRANSFORM_PRIVATE,
         behaviorProfileId: HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID,
+        atomicTransformProfileId:
+            HEXA_MANY_TO_ONE_ATOMIC_TRANSFORM_PROFILE_ID,
         capabilityIds: BASIC_HEXA_FORMATION_CAPABILITY_IDS
     }
 );

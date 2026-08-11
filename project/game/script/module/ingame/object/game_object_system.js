@@ -35,6 +35,9 @@ import {
 import {
     FormationRuntimeDirector
 } from './enemy/formation_runtime_director.js';
+import {
+    JorangSplitLineageDirector
+} from './enemy/jorang_split_lineage_director.js';
 import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
@@ -61,6 +64,9 @@ import {
 import {
     GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION
 } from '../physics/gpu/gpu_formation_runtime_abi.js';
+import {
+    GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+} from '../physics/gpu/gpu_atomic_transform_runtime_abi.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
@@ -197,6 +203,16 @@ export class GameObjectSystem {
         if (typeof this.formationRuntimeDirectorFactory !== 'function') {
             throw new TypeError('formationRuntimeDirectorFactory는 함수여야 합니다.');
         }
+        this.jorangSplitLineageDirectorFactory
+            = dependencies?.jorangSplitLineageDirectorFactory
+                ?? ((directorOptions) => new JorangSplitLineageDirector(
+                    directorOptions
+                ));
+        if (typeof this.jorangSplitLineageDirectorFactory !== 'function') {
+            throw new TypeError(
+                'jorangSplitLineageDirectorFactory는 함수여야 합니다.'
+            );
+        }
         this.endpointSessionCount = 0;
         this.enemySimulationEndpoint = null;
         this.enemySimulationBackend = null;
@@ -207,6 +223,7 @@ export class GameObjectSystem {
         this.enemyCoreImpactDirector = null;
         this.pentagonEffectDirector = null;
         this.formationRuntimeDirector = null;
+        this.jorangSplitLineageDirector = null;
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             try {
                 if (this.gameplayWorldActorsEnabled) {
@@ -224,7 +241,16 @@ export class GameObjectSystem {
                     = this.#createFormationRuntimeDirector(
                         this.enemySimulationEndpoint
                     );
+                this.jorangSplitLineageDirector
+                    = this.#createJorangSplitLineageDirector(
+                        this.enemySimulationEndpoint
+                    );
             } catch (error) {
+                try {
+                    this.jorangSplitLineageDirector?.destroy();
+                } catch {
+                    // 최초 J lineage director 생성 실패의 원래 오류를 보존합니다.
+                }
                 try {
                     this.formationRuntimeDirector?.destroy();
                 } catch {
@@ -255,6 +281,7 @@ export class GameObjectSystem {
                 this.enemyCoreImpactDirector = null;
                 this.pentagonEffectDirector = null;
                 this.formationRuntimeDirector = null;
+                this.jorangSplitLineageDirector = null;
                 this.enemySimulationEndpoint = null;
                 this.enemySimulationBackend = null;
                 this.worldRegistry = null;
@@ -479,6 +506,11 @@ export class GameObjectSystem {
         return this.formationRuntimeDirector?.getStatus() ?? null;
     }
 
+    /** J/C′ lineage-global pending/backoff/atomic transform 상태입니다. */
+    getJorangSplitLineageStatus() {
+        return this.jorangSplitLineageDirector?.getStatus() ?? null;
+    }
+
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
     getTerminalStatus() {
         return Object.freeze({
@@ -507,6 +539,7 @@ export class GameObjectSystem {
             lastCoreImpactFacts: this.lastCoreImpactFacts,
             pentagonEffect: this.getPentagonEffectStatus(),
             formation: this.getFormationRuntimeStatus(),
+            jorangSplitLineage: this.getJorangSplitLineageStatus(),
             terminal: this.getTerminalStatus()
         });
     }
@@ -535,7 +568,8 @@ export class GameObjectSystem {
             || this.hostileAttackDirector?.requiresRecovery() === true
             || this.enemyCoreImpactDirector?.requiresRecovery() === true
             || this.pentagonEffectDirector?.requiresRecovery() === true
-            || this.formationRuntimeDirector?.requiresRecovery() === true;
+            || this.formationRuntimeDirector?.requiresRecovery() === true
+            || this.jorangSplitLineageDirector?.requiresRecovery() === true;
     }
 
     isGpuWorldRecoveryRequired() {
@@ -586,11 +620,49 @@ export class GameObjectSystem {
             && (this.hostileAttackDirector?.requiresRecovery() === true
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
-                || this.formationRuntimeDirector?.requiresRecovery() === true)) {
+                || this.formationRuntimeDirector?.requiresRecovery() === true
+                || this.jorangSplitLineageDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery();
         }
 
         if (this.pendingEnemyFixedTick === 0) {
+            // T-1 prepare가 제출됐지만 비동기 GPU readback이 아직 끝나지 않은
+            // 경우는 recovery가 아닙니다. 다른 completion domain의 watermark나
+            // lifecycle/stage/fixed state를 건드리기 전에 exact T 경계를 그대로
+            // 보존하고 다음 frame에서 같은 proposedFixedTick을 재시도합니다.
+            const completedAtomicTransformPrograms
+                = this.enemySimulationEndpoint
+                    .commitCompletedAtomicTransformProgramsAtFixedBoundary(
+                        proposedFixedTick
+                    );
+            if (completedAtomicTransformPrograms.pending === true) {
+                return false;
+            }
+            if (completedAtomicTransformPrograms.protocolFailure) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'atomic-transform-completion-protocol',
+                        proposedFixedTick,
+                        completedAtomicTransformPrograms.protocolFailure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            this.jorangSplitLineageDirector?.observeCompletedPreparations(
+                completedAtomicTransformPrograms
+            );
+            if (this.jorangSplitLineageDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'atomic-transform-completion-observe',
+                        proposedFixedTick,
+                        this.jorangSplitLineageDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             const completedEffectPrograms = this.enemySimulationEndpoint
                 .commitCompletedEffectProgramsAtFixedBoundary(proposedFixedTick);
             if (completedEffectPrograms.protocolFailure) {
@@ -656,6 +728,20 @@ export class GameObjectSystem {
                 return this.#pauseForGpuRecovery();
             }
             this.lastCompletedGpuEvents = completedEvents;
+            this.jorangSplitLineageDirector?.observeCompletedEvents(
+                completedEvents
+            );
+            if (this.jorangSplitLineageDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'atomic-transform-trigger-observe',
+                        proposedFixedTick,
+                        this.jorangSplitLineageDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             let towerGameplayTargetClearFailure = null;
             this.lastTowerCombatFacts = this.towerCombatRoster
                 ?.commitCompletedEvents(completedEvents, this.worldRegistry)
@@ -793,6 +879,14 @@ export class GameObjectSystem {
                     || formationStage?.accepted === false) {
                     return this.#pauseForGpuRecovery();
                 }
+                const atomicTransformStage = this.jorangSplitLineageDirector
+                    ?.stageForFixedTick({
+                        targetFixedTick: proposedFixedTick
+                    }) ?? null;
+                if (atomicTransformStage?.recoveryRequired === true
+                    || atomicTransformStage?.accepted === false) {
+                    return this.#pauseForGpuRecovery();
+                }
             }
 
             const lifecycleResult = this.enemySimulationEndpoint
@@ -807,15 +901,29 @@ export class GameObjectSystem {
                         .getTerminalFixedProgramCancelStatus?.() ?? null;
                     const effectTerminalCancel = this.enemySimulationEndpoint
                         .getTerminalEffectProgramCancelStatus?.() ?? null;
+                    const formationTerminalCancel = this.enemySimulationEndpoint
+                        .getTerminalFormationProgramCancelStatus?.() ?? null;
+                    const atomicTransformTerminalCancel
+                        = this.enemySimulationEndpoint
+                            .getTerminalAtomicTransformProgramCancelStatus?.()
+                            ?? null;
                     return this.#sealTerminalFailure(
-                        effectTerminalCancel?.owner?.state === 'failed'
+                        atomicTransformTerminalCancel?.owner?.state === 'failed'
+                            ? 'terminal-atomic-transform-program-cancel'
+                            : formationTerminalCancel?.owner?.state === 'failed'
+                            ? 'terminal-formation-program-cancel'
+                            : effectTerminalCancel?.owner?.state === 'failed'
                             ? 'terminal-effect-program-cancel'
                             : terminalCancel?.owner
                             && terminalCancel.owner.accepted !== true
                             ? 'terminal-fixed-program-cancel'
                             : 'terminal-lifecycle-commit',
                         proposedFixedTick,
-                        effectTerminalCancel?.owner?.state === 'failed'
+                        atomicTransformTerminalCancel?.owner?.state === 'failed'
+                            ? atomicTransformTerminalCancel.owner
+                            : formationTerminalCancel?.owner?.state === 'failed'
+                            ? formationTerminalCancel.owner
+                            : effectTerminalCancel?.owner?.state === 'failed'
                             ? effectTerminalCancel.owner
                             : terminalCancel?.owner?.accepted === false
                             ? terminalCancel.owner
@@ -880,6 +988,24 @@ export class GameObjectSystem {
                 }
                 return this.#pauseForGpuRecovery();
             }
+            this.jorangSplitLineageDirector?.observeFixedCommit(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            this.jorangSplitLineageDirector?.observeLifecycle(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            if (this.jorangSplitLineageDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'atomic-transform-lifecycle-observe',
+                        proposedFixedTick,
+                        this.jorangSplitLineageDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             if (expectedControlCommandId) {
                 const controls = lifecycleResult.fixedCommands?.controls ?? [];
                 if (controls.filter(({ commandId }) => (
@@ -921,6 +1047,37 @@ export class GameObjectSystem {
             this.pendingEnemyFixedTick = proposedFixedTick;
         }
 
+        const terminalFinalization = this.runOutcome.isDefeated();
+        if (terminalFinalization
+            && this.pendingEnemyFixedTick === proposedFixedTick) {
+            const atomicTerminal = this.enemySimulationEndpoint
+                .getTerminalAtomicTransformProgramCancelStatus?.() ?? null;
+            const atomicBackend = atomicTerminal?.backend;
+            if (atomicBackend?.state === 'failed') {
+                return this.#sealTerminalFailure(
+                    'terminal-atomic-transform-readback',
+                    proposedFixedTick,
+                    atomicBackend.failure ?? atomicBackend
+                );
+            }
+            if (atomicBackend?.state === 'submitted') {
+                const atomicSettlementPending
+                    = atomicBackend.pendingPrepareCount > 0
+                    || atomicBackend.pendingTransformCount > 0
+                    || atomicBackend.pendingReadbackCount > 0;
+                if (atomicSettlementPending) {
+                    return false;
+                }
+                // final submit은 이미 끝났습니다. 같은 T를 GPU에 다시 제출하지
+                // 않고 async transform readback이 만든 terminal evidence만 재평가합니다.
+                this.enemySimulationPaused = false;
+                this.enemySimulationRecoveryRequired = false;
+                this.lastCompletedEnemyFixedTick = proposedFixedTick;
+                this.pendingEnemyFixedTick = 0;
+                return this.#sealTerminalSuccess(proposedFixedTick);
+            }
+        }
+
         const hasActiveBodies = this.enemySimulationEndpoint.hasActiveBodies();
         const gpuSubmitted = this.enemySimulationEndpoint.fixedUpdate(
             delta,
@@ -931,7 +1088,6 @@ export class GameObjectSystem {
             || this.gameplayWorldActorsEnabled
             || hasActiveBodies
             || this.enemySimulationEndpoint.getPendingCommandCount() > 0;
-        const terminalFinalization = this.runOutcome.isDefeated();
         this.enemySimulationRecoveryRequired = !terminalFinalization
             && gpuStillRequired
             && this.enemySimulationEndpoint.requiresRecovery()
@@ -949,6 +1105,28 @@ export class GameObjectSystem {
             }
             this.enemySimulationPaused = true;
             return false;
+        }
+
+        if (terminalFinalization) {
+            const atomicTerminal = this.enemySimulationEndpoint
+                .getTerminalAtomicTransformProgramCancelStatus?.() ?? null;
+            const atomicBackend = atomicTerminal?.backend;
+            if (atomicBackend?.state === 'failed') {
+                return this.#sealTerminalFailure(
+                    'terminal-atomic-transform-readback',
+                    proposedFixedTick,
+                    atomicBackend.failure ?? atomicBackend
+                );
+            }
+            if (atomicBackend?.state === 'submitted'
+                && (atomicBackend.pendingPrepareCount > 0
+                    || atomicBackend.pendingTransformCount > 0
+                    || atomicBackend.pendingReadbackCount > 0)) {
+                // Registry/host publication과 final GPU program submit은 이미
+                // 끝났지만 authentic transform readback이 남았습니다. T를 pending
+                // 상태로 보존해 다음 호출이 submit 없이 evidence만 재평가합니다.
+                return false;
+            }
         }
 
         this.enemySimulationPaused = false;
@@ -1032,7 +1210,8 @@ export class GameObjectSystem {
                 || this.hostileAttackDirector?.requiresRecovery() === true
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
-                || this.formationRuntimeDirector?.requiresRecovery() === true;
+                || this.formationRuntimeDirector?.requiresRecovery() === true
+                || this.jorangSplitLineageDirector?.requiresRecovery() === true;
         return submitted;
     }
 
@@ -1062,6 +1241,7 @@ export class GameObjectSystem {
         let replacementEnemyCoreImpactDirector = null;
         let replacementPentagonEffectDirector = null;
         let replacementFormationRuntimeDirector = null;
+        let replacementJorangSplitLineageDirector = null;
         try {
             const replacement = this.#createGpuEndpoint(false);
             replacementEndpoint = replacement.endpoint;
@@ -1101,7 +1281,16 @@ export class GameObjectSystem {
             replacementFormationRuntimeDirector = this.formationRuntimeDirector
                 ? this.#createFormationRuntimeDirector(replacementEndpoint)
                 : null;
+            replacementJorangSplitLineageDirector
+                = this.jorangSplitLineageDirector
+                ? this.#createJorangSplitLineageDirector(replacementEndpoint)
+                : null;
         } catch {
+            try {
+                replacementJorangSplitLineageDirector?.destroy();
+            } catch {
+                // 실패한 replacement J lineage state만 폐기합니다.
+            }
             try {
                 replacementFormationRuntimeDirector?.destroy();
             } catch {
@@ -1140,6 +1329,7 @@ export class GameObjectSystem {
             return false;
         }
         this.enemySimulationEndpoint.synchronizePresentation();
+        this.jorangSplitLineageDirector?.destroy();
         this.formationRuntimeDirector?.destroy();
         this.pentagonEffectDirector?.destroy();
         this.enemyCoreImpactDirector?.destroy();
@@ -1163,6 +1353,8 @@ export class GameObjectSystem {
         this.enemyCoreImpactDirector = replacementEnemyCoreImpactDirector;
         this.pentagonEffectDirector = replacementPentagonEffectDirector;
         this.formationRuntimeDirector = replacementFormationRuntimeDirector;
+        this.jorangSplitLineageDirector
+            = replacementJorangSplitLineageDirector;
         this.waveDirector = replacementWaveDirector;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -1199,6 +1391,8 @@ export class GameObjectSystem {
         this.pentagonEffectDirector = null;
         this.formationRuntimeDirector?.destroy();
         this.formationRuntimeDirector = null;
+        this.jorangSplitLineageDirector?.destroy();
+        this.jorangSplitLineageDirector = null;
         this.enemyCoreImpactDirector?.destroy();
         this.enemyCoreImpactDirector = null;
         this.#revokeCoreImpactCleanupBinding();
@@ -1277,6 +1471,10 @@ export class GameObjectSystem {
             fixedTick,
             'run-defeated'
         );
+        this.jorangSplitLineageDirector?.closeForTerminal(
+            fixedTick,
+            'run-defeated'
+        );
         this.enemySimulationEndpoint.closeGameplayIngress?.(
             'run-defeated',
             fixedTick
@@ -1324,6 +1522,14 @@ export class GameObjectSystem {
         const formationBackendEvidence = formationTerminalCancel?.backend;
         const formationRosterEvidence
             = this.formationRuntimeDirector?.getStatus() ?? null;
+        const atomicTransformTerminalCancel = this.enemySimulationEndpoint
+            .getTerminalAtomicTransformProgramCancelStatus?.() ?? null;
+        const atomicTransformOwnerEvidence
+            = atomicTransformTerminalCancel?.owner;
+        const atomicTransformBackendEvidence
+            = atomicTransformTerminalCancel?.backend;
+        const atomicTransformRosterEvidence
+            = this.jorangSplitLineageDirector?.getStatus() ?? null;
         const endpointStatus = this.enemySimulationEndpoint.getStatus();
         const gpuStatus = endpointStatus.backend?.gpu
             ?? endpointStatus.backend
@@ -1410,12 +1616,52 @@ export class GameObjectSystem {
             && formationRosterEvidence.terminal.fixedCommitObserved === true
             && formationRosterEvidence.terminal.lifecycleObserved === true
             && formationRosterEvidence.terminal.rosterSealed === true;
+        const atomicTransformCancellationSubmitted
+            = atomicTransformOwnerEvidence?.abiVersion
+                === GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+            && atomicTransformOwnerEvidence.state === 'armed'
+            && atomicTransformOwnerEvidence.finalFixedTick === fixedTick
+            && atomicTransformOwnerEvidence.submittedTick === 0
+            && atomicTransformOwnerEvidence.pendingPrepareCount === 0
+            && atomicTransformOwnerEvidence.pendingTransformCount === 0
+            && atomicTransformOwnerEvidence.pendingReadbackCount === 0
+            && atomicTransformOwnerEvidence.failure === null
+            && atomicTransformBackendEvidence?.abiVersion
+                === GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+            && atomicTransformBackendEvidence.state === 'submitted'
+            && atomicTransformBackendEvidence.finalFixedTick === fixedTick
+            && atomicTransformBackendEvidence.submittedTick === fixedTick
+            && atomicTransformBackendEvidence.pendingPrepareCount === 0
+            && atomicTransformBackendEvidence.pendingTransformCount === 0
+            && atomicTransformBackendEvidence.pendingReadbackCount === 0
+            && atomicTransformBackendEvidence.failure === null
+            && atomicTransformBackendEvidence.sessionGeneration
+                === atomicTransformOwnerEvidence.sessionGeneration
+            && atomicTransformBackendEvidence.deviceGeneration
+                === atomicTransformOwnerEvidence.deviceGeneration
+            && atomicTransformBackendEvidence.authoritativeEpoch
+                === atomicTransformOwnerEvidence.authoritativeEpoch
+            && endpointStatus.atomicTransformCommands?.pendingPrepareCount === 0
+            && endpointStatus.atomicTransformCommands?.pendingTransformCount === 0
+            && endpointStatus.atomicTransformCommands?.pendingReadbackCount === 0;
+        const atomicTransformRosterSealed
+            = atomicTransformRosterEvidence?.recoveryRequired === false
+            && atomicTransformRosterEvidence.pendingTransformBatchCount === 0
+            && atomicTransformRosterEvidence.pendingFirstHitCount === 0
+            && atomicTransformRosterEvidence.circlePrimeDueCount === 0
+            && atomicTransformRosterEvidence.terminal?.finalFixedTick
+                === fixedTick
+            && atomicTransformRosterEvidence.terminal.fixedCommitObserved === true
+            && atomicTransformRosterEvidence.terminal.lifecycleObserved === true
+            && atomicTransformRosterEvidence.terminal.rosterSealed === true;
         if (!towerGameplayTargetCleared
             || !cancellationSubmitted
             || !effectCancellationSubmitted
             || !effectRosterSealed
             || !formationCancellationSubmitted
-            || !formationRosterSealed) {
+            || !formationRosterSealed
+            || !atomicTransformCancellationSubmitted
+            || !atomicTransformRosterSealed) {
             return this.#sealTerminalFailure(
                 !towerGameplayTargetCleared
                     ? 'terminal-tower-gameplay-target-evidence'
@@ -1427,7 +1673,11 @@ export class GameObjectSystem {
                             ? 'terminal-effect-roster-seal'
                             : !formationCancellationSubmitted
                                 ? 'terminal-formation-program-cancel'
-                                : 'terminal-formation-roster-seal',
+                                : !formationRosterSealed
+                                    ? 'terminal-formation-roster-seal'
+                                    : !atomicTransformCancellationSubmitted
+                                        ? 'terminal-atomic-transform-program-cancel'
+                                        : 'terminal-atomic-transform-roster-seal',
                 fixedTick,
                 !towerGameplayTargetCleared
                     ? towerGameplayTargetEvidence
@@ -1443,7 +1693,13 @@ export class GameObjectSystem {
                                 ? formationBackendEvidence
                                     ?? formationOwnerEvidence
                                     ?? formationTerminalCancel
-                                : formationRosterEvidence
+                                : !formationRosterSealed
+                                    ? formationRosterEvidence
+                                    : !atomicTransformCancellationSubmitted
+                                        ? atomicTransformBackendEvidence
+                                            ?? atomicTransformOwnerEvidence
+                                            ?? atomicTransformTerminalCancel
+                                        : atomicTransformRosterEvidence
             );
         }
         this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
@@ -1640,6 +1896,37 @@ export class GameObjectSystem {
                 // 잘못된 Formation director 정리가 old world를 건드리지 않게 합니다.
             }
             throw new TypeError('FormationRuntimeDirector contract가 올바르지 않습니다.');
+        }
+        return director;
+    }
+
+    #createJorangSplitLineageDirector(endpoint) {
+        const director = this.jorangSplitLineageDirectorFactory({
+            registry: endpoint.getRegistry(),
+            atomicTransformCommandPort:
+                endpoint.getAtomicTransformCommandPort(),
+            sessionGeneration: endpoint.getStatus().sessionGeneration,
+            capacity: endpoint.getCapacity()
+        });
+        if (!director
+            || typeof director.observeLifecycle !== 'function'
+            || typeof director.observeCompletedEvents !== 'function'
+            || typeof director.observeCompletedPreparations !== 'function'
+            || typeof director.stageForFixedTick !== 'function'
+            || typeof director.observeFixedCommit !== 'function'
+            || typeof director.requiresRecovery !== 'function'
+            || typeof director.getStatus !== 'function'
+            || typeof director.resetGpuBinding !== 'function'
+            || typeof director.closeForTerminal !== 'function'
+            || typeof director.destroy !== 'function') {
+            try {
+                director?.destroy?.();
+            } catch {
+                // 잘못된 J lineage director가 old world를 건드리지 않게 합니다.
+            }
+            throw new TypeError(
+                'JorangSplitLineageDirector contract가 올바르지 않습니다.'
+            );
         }
         return director;
     }

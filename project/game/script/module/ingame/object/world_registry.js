@@ -1,3 +1,8 @@
+import {
+    ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID,
+    normalizeEnemyAtomicTransformDescriptor
+} from '../contract/enemy_atomic_transform_contract.js';
+
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const FIRST_ENTITY_ID = 1;
 
@@ -38,17 +43,85 @@ function normalizeHandle(source, label) {
     };
 }
 
-function compareHandles(left, right) {
-    return left.entityId - right.entityId
-        || left.incarnation - right.incarnation;
-}
-
 function freezeHandle(source) {
     return Object.freeze({
         entityId: source.entityId,
         incarnation: source.incarnation
     });
 }
+
+function snapshotOwnDataProperties(source, allowedKeys, label) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError(`${label}은 object여야 합니다.`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    if (ownKeys.some((key) => typeof key === 'symbol')) {
+        throw new TypeError(`${label}에는 symbol key를 허용하지 않습니다.`);
+    }
+    const snapshot = Object.create(null);
+    for (const key of ownKeys) {
+        if (!allowedKeys.has(key)) {
+            throw new RangeError(`${label}에 알 수 없는 필드가 있습니다: ${key}`);
+        }
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new TypeError(`${label}.${key}은 getter/setter일 수 없습니다.`);
+        }
+        snapshot[key] = descriptor.value;
+    }
+    return snapshot;
+}
+
+function snapshotDenseArrayValues(source, maximumLength, label) {
+    if (!Array.isArray(source)) {
+        throw new TypeError(`${label}은 array여야 합니다.`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const ownKeys = Reflect.ownKeys(descriptors);
+    const lengthDescriptor = descriptors.length;
+    const length = lengthDescriptor?.value;
+    if (!lengthDescriptor
+        || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
+        || !Number.isSafeInteger(length)
+        || length <= 0
+        || length > maximumLength
+        || ownKeys.length !== length + 1
+        || ownKeys.some((key) => {
+            if (key === 'length') {
+                return false;
+            }
+            if (typeof key !== 'string') {
+                return true;
+            }
+            const index = Number(key);
+            return !Number.isSafeInteger(index)
+                || index < 0
+                || index >= length
+                || String(index) !== key;
+        })) {
+        throw new TypeError(`${label}은 bounded dense data array여야 합니다.`);
+    }
+    const values = [];
+    for (let index = 0; index < length; index++) {
+        const descriptor = descriptors[index];
+        if (!descriptor
+            || !Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new TypeError(`${label}[${index}]는 data property여야 합니다.`);
+        }
+        values.push(descriptor.value);
+    }
+    return values;
+}
+
+const ATOMIC_TRANSFORM_REQUEST_KEYS = new Set(['transforms']);
+const ATOMIC_TRANSFORM_ENTRY_KEYS = new Set([
+    'topologyId',
+    'sourceHandles',
+    'destination',
+    'destinations',
+    'effectTransferDestinationIndex'
+]);
 
 /**
  * registry 밖으로 엔진 객체나 가변 컬렉션을 누출하지 않도록 작은 metadata만 복제합니다.
@@ -67,7 +140,7 @@ function normalizeMetadata(source) {
     if (!source || typeof source !== 'object' || !isPlainObject) {
         throw new TypeError('entity metadata는 plain object여야 합니다.');
     }
-    const result = {};
+    const result = Object.create(null);
     for (const [key, value] of Object.entries(source)) {
         if (value !== null
             && value !== undefined
@@ -220,33 +293,80 @@ export class WorldRegistry {
     preflightAtomicTransformBatch(request, authority = null) {
         this.#assertUsable();
         this.#assertAtomicTransformAuthority(authority);
-        if (!Array.isArray(request?.transforms)
-            || request.transforms.length === 0
-            || request.transforms.length > this.capacity) {
-            throw new TypeError('atomic transform batch에는 bounded transform 배열이 필요합니다.');
-        }
+        const requestSnapshot = snapshotOwnDataProperties(
+            request,
+            ATOMIC_TRANSFORM_REQUEST_KEYS,
+            'atomicTransformBatch'
+        );
+        const requestedTransforms = snapshotDenseArrayValues(
+            requestSnapshot.transforms,
+            this.capacity,
+            'atomicTransformBatch.transforms'
+        );
         const claimedEntityIds = new Set();
-        const plans = [];
+        const destinationEntityIds = new Set();
+        const planSeeds = [];
+        const releasedEntityIds = [];
+        let sourceCount = 0;
+        let destinationCount = 0;
         for (let transformIndex = 0;
-            transformIndex < request.transforms.length;
+            transformIndex < requestedTransforms.length;
             transformIndex++) {
-            const transform = request.transforms[transformIndex];
-            if (!Array.isArray(transform?.sourceHandles)
-                || transform.sourceHandles.length !== 2) {
-                throw new TypeError(
-                    `transforms[${transformIndex}].sourceHandles는 정확히 두 개여야 합니다.`
+            const transform = snapshotOwnDataProperties(
+                requestedTransforms[transformIndex],
+                ATOMIC_TRANSFORM_ENTRY_KEYS,
+                `transforms[${transformIndex}]`
+            );
+            const hasDestination = Object.prototype.hasOwnProperty.call(
+                transform,
+                'destination'
+            );
+            const hasDestinations = Object.prototype.hasOwnProperty.call(
+                transform,
+                'destinations'
+            );
+            if (hasDestination === hasDestinations) {
+                throw new RangeError(
+                    `transforms[${transformIndex}]는 destination 또는 destinations 하나만 가져야 합니다.`
                 );
             }
-            const sourceHandles = transform.sourceHandles.map((handle, index) => (
-                normalizeHandle(
-                    handle,
-                    `transforms[${transformIndex}].sourceHandles[${index}]`
-                )
-            )).sort(compareHandles);
-            if (sourceHandles[0].entityId === sourceHandles[1].entityId
-                || claimedEntityIds.has(sourceHandles[0].entityId)
-                || claimedEntityIds.has(sourceHandles[1].entityId)) {
-                return null;
+            const hasLegacyDestination = hasDestination;
+            const legacyDestinations = hasDestinations
+                ? transform.destinations
+                : [transform.destination];
+            const topologyId = transform.topologyId
+                ?? (hasLegacyDestination
+                    ? ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE
+                    : null);
+            const isLegacyManyToOne = hasLegacyDestination
+                && topologyId
+                    === ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE;
+            if (hasLegacyDestination && !isLegacyManyToOne) {
+                throw new RangeError(
+                    `transforms[${transformIndex}].destination singular alias는 legacy MANY_TO_ONE에만 허용됩니다.`
+                );
+            }
+            if (hasLegacyDestination
+                && transform.effectTransferDestinationIndex !== undefined
+                && transform.effectTransferDestinationIndex !== 0) {
+                throw new RangeError(
+                    `transforms[${transformIndex}].effectTransferDestinationIndex는 exact 0이어야 합니다.`
+                );
+            }
+            const descriptor = normalizeEnemyAtomicTransformDescriptor({
+                topologyId,
+                sourceHandles: transform.sourceHandles,
+                destinations: legacyDestinations,
+                effectTransferDestinationIndex: isLegacyManyToOne
+                    ? 0
+                    : transform.effectTransferDestinationIndex
+            }, `transforms[${transformIndex}]`);
+            const sourceHandles = descriptor.sourceHandles;
+            for (const handle of sourceHandles) {
+                if (claimedEntityIds.has(handle.entityId)) {
+                    return null;
+                }
+                claimedEntityIds.add(handle.entityId);
             }
             const sourceRecords = sourceHandles.map((handle) => (
                 this.#findExactRecord(handle, 'atomicTransformSource')
@@ -254,25 +374,6 @@ export class WorldRegistry {
             if (sourceRecords.some((record) => record?.state !== 'active')) {
                 return null;
             }
-            claimedEntityIds.add(sourceHandles[0].entityId);
-            claimedEntityIds.add(sourceHandles[1].entityId);
-            const destination = transform.destination;
-            const kindId = requireNonEmptyString(
-                destination?.kindId,
-                `transforms[${transformIndex}].destination.kindId`
-            );
-            const definitionId = destination?.definitionId === undefined
-                || destination.definitionId === null
-                ? null
-                : requireNonEmptyString(
-                    destination.definitionId,
-                    `transforms[${transformIndex}].destination.definitionId`
-                );
-            const createdAtTick = requireNonNegativeSafeInteger(
-                destination?.createdAtTick,
-                `transforms[${transformIndex}].destination.createdAtTick`
-            );
-            const metadata = normalizeMetadata(destination?.metadata ?? null);
             const root = sourceHandles[0];
             if ((this.lastIncarnationByEntityId.get(root.entityId) ?? 0)
                     !== root.incarnation
@@ -281,34 +382,128 @@ export class WorldRegistry {
                     !== sourceRecords[0]) {
                 return null;
             }
-            plans.push(Object.freeze({
+            const destinations = descriptor.destinations.map((destination, index) => (
+                Object.freeze({
+                    kindId: requireNonEmptyString(
+                        destination?.kindId,
+                        `transforms[${transformIndex}].destinations[${index}].kindId`
+                    ),
+                    definitionId: destination?.definitionId === undefined
+                        || destination.definitionId === null
+                        ? null
+                        : requireNonEmptyString(
+                            destination.definitionId,
+                            `transforms[${transformIndex}].destinations[${index}].definitionId`
+                        ),
+                    createdAtTick: requireNonNegativeSafeInteger(
+                        destination?.createdAtTick,
+                        `transforms[${transformIndex}].destinations[${index}].createdAtTick`
+                    ),
+                    metadata: normalizeMetadata(destination?.metadata ?? null)
+                })
+            ));
+            sourceCount += sourceHandles.length;
+            destinationCount += destinations.length;
+            for (let sourceIndex = 1;
+                sourceIndex < sourceHandles.length;
+                sourceIndex++) {
+                releasedEntityIds.push(sourceHandles[sourceIndex].entityId);
+            }
+            planSeeds.push(Object.freeze({
+                topologyId: descriptor.topologyId,
                 sourceHandles: Object.freeze(sourceHandles.map(freezeHandle)),
                 sourceRecords: Object.freeze([...sourceRecords]),
-                destinationHandle: freezeHandle({
-                    entityId: root.entityId,
-                    incarnation: root.incarnation + 1
-                }),
-                destination: Object.freeze({
-                    kindId,
-                    definitionId,
-                    createdAtTick,
-                    metadata
-                })
+                destinations: Object.freeze(destinations),
+                effectTransferDestinationIndex:
+                    descriptor.effectTransferDestinationIndex
             }));
         }
+        const finalOccupiedCount = this.activeCount + this.reservedCount
+            - sourceCount + destinationCount;
+        if (finalOccupiedCount > this.capacity) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'atomic-transform-capacity',
+                retryable: true,
+                capacity: this.capacity,
+                occupiedCount: this.activeCount + this.reservedCount,
+                requiredCount: finalOccupiedCount
+            });
+        }
+        if (this.activeCount < sourceCount) {
+            return null;
+        }
+
+        // Additional destination identity는 source removal 후 사용 가능한
+        // non-root ID와 기존 free stack을 포함한 private allocator snapshot에서만
+        // 결정합니다. Token commit 전에는 reservation/handle이 노출되지 않습니다.
+        const finalFreeEntityIds = [...this.freeEntityIds, ...releasedEntityIds];
+        let nextEntityId = this.nextEntityId;
+        const plans = planSeeds.map((seed, transformIndex) => {
+            const root = seed.sourceHandles[0];
+            if (root.incarnation >= INVALID_HANDLE_COMPONENT - 1) {
+                throw new RangeError(
+                    `atomic transform root incarnation 공간이 고갈되었습니다: ${root.entityId}`
+                );
+            }
+            const destinationHandles = [freezeHandle({
+                entityId: root.entityId,
+                incarnation: root.incarnation + 1
+            })];
+            destinationEntityIds.add(root.entityId);
+            for (let destinationIndex = 1;
+                destinationIndex < seed.destinations.length;
+                destinationIndex++) {
+                const entityId = finalFreeEntityIds.length > 0
+                    ? finalFreeEntityIds.pop()
+                    : nextEntityId++;
+                if (entityId >= INVALID_HANDLE_COMPONENT) {
+                    throw new RangeError('WorldRegistry entity ID 공간이 고갈되었습니다.');
+                }
+                const incarnation
+                    = (this.lastIncarnationByEntityId.get(entityId) ?? 0) + 1;
+                if (incarnation >= INVALID_HANDLE_COMPONENT) {
+                    throw new RangeError(
+                        `entity incarnation 공간이 고갈되었습니다: ${entityId}`
+                    );
+                }
+                if (destinationEntityIds.has(entityId)) {
+                    throw new Error(
+                        `atomic transform destination allocator가 중복 ID를 생성했습니다: ${transformIndex}/${entityId}`
+                    );
+                }
+                destinationEntityIds.add(entityId);
+                destinationHandles.push(freezeHandle({ entityId, incarnation }));
+            }
+            return Object.freeze({
+                ...seed,
+                destinationHandles: Object.freeze(destinationHandles)
+            });
+        });
         const token = Object.freeze({});
         const plan = Object.freeze({
             generation: this.#atomicTransformGeneration,
             revision: this.revision,
+            sourceCount,
+            destinationCount,
+            finalFreeEntityIds: Object.freeze([...finalFreeEntityIds]),
+            nextEntityId,
             transforms: Object.freeze(plans)
         });
         this.#atomicTransformBatchPlans.set(token, plan);
         return Object.freeze({
+            accepted: true,
             token,
             registryRevision: this.revision,
             transforms: Object.freeze(plans.map((entry) => Object.freeze({
+                topologyId: entry.topologyId,
                 sourceHandles: entry.sourceHandles,
-                destinationHandle: entry.destinationHandle
+                destinationHandles: entry.destinationHandles,
+                effectTransferDestinationIndex:
+                    entry.effectTransferDestinationIndex,
+                ...(entry.destinationHandles.length === 1
+                    ? { destinationHandle: entry.destinationHandles[0] }
+                    : null)
             })))
         });
     }
@@ -342,7 +537,7 @@ export class WorldRegistry {
             return null;
         }
         for (const transform of plan.transforms) {
-            for (let index = 0; index < 2; index++) {
+            for (let index = 0; index < transform.sourceHandles.length; index++) {
                 const record = this.#findExactRecord(
                     transform.sourceHandles[index],
                     'atomicTransformSource'
@@ -360,13 +555,13 @@ export class WorldRegistry {
                 return null;
             }
         }
-        if (this.activeCount < (plan.transforms.length * 2)) {
+        if (this.activeCount < plan.sourceCount) {
             return null;
         }
 
+        // Mixed topology batch에서도 released source ID를 child1이 재사용할 수
+        // 있으므로 모든 source를 먼저 제거한 뒤 destination을 publish합니다.
         for (const transform of plan.transforms) {
-            const root = transform.sourceHandles[0];
-            const other = transform.sourceHandles[1];
             for (const record of transform.sourceRecords) {
                 const nextKindCount
                     = (this.activeCountByKind.get(record.kindId) ?? 1) - 1;
@@ -375,35 +570,53 @@ export class WorldRegistry {
                 } else {
                     this.activeCountByKind.delete(record.kindId);
                 }
+                this.recordsByEntityId.delete(record.handle.entityId);
             }
-            this.recordsByEntityId.delete(other.entityId);
-            this.freeEntityIds.push(other.entityId);
-            this.recordsByEntityId.set(root.entityId, {
-                handle: transform.destinationHandle,
-                kindId: transform.destination.kindId,
-                definitionId: transform.destination.definitionId,
-                createdAtTick: transform.destination.createdAtTick,
-                metadata: transform.destination.metadata,
-                state: 'active'
-            });
-            this.lastIncarnationByEntityId.set(
-                root.entityId,
-                transform.destinationHandle.incarnation
-            );
-            this.activeCountByKind.set(
-                transform.destination.kindId,
-                (this.activeCountByKind.get(transform.destination.kindId) ?? 0) + 1
-            );
         }
-        this.activeCount -= plan.transforms.length;
+        for (const transform of plan.transforms) {
+            for (let destinationIndex = 0;
+                destinationIndex < transform.destinations.length;
+                destinationIndex++) {
+                const destination = transform.destinations[destinationIndex];
+                const destinationHandle
+                    = transform.destinationHandles[destinationIndex];
+                this.recordsByEntityId.set(destinationHandle.entityId, {
+                    handle: destinationHandle,
+                    kindId: destination.kindId,
+                    definitionId: destination.definitionId,
+                    createdAtTick: destination.createdAtTick,
+                    metadata: destination.metadata,
+                    state: 'active'
+                });
+                this.lastIncarnationByEntityId.set(
+                    destinationHandle.entityId,
+                    destinationHandle.incarnation
+                );
+                this.activeCountByKind.set(
+                    destination.kindId,
+                    (this.activeCountByKind.get(destination.kindId) ?? 0) + 1
+                );
+            }
+        }
+        this.freeEntityIds = [...plan.finalFreeEntityIds];
+        this.nextEntityId = plan.nextEntityId;
+        this.activeCount = this.activeCount - plan.sourceCount
+            + plan.destinationCount;
         this.revision++;
         return Object.freeze({
+            accepted: true,
             committed: true,
             registryRevision: this.revision,
             transforms: Object.freeze(plan.transforms.map((transform) => (
                 Object.freeze({
+                    topologyId: transform.topologyId,
                     sourceHandles: transform.sourceHandles,
-                    destinationHandle: transform.destinationHandle
+                    destinationHandles: transform.destinationHandles,
+                    effectTransferDestinationIndex:
+                        transform.effectTransferDestinationIndex,
+                    ...(transform.destinationHandles.length === 1
+                        ? { destinationHandle: transform.destinationHandles[0] }
+                        : null)
                 })
             )))
         });

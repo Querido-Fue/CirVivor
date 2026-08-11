@@ -188,6 +188,15 @@ function assertNonNegativeFinite(value, label) {
     }
 }
 
+function assertUint32(value, label) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value < 0
+        || value > 0xffffffff) {
+        throw new RangeError(`${label}은 uint32 정수여야 합니다.`);
+    }
+}
+
 function quantizeGpuBoundStat(value, label, positive = false) {
     const quantized = Math.fround(value);
     if (!Number.isFinite(quantized) || (positive && !(quantized > 0)) || (!positive && quantized < 0)) {
@@ -253,7 +262,7 @@ export function resolveEnemySpawnStats(options = {}) {
     assertPositiveFinite(raw.weight, 'resolved weight');
     assertNonNegativeFinite(raw.towerContactDamage, 'resolved towerContactDamage');
     assertNonNegativeFinite(raw.coreImpactDamage, 'resolved coreImpactDamage');
-    assertNonNegativeFinite(raw.bountyBudget, 'resolved bountyBudget');
+    assertUint32(raw.bountyBudget, 'resolved bountyBudget');
 
     // Modifier 곱셈 중간에는 round하지 않습니다. 모든 modifier/absolute 적용 후 final
     // weight를 f32로 확정하고, 반환되는 그 값에서 inverseMass를 final-derived합니다.
@@ -323,6 +332,6 @@ export function assertResolvedEnemySpawnStats(
         );
     }
     assertNonNegativeFinite(stats.coreImpactDamage, `${label}.coreImpactDamage`);
-    assertNonNegativeFinite(stats.bountyBudget, `${label}.bountyBudget`);
+    assertUint32(stats.bountyBudget, `${label}.bountyBudget`);
     return stats;
 }

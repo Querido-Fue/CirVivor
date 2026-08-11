@@ -2,6 +2,8 @@ import {
     normalizeGpuCircleBodyContactHandler,
     normalizeGpuCircleBodyMetadata,
     encodeGpuCircleBodyFixedPoint,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -65,6 +67,12 @@ import {
     BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE,
     BASIC_OCTA_ORBIT_SLOT_CAPACITY
 } from 'data/object/enemy/basic_octa_enemy_data.js';
+import {
+    BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
+    BASIC_JORANG_ENEMY_DEFINITION_ID,
+    CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID,
+    JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+} from 'data/object/enemy/enemy_jorang_split_catalog_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
@@ -75,6 +83,14 @@ function requireNonNegativeSafeInteger(value, label) {
         throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
     }
     return value;
+}
+
+function requireUint32(value, label) {
+    const number = requireNonNegativeSafeInteger(value, label);
+    if (number > 0xffffffff) {
+        throw new RangeError(`${label}은 uint32 범위여야 합니다.`);
+    }
+    return number;
 }
 
 function requirePositiveFinite(value, label) {
@@ -133,6 +149,15 @@ function copyOptionalEnemyProfileMetadata(intent) {
             intent[field],
             `spawnIntent.${field}`
         );
+    }
+    if (intent.atomicTransformProfileId !== undefined) {
+        metadata.atomicTransformProfileId
+            = intent.atomicTransformProfileId === null
+                ? null
+                : requireNonEmptyString(
+                    intent.atomicTransformProfileId,
+                    'spawnIntent.atomicTransformProfileId'
+                );
     }
     return metadata;
 }
@@ -966,15 +991,125 @@ function copyOptionalResolvedEnemyStatMetadata(intent) {
     }
     const metadata = {};
     for (const field of fields) {
-        metadata[field] = requireNonNegativeFinite(
-            intent[field],
-            `spawnIntent.${field}`
-        );
+        metadata[field] = field === 'bountyBudget'
+            ? requireUint32(intent[field], `spawnIntent.${field}`)
+            : requireNonNegativeFinite(intent[field], `spawnIntent.${field}`);
     }
     if (!(metadata.weight > 0)) {
         throw new RangeError('spawnIntent.weight은 양의 유한 숫자여야 합니다.');
     }
     return metadata;
+}
+
+const JORANG_RAW_ATOMIC_PRIVILEGED_FIELDS = Object.freeze([
+    'lineageRootEntityId',
+    'lineageRootIncarnation',
+    'atomicTransformTriggerSourceEntityId',
+    'atomicTransformTriggerSourceIncarnation'
+]);
+
+function validateRawEnemyAtomicTransformIngress(
+    intent,
+    capabilityMask,
+    definitionId
+) {
+    const hasAtomicCapability = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM,
+            'spawnIntent.capabilityMask'
+        );
+    const profileId = intent.atomicTransformProfileId ?? null;
+    if (hasAtomicCapability !== (profileId !== null)) {
+        throw new RangeError(
+            'ATOMIC_TRANSFORM capability와 atomicTransformProfileId가 일치해야 합니다.'
+        );
+    }
+    if (intent.atomicTransformState !== undefined
+        || intent.atomicTransformPrepareEvidence !== undefined) {
+        throw new TypeError(
+            'raw spawn ingress는 privileged atomic transform state/evidence를 만들 수 없습니다.'
+        );
+    }
+    const privilegedFields = [
+        ...JORANG_RAW_ATOMIC_PRIVILEGED_FIELDS,
+        'branchIndex',
+        'transformAtTick',
+        'atomicTransformTriggerSourceTick',
+        'atomicTransformTriggerSequence'
+    ];
+    if (privilegedFields.some((field) => (
+        Object.prototype.hasOwnProperty.call(intent, field)
+    ))) {
+        throw new TypeError(
+            'J lineage activation field는 raw ingress에서 허용되지 않습니다.'
+        );
+    }
+    if (definitionId === BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID) {
+        throw new TypeError('C prime은 privileged transform destination으로만 생성할 수 있습니다.');
+    }
+    if (definitionId === BASIC_JORANG_ENEMY_DEFINITION_ID
+        && profileId !== JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID) {
+        throw new RangeError('natural J에는 exact split atomic transform profile이 필요합니다.');
+    }
+}
+
+function copyOptionalEnemyAtomicTransformMetadata(intent) {
+    const profileId = intent.atomicTransformProfileId ?? null;
+    if (profileId === null) {
+        return {};
+    }
+    if (profileId !== JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+        && profileId !== CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID) {
+        return { atomicTransformProfileId: profileId };
+    }
+    const state = intent.atomicTransformState;
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        throw new TypeError(
+            'atomic transform registry metadata에는 privileged materialized state가 필요합니다.'
+        );
+    }
+    const lineageRootEntityId = requireExactIdentityComponent(
+        intent.lineageRootEntityId,
+        'spawnIntent.lineageRootEntityId'
+    );
+    const lineageRootIncarnation = requireExactIdentityComponent(
+        intent.lineageRootIncarnation,
+        'spawnIntent.lineageRootIncarnation'
+    );
+    const branchIndex = requireUint32(intent.branchIndex, 'spawnIntent.branchIndex');
+    const bountyBudget = requireUint32(intent.bountyBudget, 'spawnIntent.bountyBudget');
+    const transformAtTick = requireUint32(
+        intent.transformAtTick,
+        'spawnIntent.transformAtTick'
+    );
+    const programId = requireUint32(state.programId, 'atomicTransformState.programId');
+    const phase = requireUint32(state.phase, 'atomicTransformState.phase');
+    const dueFixedTick = requireUint32(
+        state.dueFixedTick ?? state.transformAtTick,
+        'atomicTransformState.dueFixedTick'
+    );
+    if (!Object.values(GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM).includes(programId)
+        || !Object.values(GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE).includes(phase)
+        || state.lineageRootEntityId !== lineageRootEntityId
+        || state.lineageRootIncarnation !== lineageRootIncarnation
+        || state.branchIndex !== branchIndex
+        || state.bountyBudget !== bountyBudget
+        || dueFixedTick !== transformAtTick) {
+        throw new RangeError(
+            'atomic transform state와 registry lineage metadata가 exact 일치해야 합니다.'
+        );
+    }
+    return {
+        atomicTransformProfileId: profileId,
+        atomicTransformProgramId: programId,
+        atomicTransformPhase: phase,
+        lineageRootEntityId,
+        lineageRootIncarnation,
+        branchIndex,
+        bountyBudget,
+        transformAtTick
+    };
 }
 
 function materializeGpuPlainDataValue(source, label, ancestors, opaqueKeys = null) {
@@ -1320,6 +1455,11 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
                 'spawnIntent.capabilityMask'
             )
             : null;
+        validateRawEnemyAtomicTransformIngress(
+            snapshot,
+            capabilityMask,
+            definitionId
+        );
         normalizedEffectEmitterState = normalizeOptionalEnemyEffectEmitterState(
             snapshot,
             capabilityMask
@@ -1410,6 +1550,7 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             // capability ID 배열이나 content object는 registry에 직렬화하지 않습니다.
             ...copyOptionalEnemyCapabilityMetadata(intent),
             ...copyOptionalEnemyProfileMetadata(intent),
+            ...copyOptionalEnemyAtomicTransformMetadata(intent),
             ...copyOptionalEnemyOrbitMetadata(intent),
             ...copyOptionalEnemyEffectMetadata(intent),
             ...copyOptionalEnemyFormationMetadata(intent),

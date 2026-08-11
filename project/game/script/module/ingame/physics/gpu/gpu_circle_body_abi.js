@@ -106,6 +106,33 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         RESERVED_3: 36
     }),
     /**
+     * J/C' 전용 atomic-transform persistent side-plane입니다. Contact/Combat/
+     * EnemyBehavior와 분리해 기존 program ABI를 이동시키지 않습니다.
+     */
+    ATOMIC_TRANSFORM_STATE: Object.freeze({
+        STRIDE: 48,
+        PROGRAM_ID: 0,
+        PHASE: 4,
+        ENTITY_ID: 8,
+        INCARNATION: 12,
+        DUE_FIXED_TICK: 16,
+        LINEAGE_ROOT_ENTITY_ID: 20,
+        LINEAGE_ROOT_INCARNATION: 24,
+        BRANCH_INDEX: 28,
+        BOUNTY_BUDGET: 32,
+        TRIGGER_SOURCE_TICK: 36,
+        TRIGGER_SEQUENCE: 40,
+        COMMAND_GENERATION: 44
+    }),
+    /** first-hit deterministic arbitration에만 쓰는 매 tick transient plane입니다. */
+    ATOMIC_TRANSFORM_CANDIDATE: Object.freeze({
+        STRIDE: 16,
+        SOURCE_ENTITY_ID: 0,
+        CONTACT_INDEX: 4,
+        MATCH_COUNT: 8,
+        STATUS: 12
+    }),
+    /**
      * Enemy behavior 전용 mutable/config side-plane입니다. CombatState reserved와
      * 분리하며 program 0인 slot은 전체 zero record를 유지합니다.
      */
@@ -168,7 +195,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 6;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 7;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -287,7 +314,34 @@ export const GPU_CIRCLE_APPLIED_EVENT_FLAG = Object.freeze({
     /** Maximum Damage Window winner; value 0은 억제된 valid winner의 actual HP delta입니다. */
     MAXIMUM_DAMAGE_WINDOW: 1 << 13,
     /** Directional flat defense가 이 valid hit의 final damage를 줄였습니다. */
-    DIRECTIONAL_DEFENSE: 1 << 14
+    DIRECTIONAL_DEFENSE: 1 << 14,
+    /** J의 첫 valid damaging hit가 budget을 소비하고 damage 0으로 split을 arm했습니다. */
+    ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT: 1 << 15
+});
+
+/** 독립 atomic-transform side-plane의 append-only program vocabulary입니다. */
+export const GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM = Object.freeze({
+    NONE: 0,
+    J_SPLIT_FIRST_HIT: 1,
+    C_PRIME_DELAYED_RECOMBINE: 2
+});
+
+/** Program-discriminated per-body phase입니다. */
+export const GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE = Object.freeze({
+    NONE: 0,
+    ARMED: 1,
+    SPLIT_PENDING: 2,
+    CHILD_DELAYED: 3,
+    TRANSFORM_ARMED: 4
+});
+
+export const GPU_CIRCLE_ATOMIC_TRANSFORM_CANDIDATE_STATUS = Object.freeze({
+    OK: 0,
+    SELECTED_RANK_BASE: 1,
+    DUPLICATE_EXACT_CONTACT: 1 << 8,
+    EVENT_CAPACITY_EXCEEDED: 1 << 9,
+    SOURCE_BUDGET_RESERVATION_FAILED: 1 << 10,
+    PHASE_COMPARE_EXCHANGE_FAILED: 1 << 11
 });
 
 export const GPU_CIRCLE_BODY_FIXED_POINT = Object.freeze({
@@ -987,7 +1041,7 @@ export function unpackGpuCircleAppliedEventMeta(meta) {
  * collision-only ABI storage를 생성합니다.
  * @param {*} capacity - 최대 body 수입니다.
  * 반환 buffer들은 GPU 업로드 전 CPU 권위 mirror입니다.
- * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer,enemyBehaviorStateBuffer:ArrayBuffer}}
+ * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer,atomicTransformStateBuffer:ArrayBuffer,enemyBehaviorStateBuffer:ArrayBuffer}}
  * 생성된 CPU mirror storage입니다.
  */
 export function createGpuCircleBodyAbiStorage(capacity) {
@@ -1007,6 +1061,9 @@ export function createGpuCircleBodyAbiStorage(capacity) {
         ),
         combatStateBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * safeCapacity
+        ),
+        atomicTransformStateBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * safeCapacity
         ),
         enemyBehaviorStateBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * safeCapacity
@@ -1046,6 +1103,9 @@ function requireStorage(storage) {
         || !(storage.combatStateBuffer instanceof ArrayBuffer)
         || storage.combatStateBuffer.byteLength
             !== GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * capacity
+        || !(storage.atomicTransformStateBuffer instanceof ArrayBuffer)
+        || storage.atomicTransformStateBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * capacity
         || !(storage.enemyBehaviorStateBuffer instanceof ArrayBuffer)
         || storage.enemyBehaviorStateBuffer.byteLength
             !== GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * capacity) {
@@ -1763,6 +1823,218 @@ export function readGpuCircleBodyCombatState(storage, index) {
     };
 }
 
+function normalizeAtomicTransformIdentityPair(
+    entityIdValue,
+    incarnationValue,
+    label,
+    allowInvalid = true
+) {
+    const entityId = requireUint32(
+        entityIdValue ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        `${label}.entityId`
+    );
+    const incarnation = requireUint32(
+        incarnationValue ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        `${label}.incarnation`
+    );
+    const invalid = entityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+    if (invalid !== (incarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)
+        || (!allowInvalid && invalid)
+        || (!invalid && (entityId === 0 || incarnation === 0))) {
+        throw new RangeError(`${label}는 exact pair이거나 둘 다 invalid여야 합니다.`);
+    }
+    return { entityId, incarnation };
+}
+
+const ATOMIC_TRANSFORM_STATE_INPUT_KEYS = new Set([
+    'programId',
+    'phase',
+    'entityId',
+    'incarnation',
+    'dueFixedTick',
+    'transformAtTick',
+    'lineageRootEntityId',
+    'lineageRootIncarnation',
+    'branchIndex',
+    'bountyBudget',
+    'triggerSourceTick',
+    'triggerSequence',
+    'commandGeneration'
+]);
+
+/** J/C' atomic-transform persistent side-plane 한 slot을 완전히 씁니다. */
+export function writeGpuCircleAtomicTransformState(storage, index, source = {}) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError('atomicTransformState는 객체여야 합니다.');
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const snapshot = Object.create(null);
+    for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string'
+            || !ATOMIC_TRANSFORM_STATE_INPUT_KEYS.has(key)) {
+            throw new RangeError(`atomicTransformState에 알 수 없는 필드가 있습니다: ${key}`);
+        }
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new TypeError(`atomicTransformState.${key}는 data property여야 합니다.`);
+        }
+        snapshot[key] = descriptor.value;
+    }
+    source = snapshot;
+    const abi = GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE;
+    const programId = requireUint32(
+        source.programId ?? GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE,
+        'atomicTransformState.programId'
+    );
+    if (!Object.values(GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM).includes(programId)) {
+        throw new RangeError(`지원하지 않는 atomic transform program입니다: ${programId}`);
+    }
+    const phase = requireUint32(
+        source.phase ?? GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.NONE,
+        'atomicTransformState.phase'
+    );
+    if (!Object.values(GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE).includes(phase)) {
+        throw new RangeError(`지원하지 않는 atomic transform phase입니다: ${phase}`);
+    }
+    if ((programId === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE)
+        !== (phase === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.NONE)) {
+        throw new RangeError('atomic transform NONE program/phase는 함께 사용해야 합니다.');
+    }
+    const bodyIdentity = normalizeAtomicTransformIdentityPair(
+        source.entityId,
+        source.incarnation,
+        'atomicTransformState.bodyIdentity',
+        programId === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE
+    );
+    const lineageRoot = normalizeAtomicTransformIdentityPair(
+        source.lineageRootEntityId,
+        source.lineageRootIncarnation,
+        'atomicTransformState.lineageRoot',
+        programId === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE
+    );
+    if (source.dueFixedTick !== undefined
+        && source.transformAtTick !== undefined
+        && source.dueFixedTick !== source.transformAtTick) {
+        throw new RangeError('atomicTransformState due/transform tick alias가 다릅니다.');
+    }
+    const dueFixedTick = requireUint32(
+        source.dueFixedTick ?? source.transformAtTick ?? 0,
+        'atomicTransformState.dueFixedTick'
+    );
+    const branchIndex = requireUint32(
+        source.branchIndex ?? 0,
+        'atomicTransformState.branchIndex'
+    );
+    const bountyBudget = requireUint32(
+        source.bountyBudget ?? 0,
+        'atomicTransformState.bountyBudget'
+    );
+    const triggerSourceTick = requireUint32(
+        source.triggerSourceTick ?? 0,
+        'atomicTransformState.triggerSourceTick'
+    );
+    const triggerSequence = requireUint32(
+        source.triggerSequence ?? 0,
+        'atomicTransformState.triggerSequence'
+    );
+    const commandGeneration = requireUint32(
+        source.commandGeneration ?? 0,
+        'atomicTransformState.commandGeneration'
+    );
+    if (programId === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE) {
+        if (bodyIdentity.entityId !== GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            || lineageRoot.entityId !== GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            || phase !== GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.NONE
+            || dueFixedTick !== 0
+            || branchIndex !== 0
+            || bountyBudget !== 0
+            || triggerSourceTick !== 0
+            || triggerSequence !== 0
+            || commandGeneration !== 0) {
+            throw new RangeError('NONE atomic transform state는 exact zero/invalid record여야 합니다.');
+        }
+    } else if (programId
+            === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT) {
+        if (phase !== GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED
+            && phase !== GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING) {
+            throw new RangeError('J atomic transform phase가 올바르지 않습니다.');
+        }
+        if (dueFixedTick !== 0 || branchIndex > 1 || commandGeneration === 0
+            || commandGeneration === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            || (phase === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED
+                && (triggerSourceTick !== 0 || triggerSequence !== 0))
+            || (phase === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING
+                && (triggerSourceTick === 0
+                    || triggerSourceTick
+                        === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+                    || triggerSequence
+                        === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT))) {
+            throw new RangeError('J atomic transform state 조합이 올바르지 않습니다.');
+        }
+    } else if (programId
+            === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.C_PRIME_DELAYED_RECOMBINE) {
+        if (phase !== GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.CHILD_DELAYED
+            || dueFixedTick === 0
+            || dueFixedTick === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            || branchIndex > 1
+            || triggerSourceTick !== 0
+            || triggerSequence !== 0
+            || commandGeneration === 0
+            || commandGeneration
+                === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT) {
+            throw new RangeError('C prime atomic transform state 조합이 올바르지 않습니다.');
+        }
+    }
+    const values = [
+        [abi.PROGRAM_ID, programId],
+        [abi.PHASE, phase],
+        [abi.ENTITY_ID, bodyIdentity.entityId],
+        [abi.INCARNATION, bodyIdentity.incarnation],
+        [abi.DUE_FIXED_TICK, dueFixedTick],
+        [abi.LINEAGE_ROOT_ENTITY_ID, lineageRoot.entityId],
+        [abi.LINEAGE_ROOT_INCARNATION, lineageRoot.incarnation],
+        [abi.BRANCH_INDEX, branchIndex],
+        [abi.BOUNTY_BUDGET, bountyBudget],
+        [abi.TRIGGER_SOURCE_TICK, triggerSourceTick],
+        [abi.TRIGGER_SEQUENCE, triggerSequence],
+        [abi.COMMAND_GENERATION, commandGeneration]
+    ];
+    const view = new DataView(storage.atomicTransformStateBuffer);
+    const offset = slot * abi.STRIDE;
+    for (const [fieldOffset, value] of values) {
+        view.setUint32(offset + fieldOffset, value, LITTLE_ENDIAN);
+    }
+    return slot;
+}
+
+/** J/C' atomic-transform persistent side-plane 한 slot을 읽습니다. */
+export function readGpuCircleAtomicTransformState(storage, index) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const abi = GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE;
+    const view = new DataView(storage.atomicTransformStateBuffer);
+    const offset = slot * abi.STRIDE;
+    const read = (fieldOffset) => view.getUint32(offset + fieldOffset, LITTLE_ENDIAN);
+    return Object.freeze({
+        programId: read(abi.PROGRAM_ID),
+        phase: read(abi.PHASE),
+        entityId: read(abi.ENTITY_ID),
+        incarnation: read(abi.INCARNATION),
+        dueFixedTick: read(abi.DUE_FIXED_TICK),
+        lineageRootEntityId: read(abi.LINEAGE_ROOT_ENTITY_ID),
+        lineageRootIncarnation: read(abi.LINEAGE_ROOT_INCARNATION),
+        branchIndex: read(abi.BRANCH_INDEX),
+        bountyBudget: read(abi.BOUNTY_BUDGET),
+        triggerSourceTick: read(abi.TRIGGER_SOURCE_TICK),
+        triggerSequence: read(abi.TRIGGER_SEQUENCE),
+        commandGeneration: read(abi.COMMAND_GENERATION)
+    });
+}
+
 const ENEMY_BEHAVIOR_INPUT_KEYS = new Set([
     'programId',
     'coreDamageFixedPoint',
@@ -2477,6 +2749,19 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
     );
     writeGpuCircleContactHandler(storage, slot, contactHandler);
     writeGpuCircleBodyCombatState(storage, slot, combatState);
+    writeGpuCircleAtomicTransformState(storage, slot, {
+        ...(spawn.atomicTransformState ?? {}),
+        entityId: spawn.atomicTransformState?.programId
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE
+            || spawn.atomicTransformState?.programId === undefined
+            ? undefined
+            : entityId,
+        incarnation: spawn.atomicTransformState?.programId
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE
+            || spawn.atomicTransformState?.programId === undefined
+            ? undefined
+            : incarnation
+    });
     writeGpuCircleEnemyBehaviorState(
         storage,
         slot,
@@ -2639,6 +2924,7 @@ export function readGpuCircleBody(storage, index) {
         ),
         contactHandler: readGpuCircleContactHandler(storage, slot),
         combatState: readGpuCircleBodyCombatState(storage, slot),
+        atomicTransformState: readGpuCircleAtomicTransformState(storage, slot),
         enemyBehaviorState: readGpuCircleEnemyBehaviorState(storage, slot)
     };
 }

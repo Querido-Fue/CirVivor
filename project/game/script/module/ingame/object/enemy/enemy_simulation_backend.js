@@ -19,6 +19,12 @@ import {
     GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
     GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION
 } from '../../physics/gpu/gpu_formation_runtime_abi.js';
+import {
+    GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+} from '../../physics/gpu/gpu_atomic_transform_runtime_abi.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -82,6 +88,9 @@ export class EnemySimulationBackend {
         this.formationPrepareCapacity = options.formationPrepareCapacity
             ?? options.formationCommandCapacity;
         this.formationTransformCapacity = options.formationTransformCapacity;
+        this.atomicTransformPrepareCapacity
+            = options.atomicTransformPrepareCapacity ?? this.capacity;
+        this.atomicTransformCapacity = options.atomicTransformCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -152,6 +161,9 @@ export class EnemySimulationBackend {
             effectEventCapacity: this.effectEventCapacity,
             formationPrepareCapacity: this.formationPrepareCapacity,
             formationTransformCapacity: this.formationTransformCapacity,
+            atomicTransformPrepareCapacity:
+                this.atomicTransformPrepareCapacity,
+            atomicTransformCapacity: this.atomicTransformCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -482,6 +494,112 @@ export class EnemySimulationBackend {
             failure: null,
             terminal: null
         });
+    }
+
+    stageAtomicTransformPrepareBatch(batch) {
+        const result = this.simulation?.stageAtomicTransformPrepareBatch?.(batch)
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_PREPARE_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedAtomicTransformPrepareBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('AtomicTransform prepare 완료 출력은 배열이어야 합니다.');
+        }
+        return this.simulation
+            ?.drainCompletedAtomicTransformPrepareBatches?.(out) ?? out;
+    }
+
+    discardPreparedAtomicTransformBatch(request) {
+        return this.simulation?.discardPreparedAtomicTransformBatch?.(request)
+            ?? Object.freeze({
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+    }
+
+    armPreparedAtomicTransformBatch(request) {
+        const result = this.simulation?.armPreparedAtomicTransformBatch?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    commitArmedAtomicTransformBatch(receipt) {
+        const result = this.simulation
+            ?.commitArmedAtomicTransformBatch?.(receipt)
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    cancelArmedAtomicTransformBatch(receipt, reason) {
+        const result = this.simulation
+            ?.cancelArmedAtomicTransformBatch?.(receipt, reason)
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    cancelPendingAtomicTransformProgramsForTerminal(request = {}) {
+        const result = this.simulation
+            ?.cancelPendingAtomicTransformProgramsForTerminal?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: readDiagnosticPositiveInteger(
+                    request.finalFixedTick
+                ),
+                submittedTick: 0,
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: 0,
+                failure: 'gpu-unavailable'
+            });
+        this.#syncState();
+        return result;
+    }
+
+    getAtomicTransformRuntimeStatus() {
+        return this.simulation?.getAtomicTransformRuntimeStatus?.()
+            ?? Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+                state: 'gpu-unavailable',
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: -1,
+                authoritativeEpoch: 0,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: 0,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null
+            });
     }
 
     /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */

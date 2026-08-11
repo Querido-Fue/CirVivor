@@ -11,6 +11,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/archer_enemy_data.js',
     'data/object/enemy/basic_circle_enemy_data.js',
     'data/object/enemy/basic_hexa_enemy_data.js',
+    'data/object/enemy/basic_jorang_enemy_data.js',
     'data/object/enemy/basic_octa_enemy_data.js',
     'data/object/enemy/basic_penta_enemy_data.js',
     'data/object/enemy/basic_rhom_attack_data.js',
@@ -20,6 +21,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/enemy_catalog_data.js',
     'data/object/enemy/enemy_effect_catalog_data.js',
     'data/object/enemy/enemy_formation_catalog_data.js',
+    'data/object/enemy/enemy_jorang_split_catalog_data.js',
+    'data/object/enemy/enemy_jorang_split_runtime_data.js',
     'data/object/enemy/enemy_profile_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
     'data/object/enemy/hostile_attack_runtime_data.js',
@@ -34,11 +37,13 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
+    'module/ingame/contract/enemy_atomic_transform_contract.js',
     'module/ingame/contract/enemy_effect_contract.js',
     'module/ingame/contract/enemy_formation_contract.js',
     'module/ingame/contract/enemy_lifecycle_disposition_contract.js',
     'module/ingame/contract/enemy_orbit_directional_defense_contract.js',
     'module/ingame/contract/enemy_profile_contract.js',
+    'module/ingame/contract/enemy_jorang_split_contract.js',
     'module/ingame/contract/tile_navigation_contract.js',
     'module/ingame/contract/gameplay_team_contract.js',
     'module/ingame/contract/player_controllable_contract.js',
@@ -56,11 +61,13 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/enemy/enemy_core_impact_director.js',
     'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     'module/ingame/object/enemy/enemy_simulation_backend.js',
+    'module/ingame/object/enemy/gpu_atomic_transform_command_owner.js',
     'module/ingame/object/enemy/gpu_effect_command_owner.js',
     'module/ingame/object/enemy/gpu_formation_command_owner.js',
     'module/ingame/object/enemy/gpu_enemy_spawn_adapter.js',
     'module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js',
     'module/ingame/object/enemy/hostile_attack_director.js',
+    'module/ingame/object/enemy/jorang_split_lineage_director.js',
     'module/ingame/object/enemy/pentagon_effect_director.js',
     'module/ingame/object/enemy/formation_runtime_director.js',
     'module/ingame/object/enemy/resolved_enemy_spawn_stats.js',
@@ -74,6 +81,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/tower/tower_combat_roster.js',
     'module/ingame/object/tower_core_camera_follow_target.js',
     'module/ingame/object/world_registry.js',
+    'module/ingame/physics/gpu/gpu_atomic_transform_runtime_abi.js',
+    'module/ingame/physics/gpu/gpu_atomic_transform_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
@@ -465,6 +474,161 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && replacement.respawnPendingEffectProgramCount === 0
             && replacement.respawnPendingEffectReadbackCount === 0
             && fixture.transformCompletionCount === 3;
+    } else if (fixtureStage === 'enemy-jorang-split-lineage') {
+        fixture = result?.productionEnemyJorangSplitLineage;
+        const actual = fixture?.actualRuntime;
+        const lineage = actual?.lineageRoundTrip;
+        const split = lineage?.split;
+        const core = lineage?.coreForfeiture;
+        const delayed = lineage?.delayedReturn;
+        const burst = actual?.fiveToFourPlusOne;
+        const capacity = actual?.capacityRestage;
+        const terminal = actual?.terminalReplacement;
+        const unpublished = terminal?.unpublished;
+        const published = terminal?.published;
+        const replacement = terminal?.replacement;
+        scenarioValid = fixture?.scenario
+                === 'jorang-first-hit-split-delayed-lineage'
+            && fixture.firstHit?.damageFixedPoint === 0
+            && fixture.firstHit.sourceBudgetConsumed === true
+            && fixture.firstHit.triggerEventCount === 1
+            && fixture.firstHit.pendingRepeatDamageFixedPoint === 0
+            && fixture.firstHit.pendingRepeatSourceBudgetConsumed === false
+            && fixture.firstHit.pendingRepeatEventCount === 0
+            && fixture.firstHit.sameTickEnterOnlyJCount === 5
+            && fixture.firstHit.sameTickAdmittedCount === 5
+            && fixture.firstHit.sameTickOrientedEventCount === 5
+            && fixture.firstHit.sameTickPendingCount === 5
+            && fixture.firstHit.sameTickConsumedSourceBudgetCount === 5
+            && fixture.triggerScope?.nonClosestTriggerEventCount === 0
+            && fixture.triggerScope.nonClosestPendingCount === 0
+            && fixture.triggerScope.nonClosestUnchangedJHealthCount === 0
+            && fixture.triggerScope.nonClosestConsumedSourceBudgetCount === 5
+            && split?.publicationTick === 4
+            && split.topologyId === 'ONE_TO_MANY'
+            && split.sourceConsumed === true
+            && split.childCount === 2
+            && split.child0RootIdentity === true
+            && split.child1DistinctIdentity === true
+            && split.postStepPoseFlowAndVelocityConserved === true
+            && split.childHealthCenti?.join(',') === '100,100'
+            && split.childMaximumHealthCenti?.join(',') === '100,100'
+            && split.childBountyBudgets?.join(',') === '6,6'
+            && split.lineageRootPairPreserved === true
+            && split.branchIndices?.join(',') === '0,1'
+            && split.effectTransferDestinationIndex === 0
+            && split.child0EffectInstanceCount === 1
+            && split.child1EffectInstanceCount === 0
+            && split.effectTargetSlotMatchesBody === true
+            && split.exactEffectPayloadPreserved === true
+            && split.gpuCommittedCount === 1
+            && split.gpuEffectRekeyCount === 1
+            && core?.impactFactCount === 1
+            && core.cleanupCommitted === true
+            && core.forfeitedBudget === 6
+            && core.bountyEligible === false
+            && core.returnedJCount === 0
+            && core.coreIntegrity === 99
+            && delayed?.notDuePrepareCandidateCount === 0
+            && delayed.preparedAtTick === 63
+            && delayed.publicationTick === 64
+            && delayed.delayFixedTicks === 60
+            && delayed.topologyId === 'ONE_TO_ONE_DELAYED'
+            && delayed.returnedJCount === 1
+            && delayed.exactRootIdentity === true
+            && delayed.postStepPoseFlowVelocityPreserved === true
+            && delayed.preparedHealthCenti < delayed.maximumHealthCenti
+            && delayed.returnedHealthCenti
+                === delayed.preparedHealthCenti + 1
+            && delayed.maximumHealthCenti === 100
+            && delayed.effectInstanceCount === 1
+            && delayed.effectTargetSlotMatchesBody === true
+            && delayed.exactEffectPayloadPreserved === true
+            && delayed.bountyBudget === 6
+            && delayed.gpuCommittedCount === 1
+            && delayed.gpuEffectRekeyCount === 1
+            && lineage.requiresRecovery === false
+            && burst?.admittedFirstHitCount === 5
+            && burst.firstPrepareCandidateCount === 5
+            && burst.firstLifecycleTransformCount === 4
+            && burst.firstGpuCommittedCount === 4
+            && burst.secondPrepareCandidateCount === 1
+            && burst.secondLifecycleTransformCount === 1
+            && burst.secondGpuCommittedCount === 1
+            && burst.sourceOrderExact === true
+            && burst.hostStartsByTick?.join(',') === '4,1'
+            && burst.finalCirclePrimeCount === 10
+            && burst.pendingFirstHitCount === 0
+            && burst.requiresRecovery === false
+            && capacity?.rejectionCode === 'atomic-transform-capacity'
+            && capacity.retryable === true
+            && capacity.retryDisposition === 'restage-next-prepare'
+            && capacity.sourcePendingPreserved === true
+            && capacity.attemptConsumed === true
+            && capacity.recoveryRequiredAtRejection === false
+            && capacity.pendingPhasePreserved === true
+            && capacity.halfChildCount === 0
+            && capacity.effectInstanceCountAtRejection === 0
+            && capacity.freshCommandId === true
+            && capacity.freshPrepareFingerprint === true
+            && capacity.retryLifecycleTransformCount === 1
+            && capacity.retryGpuCommittedCount === 1
+            && capacity.finalCirclePrimeCount === 2
+            && capacity.requiresRecovery === false
+            && unpublished?.cancelledBeforePublication === true
+            && unpublished.sourceStayedPending === true
+            && unpublished.lifecycleTransformCount === 0
+            && unpublished.circlePrimeCount === 0
+            && unpublished.gpuCommittedCount === 0
+            && unpublished.ownerState === 'armed'
+            && unpublished.ownerPendingPrepareCount === 0
+            && unpublished.ownerPendingTransformCount === 0
+            && unpublished.ownerPendingReadbackCount === 0
+            && unpublished.backendState === 'submitted'
+            && unpublished.backendPendingPrepareCount === 0
+            && unpublished.backendPendingTransformCount === 0
+            && unpublished.backendPendingReadbackCount === 0
+            && unpublished.fixedCommitObserved === true
+            && unpublished.lifecycleObserved === true
+            && unpublished.rosterSealed === true
+            && unpublished.lastFixedCommitTick === 3
+            && unpublished.requiresRecovery === false
+            && published?.hostPublishedBeforeClose === true
+            && published.lifecycleTransformCount === 1
+            && published.registryCirclePrimeCount === 2
+            && published.backendCommitRequestedBeforeClose === true
+            && published.gpuCommittedOnFinalSubmit === true
+            && published.readbackSettled === true
+            && published.bodyParityCount === 2
+            && published.ownerState === 'armed'
+            && published.ownerPendingPrepareCount === 0
+            && published.ownerPendingTransformCount === 0
+            && published.ownerPendingReadbackCount === 0
+            && published.backendState === 'submitted'
+            && published.backendSubmittedTick === 3
+            && published.backendPendingPrepareCount === 0
+            && published.backendPendingTransformCount === 0
+            && published.backendPendingReadbackCount === 0
+            && published.fixedCommitObserved === true
+            && published.lifecycleObserved === true
+            && published.rosterSealed === true
+            && published.lastFixedCommitTick === 3
+            && published.requiresRecovery === false
+            && replacement?.sessionGenerationChanged === true
+            && replacement.stalePrepareRejected === true
+            && replacement.staleDiscardRejected === true
+            && replacement.staleDiscardReason
+                === 'atomic-transform-ingress-closed'
+            && replacement.staleDiscardRequiresRecovery === false
+            && replacement.freshJCount === 1
+            && replacement.armedPhase === true
+            && replacement.activeEffectInstanceCount === 0
+            && replacement.pendingPrepareCount === 0
+            && replacement.pendingTransformCount === 0
+            && replacement.pendingReadbackCount === 0
+            && replacement.requiresRecovery === false
+            && fixture.storageProfile?.atomicTransformFirstHit === 9
+            && fixture.storageProfile.requiredMaximum === 9;
     } else if (fixtureStage === 'enemy-octagon-directional-defense') {
         fixture = result?.productionEnemyOctagonDirectionalDefense;
         const contract = fixture?.contract;
@@ -901,6 +1065,7 @@ function assertFixtureStageResult(result) {
         || fixtureStage === 'enemy-rhom-priority'
         || fixtureStage === 'enemy-pentagon-effect'
         || fixtureStage === 'enemy-hexa-formation'
+        || fixtureStage === 'enemy-jorang-split-lineage'
         || fixtureStage === 'enemy-octagon-directional-defense'
     ) {
         assertDedicatedFixtureResult(result, fixtureStage);
@@ -1011,9 +1176,11 @@ async function prepareHarnessApp(
         ? 'enemy_pentagon_effect_runner.js'
         : fixtureStage === 'enemy-hexa-formation'
             ? 'enemy_hexa_formation_runner.js'
-            : fixtureStage === 'enemy-octagon-directional-defense'
-                ? 'enemy_octagon_directional_defense_runner.js'
-                : 'runner.js';
+            : fixtureStage === 'enemy-jorang-split-lineage'
+                ? 'enemy_jorang_split_lineage_runner.js'
+                : fixtureStage === 'enemy-octagon-directional-defense'
+                    ? 'enemy_octagon_directional_defense_runner.js'
+                    : 'runner.js';
     await linkRuntimeFile(
         path.join(harnessDirectory, runnerFileName),
         path.join(appDirectory, 'runner.js')
@@ -1074,6 +1241,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'enemy_hexa_formation_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'enemy_jorang_split_lineage_runner.js'
             )),
             fs.access(path.join(
                 harnessDirectory,

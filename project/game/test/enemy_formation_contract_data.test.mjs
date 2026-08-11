@@ -123,6 +123,7 @@ function definitionSource(definition, overrides = {}) {
         behaviorProfileId: definition.behaviorProfileId,
         effectEmitterProfileId: definition.effectEmitterProfileId,
         formationDefinitionId: definition.formationDefinitionId,
+        atomicTransformProfileId: definition.atomicTransformProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides
@@ -367,12 +368,14 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
         ].rosterPort,
         GPU_ENEMY_FORMATION_ROSTER_PORT
     );
-    assert.equal(
+    const atomicTransformImplementation = (
         GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY.byCapabilityId[
             ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM
-        ].rosterPort,
-        GPU_ENEMY_FORMATION_ROSTER_PORT
+        ]
     );
+    assert.equal(atomicTransformImplementation.implementationId,
+        'profile-discriminated-atomic-transform');
+    assert.equal('rosterPort' in atomicTransformImplementation, false);
 
     assert.throws(() => normalizeEnemyDefinition(definitionSource(
         BASIC_HEXA_ENEMY_DATA,
@@ -412,10 +415,21 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
         ...definitionSource(BASIC_SQUARE_ENEMY_DATA),
         spawnPolicy: undefined
     }, ENEMY_PROFILE_CATALOG), /spawnPolicy/);
+    assert.throws(() => normalizeEnemyDefinition(definitionSource(
+        BASIC_SQUARE_ENEMY_DATA,
+        {
+            id: 'future-atomic-transform-missing-profile',
+            capabilityIds: Object.freeze([
+                ...BASIC_SQUARE_ENEMY_DATA.capabilityIds,
+                ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM
+            ])
+        }
+    ), ENEMY_PROFILE_CATALOG), /ATOMIC_TRANSFORM/);
     const futureAtomicWithoutFormation = normalizeEnemyDefinition(definitionSource(
         BASIC_SQUARE_ENEMY_DATA,
         {
             id: 'future-atomic-transform-without-formation',
+            atomicTransformProfileId: 'future-atomic-transform-profile-01',
             capabilityIds: Object.freeze([
                 ...BASIC_SQUARE_ENEMY_DATA.capabilityIds,
                 ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM

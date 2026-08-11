@@ -2,7 +2,10 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
-    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_EMITTER_FLAG,
@@ -59,9 +62,32 @@ import {
     BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID,
     BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID,
     BASIC_HEXA_MAXIMUM_MEMBER_COUNT,
+    HEXA_MANY_TO_ONE_ATOMIC_TRANSFORM_PROFILE_ID,
     resolveBasicHexaFormationStats,
     resolveBasicHexaTransformPrivateDefinition
 } from 'data/object/enemy/basic_hexa_enemy_data.js';
+import {
+    BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
+    BASIC_JORANG_ENEMY_DEFINITION_ID,
+    CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID,
+    ENEMY_JORANG_SPLIT_PROFILE_BY_ID,
+    JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+} from 'data/object/enemy/enemy_jorang_split_catalog_data.js';
+import {
+    BASIC_JORANG_ENEMY_DATA,
+    resolveBasicCirclePrimeTransformPrivateDefinition
+} from 'data/object/enemy/basic_jorang_enemy_data.js';
+import {
+    JORANG_NATURAL_BOUNTY_BUDGET,
+    JORANG_RETURN_DELAY_FIXED_TICKS
+} from 'data/object/enemy/enemy_jorang_split_runtime_data.js';
+import {
+    normalizeJorangLineageBranchState,
+    splitJorangBountyBudget
+} from '../../contract/enemy_jorang_split_contract.js';
+import {
+    ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID
+} from '../../contract/enemy_atomic_transform_contract.js';
 import {
     assertResolvedEnemySpawnStats,
     resolveEnemySpawnStats
@@ -233,7 +259,32 @@ function assertFormationCapabilityDefinition(definition) {
 function assertAtomicTransformCapabilityDefinition(definition) {
     // ATOMIC_TRANSFORM은 독립 capability입니다. 현재 H는 Formation과 함께 쓰지만
     // generic definition contract에서 두 capability를 서로 강제하지 않습니다.
-    requireNonEmptyString(definition.id, 'enemy atomic transform definitionId');
+    const definitionId = requireNonEmptyString(
+        definition.id,
+        'enemy atomic transform definitionId'
+    );
+    const profileId = requireNonEmptyString(
+        definition.atomicTransformProfileId,
+        'enemy atomicTransformProfileId'
+    );
+    const exactAllowed = (
+        (definitionId === BASIC_HEXA_ENEMY_DEFINITION_ID
+            || definitionId === BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID)
+            && profileId === HEXA_MANY_TO_ONE_ATOMIC_TRANSFORM_PROFILE_ID
+    ) || (
+        definitionId === BASIC_JORANG_ENEMY_DEFINITION_ID
+            && profileId === JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+            && ENEMY_JORANG_SPLIT_PROFILE_BY_ID[profileId] !== undefined
+    ) || (
+        definitionId === BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID
+            && profileId === CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID
+            && ENEMY_JORANG_SPLIT_PROFILE_BY_ID[profileId] !== undefined
+    );
+    if (!exactAllowed) {
+        throw new RangeError(
+            'atomic-transform capability definition/profile 조합이 canonical allowlist에 없습니다.'
+        );
+    }
 }
 
 /** 실제 EnemyCoreImpactDirector method family를 가리키는 class-free roster seam입니다. */
@@ -341,9 +392,8 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
         }),
         Object.freeze({
             capabilityId: ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM,
-            implementationId: 'formation-runtime-director-atomic-transform',
-            assertDefinition: assertAtomicTransformCapabilityDefinition,
-            rosterPort: GPU_ENEMY_FORMATION_ROSTER_PORT
+            implementationId: 'profile-discriminated-atomic-transform',
+            assertDefinition: assertAtomicTransformCapabilityDefinition
         }),
         Object.freeze({
             capabilityId: ENEMY_CAPABILITY_ID.CHARGE,
@@ -417,6 +467,24 @@ function requireUint32(value, label, allowZero = true) {
         throw new RangeError(`${label}은 ${allowZero ? '' : 'nonzero '}uint32여야 합니다.`);
     }
     return value >>> 0;
+}
+
+function requirePositiveInt32(value, label) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value <= 0
+        || value > 0x7fffffff) {
+        throw new RangeError(`${label}은 positive int32여야 합니다.`);
+    }
+    return value;
+}
+
+function nextAtomicTransformCommandGeneration(value, label) {
+    const current = requireUint32(value, `${label}.source`, false);
+    if (current >= 0xfffffffe) {
+        throw new RangeError(`${label}은 live uint32 범위에서 증가할 수 있어야 합니다.`);
+    }
+    return current + 1;
 }
 
 function popcountUint32(value) {
@@ -606,6 +674,7 @@ function isCanonicalEnemyDefinition(definition) {
         'combatProfileId',
         'behaviorProfileId',
         'formationDefinitionId',
+        'atomicTransformProfileId',
         'capabilityIds',
         'render'
     ];
@@ -672,7 +741,7 @@ function resolveLegacyEnemySpawnStats(definition, definitionId) {
             definition.coreImpactDamage ?? 0,
             'coreImpactDamage'
         ),
-        bountyBudget: requireNonNegativeFinite(
+        bountyBudget: requireUint32(
             definition.bountyBudget ?? 0,
             'bountyBudget'
         )
@@ -851,6 +920,10 @@ export function createGpuEnemySpawnIntent(options) {
         formationFacts
     );
     const resolvedStats = resolveSpawnStats(options, definition, enemyDefinitionId);
+    const resolvedBountyBudget = requireUint32(
+        resolvedStats.bountyBudget,
+        'resolvedStats.bountyBudget'
+    );
     const hasContactCombat = hasEnemyCapability(
         capabilityMask,
         ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
@@ -881,6 +954,13 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
         'enemy capabilityMask'
     );
+    const isNaturalJorang = enemyDefinitionId === BASIC_JORANG_ENEMY_DEFINITION_ID;
+    if (isNaturalJorang
+        && (definition.atomicTransformProfileId
+                !== JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+            || resolvedBountyBudget !== JORANG_NATURAL_BOUNTY_BUDGET)) {
+        throw new RangeError('natural J spawn은 canonical split profile/bounty여야 합니다.');
+    }
     if (canonicalDefinition
         && !hasContactCombat
         && resolvedStats.towerContactDamage > 0) {
@@ -1001,6 +1081,8 @@ export function createGpuEnemySpawnIntent(options) {
         waveId,
         policyId,
         capabilityMask,
+        atomicTransformProfileId:
+            definition.atomicTransformProfileId ?? null,
         ...(octagonOrbitBehaviorState ? {
             orbitCoordinateSystemId: orbitProfile.coordinateSystemId,
             orbitCoordinateSystemCode: orbitProfile.coordinateSystemCode,
@@ -1090,7 +1172,7 @@ export function createGpuEnemySpawnIntent(options) {
         }),
         coreImpactDamage: resolvedStats.coreImpactDamage,
         towerContactDamage: resolvedStats.towerContactDamage,
-        bountyBudget: resolvedStats.bountyBudget,
+        bountyBudget: resolvedBountyBudget,
         weight: resolvedStats.weight,
         renderStyle: Object.freeze({
             color,
@@ -1098,6 +1180,328 @@ export function createGpuEnemySpawnIntent(options) {
             visible: true,
             shapeCode
         })
+    });
+}
+
+/**
+ * WorldRegistry reservation 직후에만 natural J의 exact lineage/AtomicState를
+ * 물질화합니다. Raw ingress가 같은 필드를 forge하지 못하도록 public adapter와
+ * 분리한 privileged lifecycle seam입니다.
+ */
+export function materializeNaturalJorangAtomicTransformActivation(
+    intent,
+    destinationHandle
+) {
+    const privilegedFields = [
+        'lineageRootEntityId',
+        'lineageRootIncarnation',
+        'branchIndex',
+        'transformAtTick',
+        'atomicTransformTriggerSourceEntityId',
+        'atomicTransformTriggerSourceIncarnation',
+        'atomicTransformTriggerSourceTick',
+        'atomicTransformTriggerSequence',
+        'atomicTransformState'
+    ];
+    if (!intent || typeof intent !== 'object'
+        || privilegedFields.some((field) => (
+            Object.prototype.hasOwnProperty.call(intent, field)
+        ))) {
+        throw new TypeError(
+            'raw natural J intent에는 privileged lineage/phase/due field가 없어야 합니다.'
+        );
+    }
+    const normalized = normalizeGpuSpawnIntent(intent);
+    const handle = normalizeExactHandle(destinationHandle, 'destinationHandle');
+    if (normalized.kindId !== GPU_ENEMY_WORLD_KIND_ID
+        || normalized.spawnPolicy !== ENEMY_SPAWN_POLICY.NATURAL
+        || normalized.definitionId !== BASIC_JORANG_ENEMY_DEFINITION_ID
+        || normalized.atomicTransformProfileId
+            !== JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
+        || normalized.capabilityMask === undefined
+        || !hasEnemyCapability(
+            normalized.capabilityMask,
+            ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM,
+            'natural J capabilityMask'
+        )
+        || requireUint32(normalized.bountyBudget, 'natural J bountyBudget')
+            !== JORANG_NATURAL_BOUNTY_BUDGET
+    ) {
+        throw new RangeError('natural J activation source가 canonical raw intent가 아닙니다.');
+    }
+    const atomicTransformState = Object.freeze({
+        programId: GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT,
+        phase: GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED,
+        entityId: handle.entityId,
+        incarnation: handle.incarnation,
+        dueFixedTick: 0,
+        lineageRootEntityId: handle.entityId,
+        lineageRootIncarnation: handle.incarnation,
+        branchIndex: 0,
+        bountyBudget: JORANG_NATURAL_BOUNTY_BUDGET,
+        triggerSourceTick: 0,
+        triggerSequence: 0,
+        commandGeneration: 1
+    });
+    return Object.freeze({
+        ...normalized,
+        lineageRootEntityId: handle.entityId,
+        lineageRootIncarnation: handle.incarnation,
+        branchIndex: 0,
+        transformAtTick: 0,
+        atomicTransformTriggerSourceEntityId: 0xffffffff,
+        atomicTransformTriggerSourceIncarnation: 0xffffffff,
+        atomicTransformTriggerSourceTick: 0,
+        atomicTransformTriggerSequence: 0,
+        atomicTransformState
+    });
+}
+
+function normalizePreparedJorangRecord(
+    source,
+    topologyId,
+    sourceDefinitionId,
+    label
+) {
+    const record = materializeGpuPlainDataSnapshot(source, label);
+    if (record.topologyId !== topologyId
+        || record.sourceDefinitionId !== sourceDefinitionId) {
+        throw new RangeError(`${label} topology/source definition이 일치하지 않습니다.`);
+    }
+    const sourceHandle = normalizeExactHandle(
+        record.sourceHandle ?? {
+            entityId: record.sourceEntityId,
+            incarnation: record.sourceIncarnation
+        },
+        `${label}.sourceHandle`
+    );
+    const lineage = normalizeJorangLineageBranchState({
+        lineageRootEntityId: record.lineageRootEntityId,
+        lineageRootIncarnation: record.lineageRootIncarnation,
+        branchIndex: record.branchIndex,
+        bountyBudget: record.bountyBudget,
+        transformAtTick: record.transformAtTick ?? record.dueFixedTick ?? 0
+    }, `${label}.lineage`);
+    const metadata = record.sourceMetadata ?? record.metadata
+        ?? record.sourceView?.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+        throw new TypeError(`${label}.sourceMetadata가 필요합니다.`);
+    }
+    return Object.freeze({ record, sourceHandle, lineage, metadata });
+}
+
+function createPrivateJorangDestinationBase({
+    definition,
+    prepared,
+    branchState,
+    healthFixedPoint,
+    maxHealthFixedPoint,
+    atomicTransformState,
+    shapeCode
+}) {
+    const stats = resolveSpawnStats({}, definition, definition.id);
+    const physicsProfile = ENEMY_PROFILE_CATALOG.physicsById[
+        definition.physicsProfileId
+    ];
+    const metadata = prepared.metadata;
+    const capabilityMask = createEnemyCapabilityMask(
+        definition.capabilityIds,
+        `${definition.id}.capabilityIds`
+    );
+    return Object.freeze({
+        kindId: GPU_ENEMY_WORLD_KIND_ID,
+        spawnPolicy: ENEMY_SPAWN_POLICY.TRANSFORM_PRIVATE,
+        definitionId: definition.id,
+        enemyDefinitionId: definition.id,
+        sourceRootEntityId: prepared.sourceHandle.entityId,
+        sourceRootIncarnation: prepared.sourceHandle.incarnation,
+        teamId: metadata.teamId ?? GAMEPLAY_TEAM_ID.HOSTILE,
+        damagePolicyId: metadata.damagePolicyId,
+        allegiancePolicy:
+            metadata.allegiancePolicy ?? GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE,
+        gateId: requireNonEmptyString(metadata.gateId, 'sourceMetadata.gateId'),
+        pathId: requireNonEmptyString(metadata.pathId, 'sourceMetadata.pathId'),
+        waypointIndex: requireNonNegativeSafeInteger(
+            metadata.initialWaypointIndex ?? metadata.waypointIndex,
+            'sourceMetadata.waypointIndex'
+        ),
+        spawnSequence: requireNonNegativeSafeInteger(
+            metadata.spawnSequence,
+            'sourceMetadata.spawnSequence'
+        ),
+        waveId: metadata.waveId ?? null,
+        policyId: metadata.policyId ?? null,
+        capabilityMask,
+        physicsProfileId: definition.physicsProfileId,
+        combatProfileId: definition.combatProfileId,
+        behaviorProfileId: definition.behaviorProfileId,
+        atomicTransformProfileId: definition.atomicTransformProfileId,
+        lineageRootEntityId: branchState.lineageRootEntityId,
+        lineageRootIncarnation: branchState.lineageRootIncarnation,
+        branchIndex: branchState.branchIndex,
+        bountyBudget: branchState.bountyBudget,
+        transformAtTick: branchState.transformAtTick,
+        atomicTransformTriggerSourceEntityId: 0xffffffff,
+        atomicTransformTriggerSourceIncarnation: 0xffffffff,
+        atomicTransformTriggerSourceTick: 0,
+        atomicTransformTriggerSequence: 0,
+        atomicTransformState,
+        position: Object.freeze({ x: 0, y: 0 }),
+        velocity: Object.freeze({ x: 0, y: 0 }),
+        radius: physicsProfile.collisionRadiusTiles,
+        inverseMass: stats.inverseMass,
+        bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.CORE_PROXY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE,
+        contactHandler: Object.freeze({
+            damageSelf: 0,
+            damageOther: stats.towerContactDamage,
+            flags: GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS,
+            targetInteractionLayerMask:
+                GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        }),
+        healthFixedPoint,
+        maxHealthFixedPoint,
+        lifetime: -1,
+        alive: true,
+        flowSpeed: stats.moveSpeedTilesPerSecond,
+        coreImpactDamage: stats.coreImpactDamage,
+        towerContactDamage: stats.towerContactDamage,
+        weight: stats.weight,
+        renderStyle: Object.freeze({
+            color: definition.render.colorRgba,
+            radiusScale: definition.render.radiusScale,
+            visible: true,
+            shapeCode
+        })
+    });
+}
+
+/** Authentic J SPLIT_PENDING prepare record를 두 identity-neutral C' intent로 바꿉니다. */
+export function createGpuPrivateJorangSplitDestinationIntents(options) {
+    const transformFixedTick = requireUint32(
+        options?.transformFixedTick,
+        'transformFixedTick',
+        false
+    );
+    const prepared = normalizePreparedJorangRecord(
+        options?.preparedRecord,
+        ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.ONE_TO_MANY,
+        BASIC_JORANG_ENEMY_DEFINITION_ID,
+        'preparedRecord'
+    );
+    const dueFixedTick = requireUint32(
+        transformFixedTick + JORANG_RETURN_DELAY_FIXED_TICKS,
+        'C prime dueFixedTick',
+        false
+    );
+    if (dueFixedTick === 0xffffffff) {
+        throw new RangeError('C prime dueFixedTick은 invalid sentinel일 수 없습니다.');
+    }
+    const budgets = splitJorangBountyBudget(prepared.lineage.bountyBudget);
+    const definition = resolveBasicCirclePrimeTransformPrivateDefinition();
+    const circlePrimeStats = resolveSpawnStats({}, definition, definition.id);
+    const freshHealthFixedPoint = encodeGpuCircleBodyFixedPoint(
+        circlePrimeStats.maxHealth
+    );
+    if (freshHealthFixedPoint <= 0) {
+        throw new RangeError('C prime fresh maximum health는 positive int32여야 합니다.');
+    }
+    return Object.freeze(budgets.map((bountyBudget, branchIndex) => {
+        const branchState = normalizeJorangLineageBranchState({
+            lineageRootEntityId: prepared.lineage.lineageRootEntityId,
+            lineageRootIncarnation: prepared.lineage.lineageRootIncarnation,
+            branchIndex,
+            bountyBudget,
+            transformAtTick: dueFixedTick
+        });
+        return createPrivateJorangDestinationBase({
+            definition,
+            prepared,
+            branchState,
+            healthFixedPoint: freshHealthFixedPoint,
+            maxHealthFixedPoint: freshHealthFixedPoint,
+            atomicTransformState: Object.freeze({
+                programId:
+                    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM
+                        .C_PRIME_DELAYED_RECOMBINE,
+                phase: GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.CHILD_DELAYED,
+                dueFixedTick,
+                lineageRootEntityId: branchState.lineageRootEntityId,
+                lineageRootIncarnation: branchState.lineageRootIncarnation,
+                branchIndex,
+                bountyBudget,
+                triggerSourceTick: 0,
+                triggerSequence: 0,
+                commandGeneration: nextAtomicTransformCommandGeneration(
+                    prepared.record.commandGeneration,
+                    'C prime commandGeneration'
+                )
+            }),
+            shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+        });
+    }));
+}
+
+/** Authentic due C' prepare record를 identity-neutral J return intent로 바꿉니다. */
+export function createGpuPrivateCirclePrimeReturnDestinationIntent(options) {
+    const transformFixedTick = requireUint32(
+        options?.transformFixedTick,
+        'transformFixedTick',
+        false
+    );
+    const prepared = normalizePreparedJorangRecord(
+        options?.preparedRecord,
+        ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.ONE_TO_ONE_DELAYED,
+        BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
+        'preparedRecord'
+    );
+    const currentHealthFixedPoint = requirePositiveInt32(
+        prepared.record.currentHealthFixedPoint,
+        'preparedRecord.currentHealthFixedPoint'
+    );
+    const maxHealthFixedPoint = requirePositiveInt32(
+        prepared.record.maxHealthFixedPoint,
+        'preparedRecord.maxHealthFixedPoint'
+    );
+    if (currentHealthFixedPoint > maxHealthFixedPoint) {
+        throw new RangeError('C prime current health는 maximum을 초과할 수 없습니다.');
+    }
+    const definition = BASIC_JORANG_ENEMY_DATA;
+    const branchState = normalizeJorangLineageBranchState({
+        lineageRootEntityId: prepared.lineage.lineageRootEntityId,
+        lineageRootIncarnation: prepared.lineage.lineageRootIncarnation,
+        branchIndex: prepared.lineage.branchIndex,
+        bountyBudget: prepared.lineage.bountyBudget,
+        transformAtTick: 0
+    });
+    return createPrivateJorangDestinationBase({
+        definition,
+        prepared,
+        branchState,
+        healthFixedPoint: currentHealthFixedPoint,
+        maxHealthFixedPoint,
+        atomicTransformState: Object.freeze({
+            programId: GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT,
+            phase: GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED,
+            dueFixedTick: 0,
+            lineageRootEntityId: branchState.lineageRootEntityId,
+            lineageRootIncarnation: branchState.lineageRootIncarnation,
+            branchIndex: branchState.branchIndex,
+            bountyBudget: branchState.bountyBudget,
+            triggerSourceTick: 0,
+            triggerSequence: 0,
+            commandGeneration: nextAtomicTransformCommandGeneration(
+                prepared.record.commandGeneration,
+                'J return commandGeneration'
+            )
+        }),
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
     });
 }
 

@@ -123,6 +123,7 @@ function canonicalSource(definition, overrides = {}) {
         behaviorProfileId: definition.behaviorProfileId,
         effectEmitterProfileId: definition.effectEmitterProfileId,
         formationDefinitionId: definition.formationDefinitionId,
+        atomicTransformProfileId: definition.atomicTransformProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

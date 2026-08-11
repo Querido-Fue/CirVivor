@@ -43,12 +43,14 @@ const CHARGE_CONFIG = Object.freeze({
     telegraphRadiusScale: 1.35
 });
 
-test('Body ABI v6 charge side-plane은 별도 80-byte record이고 reuse에서 zero-reset된다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 6);
+test('Body ABI v7은 charge 80-byte offset을 유지하고 Atomic Transform 48-byte plane을 분리한다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 7);
     assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
     assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE, 40);
+    assert.equal(GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE, 48);
     const storage = createGpuCircleBodyAbiStorage(2);
     assert.equal(storage.enemyBehaviorStateBuffer.byteLength, 160);
+    assert.equal(storage.atomicTransformStateBuffer.byteLength, 96);
 
     const spawn = {
         position: { x: 1, y: 2 },

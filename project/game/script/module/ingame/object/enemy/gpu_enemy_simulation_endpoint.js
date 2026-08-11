@@ -2,6 +2,7 @@ import { WorldRegistry } from '../world_registry.js';
 import { GpuFixedCommandOwner } from '../gpu_fixed_command_owner.js';
 import { GpuEffectCommandOwner } from './gpu_effect_command_owner.js';
 import { GpuFormationCommandOwner } from './gpu_formation_command_owner.js';
+import { GpuAtomicTransformCommandOwner } from './gpu_atomic_transform_command_owner.js';
 import {
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
@@ -67,6 +68,14 @@ import {
     GPU_FORMATION_TERMINAL_CANCEL_ABI_VERSION,
     GPU_FORMATION_TRANSFORM_PROGRAM_ABI_VERSION
 } from '../../physics/gpu/gpu_formation_runtime_abi.js';
+import {
+    JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
+} from 'data/object/enemy/enemy_jorang_split_runtime_data.js';
+import {
+    GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+    GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
+} from '../../physics/gpu/gpu_atomic_transform_runtime_abi.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
 const DEFAULT_EFFECT_COMMAND_CAPACITY = 256;
@@ -411,6 +420,94 @@ function createFormationBackendPort(backend, sessionGeneration) {
     });
 }
 
+function createAtomicTransformBackendPort(backend, sessionGeneration) {
+    const supportsRuntime = [
+        'stageAtomicTransformPrepareBatch',
+        'drainCompletedAtomicTransformPrepareBatches',
+        'discardPreparedAtomicTransformBatch',
+        'armPreparedAtomicTransformBatch',
+        'commitArmedAtomicTransformBatch',
+        'cancelArmedAtomicTransformBatch',
+        'cancelPendingAtomicTransformProgramsForTerminal',
+        'getAtomicTransformRuntimeStatus'
+    ].every((methodName) => typeof backend?.[methodName] === 'function');
+    let fallbackTerminal = null;
+    const unsupported = (reason = 'atomic-transform-runtime-unsupported') => (
+        Object.freeze({ accepted: false, reason, requiresRecovery: true })
+    );
+    return Object.freeze({
+        stageAtomicTransformPrepareBatch: (request) => supportsRuntime
+            ? backend.stageAtomicTransformPrepareBatch(request)
+            : unsupported(),
+        drainCompletedAtomicTransformPrepareBatches: (out = []) => supportsRuntime
+            ? backend.drainCompletedAtomicTransformPrepareBatches(out)
+            : out,
+        discardPreparedAtomicTransformBatch: (request) => supportsRuntime
+            ? backend.discardPreparedAtomicTransformBatch(request)
+            : unsupported(),
+        armPreparedAtomicTransformBatch: (request) => supportsRuntime
+            ? backend.armPreparedAtomicTransformBatch(request)
+            : unsupported(),
+        commitArmedAtomicTransformBatch: (receipt) => supportsRuntime
+            ? backend.commitArmedAtomicTransformBatch(receipt)
+            : unsupported(),
+        cancelArmedAtomicTransformBatch: (receipt, reason) => supportsRuntime
+            ? backend.cancelArmedAtomicTransformBatch(receipt, reason)
+            : unsupported(),
+        cancelPendingAtomicTransformProgramsForTerminal: (request) => {
+            if (supportsRuntime) {
+                return backend.cancelPendingAtomicTransformProgramsForTerminal(
+                    request
+                );
+            }
+            fallbackTerminal = Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION,
+                state: 'armed',
+                finalFixedTick: request?.finalFixedTick ?? 0,
+                submittedTick: 0,
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: 0,
+                failure: null
+            });
+            return fallbackTerminal;
+        },
+        getAtomicTransformRuntimeStatus: () => supportsRuntime
+            ? backend.getAtomicTransformRuntimeStatus()
+            : Object.freeze({
+                abiVersion: GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
+                state: 'idle',
+                sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                ingressOpen: fallbackTerminal === null,
+                pendingPrepareCount: 0,
+                pendingTransformCount: 0,
+                pendingReadbackCount: 0,
+                runtimeStatus: 0,
+                requiresRecovery: false,
+                failure: null,
+                terminal: fallbackTerminal
+            }),
+        noteFixedSubmit(sourceTick, submitted) {
+            if (!supportsRuntime
+                && submitted === true
+                && fallbackTerminal?.state === 'armed'
+                && fallbackTerminal.finalFixedTick === sourceTick) {
+                fallbackTerminal = Object.freeze({
+                    ...fallbackTerminal,
+                    state: 'submitted',
+                    submittedTick: sourceTick
+                });
+            }
+        },
+        isSupported: () => supportsRuntime
+    });
+}
+
 function createTerminalCleanupAuthority() {
     const issuedPermits = new WeakSet();
     let revoked = false;
@@ -452,6 +549,9 @@ export class GpuEnemySimulationEndpoint {
     #formationTransactionPort;
     #formationCommandOwner;
     #formationBackendPort;
+    #atomicTransformCommandOwner;
+    #atomicTransformBackendPort;
+    #atomicTransformTransactionPort;
     #coreImpactCleanupPortState;
     #authenticEffectLifecycleCommits;
     #effectLifecycleCommitProofTick;
@@ -516,6 +616,9 @@ export class GpuEnemySimulationEndpoint {
             spawnProgramCapacity: options.spawnProgramCapacity,
             effectCommandCapacity: configuredEffectCommandCapacity,
             formationCommandCapacity: configuredFormationCommandCapacity,
+            atomicTransformPrepareCapacity: compositionBodyCapacity,
+            atomicTransformCapacity:
+                JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK,
             sessionGeneration: this.sessionGeneration
         };
         const injectedBackend = typeof backendFactory
@@ -554,6 +657,25 @@ export class GpuEnemySimulationEndpoint {
         });
         this.#terminalCleanupAuthority = createTerminalCleanupAuthority();
         this.#atomicTransformIngressAuthority = createTerminalCleanupAuthority();
+        this.#atomicTransformBackendPort = createAtomicTransformBackendPort(
+            this.backend,
+            this.sessionGeneration
+        );
+        this.#atomicTransformCommandOwner = null;
+        this.#atomicTransformTransactionPort = Object.freeze({
+            armPreparedAtomicTransformBatch: (request) => (
+                this.#atomicTransformBackendPort
+                    .armPreparedAtomicTransformBatch(request)
+            ),
+            commitArmedAtomicTransformBatch: (receipt) => (
+                this.#atomicTransformBackendPort
+                    .commitArmedAtomicTransformBatch(receipt)
+            ),
+            cancelArmedAtomicTransformBatch: (receipt, reason) => (
+                this.#atomicTransformBackendPort
+                    .cancelArmedAtomicTransformBatch(receipt, reason)
+            )
+        });
         this.#formationCommandOwner = null;
         this.#formationTransactionPort = Object.freeze({
             armPreparedFormationTransformBatch: (request) => (
@@ -592,7 +714,9 @@ export class GpuEnemySimulationEndpoint {
                 atomicTransformAuthority: this.#atomicTransformIngressAuthority,
                 atomicTransformRegistryAuthority:
                     this.#atomicTransformRegistryAuthority,
-                atomicTransformTransactionPort: this.#formationTransactionPort
+                atomicTransformTransactionPort: this.#formationTransactionPort,
+                enemyAtomicTransformTransactionPort:
+                    this.#atomicTransformTransactionPort
             }
         );
         this.#authenticEffectLifecycleCommits = new WeakSet();
@@ -703,6 +827,37 @@ export class GpuEnemySimulationEndpoint {
                 })
             }
         );
+        const atomicTransformLifecyclePort = Object.freeze({
+            requestAtomicTransformBatch: (ownerRequest) => {
+                const permit = this.#atomicTransformIngressAuthority.issuePermit();
+                if (!permit) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'atomic-transform-ingress-revoked'
+                    });
+                }
+                const request = Object.freeze({
+                    prepareSourceTick: ownerRequest.prepareSourceTick,
+                    transformFixedTick: ownerRequest.transformFixedTick,
+                    batchIdFingerprint: ownerRequest.batchIdFingerprint,
+                    records: ownerRequest.records
+                });
+                return this.lifecycleCommandOwner.requestAtomicTransformBatch(
+                    request,
+                    ownerRequest.targetFixedTick,
+                    ownerRequest.commandId,
+                    permit
+                );
+            }
+        });
+        this.#atomicTransformCommandOwner = new GpuAtomicTransformCommandOwner({
+            backendPort: this.#atomicTransformBackendPort,
+            lifecyclePort: atomicTransformLifecyclePort,
+            sessionGeneration: this.sessionGeneration,
+            capacity: this.capacity,
+            transformStartCapacity:
+                JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
+        });
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
             options.completedEventSnapshotCapacity
                 ?? Math.min(this.capacity * 2, DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY),
@@ -902,6 +1057,12 @@ export class GpuEnemySimulationEndpoint {
         return this.#formationCommandOwner.getCommandPort();
     }
 
+    /** J/C′ lineage director에 주입하는 GPU-authenticated transform port입니다. */
+    getAtomicTransformCommandPort() {
+        this.#assertUsable();
+        return this.#atomicTransformCommandOwner.getCommandPort();
+    }
+
     /** Arrow gameplay용 exact Tower target을 registry/backend parity 뒤에 설정합니다. */
     configureTowerGameplayTarget(handle = null) {
         this.#assertUsable();
@@ -1046,6 +1207,14 @@ export class GpuEnemySimulationEndpoint {
         );
     }
 
+    /** T-1 말단 GPU prepare proof를 T publication 경계에서 확정합니다. */
+    commitCompletedAtomicTransformProgramsAtFixedBoundary(targetFixedTick) {
+        this.#assertUsable();
+        return this.#atomicTransformCommandOwner.commitCompletedAtFixedBoundary(
+            targetFixedTick
+        );
+    }
+
     /** Session당 exact GPU body 하나의 lossy observed-pose tracking을 설정합니다. */
     configureTrackedBody(handle = null) {
         this.#assertUsable();
@@ -1129,11 +1298,16 @@ export class GpuEnemySimulationEndpoint {
                 this.gameplayIngressCloseReason,
                 finalFixedTick
             );
+            const atomicTransformCommands
+                = this.#atomicTransformCommandOwner.closeForTerminal(
+                    finalFixedTick ?? 1
+                );
             this.gameplayIngressCloseCleanup = Object.freeze({
                 lifecycle,
                 fixedCommands,
                 effectCommands,
-                formationCommands
+                formationCommands,
+                atomicTransformCommands
             });
         }
         return Object.freeze({
@@ -1162,6 +1336,15 @@ export class GpuEnemySimulationEndpoint {
         return this.#formationCommandOwner.getTerminalCancelStatus();
     }
 
+    /** Terminal AtomicTransform owner/backend의 독립 ABI/tick/pending 증거입니다. */
+    getTerminalAtomicTransformProgramCancelStatus() {
+        return Object.freeze({
+            owner: this.#atomicTransformCommandOwner.getTerminalCancelStatus(),
+            backend: this.#atomicTransformBackendPort
+                .getAtomicTransformRuntimeStatus().terminal
+        });
+    }
+
     /** @returns {boolean} public spawn/control/source-relative ingress가 열려 있는지 여부입니다. */
     isGameplayIngressOpen() {
         return !this.destroyed && this.gameplayIngressOpen;
@@ -1175,13 +1358,15 @@ export class GpuEnemySimulationEndpoint {
                 lifecycleCancelledCount: 0,
                 fixedCommands: null,
                 effectCommands: null
-                ,formationCommands: null
+                ,formationCommands: null,
+                atomicTransformCommands: null
             });
         }
         let lifecycleCancelledCount = 0;
         let fixedCommands = null;
         let effectCommands = null;
         let formationCommands = null;
+        let atomicTransformCommands = null;
         try {
             lifecycleCancelledCount
                 = this.lifecycleCommandOwner.finalizeClosedIngress();
@@ -1199,6 +1384,8 @@ export class GpuEnemySimulationEndpoint {
                         ?.finalFixedTick
                     ?? 1
             );
+            atomicTransformCommands
+                = this.#atomicTransformCommandOwner.getTerminalCancelStatus();
         } finally {
             // SEALED/SEALED_FAILED 뒤 stale stored port가 새 authentic cleanup을
             // 만들지 못하도록 permit authority까지 terminal finalizer가 닫습니다.
@@ -1209,7 +1396,8 @@ export class GpuEnemySimulationEndpoint {
             lifecycleCancelledCount,
             fixedCommands,
             effectCommands
-            ,formationCommands
+            ,formationCommands,
+            atomicTransformCommands
         });
     }
 
@@ -1234,6 +1422,7 @@ export class GpuEnemySimulationEndpoint {
         if (this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
             || this.#formationCommandOwner.getStatus().recoveryRequired
+            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             this.#finalizeClosedLifecycleIngress();
@@ -1248,18 +1437,27 @@ export class GpuEnemySimulationEndpoint {
                 registryRevision: this.registry.getRevision(),
                 fixedCommands: null,
                 effectPrograms: null,
-                formationPrograms: null
+                formationPrograms: null,
+                atomicTransformCommands: null
             });
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
         this.#formationCommandOwner.observeLifecycleCommit(lifecycle);
-        if (lifecycle.recoveryRequired) {
+        const atomicTransformCommands
+            = this.#atomicTransformCommandOwner.observeLifecycleCommit(
+                lifecycle
+            );
+        if (lifecycle.recoveryRequired
+            || atomicTransformCommands.recoveryRequired) {
             this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 ...lifecycle,
                 fixedCommands: null,
                 effectPrograms: null,
-                formationPrograms: null
+                formationPrograms: null,
+                atomicTransformCommands,
+                recoveryRequired: true,
+                state: 'failed'
             });
         }
         this.#rememberEffectLifecycleCommit(lifecycle, tick);
@@ -1284,7 +1482,8 @@ export class GpuEnemySimulationEndpoint {
         this.#finalizeClosedLifecycleIngress();
         const recoveryRequired = fixedCommands.recoveryRequired === true
             || effectPrograms?.recoveryRequired === true
-            || formationPrograms?.recoveryRequired === true;
+            || formationPrograms?.recoveryRequired === true
+            || atomicTransformCommands.recoveryRequired === true;
         const state = recoveryRequired
             ? fixedCommands.state === 'stalled'
                 && effectPrograms?.recoveryRequired !== true
@@ -1303,7 +1502,8 @@ export class GpuEnemySimulationEndpoint {
             recoveryRequired,
             fixedCommands,
             effectPrograms,
-            formationPrograms
+            formationPrograms,
+            atomicTransformCommands
         });
     }
 
@@ -1457,6 +1657,7 @@ export class GpuEnemySimulationEndpoint {
         if (this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
             || this.#formationCommandOwner.getStatus().recoveryRequired
+            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
             return false;
@@ -1464,6 +1665,10 @@ export class GpuEnemySimulationEndpoint {
         const submitted = this.backend.fixedUpdate(delta, sourceTick);
         this.effectBackendPort.noteFixedSubmit(sourceTick, submitted === true);
         this.#formationBackendPort.noteFixedSubmit(
+            sourceTick,
+            submitted === true
+        );
+        this.#atomicTransformBackendPort.noteFixedSubmit(
             sourceTick,
             submitted === true
         );
@@ -1507,6 +1712,7 @@ export class GpuEnemySimulationEndpoint {
             this.completedEventRecoveryRequired
             || this.effectCommandOwner.getStatus().recoveryRequired
             || this.#formationCommandOwner.getStatus().recoveryRequired
+            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
             || this.backend.requiresRecovery()
@@ -1523,7 +1729,11 @@ export class GpuEnemySimulationEndpoint {
             : this.lifecycleCommandOwner.getPendingCount()
                 + this.fixedCommandOwner.getPendingCount()
                 + this.effectCommandOwner.getPendingCount()
-                + this.#formationCommandOwner.getPendingCount();
+                + this.#formationCommandOwner.getPendingCount()
+                + this.#atomicTransformCommandOwner.getStatus()
+                    .pendingPrepareCount
+                + this.#atomicTransformCommandOwner.getStatus()
+                    .pendingTransformCount;
     }
 
     getCapacity() {
@@ -1552,6 +1762,8 @@ export class GpuEnemySimulationEndpoint {
         const fixedCommands = this.fixedCommandOwner.getStatus();
         const effectCommands = this.effectCommandOwner.getStatus();
         const formationCommands = this.#formationCommandOwner.getStatus();
+        const atomicTransformCommands
+            = this.#atomicTransformCommandOwner.getStatus();
         const backend = typeof this.backend.getStatus === 'function'
             ? this.backend.getStatus()
             : Object.freeze({ state: this.getRuntimeState() });
@@ -1585,7 +1797,9 @@ export class GpuEnemySimulationEndpoint {
                 + fixedCommands.pendingDestinationCount
                 + (fixedCommands.pendingPriorityTargetControlCount ?? 0)
                 + effectCommands.pendingPulseProgramCount
-                + this.#formationCommandOwner.getPendingCount(),
+                + this.#formationCommandOwner.getPendingCount()
+                + atomicTransformCommands.pendingPrepareCount
+                + atomicTransformCommands.pendingTransformCount,
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
@@ -1595,6 +1809,8 @@ export class GpuEnemySimulationEndpoint {
                 effectCommands.pendingPulseProgramCount,
             effectRuntimeSupported: this.effectBackendPort.isSupported(),
             formationRuntimeSupported: this.#formationBackendPort.isSupported(),
+            atomicTransformRuntimeSupported:
+                this.#atomicTransformBackendPort.isSupported(),
             priorityTargetControlCompletedThroughTick:
                 fixedCommands.priorityTargetControlCompletedThroughTick ?? 0,
             gameplayIngressOpen: this.gameplayIngressOpen,
@@ -1608,6 +1824,7 @@ export class GpuEnemySimulationEndpoint {
                 this.completedEventRecoveryRequired
                 || effectCommands.recoveryRequired
                 || formationCommands.recoveryRequired
+                || atomicTransformCommands.recoveryRequired
                 || fixedCommands.recoveryRequired
                 || lifecycle.recoveryRequired
                 || this.backend.requiresRecovery()
@@ -1616,6 +1833,7 @@ export class GpuEnemySimulationEndpoint {
             backend,
             effectCommands,
             formationCommands,
+            atomicTransformCommands,
             fixedCommands,
             lifecycle,
             registry
@@ -1631,6 +1849,7 @@ export class GpuEnemySimulationEndpoint {
         this.#revokeCoreImpactCleanupPort();
         this.#atomicTransformIngressAuthority.revoke();
         this.#formationCommandOwner.destroy();
+        this.#atomicTransformCommandOwner.destroy();
         this.effectCommandOwner.destroy();
         this.fixedCommandOwner.destroy();
         this.lifecycleCommandOwner.destroy();
@@ -2118,20 +2337,38 @@ export class GpuEnemySimulationEndpoint {
                 'Directional Defense event flag와 public marker가 일치하지 않습니다.'
             );
         }
-        if (maximumDamageWindow && directionalDefense) {
+        const atomicTransformTriggerFirstHit
+            = event.atomicTransformTriggerFirstHit === true;
+        const encodedAtomicTransformTriggerFirstHit = (
+            flags
+                & GPU_CIRCLE_APPLIED_EVENT_FLAG
+                    .ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT
+        ) !== 0;
+        if (atomicTransformTriggerFirstHit
+            !== encodedAtomicTransformTriggerFirstHit) {
             throw new RangeError(
-                'Maximum Damage Window와 Directional Defense event는 상호 배타적이어야 합니다.'
+                'Atomic Transform first-hit event flag와 public marker가 일치하지 않습니다.'
+            );
+        }
+        if (Number(maximumDamageWindow)
+            + Number(directionalDefense)
+            + Number(atomicTransformTriggerFirstHit) > 1) {
+            throw new RangeError(
+                'damage0 typed mitigation/transform marker는 상호 배타적이어야 합니다.'
             );
         }
         const targetDied = (
             flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
         ) !== 0;
         const allowsZeroDamage = eventType === 'damage-applied'
-            && (maximumDamageWindow || directionalDefense);
+            && (maximumDamageWindow
+                || directionalDefense
+                || atomicTransformTriggerFirstHit);
         const isChargeBehaviorEvent = eventType === 'enemy-charge-windup-started'
             || eventType === 'enemy-charge-contact-recoil-started';
         const isCoreDamageRequest = eventType === 'core-damage-request';
         if (!Number.isSafeInteger(valueFixedPoint)
+            || (atomicTransformTriggerFirstHit && valueFixedPoint !== 0)
             || (eventType === 'damage-applied' && (
                 valueFixedPoint < 0
                 || (valueFixedPoint === 0 && !allowsZeroDamage)
@@ -2141,11 +2378,13 @@ export class GpuEnemySimulationEndpoint {
                 valueFixedPoint !== 0
                 || maximumDamageWindow
                 || directionalDefense
+                || atomicTransformTriggerFirstHit
             ))
             || (isCoreDamageRequest && (
                 valueFixedPoint <= 0
                 || maximumDamageWindow
                 || directionalDefense
+                || atomicTransformTriggerFirstHit
             ))
             || ((isChargeBehaviorEvent || isCoreDamageRequest) && flags !== 0)) {
             throw new RangeError(
@@ -2200,6 +2439,7 @@ export class GpuEnemySimulationEndpoint {
             flags,
             maximumDamageWindow,
             directionalDefense,
+            atomicTransformTriggerFirstHit,
             reasonFlags: toNonNegativeSafeInteger(
                 event.reasonFlags ?? (type === 'death' ? event.flags : 0)
             ),
@@ -2217,6 +2457,7 @@ export class GpuEnemySimulationEndpoint {
             normalized.flags,
             normalized.maximumDamageWindow,
             normalized.directionalDefense,
+            normalized.atomicTransformTriggerFirstHit,
             normalized.reasonFlags,
             normalized.position?.x ?? null,
             normalized.position?.y ?? null

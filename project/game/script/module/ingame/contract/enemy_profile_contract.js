@@ -70,6 +70,7 @@ const ENEMY_DEFINITION_KEYS = new Set([
     'behaviorProfileId',
     'effectEmitterProfileId',
     'formationDefinitionId',
+    'atomicTransformProfileId',
     'capabilityIds',
     'render'
 ]);
@@ -116,6 +117,16 @@ function requireNonNegativeFinite(value, label) {
         throw new RangeError(`${label}은 0 이상의 유한 숫자여야 합니다.`);
     }
     return number;
+}
+
+function requireUint32(value, label) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value < 0
+        || value > 0xffffffff) {
+        throw new RangeError(`${label}은 uint32 정수여야 합니다.`);
+    }
+    return value;
 }
 
 function requirePositiveSafeInteger(value, label) {
@@ -184,7 +195,7 @@ function normalizeCombatProfile(source, label) {
             profile.coreImpactDamage,
             `${label}.coreImpactDamage`
         ),
-        bountyBudget: requireNonNegativeFinite(
+        bountyBudget: requireUint32(
             profile.bountyBudget,
             `${label}.bountyBudget`
         )
@@ -473,6 +484,22 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
                 + '양방향으로 일치해야 합니다.'
         );
     }
+    const atomicTransformProfileId = source.atomicTransformProfileId === undefined
+        || source.atomicTransformProfileId === null
+        ? null
+        : requireNonEmptyString(
+            source.atomicTransformProfileId,
+            `${label}.atomicTransformProfileId`
+        );
+    const hasAtomicTransform = capabilityIdSet.has(
+        ENEMY_CAPABILITY_ID.ATOMIC_TRANSFORM
+    );
+    if (hasAtomicTransform !== (atomicTransformProfileId !== null)) {
+        throw new RangeError(
+            `${label}의 ATOMIC_TRANSFORM capability와 atomicTransformProfileId가 `
+                + '양방향으로 일치해야 합니다.'
+        );
+    }
     if (!Object.prototype.hasOwnProperty.call(source, 'formationDefinitionId')) {
         throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
     }
@@ -570,6 +597,13 @@ export function normalizeEnemyDefinition(
             definition.effectEmitterProfileId,
             `${label}.effectEmitterProfileId`
         );
+    const atomicTransformProfileId = definition.atomicTransformProfileId === undefined
+        || definition.atomicTransformProfileId === null
+        ? null
+        : requireNonEmptyString(
+            definition.atomicTransformProfileId,
+            `${label}.atomicTransformProfileId`
+        );
     if (!Object.prototype.hasOwnProperty.call(definition, 'formationDefinitionId')) {
         throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
     }
@@ -601,6 +635,7 @@ export function normalizeEnemyDefinition(
         behaviorProfileId,
         effectEmitterProfileId,
         formationDefinitionId,
+        atomicTransformProfileId,
         capabilityIds,
         render
     };

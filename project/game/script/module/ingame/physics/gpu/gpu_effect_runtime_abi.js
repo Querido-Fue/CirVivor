@@ -361,10 +361,22 @@ export function writeGpuEffectBodyStateSpawn(storage, index, body = {}) {
     new Uint8Array(storage.emitterStateBuffer, emitterOffset, emitter.STRIDE).fill(0);
     const hasIdentity = writeIdentity(summaryView, summaryOffset, body);
     writeIdentity(emitterView, emitterOffset, body);
-    const maxHealth = body.maxHealth ?? body.health ?? 0;
+    const maxHealthFixedPoint = body.maxHealthFixedPoint === undefined
+        ? encodeHealthFixedPoint(
+            body.maxHealth ?? body.health ?? 0,
+            'effect body maxHealth'
+        )
+        : Number(body.maxHealthFixedPoint);
+    if (!Number.isSafeInteger(maxHealthFixedPoint)
+        || maxHealthFixedPoint < 0
+        || maxHealthFixedPoint > INT32_MAX) {
+        throw new RangeError(
+            'effect body maxHealthFixedPoint는 nonnegative int32여야 합니다.'
+        );
+    }
     summaryView.setInt32(
         summaryOffset + summary.MAX_HEALTH_FIXED_POINT,
-        hasIdentity ? encodeHealthFixedPoint(maxHealth, 'effect body maxHealth') : 0,
+        hasIdentity ? maxHealthFixedPoint : 0,
         LITTLE_ENDIAN
     );
     const authoredDamageOther = hasIdentity

@@ -6,6 +6,8 @@ const abi = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GPU_CIRCLE_BODY_ABI,
     GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_APPLIED_EVENT_META,
     GPU_CIRCLE_APPLIED_EVENT_TYPE,
@@ -45,6 +47,7 @@ const {
     readGpuCircleBody,
     readGpuCircleBodyCombatState,
     readGpuCircleBodyCounts,
+    readGpuCircleAtomicTransformState,
     readGpuCircleContactHandler,
     readGpuCircleEnemyBehaviorState,
     readGpuCircleGridBody,
@@ -123,7 +126,7 @@ function assertThrowsNamed(callback, expectedName) {
 }
 
 // std430/WGSL과 공유할 stride 및 모든 field offset을 고정합니다.
-assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 6);
+assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 7);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.ADDITION_COUNT, 4);
@@ -186,6 +189,28 @@ assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT, 8);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK, 12);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION, 20);
+assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE }, {
+    STRIDE: 48,
+    PROGRAM_ID: 0,
+    PHASE: 4,
+    ENTITY_ID: 8,
+    INCARNATION: 12,
+    DUE_FIXED_TICK: 16,
+    LINEAGE_ROOT_ENTITY_ID: 20,
+    LINEAGE_ROOT_INCARNATION: 24,
+    BRANCH_INDEX: 28,
+    BOUNTY_BUDGET: 32,
+    TRIGGER_SOURCE_TICK: 36,
+    TRIGGER_SEQUENCE: 40,
+    COMMAND_GENERATION: 44
+});
+assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE }, {
+    STRIDE: 16,
+    SOURCE_ENTITY_ID: 0,
+    CONTACT_INDEX: 4,
+    MATCH_COUNT: 8,
+    STATUS: 12
+});
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.PROGRAM_ID, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE, 4);
@@ -304,7 +329,7 @@ assert.equal(
     GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM
 );
 
-// V6 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
+// V7에서도 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
 const physicsMeta = packGpuCirclePhysicsMeta(0xa5, 0x81);
 const interactionMeta = packGpuCircleInteractionMeta(0x42, 0xa5);
 const gameplayMeta = packGpuCircleGameplayMeta(
@@ -397,11 +422,16 @@ assert.equal(
     storage.enemyBehaviorStateBuffer.byteLength,
     GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * storage.capacity
 );
+assert.equal(
+    storage.atomicTransformStateBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * storage.capacity
+);
 new Uint8Array(storage.physicsBuffer).fill(0xff);
 new Uint8Array(storage.simulationBuffer).fill(0xff);
 new Uint8Array(storage.temporaryBuffer).fill(0xff);
 new Uint8Array(storage.contactHandlerBuffer).fill(0xff);
 new Uint8Array(storage.combatStateBuffer).fill(0xff);
+new Uint8Array(storage.atomicTransformStateBuffer).fill(0xff);
 new Uint8Array(storage.enemyBehaviorStateBuffer).fill(0xff);
 writeGpuCircleBodyCounts(storage, {
     bodyCount: 1,
@@ -512,6 +542,24 @@ assert.deepEqual({
     telegraphColorRgba: [0, 0, 0, 0],
     telegraphRadiusScale: 0
 });
+assert.deepEqual({ ...packedBody.atomicTransformState }, {
+    programId: GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.NONE,
+    phase: GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.NONE,
+    entityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    incarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    dueFixedTick: 0,
+    lineageRootEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    lineageRootIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    branchIndex: 0,
+    bountyBudget: 0,
+    triggerSourceTick: 0,
+    triggerSequence: 0,
+    commandGeneration: 0
+});
+assert.deepEqual(
+    readGpuCircleAtomicTransformState(storage, 1),
+    packedBody.atomicTransformState
+);
 assert.deepEqual(
     [...new Uint8Array(
         storage.enemyBehaviorStateBuffer,
@@ -1520,7 +1568,7 @@ assert.equal(
     GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED
 );
 
-// Physics plane의 V6 binary fixture는 정확히 32 bytes이며 +24/+28 word를 보존합니다.
+// Physics plane의 V7 binary fixture도 정확히 32 bytes이며 +24/+28 word를 보존합니다.
 const fixtureStorage = createGpuCircleBodyAbiStorage(1);
 writeGpuCircleBodySpawn(fixtureStorage, 0, {
     position: { x: 1, y: -2 },

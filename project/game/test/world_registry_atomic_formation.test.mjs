@@ -63,8 +63,12 @@ test('WorldRegistry atomic transform authority/token은 private이고 full-capac
         destroyed: false
     });
 
-    const preflight = registry.preflightAtomicTransformBatch(
+    assert.throws(() => registry.preflightAtomicTransformBatch(
         transformRequest(sourceB, sourceA),
+        authority
+    ), /ASC/);
+    const preflight = registry.preflightAtomicTransformBatch(
+        transformRequest(sourceA, sourceB),
         authority
     );
     assert.ok(preflight);

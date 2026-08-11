@@ -69,7 +69,8 @@ if (PENTA_BOOST_EFFECT_DEFINITION.moveSpeedMultiplier !== 1) {
 }
 
 /**
- * Body ABI v6/80B와 독립적인 EffectInstance A/B pool, per-body summary/emitter,
+ * Body ABI v7의 독립 80B EnemyBehaviorState와 별개인 EffectInstance A/B pool,
+ * per-body summary/emitter 및 독립 AtomicTransformState side-plane을 유지하며,
  * tick-start grid pulse scan 및 Pentagon cluster navigation shader입니다.
  */
 export const GPU_EFFECT_RUNTIME_COMPUTE_WGSL = /* wgsl */`
