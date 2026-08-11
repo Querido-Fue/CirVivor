@@ -887,7 +887,7 @@ async function runLifecycleOrbitTowerLoss(device, format) {
         const storage = gpuStatus.fixedPrimitives.storageProfile;
         assert(storage.directionalDefenseClassifier === 8
             && storage.enemyBehavior === 8
-            && gpuStatus.formations.storageProfile.render === 8
+            && gpuStatus.formations.storageProfile.render === 9
             && storage.contactHandling === 9
             && storage.requiredMaximum === 9,
         `storage profile drift ${JSON.stringify({ storage, formations: gpuStatus.formations })}`);

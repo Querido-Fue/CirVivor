@@ -2142,5 +2142,5 @@ export const GPU_FORMATION_RUNTIME_STORAGE_PROFILE = Object.freeze({
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: 8
     }),
     maximum: 9,
-    render: 8
+    render: 9
 });

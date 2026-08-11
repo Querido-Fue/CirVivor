@@ -25,6 +25,13 @@ import {
     GPU_ATOMIC_TRANSFORM_RUNTIME_ABI_VERSION,
     GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
 } from '../../physics/gpu/gpu_atomic_transform_runtime_abi.js';
+import {
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+    GPU_PROJECTILE_CAPTURE_TICK_STATUS
+} from '../../physics/gpu/gpu_projectile_capture_runtime_abi.js';
+import {
+    GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE
+} from '../../physics/gpu/gpu_projectile_capture_runtime_shaders.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -600,6 +607,121 @@ export class EnemySimulationBackend {
                 failure: null,
                 terminal: null
             });
+    }
+
+    armPreparedProjectileCaptureReleaseBatch(request) {
+        const result = this.simulation
+            ?.armPreparedProjectileCaptureReleaseBatch?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    commitArmedProjectileCaptureReleaseBatch(receipt) {
+        const result = this.simulation
+            ?.commitArmedProjectileCaptureReleaseBatch?.(receipt)
+            ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    cancelArmedProjectileCaptureReleaseBatch(receipt, reason) {
+        const result = this.simulation
+            ?.cancelArmedProjectileCaptureReleaseBatch?.(receipt, reason)
+            ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false
+            });
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedProjectileCaptureBatches(out = []) {
+        return this.simulation?.drainCompletedProjectileCaptureBatches?.(out)
+            ?? out;
+    }
+
+    drainCompletedProjectileCaptureReleaseBatches(out = []) {
+        return this.simulation
+            ?.drainCompletedProjectileCaptureReleaseBatches?.(out) ?? out;
+    }
+
+    discardPreparedProjectileCaptureBatch(request) {
+        return this.simulation?.discardPreparedProjectileCaptureBatch?.(request)
+            ?? Object.freeze({ accepted: false, reason: 'gpu-unavailable' });
+    }
+
+    cancelPendingProjectileCaptureProgramsForTerminal(request) {
+        return this.simulation
+            ?.cancelPendingProjectileCaptureProgramsForTerminal?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: readDiagnosticPositiveInteger(
+                    request?.finalFixedTick
+                ),
+                failure: 'gpu-unavailable'
+            });
+    }
+
+    getTerminalProjectileCaptureProgramCancelStatus() {
+        return this.simulation
+            ?.getTerminalProjectileCaptureProgramCancelStatus?.() ?? null;
+    }
+
+    getProjectileCaptureRuntimeStatus() {
+        return this.simulation?.getProjectileCaptureRuntimeStatus?.()
+            ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                state: 'gpu-unavailable',
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                ingressOpen: false,
+                captureCapacity: 0,
+                releasePreparationCapacity: 0,
+                cleanupCapacity: 0,
+                activeDomainBodyCount: 0,
+                pendingCaptureReadbackCount: 0,
+                pendingReleaseReadbackCount: 0,
+                pendingCaptureBatchCount: 0,
+                pendingReleaseBatchCount: 0,
+                preparedBatchCount: 0,
+                armedReleaseCount: 0,
+                stagedReleaseCount: 0,
+                commitRequested: false,
+                targetFixedTick: 0,
+                sourceTick: 0,
+                completedThroughTick: 0,
+                lastReleaseCommittedTick: 0,
+                runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET,
+                errorFlags: 0,
+                storageProfile: GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null
+            });
+    }
+
+    registerProjectileCaptureCoreImpactReceipt(receipt) {
+        return this.simulation
+            ?.registerProjectileCaptureCoreImpactReceipt?.(receipt) === true;
+    }
+
+    getProjectileCaptureBodyState(handle) {
+        return this.simulation?.getProjectileCaptureBodyState?.(handle) ?? null;
     }
 
     /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */

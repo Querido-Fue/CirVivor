@@ -2,6 +2,8 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_PROJECTILE_CAPTURE_POLICY_CODE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -32,6 +34,12 @@ import {
 import {
     materializeGpuPlainDataSnapshot
 } from '../gpu_spawn_intent.js';
+import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+    normalizeProjectileCapturePolicyId,
+    normalizeProjectileOriginProvenance
+} from '../../contract/projectile_capture_contract.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
@@ -371,6 +379,11 @@ export function createGpuProjectileSpawnIntent(options = {}) {
             ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX
     );
     const targetPolicy = resolveProjectileTargetPolicy(options, definition);
+    const projectileCapturePolicyId = normalizeProjectileCapturePolicyId(
+        definition.projectileCapturePolicyId
+            ?? PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        'definition.projectileCapturePolicyId'
+    );
     const coreDamageMetadata = resolveOptionalCoreDamageMetadata(definition);
     const spawnSequence = requireNonNegativeSafeInteger(
         options.spawnSequence ?? 0,
@@ -380,12 +393,30 @@ export function createGpuProjectileSpawnIntent(options = {}) {
     const renderStyle = createRenderStyle(definition);
     const producerId = options.producerId ?? definition.producerId;
     const sourceAbilityId = options.sourceAbilityId ?? definition.sourceAbilityId;
+    const originProvenance = normalizeProjectileOriginProvenance({
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: definition.archetypeId ?? definitionId,
+        wordTagMask: definition.wordTagMask ?? 0,
+        modifierSetId: definition.modifierSetId ?? null,
+        sourceExecutionId: definition.sourceExecutionId ?? null,
+        projectileGeneration: definition.projectileGeneration ?? 1,
+        originProducerId: producerId ?? null,
+        originSourceAbilityId: sourceAbilityId ?? null,
+        originOwnerEntityId: ownerHandle?.entityId ?? null,
+        originOwnerIncarnation: ownerHandle?.incarnation ?? null,
+        originSourceEntityId: sourceHandle?.entityId ?? null,
+        originSourceIncarnation: sourceHandle?.incarnation ?? null,
+        originTargetEntityId: targetHandle?.entityId ?? null,
+        originTargetIncarnation: targetHandle?.incarnation ?? null
+    });
     return Object.freeze({
         kindId: GPU_PROJECTILE_WORLD_KIND_ID,
         definitionId,
         ...allegiance,
         damagePolicyId,
         targetPolicyId: targetPolicy.targetPolicyId,
+        projectileCapturePolicyId,
+        ...originProvenance,
         ...coreDamageMetadata,
         spawnSequence,
         ...(sourceHandle ? {
@@ -427,6 +458,13 @@ export function createGpuProjectileSpawnIntent(options = {}) {
             'definition.lifetimeSeconds'
         ),
         contactHandler: createContactHandler(definition),
+        projectileCaptureState: Object.freeze({
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE,
+            policyCode: projectileCapturePolicyId
+                    === PROJECTILE_CAPTURE_POLICY_ID.CAPTURABLE
+                ? GPU_PROJECTILE_CAPTURE_POLICY_CODE.CAPTURABLE
+                : GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE
+        }),
         ...(coreDamageMetadata.coreDamageFixedPoint !== undefined ? {
             enemyBehaviorState: Object.freeze({
                 programId:

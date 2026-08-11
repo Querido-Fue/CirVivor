@@ -169,8 +169,8 @@ for (const entryPoint of [
     assert.match(compute, new RegExp(`fn\\s+${entryPoint}\\b`));
 }
 
-// ABI v7은 기존 gameplay/combat/EnemyBehaviorState offset을 유지하고 Atomic Transform을 분리합니다.
-assert.match(compute, /const BODY_ABI_VERSION: u32 = 7u;/);
+// ABI v8은 기존 gameplay/combat/EnemyBehaviorState offset을 유지하고 capture plane을 append합니다.
+assert.match(compute, /const BODY_ABI_VERSION: u32 = 8u;/);
 assert.match(compute, /struct BodyCounts \{[\s\S]*?abi_version: u32,/);
 assert.match(compute, /struct BodyPhysics \{[\s\S]*?physical_meta: u32,[\s\S]*?interaction_meta: u32,/);
 assert.match(compute, /struct BodySimulation \{[\s\S]*?lifetime: f32,[\s\S]*?health: atomic<i32>,[\s\S]*?gameplay_meta: u32,[\s\S]*?flags: atomic<u32>,[\s\S]*?incarnation: u32,/);

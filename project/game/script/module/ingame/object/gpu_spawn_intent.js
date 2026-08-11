@@ -4,7 +4,10 @@ import {
     encodeGpuCircleBodyFixedPoint,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
-    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_PROJECTILE_CAPTURE_PHASE,
+    GPU_PROJECTILE_CAPTURE_POLICY_CODE,
+    GPU_PROJECTILE_CAPTURE_ROLE
 } from '../physics/gpu/gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_LAST_PULSE_TICK_INVALID,
@@ -20,6 +23,12 @@ import {
     PROJECTILE_SELECTED_TARGET_POLICY_ID,
     PROJECTILE_TARGET_POLICY_ID
 } from '../contract/projectile_target_policy_contract.js';
+import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_KEYS,
+    normalizeProjectileCapturePolicyId,
+    normalizeProjectileOriginProvenance
+} from '../contract/projectile_capture_contract.js';
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -73,6 +82,10 @@ import {
     CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID,
     JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID
 } from 'data/object/enemy/enemy_jorang_split_catalog_data.js';
+import {
+    ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_CODE,
+    ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
@@ -172,6 +185,164 @@ function copyOptionalEnemyCapabilityMetadata(intent) {
             'spawnIntent.capabilityMask'
         )
     };
+}
+
+function normalizeOptionalEnemyProjectileCaptureMetadata(intent, capabilityMask) {
+    const hasCapability = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE,
+            'spawnIntent.capabilityMask'
+        );
+    const hasProfileId = intent.projectileCaptureProfileId !== undefined
+        && intent.projectileCaptureProfileId !== null;
+    const hasProfileCode = intent.projectileCaptureProfileCode !== undefined
+        && intent.projectileCaptureProfileCode !== null;
+    if (hasCapability !== hasProfileId || hasProfileId !== hasProfileCode) {
+        throw new RangeError(
+            'PROJECTILE_CAPTURE capability과 capture profile id/code가 함께 있어야 합니다.'
+        );
+    }
+    if (!hasCapability) {
+        return null;
+    }
+    const profileId = requireNonEmptyString(
+        intent.projectileCaptureProfileId,
+        'spawnIntent.projectileCaptureProfileId'
+    );
+    const profileCode = requireUint32(
+        intent.projectileCaptureProfileCode,
+        'spawnIntent.projectileCaptureProfileCode',
+        false
+    );
+    const byId = ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID[profileId];
+    const byCode = ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_CODE[profileCode];
+    if (!byId || byId !== byCode || byId.definitionCode !== profileCode) {
+        throw new RangeError('enemy projectile capture profile id/code가 catalog와 다릅니다.');
+    }
+    return Object.freeze({
+        projectileCaptureProfileId: profileId,
+        projectileCaptureProfileCode: profileCode
+    });
+}
+
+function normalizeProjectileCaptureIngress(intent) {
+    const projectileCapturePolicyId = normalizeProjectileCapturePolicyId(
+        intent.projectileCapturePolicyId,
+        'spawnIntent.projectileCapturePolicyId'
+    );
+    const provenanceSource = Object.create(null);
+    for (const key of PROJECTILE_ORIGIN_PROVENANCE_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(intent, key)) {
+            throw new TypeError(`spawnIntent.${key} origin provenance가 필요합니다.`);
+        }
+        provenanceSource[key] = intent[key];
+    }
+    return Object.freeze({
+        projectileCapturePolicyId,
+        ...normalizeProjectileOriginProvenance(
+            provenanceSource,
+            'spawnIntent.projectileOriginProvenance'
+        )
+    });
+}
+
+function normalizeInitialProjectileCaptureState(
+    intent,
+    kindId,
+    enemyCaptureProfile,
+    projectileCaptureIngress
+) {
+    const state = intent.projectileCaptureState;
+    const expectedRole = kindId === 'enemy' && enemyCaptureProfile !== null
+        ? GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+        : kindId === 'projectile'
+            ? GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+            : GPU_PROJECTILE_CAPTURE_ROLE.NONE;
+    if (expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.NONE) {
+        if (state !== undefined && state !== null) {
+            throw new TypeError(
+                'capture capability이 없는 body에는 projectileCaptureState가 금지됩니다.'
+            );
+        }
+        return null;
+    }
+    if (!state || typeof state !== 'object' || Array.isArray(state)) {
+        throw new TypeError('capture-capable spawn에는 projectileCaptureState가 필요합니다.');
+    }
+    const allowedKeys = new Set([
+        'role',
+        'phase',
+        'profileCode',
+        'policyCode',
+        'flags',
+        'peerBodySlot',
+        'peerEntityId',
+        'peerIncarnation',
+        'capturedAtFixedTick',
+        'releaseDueFixedTick',
+        'captureSequence',
+        'capturedSpeed',
+        'facingX',
+        'facingY'
+    ]);
+    for (const key of Reflect.ownKeys(state)) {
+        if (typeof key !== 'string' || !allowedKeys.has(key)) {
+            throw new RangeError(`projectileCaptureState에 금지 field가 있습니다: ${String(key)}`);
+        }
+    }
+    const expectedProfileCode = expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+        ? enemyCaptureProfile.projectileCaptureProfileCode
+        : 0;
+    const expectedPolicyCode = expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+        && projectileCaptureIngress.projectileCapturePolicyId
+            === PROJECTILE_CAPTURE_POLICY_ID.CAPTURABLE
+        ? GPU_PROJECTILE_CAPTURE_POLICY_CODE.CAPTURABLE
+        : GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE;
+    const peerBodySlot = state.peerBodySlot ?? INVALID_HANDLE_COMPONENT;
+    const peerEntityId = state.peerEntityId ?? INVALID_HANDLE_COMPONENT;
+    const peerIncarnation = state.peerIncarnation ?? INVALID_HANDLE_COMPONENT;
+    const facingX = state.facingX ?? 0;
+    const facingY = state.facingY ?? 0;
+    const facingLength = Math.hypot(facingX, facingY);
+    if (state.role !== expectedRole
+        || (state.phase ?? GPU_PROJECTILE_CAPTURE_PHASE.IDLE)
+            !== GPU_PROJECTILE_CAPTURE_PHASE.IDLE
+        || (state.profileCode ?? 0) !== expectedProfileCode
+        || (state.policyCode ?? GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE)
+            !== expectedPolicyCode
+        || (state.flags ?? 0) !== 0
+        || peerBodySlot !== INVALID_HANDLE_COMPONENT
+        || peerEntityId !== INVALID_HANDLE_COMPONENT
+        || peerIncarnation !== INVALID_HANDLE_COMPONENT
+        || (state.capturedAtFixedTick ?? 0) !== 0
+        || (state.releaseDueFixedTick ?? 0) !== 0
+        || (state.captureSequence ?? 0) !== 0
+        || (state.capturedSpeed ?? 0) !== 0
+        || (expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            ? !Number.isFinite(facingLength)
+                || Math.abs(facingLength - 1) > 1e-4
+            : state.facingX !== undefined || state.facingY !== undefined)) {
+        throw new RangeError(
+            'public spawn projectileCaptureState는 exact IDLE catalog state여야 합니다.'
+        );
+    }
+    return Object.freeze({
+        role: expectedRole,
+        phase: GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+        profileCode: expectedProfileCode,
+        policyCode: expectedPolicyCode,
+        flags: 0,
+        peerBodySlot,
+        peerEntityId,
+        peerIncarnation,
+        capturedAtFixedTick: 0,
+        releaseDueFixedTick: 0,
+        captureSequence: 0,
+        capturedSpeed: 0,
+        facingX: expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR ? facingX : 0,
+        facingY: expectedRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR ? facingY : 0
+    });
 }
 
 function hasEnemyOrbitCapability(capabilityMask) {
@@ -1421,6 +1592,19 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
             ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         'spawnIntent.damagePolicyId'
     );
+    const hasAnyProjectileOriginField = PROJECTILE_ORIGIN_PROVENANCE_KEYS.some(
+        (key) => Object.prototype.hasOwnProperty.call(snapshot, key)
+    );
+    const projectileCaptureIngress = kindId === 'projectile'
+        ? normalizeProjectileCaptureIngress(snapshot)
+        : null;
+    if (kindId !== 'projectile'
+        && (snapshot.projectileCapturePolicyId !== undefined
+            || hasAnyProjectileOriginField)) {
+        throw new TypeError(
+            'projectile capture policy/origin provenance는 projectile spawn에만 허용됩니다.'
+        );
+    }
     validateOptionalExactIdentityPair(snapshot, 'owner');
     validateOptionalExactIdentityPair(snapshot, 'source');
     validateOptionalExactIdentityPair(snapshot, 'target');
@@ -1430,6 +1614,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     }
     let normalizedEffectEmitterState = null;
     let normalizedOrbitLease = null;
+    let normalizedProjectileCaptureProfile = null;
     if (kindId === 'enemy') {
         const spawnPolicy = requireNonEmptyString(
             snapshot.spawnPolicy,
@@ -1455,6 +1640,11 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
                 'spawnIntent.capabilityMask'
             )
             : null;
+        normalizedProjectileCaptureProfile
+            = normalizeOptionalEnemyProjectileCaptureMetadata(
+                snapshot,
+                capabilityMask
+            );
         validateRawEnemyAtomicTransformIngress(
             snapshot,
             capabilityMask,
@@ -1496,9 +1686,19 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     } else if (hasAnyEnemyEffectMetadata(snapshot)
         || snapshot.effectEmitterState !== undefined
         || hasAnyEnemyOrbitLeaseMetadata(snapshot)
-        || hasEnemyOrbitBehaviorProgram(snapshot)) {
+        || hasEnemyOrbitBehaviorProgram(snapshot)
+        || snapshot.projectileCaptureProfileId !== undefined
+        || snapshot.projectileCaptureProfileCode !== undefined
+        || (kindId !== 'projectile'
+            && snapshot.projectileCaptureState !== undefined)) {
         throw new TypeError('Enemy capability metadata/state는 Enemy spawn에만 허용됩니다.');
     }
+    const projectileCaptureState = normalizeInitialProjectileCaptureState(
+        snapshot,
+        kindId,
+        normalizedProjectileCaptureProfile,
+        projectileCaptureIngress
+    );
     const {
         layerMask: _legacyLayerMask,
         sensorMask: _legacySensorMask,
@@ -1515,6 +1715,9 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
         ...(normalizedEffectEmitterState === null ? {} : {
             effectEmitterState: normalizedEffectEmitterState
         }),
+        ...(normalizedProjectileCaptureProfile ?? {}),
+        ...(projectileCaptureIngress ?? {}),
+        ...(projectileCaptureState === null ? {} : { projectileCaptureState }),
         contactHandler
     });
 }
@@ -1550,6 +1753,10 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             // capability ID 배열이나 content object는 registry에 직렬화하지 않습니다.
             ...copyOptionalEnemyCapabilityMetadata(intent),
             ...copyOptionalEnemyProfileMetadata(intent),
+            ...(intent.projectileCaptureProfileId === undefined ? {} : {
+                projectileCaptureProfileId: intent.projectileCaptureProfileId,
+                projectileCaptureProfileCode: intent.projectileCaptureProfileCode
+            }),
             ...copyOptionalEnemyAtomicTransformMetadata(intent),
             ...copyOptionalEnemyOrbitMetadata(intent),
             ...copyOptionalEnemyEffectMetadata(intent),
@@ -1560,6 +1767,7 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
     return {
         ...common,
         spawnSequence: intent.spawnSequence,
+        ...normalizeProjectileCaptureIngress(intent),
         ...copySelectedTargetProjectileMetadata(intent, activationEvidence)
     };
 }

@@ -71,6 +71,7 @@ const ENEMY_DEFINITION_KEYS = new Set([
     'effectEmitterProfileId',
     'formationDefinitionId',
     'atomicTransformProfileId',
+    'projectileCaptureProfileId',
     'capabilityIds',
     'render'
 ]);
@@ -500,6 +501,31 @@ export function assertEnemyDefinitionProfileCapabilityConsistency(
                 + '양방향으로 일치해야 합니다.'
         );
     }
+    const projectileCaptureProfileId = source.projectileCaptureProfileId
+        === undefined || source.projectileCaptureProfileId === null
+        ? null
+        : requireNonEmptyString(
+            source.projectileCaptureProfileId,
+            `${label}.projectileCaptureProfileId`
+        );
+    const hasProjectileCapture = capabilityIdSet.has(
+        ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE
+    );
+    if (hasProjectileCapture !== (projectileCaptureProfileId !== null)) {
+        throw new RangeError(
+            `${label}의 PROJECTILE_CAPTURE capability와 `
+                + 'projectileCaptureProfileId가 양방향으로 일치해야 합니다.'
+        );
+    }
+    if (hasProjectileCapture
+        && (!capabilityIdSet.has(ENEMY_CAPABILITY_ID.NAVIGATION)
+            || !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CONTACT_COMBAT)
+            || !capabilityIdSet.has(ENEMY_CAPABILITY_ID.CORE_IMPACT))) {
+        throw new RangeError(
+            `${label}의 PROJECTILE_CAPTURE capability에는 `
+                + 'NAVIGATION/CONTACT_COMBAT/CORE_IMPACT가 필요합니다.'
+        );
+    }
     if (!Object.prototype.hasOwnProperty.call(source, 'formationDefinitionId')) {
         throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
     }
@@ -604,6 +630,13 @@ export function normalizeEnemyDefinition(
             definition.atomicTransformProfileId,
             `${label}.atomicTransformProfileId`
         );
+    const projectileCaptureProfileId = definition.projectileCaptureProfileId
+        === undefined || definition.projectileCaptureProfileId === null
+        ? null
+        : requireNonEmptyString(
+            definition.projectileCaptureProfileId,
+            `${label}.projectileCaptureProfileId`
+        );
     if (!Object.prototype.hasOwnProperty.call(definition, 'formationDefinitionId')) {
         throw new TypeError(`${label}.formationDefinitionId는 nullable 필수 필드입니다.`);
     }
@@ -636,6 +669,7 @@ export function normalizeEnemyDefinition(
         effectEmitterProfileId,
         formationDefinitionId,
         atomicTransformProfileId,
+        projectileCaptureProfileId,
         capabilityIds,
         render
     };

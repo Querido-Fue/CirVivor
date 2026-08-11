@@ -32,6 +32,20 @@ import { SETTING_DEFINITIONS } from 'data/settings/setting_definitions.js';
 `object/enemy/enemy_shape_geometry_data.js`가 소유합니다. SVG path 문자열과 GPU
 analytic mask는 이 선언 데이터를 각각 변환하며 별도 좌표 사본을 두지 않습니다.
 
+R은 GPU-only `basic_ring_01` definition이며 legacy `ENEMY_SHAPE_TYPES`/CPU enemy pool에는
+등록하지 않습니다. `basic_ring_enemy_data.js`가 common-C profile과
+`enemy-projectile-capture` capability를 조합하고,
+`enemy_projectile_capture_catalog_data.js`가 one-slot, 60 fixed-tick delay, inclusive ±45° funnel,
+숨김 보관, 포획 중 lifetime 계속 감소, 포획 속력 보존, 바깥 반경 + `1/1024` tile 출구를 소유합니다.
+Release aim은 exact living Tower가 없으면 포획 시 저장한 전방을 사용하며 Core fallback은 없습니다.
+`PLAYER_DAMAGEABLE_AND_TERRAIN` target policy가 `CORE_PROXY`와 reciprocal하지 않기 때문입니다.
+Captor death와 Core impact는 held projectile을 Hostile 전방으로 한 번 방출하고, projectile 자체 만료는
+방출 없이 slot만 정리하며, Core-depletion terminal은 아직 publish하지 않은 release를 취소하고 held
+projectile을 tombstone 처리합니다. Funnel cosine은 data에 복제하지 않고 원본 angle에서 GPU adapter가
+한 번 파생합니다. 최초 spawn의 archetype/tag/modifier/generation/producer/ability 및 origin exact-handle
+provenance는 `projectile_capture_contract.js` schema v1로 고정하며, capture/release가 바꾸는 current
+team/owner/source/target과 분리해 보존합니다.
+
 O의 profile/data authority는 `basic_octa_enemy_data.js`와 profile catalog에 있습니다. Tower 반지름 × 12,
 각속도, 60Hz 계약, 8슬롯 분산 순서, 무게, 고정 피해 감소량, 3/8 장갑 면 인덱스는 데이터가 소유합니다.
 GPU Q32/fixed-point 인코딩, 접근·포획 상태 전이, 서쪽 기준 슬롯 위상 매핑, 슬롯 lifecycle, facing,
@@ -49,6 +63,7 @@ phase/group 기반 command ID와 fixed-tick schedule은 바뀌지 않습니다.
 - `settings/`: 설정 정의와 기본값
 - `save/`: 진행도·인게임 저장 초기값
 - `object/enemy/`: 적 catalog와 게임플레이·AI 밸런스
+- `object/projectile/`: projectile archetype, capturable policy와 logical metadata 기본값
 - `object/tower/`: Tower 크기·이동·물리 밸런스. Tower HP 데이터는 두지 않음
 - `object/core/`: Core 크기와 Integrity 기본값
 - `scene/game/`: 맵 catalog, 방향 경로, 복수 적 진입 route와 실제 플레이 초기 데이터

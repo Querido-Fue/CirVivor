@@ -9,9 +9,12 @@ import {
     GPU_CIRCLE_BODY_LAYER,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
-    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE
+    GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
+    GPU_PROJECTILE_CAPTURE_STATE_META
 } from './gpu_circle_body_abi.js';
 import {
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -53,6 +56,9 @@ import {
 import {
     MAIN_GPU_ENEMY_PAIR_COLLISION_RADIUS_SCALE
 } from '../../../../data/object/enemy/basic_circle_enemy_data.js';
+import {
+    GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE
+} from '../../../../data/object/enemy/enemy_projectile_capture_catalog_data.js';
 
 const WGSL_POLYGON_POINT_CAPACITY = 8;
 
@@ -146,6 +152,7 @@ const CONTACT_ABI_STATUS_OK: u32 = 1u;
 const CONTACT_ABI_STATUS_MISMATCH: u32 = 2u;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
+const BODY_FLAG_PROJECTILE_CAPTURED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED}u;
 // GPU fixed journal에서만 쓰는 한-tick marker입니다. Body ABI stride는 바꾸지 않습니다.
 const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = 65536u;
 const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
@@ -431,8 +438,23 @@ struct FormationState {
     reserved_1: u32,
 }
 
+struct ProjectileCaptureState {
+    role_phase_profile_policy: u32,
+    self_entity_id: u32,
+    self_incarnation: u32,
+    peer_body_slot: u32,
+    peer_entity_id: u32,
+    peer_incarnation: u32,
+    captured_at_fixed_tick: u32,
+    release_due_fixed_tick: u32,
+    capture_sequence: u32,
+    captured_speed: f32,
+    facing: vec2f,
+}
+
 struct EffectSummaryBuffer { values: array<EffectSummary> }
 struct FormationStateBuffer { values: array<FormationState> }
+struct ProjectileCaptureStateBuffer { values: array<ProjectileCaptureState> }
 
 struct ContactState {
     contact_count: atomic<u32>,
@@ -749,6 +771,12 @@ fn load_simulation_flags(body_id: u32) -> u32 {
 
 fn body_id_is_alive(body_id: u32) -> bool {
     return body_is_alive(load_simulation_flags(body_id));
+}
+
+fn body_id_is_simulation_active(body_id: u32) -> bool {
+    let flags = load_simulation_flags(body_id);
+    return body_is_alive(flags)
+        && !body_has_flag(flags, BODY_FLAG_PROJECTILE_CAPTURED);
 }
 
 fn snapshot_tower_attack_damage(source_slot: u32, destination_slot: u32) {
@@ -1082,7 +1110,7 @@ fn validate_body_control_commands(@builtin(global_invocation_id) global_id: vec3
     }
     // GPU death와 async death-event commit 사이에는 host exact handle이 잠시
     // active일 수 있습니다. 같은 identity의 dead target은 bounded no-op입니다.
-    if (!body_id_is_alive(command.destination_slot)) {
+    if (!body_id_is_simulation_active(command.destination_slot)) {
         return;
     }
 }
@@ -1233,7 +1261,8 @@ fn apply_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let body_id = global_id.x;
-    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+    if (body_id >= counts.body_count
+        || !body_id_is_simulation_active(body_id)) {
         return;
     }
     let control_state = body_control_states.values[body_id];
@@ -1542,7 +1571,7 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
         || simulations.values[program.source_slot].entity_id != program.source_entity_id
         || simulations.values[program.source_slot].incarnation
             != program.source_incarnation
-        || !body_id_is_alive(program.source_slot)) {
+        || !body_id_is_simulation_active(program.source_slot)) {
         spawn_program.records[program_index].result
             = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
         return;
@@ -1822,7 +1851,7 @@ fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3
         || simulations.values[program.source_slot].entity_id != program.source_entity_id
         || simulations.values[program.source_slot].incarnation
             != program.source_incarnation
-        || !body_id_is_alive(program.source_slot)) {
+        || !body_id_is_simulation_active(program.source_slot)) {
         spawn_program.records[program_index].result
             = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
         return;
@@ -2397,6 +2426,15 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
     if (lifetime >= 0.0) {
         simulations.values[body_id].lifetime = max(lifetime - params.dt, 0.0);
     }
+    // Captured projectile lifetime은 계속 흐르지만 normal movement는 정지합니다.
+    if (body_has_flag(simulation_flags, BODY_FLAG_PROJECTILE_CAPTURED)) {
+        physics.values[body_id].velocity = vec2f(0.0);
+        temporaries.values[body_id].previous_position = current;
+        temporaries.values[body_id].predicted_position = current;
+        temporaries.values[body_id].position_delta = vec2f(0.0);
+        temporaries.values[body_id].grid_index = -1;
+        return;
+    }
     if (params.flow_enabled != 0u
         && params.flow_field_count > 0u
         && body_has_flag(simulation_flags, BODY_FLAG_USE_FLOW)
@@ -2486,7 +2524,7 @@ fn build_tick_start_grid(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let body_id = global_id.x;
-    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+    if (body_id >= counts.body_count || !body_id_is_simulation_active(body_id)) {
         return;
     }
     let position = physics.values[body_id].position;
@@ -2554,7 +2592,7 @@ fn build_grid(@builtin(global_invocation_id) global_id: vec3u) {
     }
 
     temporaries.values[body_id].grid_index = -1;
-    if (!body_id_is_alive(body_id)) {
+    if (!body_id_is_simulation_active(body_id)) {
         return;
     }
     let predicted = temporaries.values[body_id].predicted_position;
@@ -2739,7 +2777,7 @@ fn consider_body_contact(
     selection: ContactSelection
 ) -> ContactSelection {
     if (self_body.body_id == other_body.body_id
-        || !body_id_is_alive(other_body.body_id)) {
+        || !body_id_is_simulation_active(other_body.body_id)) {
         return selection;
     }
     let self_mask = body_interaction_mask(self_body.interaction_meta);
@@ -2893,7 +2931,8 @@ fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let self_body_id = global_id.x;
-    if (self_body_id >= counts.body_count || !body_id_is_alive(self_body_id)) {
+    if (self_body_id >= counts.body_count
+        || !body_id_is_simulation_active(self_body_id)) {
         return;
     }
     let self_physics = physics.values[self_body_id];
@@ -3069,7 +3108,7 @@ fn generate_world_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || params.sdf_enabled == 0u
-        || !body_id_is_alive(body_id)) {
+        || !body_id_is_simulation_active(body_id)) {
         return;
     }
     let body = physics.values[body_id];
@@ -3144,8 +3183,8 @@ fn classify_directional_defense_contacts(
         || target_incarnation == INVALID_IDENTITY_COMPONENT
         || source_incarnation != contact.self_incarnation
         || target_incarnation != contact.other_incarnation
-        || !body_id_is_alive(source_body_id)
-        || !body_id_is_alive(target_body_id)
+        || !body_id_is_simulation_active(source_body_id)
+        || !body_id_is_simulation_active(target_body_id)
         || enemy_behavior_states.values[target_body_id].program_id
             != ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT
         || atomicLoad(&enemy_behavior_states.values[target_body_id].state)
@@ -3484,7 +3523,7 @@ fn preflight_maximum_damage_window(
     }
     let body_id = global_id.x;
     if (body_id >= counts.body_count
-        || !body_id_is_alive(body_id)
+        || !body_id_is_simulation_active(body_id)
         || !maximum_damage_window_target_is_configured(body_id)) {
         return;
     }
@@ -3566,7 +3605,7 @@ fn resolve_maximum_damage_window(
     }
     let body_id = global_id.x;
     if (body_id >= counts.body_count
-        || !body_id_is_alive(body_id)
+        || !body_id_is_simulation_active(body_id)
         || !maximum_damage_window_target_is_configured(body_id)) {
         return;
     }
@@ -3682,8 +3721,8 @@ fn atomic_transform_projectile_hit_is_valid_for_phase(
         || target_incarnation == INVALID_IDENTITY_COMPONENT
         || source_incarnation != contact.self_incarnation
         || target_incarnation != contact.other_incarnation
-        || !body_id_is_alive(source_body_id)
-        || !body_id_is_alive(target_body_id)) {
+        || !body_id_is_simulation_active(source_body_id)
+        || !body_id_is_simulation_active(target_body_id)) {
         return false;
     }
     if (atomic_transform_states.values[target_body_id].program_id
@@ -4064,7 +4103,7 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     let self_body_id = contact.self_body_id;
     if (self_body_id >= counts.body_count
         || simulations.values[self_body_id].incarnation != contact.self_incarnation
-        || !body_id_is_alive(self_body_id)) {
+        || !body_id_is_simulation_active(self_body_id)) {
         return;
     }
     let handler = contact_handlers.values[self_body_id];
@@ -4107,7 +4146,7 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     if (other_body_id >= counts.body_count
         || other_body_id == self_body_id
         || simulations.values[other_body_id].incarnation != contact.other_incarnation
-        || !body_id_is_alive(other_body_id)) {
+        || !body_id_is_simulation_active(other_body_id)) {
         return;
     }
     if (body_interaction_layer(physics.values[self_body_id].interaction_meta)
@@ -4284,8 +4323,8 @@ fn core_damage_request_candidate_is_valid(contact: Contact) -> bool {
             != contact.self_incarnation
         || simulations.values[other_body_id].incarnation
             != contact.other_incarnation
-        || !body_id_is_alive(self_body_id)
-        || !body_id_is_alive(other_body_id)) {
+        || !body_id_is_simulation_active(self_body_id)
+        || !body_id_is_simulation_active(other_body_id)) {
         return false;
     }
     let handler = contact_handlers.values[self_body_id];
@@ -4356,8 +4395,8 @@ fn selected_target_tower_candidate_is_valid(contact: Contact) -> bool {
             != contact.self_incarnation
         || simulations.values[other_body_id].incarnation
             != contact.other_incarnation
-        || !body_id_is_alive(self_body_id)
-        || !body_id_is_alive(other_body_id)) {
+        || !body_id_is_simulation_active(self_body_id)
+        || !body_id_is_simulation_active(other_body_id)) {
         return false;
     }
     let handler = contact_handlers.values[self_body_id];
@@ -4682,7 +4721,7 @@ fn pair_correction(self_body: GridBody, other_body: GridBody, alpha: f32, big_pa
     if (self_body.body_id == other_body.body_id) {
         return vec2f(0.0);
     }
-    if (!body_id_is_alive(other_body.body_id)) {
+    if (!body_id_is_simulation_active(other_body.body_id)) {
         return vec2f(0.0);
     }
     if ((body_collision_mask(self_body.physical_meta)
@@ -4774,7 +4813,7 @@ fn solve_body_body(
     if (self_body.inverse_mass <= EPSILON_MASS
         || self_body.radius <= 0.0
         || collision_mask == 0u
-        || !body_id_is_alive(self_body.body_id)) {
+        || !body_id_is_simulation_active(self_body.body_id)) {
         return;
     }
 
@@ -4830,7 +4869,7 @@ fn solve_body_world(@builtin(global_invocation_id) global_id: vec3u) {
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || params.sdf_enabled == 0u
-        || !body_id_is_alive(body_id)) {
+        || !body_id_is_simulation_active(body_id)) {
         return;
     }
     let body = physics.values[body_id];
@@ -4879,7 +4918,7 @@ fn apply_position_deltas(@builtin(global_invocation_id) global_id: vec3u) {
     if (body_id >= counts.body_count) {
         return;
     }
-    if (!body_id_is_alive(body_id)) {
+    if (!body_id_is_simulation_active(body_id)) {
         return;
     }
     temporaries.values[body_id].predicted_position += temporaries.values[body_id].position_delta;
@@ -4904,7 +4943,7 @@ fn rebuild_velocities(@builtin(global_invocation_id) global_id: vec3u) {
     if (body_id >= counts.body_count) {
         return;
     }
-    if (!body_id_is_alive(body_id)) {
+    if (!body_id_is_simulation_active(body_id)) {
         return;
     }
     if (grid_has_overflow()) {
@@ -4937,7 +4976,7 @@ fn finalize_velocities(@builtin(global_invocation_id) global_id: vec3u) {
     let body_id = global_id.x;
     if (body_id >= counts.body_count
         || grid_has_overflow()
-        || !body_id_is_alive(body_id)) {
+        || !body_id_is_simulation_active(body_id)) {
         return;
     }
     if (body_has_flag(
@@ -4961,7 +5000,8 @@ fn finalize_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let body_id = global_id.x;
-    if (body_id >= counts.body_count || !body_id_is_alive(body_id)) {
+    if (body_id >= counts.body_count
+        || !body_id_is_simulation_active(body_id)) {
         return;
     }
     let control_state = body_control_states.values[body_id];
@@ -5240,6 +5280,7 @@ struct VertexOutput {
 @group(0) @binding(5) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(6) var<storage, read> effect_summaries: EffectSummaryBuffer;
 @group(0) @binding(7) var<storage, read> formation_states: FormationStateBuffer;
+@group(0) @binding(8) var<storage, read> projectile_capture_states: ProjectileCaptureStateBuffer;
 @group(1) @binding(0) var<uniform> params: RenderParams;
 
 const QUAD_VERTICES = array<vec2f, 6>(
@@ -5255,6 +5296,14 @@ const RENDER_SHAPE_HEXA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA}u;
 const RENDER_SHAPE_GEN: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.GEN}u;
 const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
 const RENDER_SHAPE_OCTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA}u;
+const RENDER_SHAPE_RING: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RING}u;
+const PROJECTILE_CAPTURE_ROLE_CAPTOR: u32 = ${GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR}u;
+const PROJECTILE_CAPTURE_ROLE_MASK: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_MASK}u;
+const PROJECTILE_CAPTURE_ROLE_SHIFT: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_SHIFT}u;
+const PROJECTILE_CAPTURE_PROFILE_MASK: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_MASK}u;
+const PROJECTILE_CAPTURE_PROFILE_SHIFT: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_SHIFT}u;
+const PROJECTILE_CAPTURE_PROFILE_RING: u32 = ${GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE.RING_SINGLE_SLOT}u;
+const BODY_FLAG_PROJECTILE_CAPTURED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED}u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
 const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
@@ -5286,6 +5335,12 @@ const PENTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.penta.points)};
 const HEXA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.hexa.points)};
 const RHOM_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.rhom.points)};
 const OCTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.octa.points)};
+const RING_OUTER_RADIUS: f32 = ${toWgslFloat(
+    ENEMY_RENDER_GEOMETRY.ring.outerRadius
+)};
+const RING_INNER_RADIUS: f32 = ${toWgslFloat(
+    ENEMY_RENDER_GEOMETRY.ring.innerRadius
+)};
 const GENERATOR_OUTER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.center)};
 const GENERATOR_OUTER_HALF_SIZE: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.outerBox.halfSize)};
 const GENERATOR_INNER_CENTER: vec2f = ${toWgslVec2(ENEMY_RENDER_GEOMETRY.gen.innerBox.center)};
@@ -5409,6 +5464,18 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     if (shape_code == RENDER_SHAPE_GEN) {
         return generator_distance(point);
     }
+    if (shape_code == RENDER_SHAPE_RING) {
+        let local = directional_local_position(point, velocity);
+        let ring_distance = max(
+            length(point) - RING_OUTER_RADIUS,
+            RING_INNER_RADIUS - length(point)
+        );
+        // Data-owned PI/4 inclusive funnel을 presentation에서도 같은 전방 sector로 엽니다.
+        if (local.y >= 0.0 && abs(local.x) <= local.y) {
+            return max(ring_distance, min(local.y - abs(local.x), 1.0));
+        }
+        return ring_distance;
+    }
     return length(point) - 1.0;
 }
 
@@ -5499,7 +5566,8 @@ fn vertex_main(
         return output;
     }
     let simulation_flags = simulations.values[instance_index].flags;
-    if ((simulation_flags & 1u) == 0u) {
+    if ((simulation_flags & 1u) == 0u
+        || (simulation_flags & BODY_FLAG_PROJECTILE_CAPTURED) != 0u) {
         output.position = vec4f(2.0, 2.0, 0.0, 1.0);
         output.local_position = vec2f(0.0);
         output.color = vec4f(0.0);
@@ -5518,6 +5586,7 @@ fn vertex_main(
     let behavior = enemy_behavior_states.values[instance_index];
     let effect_summary = effect_summaries.values[instance_index];
     let formation = formation_states.values[instance_index];
+    let projectile_capture = projectile_capture_states.values[instance_index];
     var body_position = mix(
         temporary.previous_position,
         body.position,
@@ -5582,6 +5651,29 @@ fn vertex_main(
     if (directional_defense_active) {
         // The same +32/+36 facing drives presentation and contact classification.
         presentation_velocity = behavior.charge_direction;
+    }
+    let projectile_capture_meta = projectile_capture.role_phase_profile_policy;
+    let projectile_capture_role = (
+        projectile_capture_meta & PROJECTILE_CAPTURE_ROLE_MASK
+    ) >> PROJECTILE_CAPTURE_ROLE_SHIFT;
+    let projectile_capture_profile = (
+        projectile_capture_meta & PROJECTILE_CAPTURE_PROFILE_MASK
+    ) >> PROJECTILE_CAPTURE_PROFILE_SHIFT;
+    let projectile_capture_facing_length_squared = dot(
+        projectile_capture.facing,
+        projectile_capture.facing
+    );
+    if (style.shape_code == RENDER_SHAPE_RING
+        && projectile_capture.self_entity_id
+            == simulations.values[instance_index].entity_id
+        && projectile_capture.self_incarnation
+            == simulations.values[instance_index].incarnation
+        && projectile_capture_role == PROJECTILE_CAPTURE_ROLE_CAPTOR
+        && projectile_capture_profile == PROJECTILE_CAPTURE_PROFILE_RING
+        && all(isFinite(projectile_capture.facing))
+        && isFinite(projectile_capture_facing_length_squared)
+        && projectile_capture_facing_length_squared > 0.0) {
+        presentation_velocity = projectile_capture.facing;
     }
     let local = QUAD_VERTICES[vertex_index];
     let world_position = body_position

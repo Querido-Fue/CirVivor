@@ -10,6 +10,7 @@ const {
     BASIC_HEXA_ENEMY_DATA,
     BASIC_OCTA_ENEMY_DATA,
     BASIC_PENTA_ENEMY_DATA,
+    BASIC_RING_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
@@ -92,6 +93,11 @@ const EXPECTED_ARCHETYPES = Object.freeze([
         definition: BASIC_OCTA_ENEMY_DATA,
         shapeType: 'octa',
         shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
+    }),
+    Object.freeze({
+        definition: BASIC_RING_ENEMY_DATA,
+        shapeType: 'ring',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.RING
     })
 ]);
 const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([
@@ -289,6 +295,8 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(normalized.gen.terminalBoxes.length, 4);
     assertClose(normalized.gen.terminalBoxes[0].center.x, -0.6204862004911955);
     assertClose(normalized.gen.terminalBoxes[0].center.y, -0.5909392385620433);
+    assert.ok(normalized.ring.outerRadius > normalized.ring.innerRadius);
+    assert.ok(normalized.ring.innerRadius > 0);
 });
 
 test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달한다', () => {

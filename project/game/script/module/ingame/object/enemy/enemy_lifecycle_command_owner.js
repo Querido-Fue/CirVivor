@@ -51,6 +51,24 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_TEAM_ID,
+    normalizeGameplayDamagePolicyId
+} from '../../contract/gameplay_team_contract.js';
+import {
+    PROJECTILE_TARGET_POLICY_ID
+} from '../../contract/projectile_target_policy_contract.js';
+import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_KEYS,
+    normalizeProjectileOriginProvenance
+} from '../../contract/projectile_capture_contract.js';
+import {
+    GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+    GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
+} from '../../physics/gpu/gpu_projectile_capture_runtime_abi.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
@@ -61,6 +79,9 @@ export const ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE = (
 // 외부 options/reason이나 reflection으로 재현할 수 없는 command identity marker입니다.
 // fixed commit payload에는 노출하지 않고 terminal close의 보존 여부만 지배합니다.
 const AUTHENTIC_TERMINAL_CLEANUP_COMMANDS = new WeakSet();
+const PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION = (
+    'projectile-capture-terminal-held-unpublished'
+);
 const PRIVILEGED_TRANSFORM_DISPOSITIONS = new Set([
     ENEMY_LIFECYCLE_DISPOSITION_ID.MERGE_CONSUMED,
     ENEMY_LIFECYCLE_DISPOSITION_ID.TRANSFORM_CONSUMED
@@ -106,6 +127,35 @@ const ENEMY_ATOMIC_TRANSFORM_RECORD_FIELDS = Object.freeze([
     'disposition',
     'prepareEvidence'
 ]);
+const PROJECTILE_CAPTURE_RELEASE_REQUEST_FIELDS = Object.freeze([
+    'prepareSourceTick',
+    'batchIdFingerprint',
+    'records'
+]);
+const PROJECTILE_CAPTURE_RELEASE_RECORD_FIELDS = Object.freeze([
+    'projectileHandle',
+    'captorHandle',
+    'captureSequence',
+    'releaseReason',
+    'expectedMetadata',
+    'expectedMetadataRevision',
+    'towerTargetHandle',
+    'prepareEvidence',
+    'coreImpactReceipt'
+]);
+const PROJECTILE_CAPTURE_RELEASE_REASONS = new Set(
+    Object.values(GPU_PROJECTILE_CAPTURE_RELEASE_REASON)
+);
+
+function fingerprintProjectileCaptureCommandId(value) {
+    const text = String(value);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash === 0 || hash === INVALID_HANDLE_COMPONENT ? 1 : hash;
+}
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -113,6 +163,32 @@ function requirePositiveSafeInteger(value, label) {
         throw new RangeError(`${label}은 reserved sentinel보다 작은 양의 정수여야 합니다.`);
     }
     return number;
+}
+
+function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
+function requirePositiveUint32(value, label) {
+    if (typeof value !== 'number'
+        || !Number.isSafeInteger(value)
+        || value <= 0
+        || value >= INVALID_HANDLE_COMPONENT) {
+        throw new RangeError(`${label}은 positive non-sentinel uint32여야 합니다.`);
+    }
+    return value;
+}
+
+function requireProjectileCaptureReleaseReason(value, label) {
+    const reason = requirePositiveUint32(value, label);
+    if (!PROJECTILE_CAPTURE_RELEASE_REASONS.has(reason)) {
+        throw new RangeError(`${label}은 알려진 projectile release reason이어야 합니다.`);
+    }
+    return reason;
 }
 
 function requireNonEmptyString(value, label) {
@@ -237,6 +313,42 @@ function normalizeHandle(source, label) {
     });
 }
 
+function sameHandle(left, right) {
+    return left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation;
+}
+
+function assertProjectileCaptureCoreImpactReceipt(
+    receipt,
+    captorHandle,
+    prepareSourceTick,
+    label
+) {
+    if (!receipt
+        || typeof receipt !== 'object'
+        || !Object.isFrozen(receipt)
+        || !Object.isFrozen(receipt.other)
+        || receipt.type !== 'contact'
+        || receipt.eventType !== 'interaction-enter'
+        || receipt.disposition !== 'applied'
+        || receipt.sourceTick !== prepareSourceTick
+        || !Number.isSafeInteger(receipt.sessionGeneration)
+        || receipt.sessionGeneration <= 0
+        || !Number.isSafeInteger(receipt.deviceGeneration)
+        || receipt.deviceGeneration < 0
+        || !Number.isSafeInteger(receipt.authoritativeEpoch)
+        || receipt.authoritativeEpoch < 0) {
+        throw new TypeError(`${label}은 authenticated core-impact receipt여야 합니다.`);
+    }
+    const subject = normalizeHandle(receipt, `${label}.subjectHandle`);
+    const other = normalizeHandle(receipt.other, `${label}.otherHandle`);
+    if (!sameHandle(subject, captorHandle)
+        && !sameHandle(other, captorHandle)) {
+        throw new RangeError(`${label}의 captor identity가 다릅니다.`);
+    }
+    return receipt;
+}
+
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
@@ -338,6 +450,104 @@ function assertFormationAtomicTransformTransactionPort(source) {
     return source;
 }
 
+function assertProjectileCaptureReleaseTransactionPort(source) {
+    const methods = [
+        'armPreparedProjectileCaptureReleaseBatch',
+        'commitArmedProjectileCaptureReleaseBatch',
+        'cancelArmedProjectileCaptureReleaseBatch'
+    ];
+    if (!source || typeof source !== 'object') {
+        throw new TypeError('projectile capture release transaction port가 필요합니다.');
+    }
+    for (const method of methods) {
+        if (typeof source[method] !== 'function') {
+            throw new TypeError(
+                `projectile capture release transaction port.${method}()가 필요합니다.`
+            );
+        }
+    }
+    return source;
+}
+
+function copyFrozenPrimitiveMetadata(source, label) {
+    if (!source || typeof source !== 'object' || !Object.isFrozen(source)) {
+        throw new TypeError(`${label}은 frozen metadata object여야 합니다.`);
+    }
+    const prototype = Object.getPrototypeOf(source);
+    const isPlainObject = prototype === null
+        || (prototype !== null && Object.getPrototypeOf(prototype) === null);
+    if (!isPlainObject) {
+        throw new TypeError(`${label}은 plain metadata object여야 합니다.`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const result = Object.create(null);
+    for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string') {
+            throw new TypeError(`${label}에는 symbol key를 허용하지 않습니다.`);
+        }
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new TypeError(`${label}.${key}은 getter/setter일 수 없습니다.`);
+        }
+        const value = descriptor.value;
+        if (value !== null
+            && value !== undefined
+            && typeof value !== 'string'
+            && typeof value !== 'number'
+            && typeof value !== 'boolean') {
+            throw new TypeError(`${label}.${key}은 primitive여야 합니다.`);
+        }
+        result[key] = value ?? null;
+    }
+    return result;
+}
+
+function materializeProjectileCaptureReleaseMetadata(
+    expectedMetadata,
+    captorHandle,
+    towerTargetHandle
+) {
+    const next = copyFrozenPrimitiveMetadata(
+        expectedMetadata,
+        'projectileCaptureRelease.expectedMetadata'
+    );
+    if (next.projectileCapturePolicyId
+        !== PROJECTILE_CAPTURE_POLICY_ID.CAPTURABLE) {
+        throw new RangeError('release projectile은 CAPTURABLE metadata여야 합니다.');
+    }
+    const provenanceSource = Object.create(null);
+    for (const key of PROJECTILE_ORIGIN_PROVENANCE_KEYS) {
+        if (!Object.prototype.hasOwnProperty.call(next, key)) {
+            throw new RangeError(`release projectile origin metadata가 없습니다: ${key}`);
+        }
+        provenanceSource[key] = next[key];
+    }
+    normalizeGameplayDamagePolicyId(
+        next.damagePolicyId,
+        'projectileCaptureRelease.damagePolicyId'
+    );
+    const provenance = normalizeProjectileOriginProvenance(
+        provenanceSource,
+        'projectileCaptureRelease.originProvenance'
+    );
+    next.teamId = GAMEPLAY_TEAM_ID.HOSTILE;
+    next.allegiancePolicy = GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE;
+    next.ownerEntityId = captorHandle.entityId;
+    next.ownerIncarnation = captorHandle.incarnation;
+    next.sourceEntityId = captorHandle.entityId;
+    next.sourceIncarnation = captorHandle.incarnation;
+    next.targetEntityId = towerTargetHandle?.entityId ?? null;
+    next.targetIncarnation = towerTargetHandle?.incarnation ?? null;
+    next.targetPolicyId
+        = PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN;
+    for (const key of PROJECTILE_ORIGIN_PROVENANCE_KEYS) {
+        if (next[key] !== provenance[key]) {
+            throw new RangeError(`release projectile origin metadata drift: ${key}`);
+        }
+    }
+    return Object.freeze(next);
+}
+
 function isRetryableSpawnRejection(reason) {
     return reason === 'unavailable'
         || reason === 'gpu-unavailable'
@@ -378,6 +588,9 @@ function freezeCommitResult(result) {
         despawned: Object.freeze(result.despawned.map((entry) => Object.freeze(entry))),
         atomicTransforms: Object.freeze(
             result.atomicTransforms.map((entry) => Object.freeze(entry))
+        ),
+        projectileCaptureReleases: Object.freeze(
+            result.projectileCaptureReleases.map((entry) => Object.freeze(entry))
         ),
         rejected: Object.freeze(result.rejected.map((entry) => Object.freeze(entry))),
         recoveryRequired: result.recoveryRequired === true,
@@ -430,12 +643,15 @@ export class EnemyLifecycleCommandOwner {
     #atomicTransformRegistryAuthority;
     #atomicTransformTransactionPort;
     #enemyAtomicTransformTransactionPort;
+    #projectileCaptureReleaseAuthority;
+    #activeMetadataMutationRegistryAuthority;
+    #projectileCaptureReleaseTransactionPort;
     #authoredFormationProvenanceLedger;
 
     /**
      * @param {object} backend - EnemySimulationBackend public port입니다.
      * @param {object} registry - WorldRegistry입니다.
-     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null,atomicTransformAuthority?:object|null,atomicTransformRegistryAuthority?:object|null,atomicTransformTransactionPort?:object|null,enemyAtomicTransformTransactionPort?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 privileged authority입니다.
+     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null,atomicTransformAuthority?:object|null,atomicTransformRegistryAuthority?:object|null,atomicTransformTransactionPort?:object|null,enemyAtomicTransformTransactionPort?:object|null,projectileCaptureReleaseAuthority?:object|null,activeMetadataMutationRegistryAuthority?:object|null,projectileCaptureReleaseTransactionPort?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 privileged authority입니다.
      */
     constructor(backend, registry, options = {}) {
         this.backend = assertBackend(backend);
@@ -514,12 +730,70 @@ export class EnemyLifecycleCommandOwner {
             this.#atomicTransformTransactionPort = null;
             this.#enemyAtomicTransformTransactionPort = null;
         }
+        const projectileCaptureReleaseAuthority
+            = options.projectileCaptureReleaseAuthority ?? null;
+        const activeMetadataMutationRegistryAuthority
+            = options.activeMetadataMutationRegistryAuthority ?? null;
+        const projectileCaptureReleaseTransactionPort
+            = options.projectileCaptureReleaseTransactionPort ?? null;
+        const hasProjectileCaptureReleaseAuthority
+            = projectileCaptureReleaseAuthority !== null;
+        const hasActiveMetadataMutationAuthority
+            = activeMetadataMutationRegistryAuthority !== null;
+        const hasProjectileCaptureReleasePort
+            = projectileCaptureReleaseTransactionPort !== null;
+        if (hasProjectileCaptureReleaseAuthority
+            !== hasActiveMetadataMutationAuthority
+            || hasProjectileCaptureReleaseAuthority
+                !== hasProjectileCaptureReleasePort) {
+            throw new TypeError(
+                'projectile capture release authority/registry authority/transaction port가 함께 필요합니다.'
+            );
+        }
+        if (hasProjectileCaptureReleaseAuthority
+            && typeof projectileCaptureReleaseAuthority?.consumePermit
+                !== 'function') {
+            throw new TypeError(
+                'projectileCaptureReleaseAuthority.consumePermit()가 필요합니다.'
+            );
+        }
+        if (hasActiveMetadataMutationAuthority
+            && typeof activeMetadataMutationRegistryAuthority !== 'object') {
+            throw new TypeError(
+                'activeMetadataMutationRegistryAuthority는 opaque object여야 합니다.'
+            );
+        }
+        if (hasProjectileCaptureReleasePort) {
+            for (const method of [
+                'preflightActiveMetadataMutationBatch',
+                'commitActiveMetadataMutationBatch',
+                'cancelActiveMetadataMutationBatch',
+                'copyEntityView'
+            ]) {
+                if (typeof this.registry?.[method] !== 'function') {
+                    throw new TypeError(
+                        `EnemyLifecycle metadata registry.${method}()가 필요합니다.`
+                    );
+                }
+            }
+        }
+        this.#projectileCaptureReleaseAuthority
+            = projectileCaptureReleaseAuthority;
+        this.#activeMetadataMutationRegistryAuthority
+            = activeMetadataMutationRegistryAuthority;
+        this.#projectileCaptureReleaseTransactionPort
+            = hasProjectileCaptureReleasePort
+            ? assertProjectileCaptureReleaseTransactionPort(
+                projectileCaptureReleaseTransactionPort
+            )
+            : null;
         this.pendingCommands = [];
         this.knownCommandIds = new Set();
         this.completedCommandIds = [];
         this.completedCommandHead = 0;
         this.pendingDespawnKeys = new Set();
         this.pendingAtomicTransformSourceKeys = new Set();
+        this.pendingProjectileCaptureReleaseKeys = new Set();
         this.#authoredFormationProvenanceLedger = new Map();
         this.nextCommandSequence = 1;
         this.nextTerminalCleanupCommandSequence = 1;
@@ -661,12 +935,22 @@ export class EnemyLifecycleCommandOwner {
                 || options?.disposition === null)
             && typeof commandId === 'string'
             && commandId.startsWith('gpu-death:');
+        const requestedProjectileCaptureTerminalCleanup
+            = reason === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+            && options?.disposition
+                === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+            && typeof commandId === 'string'
+            && commandId.startsWith('ring-projectile-capture-terminal:');
         const authenticCoreImpactCleanup = validTerminalCleanupPermit
             && requestedCoreImpactCleanup;
         const authenticGpuDeathCleanup = validTerminalCleanupPermit
             && requestedGpuDeathCleanup;
+        const authenticProjectileCaptureTerminalCleanup
+            = validTerminalCleanupPermit
+            && requestedProjectileCaptureTerminalCleanup;
         const authenticTerminalCleanup = authenticCoreImpactCleanup
-            || authenticGpuDeathCleanup;
+            || authenticGpuDeathCleanup
+            || authenticProjectileCaptureTerminalCleanup;
         const privilegedTerminalCleanup = !this.ingressOpen
             && authenticTerminalCleanup;
         if (!this.ingressOpen && !privilegedTerminalCleanup) {
@@ -681,6 +965,10 @@ export class EnemyLifecycleCommandOwner {
         const disposition = options?.disposition === undefined
             || options?.disposition === null
             ? null
+            : options.disposition
+                === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+                && authenticProjectileCaptureTerminalCleanup
+            ? PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
             : assertEnemyLifecycleDisposition(options.disposition);
         if (disposition !== null
             && PRIVILEGED_TRANSFORM_DISPOSITIONS.has(disposition)) {
@@ -693,7 +981,8 @@ export class EnemyLifecycleCommandOwner {
         if (pendingDespawnIndex >= 0) {
             const existing = this.pendingCommands[pendingDespawnIndex];
             const sameFixedTick = existing.targetFixedTick === tick;
-            if (authenticCoreImpactCleanup
+            if ((authenticCoreImpactCleanup
+                    || authenticProjectileCaptureTerminalCleanup)
                 && existing.targetFixedTick < tick) {
                 // committed Core arrival의 current boundary보다 앞선 command는 이미
                 // missed-boundary desync입니다. 과거로 retarget하지 않고 recovery합니다.
@@ -711,12 +1000,16 @@ export class EnemyLifecycleCommandOwner {
             }
             const shouldRetargetCoreImpact = authenticCoreImpactCleanup
                 && existing.targetFixedTick > tick;
+            const shouldRetargetProjectileCaptureTerminal
+                = authenticProjectileCaptureTerminalCleanup
+                && existing.targetFixedTick > tick;
             const shouldUpgradeCoreImpact = authenticCoreImpactCleanup
                 && normalizedReason === 'core-impact'
                 && disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
                 && existing.disposition
                     !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
             const shouldAuthenticateExisting = authenticCoreImpactCleanup
+                || authenticProjectileCaptureTerminalCleanup
                 || (sameFixedTick
                     && authenticGpuDeathCleanup
                     && existing.reason === 'gpu-death');
@@ -725,18 +1018,35 @@ export class EnemyLifecycleCommandOwner {
                     !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
             const provenanceUpgraded = shouldAuthenticateExisting
                 && !AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(existing);
+            const shouldUpgradeProjectileCaptureTerminal
+                = authenticProjectileCaptureTerminalCleanup
+                && (existing.reason
+                        !== PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+                    || existing.disposition
+                        !== PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION);
             if (shouldRetargetCoreImpact
+                || shouldRetargetProjectileCaptureTerminal
                 || dispositionUpgraded
-                || provenanceUpgraded) {
+                || provenanceUpgraded
+                || shouldUpgradeProjectileCaptureTerminal) {
                 const upgradedCommand = Object.freeze({
                     ...existing,
                     ...(shouldRetargetCoreImpact
+                        || shouldRetargetProjectileCaptureTerminal
                         ? { targetFixedTick: tick }
                         : null),
                     ...(dispositionUpgraded
                         ? {
                             disposition:
                                 ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+                        }
+                        : null),
+                    ...(shouldUpgradeProjectileCaptureTerminal
+                        ? {
+                            reason:
+                                PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION,
+                            disposition:
+                                PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
                         }
                         : null)
                 });
@@ -754,7 +1064,8 @@ export class EnemyLifecycleCommandOwner {
                     ? ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
                     : resolvedExisting.disposition,
                 dispositionUpgraded,
-                targetFixedTickRetargeted: shouldRetargetCoreImpact,
+                targetFixedTickRetargeted: shouldRetargetCoreImpact
+                    || shouldRetargetProjectileCaptureTerminal,
                 authenticTerminalCleanup: shouldAuthenticateExisting
                     && AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(
                         resolvedExisting
@@ -1168,6 +1479,240 @@ export class EnemyLifecycleCommandOwner {
         });
     }
 
+    /** Capture command owner만 사용할 수 있는 same-projectile hostile release ingress입니다. */
+    requestProjectileCaptureReleaseBatch(
+        request,
+        targetFixedTick,
+        commandId,
+        projectileCaptureReleasePermit
+    ) {
+        this.#assertUsable();
+        if (!this.ingressOpen) {
+            return this.#rejectClosedIngress();
+        }
+        if (this.#projectileCaptureReleaseAuthority?.consumePermit(
+            projectileCaptureReleasePermit
+        ) !== true) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-permit-invalid',
+                requiresRecovery: false
+            });
+        }
+        if (this.#projectileCaptureReleaseTransactionPort === null) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-runtime-unconfigured',
+                requiresRecovery: false
+            });
+        }
+        const requestSnapshot = snapshotExactOwnDataFields(
+            request,
+            PROJECTILE_CAPTURE_RELEASE_REQUEST_FIELDS,
+            'projectileCaptureReleaseRequest'
+        );
+        const tick = requirePositiveSafeInteger(
+            targetFixedTick,
+            'targetFixedTick'
+        );
+        const prepareSourceTick = requirePositiveSafeInteger(
+            requestSnapshot.prepareSourceTick,
+            'projectileCaptureReleaseRequest.prepareSourceTick'
+        );
+        const batchIdFingerprint = requirePositiveUint32(
+            requestSnapshot.batchIdFingerprint,
+            'projectileCaptureReleaseRequest.batchIdFingerprint'
+        );
+        if (tick !== prepareSourceTick + 1) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-publication-deadline',
+                requiresRecovery: false
+            });
+        }
+        const rawRecords = snapshotBoundedDenseDataArray(
+            requestSnapshot.records,
+            this.commandHistoryCapacity,
+            'projectileCaptureReleaseRequest.records'
+        );
+        if (rawRecords.length === 0) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-empty-batch',
+                requiresRecovery: false
+            });
+        }
+        const batchProjectileKeys = new Set();
+        const records = rawRecords.map((record, index) => {
+            const snapshot = snapshotExactOwnDataFields(
+                record,
+                PROJECTILE_CAPTURE_RELEASE_RECORD_FIELDS,
+                `projectileCaptureReleaseRequest.records[${index}]`
+            );
+            const projectileHandle = normalizeHandle(
+                snapshot.projectileHandle,
+                `records[${index}].projectileHandle`
+            );
+            const captorHandle = normalizeHandle(
+                snapshot.captorHandle,
+                `records[${index}].captorHandle`
+            );
+            if (projectileHandle.entityId === captorHandle.entityId) {
+                throw new RangeError('release projectile/captor identity는 달라야 합니다.');
+            }
+            const key = handleKey(projectileHandle);
+            if (batchProjectileKeys.has(key)
+                || this.pendingProjectileCaptureReleaseKeys.has(key)) {
+                throw new RangeError(
+                    'projectile capture release exact handle이 중복되었습니다.'
+                );
+            }
+            batchProjectileKeys.add(key);
+            const towerTargetHandle = snapshot.towerTargetHandle === null
+                ? null
+                : normalizeHandle(
+                    snapshot.towerTargetHandle,
+                    `records[${index}].towerTargetHandle`
+                );
+            if (towerTargetHandle?.entityId === projectileHandle.entityId
+                || towerTargetHandle?.entityId === captorHandle.entityId) {
+                throw new RangeError('release Tower target identity가 잘못되었습니다.');
+            }
+            if (!snapshot.prepareEvidence
+                || typeof snapshot.prepareEvidence !== 'object'
+                || !Object.isFrozen(snapshot.prepareEvidence)) {
+                throw new TypeError(
+                    `records[${index}].prepareEvidence authentic receipt가 필요합니다.`
+                );
+            }
+            const releaseReason = requireProjectileCaptureReleaseReason(
+                snapshot.releaseReason,
+                `records[${index}].releaseReason`
+            );
+            const baseReason = requireProjectileCaptureReleaseReason(
+                snapshot.prepareEvidence.baseReason,
+                `records[${index}].prepareEvidence.baseReason`
+            );
+            const targetSelector = snapshot.prepareEvidence.targetSelector;
+            if (targetSelector
+                    !== GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD
+                && targetSelector
+                    !== GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER) {
+                throw new RangeError(
+                    `records[${index}].prepareEvidence.targetSelector가 잘못됐습니다.`
+                );
+            }
+            const preparedTowerHandle = targetSelector
+                === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER
+                ? normalizeHandle(
+                    snapshot.prepareEvidence.targetHandle,
+                    `records[${index}].prepareEvidence.targetHandle`
+                )
+                : null;
+            if ((targetSelector
+                    === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD
+                    && snapshot.prepareEvidence.targetHandle !== null)
+                || ((targetSelector
+                        === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER)
+                    !== (towerTargetHandle !== null))
+                || (towerTargetHandle !== null
+                    && (preparedTowerHandle === null
+                        || !sameHandle(towerTargetHandle, preparedTowerHandle)))
+                || (releaseReason
+                    !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+                    && (towerTargetHandle !== null
+                        || targetSelector
+                            !== GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
+                                .INVALID_FORWARD))
+                || (releaseReason
+                    !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                        .CAPTOR_CORE_IMPACT
+                    && baseReason !== releaseReason)) {
+                throw new RangeError(
+                    `records[${index}]의 release target/base proof가 잘못됐습니다.`
+                );
+            }
+            const coreImpactReceipt = releaseReason
+                === GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_CORE_IMPACT
+                ? assertProjectileCaptureCoreImpactReceipt(
+                    snapshot.coreImpactReceipt,
+                    captorHandle,
+                    prepareSourceTick,
+                    `records[${index}].coreImpactReceipt`
+                )
+                : null;
+            if ((releaseReason
+                    !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                        .CAPTOR_CORE_IMPACT
+                    && snapshot.coreImpactReceipt !== null)
+                || (releaseReason
+                    === GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                        .CAPTOR_CORE_IMPACT
+                    && (snapshot.towerTargetHandle !== null
+                        || baseReason
+                            !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                                .CAPTOR_CORE_IMPACT))) {
+                throw new RangeError(
+                    `records[${index}]의 core-impact 결합 proof가 잘못됐습니다.`
+                );
+            }
+            const expectedMetadataRevision = requirePositiveSafeInteger(
+                snapshot.expectedMetadataRevision,
+                `records[${index}].expectedMetadataRevision`
+            );
+            // Queue 전에 frozen provenance 전체를 한 번 검증하되 identity reference는
+            // 그대로 보존하여 boundary preflight의 compare-and-swap 기준으로 씁니다.
+            materializeProjectileCaptureReleaseMetadata(
+                snapshot.expectedMetadata,
+                captorHandle,
+                null
+            );
+            return Object.freeze({
+                projectileHandle,
+                captorHandle,
+                captureSequence: requirePositiveUint32(
+                    snapshot.captureSequence,
+                    `records[${index}].captureSequence`
+                ),
+                releaseReason,
+                expectedMetadata: snapshot.expectedMetadata,
+                expectedMetadataRevision,
+                towerTargetHandle,
+                prepareEvidence: snapshot.prepareEvidence,
+                coreImpactReceipt
+            });
+        });
+        const normalizedCommandId = this.#claimCommandId(commandId);
+        if (!normalizedCommandId) {
+            return Object.freeze({ accepted: false, reason: 'duplicate-command' });
+        }
+        const commandIdFingerprint = fingerprintProjectileCaptureCommandId(
+            normalizedCommandId
+        );
+        const sequence = this.nextCommandSequence++;
+        this.pendingCommands.push(Object.freeze({
+            type: 'projectile-capture-release-batch',
+            commandId: normalizedCommandId,
+            commandIdFingerprint,
+            targetFixedTick: tick,
+            sequence,
+            prepareSourceTick,
+            batchIdFingerprint,
+            records: Object.freeze(records),
+            transactionPort: this.#projectileCaptureReleaseTransactionPort
+        }));
+        for (const key of batchProjectileKeys) {
+            this.pendingProjectileCaptureReleaseKeys.add(key);
+        }
+        return Object.freeze({
+            accepted: true,
+            commandId: normalizedCommandId,
+            commandIdFingerprint,
+            targetFixedTick: tick,
+            releaseCount: records.length
+        });
+    }
+
     /**
      * terminal 전이에서 새 lifecycle ingress를 영구히 닫습니다. 아직 commit되지 않은
      * spawn/일반 despawn은 즉시 취소하고, committed-event cleanup만 마지막 경계까지
@@ -1201,7 +1746,8 @@ export class EnemyLifecycleCommandOwner {
     }
 
     /**
-     * due command snapshot을 despawn → spawn 순서로 fixed boundary에서만 commit합니다.
+     * due command snapshot을 despawn → H → J → projectile release → spawn 순서로
+     * fixed boundary에서만 commit합니다.
      * @returns {object} 불변 commit result snapshot입니다.
      */
     commitAtFixedBoundary(fixedTick) {
@@ -1213,6 +1759,7 @@ export class EnemyLifecycleCommandOwner {
             spawned: [],
             despawned: [],
             atomicTransforms: [],
+            projectileCaptureReleases: [],
             rejected: [],
             recoveryRequired: false,
             backendState: this.backend.getRuntimeState(),
@@ -1230,10 +1777,13 @@ export class EnemyLifecycleCommandOwner {
         for (const command of this.pendingCommands) {
             if (command.targetFixedTick < tick) {
                 if (command.type === 'atomic-transform-batch'
-                    || command.type === 'enemy-atomic-transform-batch') {
+                    || command.type === 'enemy-atomic-transform-batch'
+                    || command.type === 'projectile-capture-release-batch') {
                     baseResult.rejected.push({
                         commandId: command.commandId,
-                        code: 'atomic-transform-publication-deadline'
+                        code: command.type === 'projectile-capture-release-batch'
+                            ? 'projectile-capture-release-publication-deadline'
+                            : 'atomic-transform-publication-deadline'
                     });
                     consumedCommandIds.add(command.commandId);
                     continue;
@@ -1271,6 +1821,9 @@ export class EnemyLifecycleCommandOwner {
         const enemyAtomicTransformCommands = dueCommands.filter(
             (command) => command.type === 'enemy-atomic-transform-batch'
         );
+        const projectileCaptureReleaseCommands = dueCommands.filter(
+            (command) => command.type === 'projectile-capture-release-batch'
+        );
 
         const despawnOutcome = this.#commitDespawns(
             despawnCommands,
@@ -1302,6 +1855,17 @@ export class EnemyLifecycleCommandOwner {
             return this.#saveResult(baseResult);
         }
 
+        const projectileReleaseOutcome
+            = this.#commitProjectileCaptureReleases(
+                projectileCaptureReleaseCommands,
+                baseResult,
+                consumedCommandIds
+            );
+        if (projectileReleaseOutcome === 'recovery') {
+            this.#consumeCommands(consumedCommandIds);
+            return this.#saveResult(baseResult);
+        }
+
         this.#commitSpawns(spawnCommands, baseResult, consumedCommandIds);
         this.#consumeCommands(consumedCommandIds);
         if (baseResult.recoveryRequired) {
@@ -1325,6 +1889,8 @@ export class EnemyLifecycleCommandOwner {
     getStatus() {
         return Object.freeze({
             pendingCount: this.pendingCommands.length,
+            pendingProjectileCaptureReleaseCount:
+                this.pendingProjectileCaptureReleaseKeys.size,
             lastCommitResult: this.lastCommitResult,
             recoveryRequired: this.recoveryRequired,
             ingressOpen: this.ingressOpen,
@@ -1342,6 +1908,7 @@ export class EnemyLifecycleCommandOwner {
         this.pendingCommands = [];
         this.pendingDespawnKeys.clear();
         this.pendingAtomicTransformSourceKeys.clear();
+        this.pendingProjectileCaptureReleaseKeys.clear();
         for (const command of commands) {
             this.#rememberCompletedCommandIds(command);
         }
@@ -1361,6 +1928,9 @@ export class EnemyLifecycleCommandOwner {
         this.#atomicTransformRegistryAuthority = null;
         this.#atomicTransformTransactionPort = null;
         this.#enemyAtomicTransformTransactionPort = null;
+        this.#projectileCaptureReleaseAuthority = null;
+        this.#activeMetadataMutationRegistryAuthority = null;
+        this.#projectileCaptureReleaseTransactionPort = null;
         this.#authoredFormationProvenanceLedger.clear();
         this.lastCommitResult = null;
     }
@@ -1565,9 +2135,12 @@ export class EnemyLifecycleCommandOwner {
                 };
                 if (command.disposition !== null) {
                     despawned.disposition = command.disposition;
-                    despawned.bountyEligible = isEnemyDispositionBountyEligible(
-                        command.disposition
-                    );
+                    despawned.bountyEligible = command.disposition
+                        === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+                        ? false
+                        : isEnemyDispositionBountyEligible(
+                            command.disposition
+                        );
                 }
                 result.despawned.push(despawned);
                 consumedCommandIds.add(command.commandId);
@@ -2203,6 +2776,357 @@ export class EnemyLifecycleCommandOwner {
         return 'complete';
     }
 
+    #commitProjectileCaptureReleases(commands, result, consumedCommandIds) {
+        for (const command of commands) {
+            const outcome = this.#commitProjectileCaptureReleaseCommand(
+                command,
+                result,
+                consumedCommandIds
+            );
+            if (outcome === 'recovery') {
+                return outcome;
+            }
+        }
+        return 'complete';
+    }
+
+    #commitProjectileCaptureReleaseCommand(command, result, consumedCommandIds) {
+        const materializedRecords = [];
+        let ordinaryRejection = null;
+        for (let index = 0; index < command.records.length; index++) {
+            const record = command.records[index];
+            const projectileView = this.registry.copyEntityView(
+                record.projectileHandle,
+                {}
+            );
+            const registryLive = projectileView !== null;
+            const backendLive = this.backend.hasBody(record.projectileHandle);
+            if (registryLive !== backendLive) {
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: command.commandId,
+                    code: 'projectile-capture-release-registry-backend-desync',
+                    recordIndex: index
+                });
+                return 'recovery';
+            }
+            if (registryLive && projectileView.kindId !== 'projectile') {
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: command.commandId,
+                    code: 'projectile-capture-release-kind-corruption',
+                    recordIndex: index
+                });
+                return 'recovery';
+            }
+
+            let targetHandle = null;
+            let targetRejected = false;
+            if (record.towerTargetHandle !== null) {
+                const targetView = this.registry.copyEntityView(
+                    record.towerTargetHandle,
+                    {}
+                );
+                const registryTargetLive = targetView !== null;
+                const backendTargetLive = this.backend.hasBody(
+                    record.towerTargetHandle
+                );
+                if (registryTargetLive !== backendTargetLive) {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        code: 'projectile-capture-release-target-registry-backend-desync',
+                        recordIndex: index
+                    });
+                    return 'recovery';
+                }
+                const targetLive = registryTargetLive && backendTargetLive;
+                if (!targetLive) {
+                    ordinaryRejection ??= {
+                        commandId: command.commandId,
+                        code: 'projectile-capture-release-target-stale',
+                        retryable: true,
+                        recordIndex: index
+                    };
+                    targetRejected = true;
+                }
+                if (targetLive && targetView.kindId !== 'tower') {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        code: 'projectile-capture-release-target-unsupported',
+                        recordIndex: index
+                    });
+                    return 'recovery';
+                }
+                if (!targetRejected) {
+                    targetHandle = record.towerTargetHandle;
+                }
+            }
+
+            const projectileStale = !registryLive
+                || projectileView.metadata !== record.expectedMetadata
+                || projectileView.metadataRevision
+                    !== record.expectedMetadataRevision;
+            if (projectileStale) {
+                ordinaryRejection ??= {
+                    commandId: command.commandId,
+                    code: 'projectile-capture-release-stale',
+                    retryable: false,
+                    recordIndex: index
+                };
+                continue;
+            }
+
+            let nextMetadata;
+            try {
+                nextMetadata = materializeProjectileCaptureReleaseMetadata(
+                    record.expectedMetadata,
+                    record.captorHandle,
+                    targetHandle
+                );
+            } catch (error) {
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: command.commandId,
+                    code: 'projectile-capture-release-metadata-corruption',
+                    recordIndex: index,
+                    message: String(error?.message ?? error)
+                });
+                return 'recovery';
+            }
+            if (targetRejected) {
+                continue;
+            }
+            materializedRecords.push(Object.freeze({
+                ...record,
+                targetHandle,
+                nextMetadata
+            }));
+        }
+        if (ordinaryRejection !== null) {
+            result.rejected.push(ordinaryRejection);
+            consumedCommandIds.add(command.commandId);
+            return 'complete';
+        }
+        if (materializedRecords.length !== command.records.length) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-preflight-cardinality'
+            });
+            return 'recovery';
+        }
+
+        let preflight;
+        try {
+            preflight = this.registry.preflightActiveMetadataMutationBatch({
+                mutations: materializedRecords.map((record) => ({
+                    handle: record.projectileHandle,
+                    expectedMetadata: record.expectedMetadata,
+                    expectedMetadataRevision: record.expectedMetadataRevision,
+                    nextMetadata: record.nextMetadata
+                }))
+            }, this.#activeMetadataMutationRegistryAuthority);
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-registry-preflight-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (preflight?.accepted !== true) {
+            result.rejected.push({
+                commandId: command.commandId,
+                code: preflight?.reason
+                    ?? 'projectile-capture-release-registry-preflight-stale',
+                retryable: preflight?.retryable === true
+            });
+            consumedCommandIds.add(command.commandId);
+            return 'complete';
+        }
+
+        let armed;
+        try {
+            armed = command.transactionPort
+                .armPreparedProjectileCaptureReleaseBatch(Object.freeze({
+                    commandId: command.commandId,
+                    commandIdFingerprint: command.commandIdFingerprint,
+                    prepareSourceTick: command.prepareSourceTick,
+                    targetFixedTick: command.targetFixedTick,
+                    batchIdFingerprint: command.batchIdFingerprint,
+                    registryRevision: preflight.registryRevision,
+                    records: Object.freeze(materializedRecords.map(
+                        (record, index) => Object.freeze({
+                            projectileHandle: record.projectileHandle,
+                            captorHandle: record.captorHandle,
+                            captureSequence: record.captureSequence,
+                            releaseReason: record.releaseReason,
+                            targetHandle: record.targetHandle,
+                            expectedMetadataRevision:
+                                record.expectedMetadataRevision,
+                            nextMetadataRevision:
+                                preflight.mutations[index].nextMetadataRevision,
+                            nextMetadata: record.nextMetadata,
+                            prepareEvidence: record.prepareEvidence,
+                            coreImpactReceipt: record.coreImpactReceipt
+                        })
+                    ))
+                }));
+        } catch (error) {
+            this.registry.cancelActiveMetadataMutationBatch(
+                preflight.token,
+                this.#activeMetadataMutationRegistryAuthority
+            );
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-arm-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (armed?.accepted !== true) {
+            this.registry.cancelActiveMetadataMutationBatch(
+                preflight.token,
+                this.#activeMetadataMutationRegistryAuthority
+            );
+            const retryable = armed?.retryable === true;
+            result.recoveryRequired = armed?.requiresRecovery === true;
+            result.state = result.recoveryRequired ? 'failed' : result.state;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: armed?.reason ?? 'projectile-capture-release-arm-rejected',
+                retryable,
+                ...(retryable ? {
+                    retryDisposition: 'restage-next-prepare',
+                    heldStatePreserved: true,
+                    attemptConsumed: true
+                } : null)
+            });
+            consumedCommandIds.add(command.commandId);
+            return result.recoveryRequired ? 'recovery' : 'complete';
+        }
+        if (!armed.receipt
+            || armed.abiVersion !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            || armed.requiresRecovery !== false
+            || armed.armedCount !== materializedRecords.length
+            || armed.commandIdFingerprint !== command.commandIdFingerprint
+            || armed.receipt.targetFixedTick !== command.targetFixedTick
+            || armed.receipt.batchIdFingerprint !== command.batchIdFingerprint
+            || armed.receipt.commandIdFingerprint
+                !== command.commandIdFingerprint) {
+            this.registry.cancelActiveMetadataMutationBatch(
+                preflight.token,
+                this.#activeMetadataMutationRegistryAuthority
+            );
+            try {
+                command.transactionPort.cancelArmedProjectileCaptureReleaseBatch(
+                    armed.receipt,
+                    'command-fingerprint-mismatch'
+                );
+            } catch {
+                // 아래 sticky recovery가 registry/backend parity를 봉인합니다.
+            }
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-command-fingerprint-mismatch'
+            });
+            return 'recovery';
+        }
+
+        const registryCommit = this.registry.commitActiveMetadataMutationBatch(
+            preflight.token,
+            this.#activeMetadataMutationRegistryAuthority
+        );
+        if (!registryCommit) {
+            try {
+                command.transactionPort.cancelArmedProjectileCaptureReleaseBatch(
+                    armed.receipt,
+                    'registry-commit-failed'
+                );
+            } catch {
+                // Registry/backend parity failure is already sticky recovery below.
+            }
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-registry-commit-failed'
+            });
+            return 'recovery';
+        }
+
+        let committed;
+        try {
+            committed = command.transactionPort
+                .commitArmedProjectileCaptureReleaseBatch(armed.receipt);
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: 'projectile-capture-release-backend-commit-exception',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        if (committed?.accepted !== true
+            || committed.abiVersion
+                !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            || committed.targetFixedTick !== command.targetFixedTick
+            || committed.committedCount !== materializedRecords.length
+            || committed.commandIdFingerprint
+                !== command.commandIdFingerprint
+            || committed.requiresRecovery !== false) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: command.commandId,
+                code: committed?.accepted !== true
+                    ? committed?.reason
+                        ?? 'projectile-capture-release-backend-commit-failed'
+                    : 'projectile-capture-release-backend-commit-proof-mismatch'
+            });
+            return 'recovery';
+        }
+
+        for (let index = 0; index < materializedRecords.length; index++) {
+            const record = materializedRecords[index];
+            const mutation = registryCommit.mutations[index];
+            result.projectileCaptureReleases.push({
+                commandId: command.commandId,
+                commandIdFingerprint: command.commandIdFingerprint,
+                projectileHandle: record.projectileHandle,
+                captorHandle: record.captorHandle,
+                captureSequence: record.captureSequence,
+                releaseReason: record.releaseReason,
+                prepareSourceTick: command.prepareSourceTick,
+                batchIdFingerprint: command.batchIdFingerprint,
+                prepareFingerprint: record.prepareEvidence.prepareFingerprint,
+                targetFixedTick: command.targetFixedTick,
+                targetHandle: record.targetHandle,
+                registryRevision: registryCommit.registryRevision,
+                metadataRevision: mutation.metadataRevision,
+                backendCommitRequested: true
+            });
+        }
+        consumedCommandIds.add(command.commandId);
+        return 'complete';
+    }
+
     #preflightOrbitSpawnActivations(commands) {
         const orbitCommands = [];
         for (let index = 0; index < commands.length; index++) {
@@ -2567,6 +3491,12 @@ export class EnemyLifecycleCommandOwner {
                             handleKey(handle)
                         );
                     }
+                }
+            } else if (command.type === 'projectile-capture-release-batch') {
+                for (const record of command.records) {
+                    this.pendingProjectileCaptureReleaseKeys.delete(
+                        handleKey(record.projectileHandle)
+                    );
                 }
             }
             this.#rememberCompletedCommandIds(command);

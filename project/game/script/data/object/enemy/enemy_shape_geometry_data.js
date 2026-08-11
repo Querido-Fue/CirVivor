@@ -1,6 +1,10 @@
 const FULL_CIRCLE_RADIANS = Math.PI * 2;
 const UPRIGHT_POLYGON_ANGLE_OFFSET = -Math.PI / 2;
 
+export const RING_ENEMY_OUTER_RADIUS = 0.47;
+export const RING_ENEMY_INNER_RADIUS = 0.28;
+export const RING_ENEMY_SEGMENT_COUNT = 32;
+
 export const ENEMY_SHAPE_PATH_KIND = Object.freeze({
     POLYGON: 'polygon',
     RECT: 'rect',
@@ -125,6 +129,18 @@ export const ENEMY_SHAPE_GEOMETRY = Object.freeze({
         createRectPath(0.34, -0.44, 0.10, 0.10),
         createRectPath(0.34, 0.34, 0.10, 0.10),
         createRectPath(-0.44, 0.34, 0.10, 0.10)
+    ]),
+    ring: createShapeGeometry([
+        createCompoundPath([
+            createRegularPolygonPath(
+                RING_ENEMY_SEGMENT_COUNT,
+                RING_ENEMY_OUTER_RADIUS
+            ),
+            createRegularPolygonPath(
+                RING_ENEMY_SEGMENT_COUNT,
+                RING_ENEMY_INNER_RADIUS
+            )
+        ], 'evenodd')
     ])
 });
 
@@ -181,6 +197,14 @@ const normalizeRect = (shapeType, path) => {
 
 const generatorPaths = ENEMY_SHAPE_GEOMETRY.gen.paths;
 const generatorRingPaths = generatorPaths[0].paths;
+const normalizedRingOuterPoint = normalizePoint(
+    'ring',
+    freezePoint(RING_ENEMY_OUTER_RADIUS, 0)
+);
+const normalizedRingInnerPoint = normalizePoint(
+    'ring',
+    freezePoint(RING_ENEMY_INNER_RADIUS, 0)
+);
 
 /**
  * body radius를 legacy square collider 반경의 배수로 둘 때 같은 배율의 legacy
@@ -214,5 +238,9 @@ export const ENEMY_NORMALIZED_RENDER_GEOMETRY = Object.freeze({
         terminalBoxes: Object.freeze(
             generatorPaths.slice(1).map((path) => normalizeRect('gen', path))
         )
+    }),
+    ring: Object.freeze({
+        outerRadius: Math.abs(normalizedRingOuterPoint.x),
+        innerRadius: Math.abs(normalizedRingInnerPoint.x)
     })
 });

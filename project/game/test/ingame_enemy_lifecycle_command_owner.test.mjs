@@ -1510,3 +1510,47 @@ test('authentic Core cleanup보다 과거인 pending despawn은 missed-boundary 
     assert.equal(conflict.recoveryRequired, true);
     assert.equal(owner.getStatus().recoveryRequired, true);
 });
+
+test('authentic capture terminal held cleanup survives closed ingress with zero bounty', () => {
+    const backend = createFakeBackend();
+    const permit = Object.freeze({});
+    let permitAvailable = true;
+    const registry = new WorldRegistry({ capacity: 1 });
+    const owner = new EnemyLifecycleCommandOwner(backend, registry, {
+        terminalCleanupAuthority: Object.freeze({
+            consumePermit(candidate) {
+                if (!permitAvailable || candidate !== permit) {
+                    return false;
+                }
+                permitAvailable = false;
+                return true;
+            }
+        })
+    });
+    assert.equal(owner.requestSpawn(
+        createProjectileIntent(),
+        1,
+        'capture-terminal:spawn'
+    ).accepted, true);
+    const projectile = owner.commitAtFixedBoundary(1).spawned[0].handle;
+    const disposition = 'projectile-capture-terminal-held-unpublished';
+    const requested = owner.requestDespawn(
+        projectile,
+        disposition,
+        2,
+        'ring-projectile-capture-terminal:1:2:1:1:1',
+        Object.freeze({ disposition }),
+        permit
+    );
+    assert.equal(requested.accepted, true);
+    assert.equal(requested.authenticTerminalCleanup, true);
+    assert.equal(owner.closeIngress('run-defeated').preservedCleanupCount, 1);
+
+    const commit = owner.commitAtFixedBoundary(2);
+    assert.equal(commit.recoveryRequired, false);
+    assert.equal(commit.despawned.length, 1);
+    assert.equal(commit.despawned[0].reason, disposition);
+    assert.equal(commit.despawned[0].disposition, disposition);
+    assert.equal(commit.despawned[0].bountyEligible, false);
+    assert.equal(registry.has(projectile), false);
+});

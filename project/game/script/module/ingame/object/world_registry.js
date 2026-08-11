@@ -73,7 +73,12 @@ function snapshotOwnDataProperties(source, allowedKeys, label) {
     return snapshot;
 }
 
-function snapshotDenseArrayValues(source, maximumLength, label) {
+function snapshotDenseArrayValues(
+    source,
+    maximumLength,
+    label,
+    minimumLength = 1
+) {
     if (!Array.isArray(source)) {
         throw new TypeError(`${label}은 array여야 합니다.`);
     }
@@ -84,7 +89,7 @@ function snapshotDenseArrayValues(source, maximumLength, label) {
     if (!lengthDescriptor
         || !Object.prototype.hasOwnProperty.call(lengthDescriptor, 'value')
         || !Number.isSafeInteger(length)
-        || length <= 0
+        || length < minimumLength
         || length > maximumLength
         || ownKeys.length !== length + 1
         || ownKeys.some((key) => {
@@ -122,6 +127,13 @@ const ATOMIC_TRANSFORM_ENTRY_KEYS = new Set([
     'destinations',
     'effectTransferDestinationIndex'
 ]);
+const ACTIVE_METADATA_MUTATION_REQUEST_KEYS = new Set(['mutations']);
+const ACTIVE_METADATA_MUTATION_ENTRY_KEYS = new Set([
+    'handle',
+    'expectedMetadata',
+    'expectedMetadataRevision',
+    'nextMetadata'
+]);
 
 /**
  * registry 밖으로 엔진 객체나 가변 컬렉션을 누출하지 않도록 작은 metadata만 복제합니다.
@@ -155,6 +167,46 @@ function normalizeMetadata(source) {
 }
 
 /**
+ * Active metadata transaction은 accessor를 실행하지 않고 own primitive data만
+ * 즉시 복제합니다. Registry metadata는 flat scalar contract이므로 이 snapshot이
+ * 곧 complete deep snapshot입니다.
+ */
+function snapshotActiveMetadata(source, label) {
+    if (source === undefined || source === null) {
+        return null;
+    }
+    const prototype = typeof source === 'object'
+        ? Object.getPrototypeOf(source)
+        : null;
+    const isPlainObject = prototype === null
+        || (prototype !== null && Object.getPrototypeOf(prototype) === null);
+    if (!source || typeof source !== 'object' || !isPlainObject) {
+        throw new TypeError(`${label}은 plain object여야 합니다.`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(source);
+    const result = Object.create(null);
+    for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== 'string') {
+            throw new TypeError(`${label}에는 symbol key를 허용하지 않습니다.`);
+        }
+        const descriptor = descriptors[key];
+        if (!Object.prototype.hasOwnProperty.call(descriptor, 'value')) {
+            throw new TypeError(`${label}.${key}은 getter/setter일 수 없습니다.`);
+        }
+        const value = descriptor.value;
+        if (value !== null
+            && value !== undefined
+            && typeof value !== 'string'
+            && typeof value !== 'number'
+            && typeof value !== 'boolean') {
+            throw new TypeError(`${label}은 primitive 값만 허용합니다: ${key}`);
+        }
+        result[key] = value ?? null;
+    }
+    return Object.freeze(result);
+}
+
+/**
  * @class WorldRegistry
  * @description 세션 entity handle과 활성/예약 visibility를 소유하는 범용 registry입니다.
  * 현재 수직 슬라이스에서는 GPU 적만 등록하며 위치·속도·flow stage는 GPU 권위입니다.
@@ -163,8 +215,17 @@ export class WorldRegistry {
     #atomicTransformAuthority;
     #atomicTransformGeneration;
     #atomicTransformBatchPlans;
+    #activeMetadataMutationAuthority;
+    #activeMetadataMutationGeneration;
+    #activeMetadataMutationBatchPlans;
 
-    /** @param {{capacity?:number,atomicTransformAuthority?:object|null}} [options={}] */
+    /**
+     * @param {{
+     * capacity?:number,
+     * atomicTransformAuthority?:object|null,
+     * activeMetadataMutationAuthority?:object|null
+     * }} [options={}]
+     */
     constructor(options = {}) {
         this.capacity = requirePositiveSafeInteger(options.capacity ?? 16384, 'capacity');
         this.recordsByEntityId = new Map();
@@ -186,6 +247,18 @@ export class WorldRegistry {
         // token 자체는 opaque/single-use이며 clear/replacement generation을 넘을 수 없습니다.
         this.#atomicTransformGeneration = 1;
         this.#atomicTransformBatchPlans = new WeakMap();
+        const activeMetadataMutationAuthority
+            = options.activeMetadataMutationAuthority ?? null;
+        if (activeMetadataMutationAuthority !== null
+            && (typeof activeMetadataMutationAuthority !== 'object'
+                || Array.isArray(activeMetadataMutationAuthority))) {
+            throw new TypeError(
+                'activeMetadataMutationAuthority는 opaque object여야 합니다.'
+            );
+        }
+        this.#activeMetadataMutationAuthority = activeMetadataMutationAuthority;
+        this.#activeMetadataMutationGeneration = 1;
+        this.#activeMetadataMutationBatchPlans = new WeakMap();
         this.destroyed = false;
     }
 
@@ -226,6 +299,7 @@ export class WorldRegistry {
             definitionId,
             createdAtTick,
             metadata: null,
+            metadataRevision: 0,
             state: 'reserved'
         });
         this.reservedCount++;
@@ -241,6 +315,7 @@ export class WorldRegistry {
             return false;
         }
         record.metadata = normalizeMetadata(metadata);
+        record.metadataRevision = 1;
         record.state = 'active';
         this.reservedCount--;
         this.activeCount++;
@@ -284,6 +359,162 @@ export class WorldRegistry {
         }
         this.revision++;
         return true;
+    }
+
+    /**
+     * Active entity identity를 유지한 채 frozen metadata reference만 교체할 batch를
+     * 0-mutation으로 준비합니다. Token은 current global revision과 각 record의
+     * metadata object identity/revision에 결속됩니다.
+     */
+    preflightActiveMetadataMutationBatch(request, authority = null) {
+        this.#assertUsable();
+        this.#assertActiveMetadataMutationAuthority(authority);
+        const requestSnapshot = snapshotOwnDataProperties(
+            request,
+            ACTIVE_METADATA_MUTATION_REQUEST_KEYS,
+            'activeMetadataMutationBatch'
+        );
+        const requestedMutations = snapshotDenseArrayValues(
+            requestSnapshot.mutations,
+            this.capacity,
+            'activeMetadataMutationBatch.mutations',
+            0
+        );
+        if (requestedMutations.length === 0) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'active-metadata-mutation-empty-batch',
+                retryable: false
+            });
+        }
+        const claimedEntityIds = new Set();
+        const mutations = [];
+        for (let index = 0; index < requestedMutations.length; index++) {
+            const mutation = snapshotOwnDataProperties(
+                requestedMutations[index],
+                ACTIVE_METADATA_MUTATION_ENTRY_KEYS,
+                `mutations[${index}]`
+            );
+            const handle = freezeHandle(normalizeHandle(
+                mutation.handle,
+                `mutations[${index}].handle`
+            ));
+            if (claimedEntityIds.has(handle.entityId)) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'active-metadata-mutation-duplicate-handle',
+                    retryable: false
+                });
+            }
+            claimedEntityIds.add(handle.entityId);
+            const expectedMetadataRevision = requirePositiveSafeInteger(
+                mutation.expectedMetadataRevision,
+                `mutations[${index}].expectedMetadataRevision`
+            );
+            const record = this.#findExactRecord(
+                handle,
+                `mutations[${index}].handle`
+            );
+            if (!record
+                || record.state !== 'active'
+                || record.metadata !== mutation.expectedMetadata
+                || record.metadataRevision !== expectedMetadataRevision) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'active-metadata-mutation-stale',
+                    retryable: false
+                });
+            }
+            const nextMetadata = snapshotActiveMetadata(
+                mutation.nextMetadata,
+                `mutations[${index}].nextMetadata`
+            );
+            const nextMetadataRevision = requirePositiveSafeInteger(
+                expectedMetadataRevision + 1,
+                `mutations[${index}].nextMetadataRevision`
+            );
+            mutations.push(Object.freeze({
+                handle,
+                record,
+                expectedMetadata: mutation.expectedMetadata,
+                expectedMetadataRevision,
+                nextMetadata,
+                nextMetadataRevision
+            }));
+        }
+        const token = Object.freeze({});
+        const plan = Object.freeze({
+            generation: this.#activeMetadataMutationGeneration,
+            revision: this.revision,
+            mutations: Object.freeze(mutations)
+        });
+        this.#activeMetadataMutationBatchPlans.set(token, plan);
+        return Object.freeze({
+            accepted: true,
+            registryRevision: plan.revision,
+            mutations: Object.freeze(mutations.map((mutation) => Object.freeze({
+                handle: mutation.handle,
+                expectedMetadataRevision: mutation.expectedMetadataRevision,
+                nextMetadataRevision: mutation.nextMetadataRevision
+            }))),
+            token
+        });
+    }
+
+    cancelActiveMetadataMutationBatch(token, authority = null) {
+        this.#assertUsable();
+        this.#assertActiveMetadataMutationAuthority(authority);
+        if (!token || typeof token !== 'object'
+            || !this.#activeMetadataMutationBatchPlans.has(token)) {
+            return false;
+        }
+        this.#activeMetadataMutationBatchPlans.delete(token);
+        return true;
+    }
+
+    /** 첫 commit 시도에서 token을 소비하고 batch 전체 metadata를 한 번에 게시합니다. */
+    commitActiveMetadataMutationBatch(token, authority = null) {
+        this.#assertUsable();
+        this.#assertActiveMetadataMutationAuthority(authority);
+        const plan = token && typeof token === 'object'
+            ? this.#activeMetadataMutationBatchPlans.get(token)
+            : null;
+        if (plan) {
+            this.#activeMetadataMutationBatchPlans.delete(token);
+        }
+        if (!plan
+            || plan.generation !== this.#activeMetadataMutationGeneration
+            || plan.revision !== this.revision) {
+            return null;
+        }
+        for (const mutation of plan.mutations) {
+            const record = this.#findExactRecord(
+                mutation.handle,
+                'activeMetadataMutationHandle'
+            );
+            if (record !== mutation.record
+                || record.state !== 'active'
+                || record.metadata !== mutation.expectedMetadata
+                || record.metadataRevision !== mutation.expectedMetadataRevision) {
+                return null;
+            }
+        }
+        for (const mutation of plan.mutations) {
+            mutation.record.metadata = mutation.nextMetadata;
+            mutation.record.metadataRevision = mutation.nextMetadataRevision;
+        }
+        this.revision++;
+        return Object.freeze({
+            accepted: true,
+            committed: true,
+            registryRevision: this.revision,
+            mutations: Object.freeze(plan.mutations.map((mutation) => Object.freeze({
+                handle: mutation.handle,
+                previousMetadata: mutation.expectedMetadata,
+                metadata: mutation.nextMetadata,
+                metadataRevision: mutation.nextMetadataRevision
+            })))
+        });
     }
 
     /**
@@ -586,6 +817,7 @@ export class WorldRegistry {
                     definitionId: destination.definitionId,
                     createdAtTick: destination.createdAtTick,
                     metadata: destination.metadata,
+                    metadataRevision: 1,
                     state: 'active'
                 });
                 this.lastIncarnationByEntityId.set(
@@ -658,6 +890,7 @@ export class WorldRegistry {
         out.definitionId = record.definitionId;
         out.createdAtTick = record.createdAtTick;
         out.metadata = record.metadata;
+        out.metadataRevision = record.metadataRevision;
         return out;
     }
 
@@ -723,6 +956,8 @@ export class WorldRegistry {
         this.activeCountByKind.clear();
         this.#atomicTransformGeneration++;
         this.#atomicTransformBatchPlans = new WeakMap();
+        this.#activeMetadataMutationGeneration++;
+        this.#activeMetadataMutationBatchPlans = new WeakMap();
         this.revision++;
     }
 
@@ -744,6 +979,13 @@ export class WorldRegistry {
         if (this.#atomicTransformAuthority === null
             || authority !== this.#atomicTransformAuthority) {
             throw new Error('atomic transform registry authority가 필요합니다.');
+        }
+    }
+
+    #assertActiveMetadataMutationAuthority(authority) {
+        if (this.#activeMetadataMutationAuthority === null
+            || authority !== this.#activeMetadataMutationAuthority) {
+            throw new Error('active metadata mutation registry authority가 필요합니다.');
         }
     }
 

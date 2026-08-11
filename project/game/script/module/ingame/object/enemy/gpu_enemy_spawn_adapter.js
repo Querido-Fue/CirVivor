@@ -2,6 +2,7 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
@@ -56,6 +57,14 @@ import {
 import {
     ENEMY_FORMATION_DEFINITION_BY_ID
 } from 'data/object/enemy/enemy_formation_catalog_data.js';
+import {
+    ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID,
+    RING_PROJECTILE_CAPTURE_PROFILE_ID
+} from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
+    BASIC_RING_ENEMY_CAPABILITY_MASK,
+    BASIC_RING_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_ring_enemy_data.js';
 import {
     BASIC_HEXA_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DEFINITION_ID,
@@ -125,7 +134,8 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
     hexa: GPU_CIRCLE_BODY_RENDER_SHAPE.HEXA,
     gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN,
     rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM,
-    octa: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA
+    octa: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA,
+    ring: GPU_CIRCLE_BODY_RENDER_SHAPE.RING
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -225,6 +235,31 @@ function assertOrbitCapabilityDefinition(definition) {
         ENEMY_CAPABILITY_ID.ORBIT,
         ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE
     );
+}
+
+function assertProjectileCaptureCapabilityDefinition(definition) {
+    const profileId = requireNonEmptyString(
+        definition.projectileCaptureProfileId,
+        'enemy projectileCaptureProfileId'
+    );
+    const profile = ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID[profileId];
+    const shapeCode = resolveEnemyRenderShapeCode(
+        definition.shapeDefinitionId ?? definition.shapeType
+    );
+    const capabilityMask = createEnemyCapabilityMask(
+        definition.capabilityIds,
+        'enemy projectile capture capabilityIds'
+    );
+    if (definition.id !== BASIC_RING_ENEMY_DEFINITION_ID
+        || profileId !== RING_PROJECTILE_CAPTURE_PROFILE_ID
+        || capabilityMask !== BASIC_RING_ENEMY_CAPABILITY_MASK
+        || !profile
+        || profile.slotCapacity !== 1
+        || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.RING) {
+        throw new RangeError(
+            'enemy-projectile-capture capability에는 exact single-slot RING profile이 필요합니다.'
+        );
+    }
 }
 
 function assertEffectEmitterCapabilityDefinition(definition) {
@@ -415,6 +450,11 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             implementationId: 'gpu-pentagon-effect-emitter',
             assertDefinition: assertEffectEmitterCapabilityDefinition,
             rosterPort: GPU_ENEMY_EFFECT_EMITTER_ROSTER_PORT
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE,
+            implementationId: 'gpu-ring-projectile-capture',
+            assertDefinition: assertProjectileCaptureCapabilityDefinition
         })
     ])
 );
@@ -673,6 +713,7 @@ function isCanonicalEnemyDefinition(definition) {
         'physicsProfileId',
         'combatProfileId',
         'behaviorProfileId',
+        'projectileCaptureProfileId',
         'formationDefinitionId',
         'atomicTransformProfileId',
         'capabilityIds',
@@ -954,6 +995,11 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.EFFECT_EMITTER,
         'enemy capabilityMask'
     );
+    const hasProjectileCapture = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE,
+        'enemy capabilityMask'
+    );
     const isNaturalJorang = enemyDefinitionId === BASIC_JORANG_ENEMY_DEFINITION_ID;
     if (isNaturalJorang
         && (definition.atomicTransformProfileId
@@ -1057,6 +1103,16 @@ export function createGpuEnemySpawnIntent(options) {
     const effectDefinition = effectEmitterProfile
         ? ENEMY_EFFECT_DEFINITION_BY_ID[effectEmitterProfile.effectDefinitionId]
         : null;
+    const projectileCaptureProfile = hasProjectileCapture
+        ? ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID[
+            definition.projectileCaptureProfileId
+        ]
+        : null;
+    if (hasProjectileCapture && !projectileCaptureProfile) {
+        throw new RangeError(
+            'enemy-projectile-capture spawn에는 exact catalog profile이 필요합니다.'
+        );
+    }
     if (hasEffectEmitter
         && (!effectEmitterProfile
             || !effectDefinition
@@ -1081,6 +1137,10 @@ export function createGpuEnemySpawnIntent(options) {
         waveId,
         policyId,
         capabilityMask,
+        ...(projectileCaptureProfile ? {
+            projectileCaptureProfileId: projectileCaptureProfile.id,
+            projectileCaptureProfileCode: projectileCaptureProfile.definitionCode
+        } : {}),
         atomicTransformProfileId:
             definition.atomicTransformProfileId ?? null,
         ...(octagonOrbitBehaviorState ? {
@@ -1133,6 +1193,14 @@ export function createGpuEnemySpawnIntent(options) {
         lifetime: -1,
         alive: true,
         flowSpeed,
+        ...(projectileCaptureProfile ? {
+            projectileCaptureState: Object.freeze({
+                role: GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR,
+                profileCode: projectileCaptureProfile.definitionCode,
+                facingX: directionUnitX,
+                facingY: directionUnitY
+            })
+        } : {}),
         ...(chargeProfile || octagonOrbitBehaviorState ? {
             enemyBehaviorState: Object.freeze({
                 ...(chargeProfile ? {

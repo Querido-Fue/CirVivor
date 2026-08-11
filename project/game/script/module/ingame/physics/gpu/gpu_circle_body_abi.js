@@ -133,6 +133,33 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         STATUS: 12
     }),
     /**
+     * R/projectile가 양측 exact handle을 보존하는 persistent capture side-plane입니다.
+     * session/device/epoch generation은 per-tick runtime header가 소유합니다.
+     */
+    PROJECTILE_CAPTURE_STATE: Object.freeze({
+        STRIDE: 48,
+        ROLE_PHASE_PROFILE_POLICY: 0,
+        SELF_ENTITY_ID: 4,
+        SELF_INCARNATION: 8,
+        PEER_BODY_SLOT: 12,
+        PEER_ENTITY_ID: 16,
+        PEER_INCARNATION: 20,
+        CAPTURED_AT_FIXED_TICK: 24,
+        RELEASE_DUE_FIXED_TICK: 28,
+        CAPTURE_SEQUENCE: 32,
+        CAPTURED_SPEED: 36,
+        FACING_X: 40,
+        FACING_Y: 44
+    }),
+    /** one-slot mutual-min arbitration의 per-body transient peer record입니다. */
+    PROJECTILE_CAPTURE_CANDIDATE: Object.freeze({
+        STRIDE: 16,
+        DISTANCE_SQUARED_BITS: 0,
+        PEER_ENTITY_ID: 4,
+        PEER_INCARNATION: 8,
+        STATUS: 12
+    }),
+    /**
      * Enemy behavior 전용 mutable/config side-plane입니다. CombatState reserved와
      * 분리하며 program 0인 slot은 전체 zero record를 유지합니다.
      */
@@ -195,7 +222,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 7;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 8;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -210,7 +237,8 @@ export const GPU_CIRCLE_BODY_RENDER_SHAPE = Object.freeze({
     HEXA: 5,
     GEN: 6,
     RHOM: 7,
-    OCTA: 8
+    OCTA: 8,
+    RING: 9
 });
 
 export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
@@ -219,6 +247,7 @@ export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
     COUNT_AS_KILL: 1 << 2,
     EXPLODE_ON_DEATH: 1 << 3,
     GOLDEN: 1 << 4,
+    PROJECTILE_CAPTURED: 1 << 5,
     INTERACTION_ENTER_ONLY: 1 << 8,
     INTERACTION_CONTINUOUS: 1 << 9
 });
@@ -235,12 +264,47 @@ export const GPU_CIRCLE_BODY_META = Object.freeze({
     COUNT_AS_KILL_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL,
     EXPLODE_ON_DEATH_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH,
     GOLDEN_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
+    PROJECTILE_CAPTURED_FLAG:
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED,
     IS_GOLDEN_FLAG: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
     ALIVE_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE,
     USE_FLOW_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW,
     COUNT_AS_KILL_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.COUNT_AS_KILL,
     EXPLODE_ON_DEATH_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.EXPLODE_ON_DEATH,
-    GOLDEN_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN
+    GOLDEN_BIT: GPU_CIRCLE_BODY_SIMULATION_FLAG.GOLDEN,
+    PROJECTILE_CAPTURED_BIT:
+        GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED
+});
+
+export const GPU_PROJECTILE_CAPTURE_ROLE = Object.freeze({
+    NONE: 0,
+    CAPTOR: 1,
+    PROJECTILE: 2
+});
+
+export const GPU_PROJECTILE_CAPTURE_PHASE = Object.freeze({
+    IDLE: 0,
+    HELD: 1,
+    RELEASE_PREPARED: 2,
+    TOMBSTONED: 3
+});
+
+export const GPU_PROJECTILE_CAPTURE_POLICY_CODE = Object.freeze({
+    NOT_CAPTURABLE: 0,
+    CAPTURABLE: 1
+});
+
+export const GPU_PROJECTILE_CAPTURE_STATE_META = Object.freeze({
+    ROLE_SHIFT: 0,
+    ROLE_MASK: 0x00000003,
+    PHASE_SHIFT: 2,
+    PHASE_MASK: 0x0000000c,
+    PROFILE_SHIFT: 4,
+    PROFILE_MASK: 0x00000ff0,
+    POLICY_SHIFT: 12,
+    POLICY_MASK: 0x00003000,
+    FLAGS_SHIFT: 16,
+    FLAGS_MASK: 0xffff0000
 });
 
 /** BodySimulation +8의 team/damage-policy packed gameplay word입니다. */
@@ -811,6 +875,7 @@ export function normalizeGpuCircleBodyRenderShapeCode(
         case GPU_CIRCLE_BODY_RENDER_SHAPE.GEN:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.RING:
             return shapeCode;
         default:
             throw new RangeError(`${fieldName}에 지원하지 않는 shape code가 있습니다: ${shapeCode}`);
@@ -939,8 +1004,60 @@ export function unpackGpuCircleSimulationMeta(meta) {
         explodeOnDeath: (flags & GPU_CIRCLE_BODY_META.EXPLODE_ON_DEATH_FLAG)
             === GPU_CIRCLE_BODY_META.EXPLODE_ON_DEATH_FLAG,
         golden: (flags & GPU_CIRCLE_BODY_META.GOLDEN_FLAG)
-            === GPU_CIRCLE_BODY_META.GOLDEN_FLAG
+            === GPU_CIRCLE_BODY_META.GOLDEN_FLAG,
+        projectileCaptured:
+            (flags & GPU_CIRCLE_BODY_META.PROJECTILE_CAPTURED_FLAG)
+                === GPU_CIRCLE_BODY_META.PROJECTILE_CAPTURED_FLAG
     };
+}
+
+/** 48-byte capture state word 0의 append-only packed contract입니다. */
+export function packGpuProjectileCaptureStateMeta({
+    role = GPU_PROJECTILE_CAPTURE_ROLE.NONE,
+    phase = GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+    profileCode = 0,
+    policyCode = GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE,
+    flags = 0
+} = {}) {
+    const safeRole = requireUint8(role, 'projectileCaptureState.role');
+    const safePhase = requireUint8(phase, 'projectileCaptureState.phase');
+    const safeProfile = requireUint8(
+        profileCode,
+        'projectileCaptureState.profileCode'
+    );
+    const safePolicy = requireUint8(
+        policyCode,
+        'projectileCaptureState.policyCode'
+    );
+    const safeFlags = requireUint16(flags, 'projectileCaptureState.flags');
+    if (!Object.values(GPU_PROJECTILE_CAPTURE_ROLE).includes(safeRole)
+        || !Object.values(GPU_PROJECTILE_CAPTURE_PHASE).includes(safePhase)
+        || !Object.values(GPU_PROJECTILE_CAPTURE_POLICY_CODE).includes(
+            safePolicy
+        )) {
+        throw new RangeError('projectile capture state meta enum이 유효하지 않습니다.');
+    }
+    return ((safeRole << GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_SHIFT)
+        | (safePhase << GPU_PROJECTILE_CAPTURE_STATE_META.PHASE_SHIFT)
+        | (safeProfile << GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_SHIFT)
+        | (safePolicy << GPU_PROJECTILE_CAPTURE_STATE_META.POLICY_SHIFT)
+        | (safeFlags << GPU_PROJECTILE_CAPTURE_STATE_META.FLAGS_SHIFT)) >>> 0;
+}
+
+export function unpackGpuProjectileCaptureStateMeta(value) {
+    const packed = requireUint32(value, 'projectileCaptureState.meta');
+    return Object.freeze({
+        role: (packed & GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_MASK)
+            >>> GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_SHIFT,
+        phase: (packed & GPU_PROJECTILE_CAPTURE_STATE_META.PHASE_MASK)
+            >>> GPU_PROJECTILE_CAPTURE_STATE_META.PHASE_SHIFT,
+        profileCode: (packed & GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_MASK)
+            >>> GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_SHIFT,
+        policyCode: (packed & GPU_PROJECTILE_CAPTURE_STATE_META.POLICY_MASK)
+            >>> GPU_PROJECTILE_CAPTURE_STATE_META.POLICY_SHIFT,
+        flags: (packed & GPU_PROJECTILE_CAPTURE_STATE_META.FLAGS_MASK)
+            >>> GPU_PROJECTILE_CAPTURE_STATE_META.FLAGS_SHIFT
+    });
 }
 
 /**
@@ -1041,7 +1158,7 @@ export function unpackGpuCircleAppliedEventMeta(meta) {
  * collision-only ABI storage를 생성합니다.
  * @param {*} capacity - 최대 body 수입니다.
  * 반환 buffer들은 GPU 업로드 전 CPU 권위 mirror입니다.
- * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer,atomicTransformStateBuffer:ArrayBuffer,enemyBehaviorStateBuffer:ArrayBuffer}}
+ * @returns {{capacity:number,countsBuffer:ArrayBuffer,physicsBuffer:ArrayBuffer,simulationBuffer:ArrayBuffer,temporaryBuffer:ArrayBuffer,contactHandlerBuffer:ArrayBuffer,combatStateBuffer:ArrayBuffer,atomicTransformStateBuffer:ArrayBuffer,projectileCaptureStateBuffer:ArrayBuffer,projectileCaptureCandidateBuffer:ArrayBuffer,enemyBehaviorStateBuffer:ArrayBuffer}}
  * 생성된 CPU mirror storage입니다.
  */
 export function createGpuCircleBodyAbiStorage(capacity) {
@@ -1064,6 +1181,13 @@ export function createGpuCircleBodyAbiStorage(capacity) {
         ),
         atomicTransformStateBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * safeCapacity
+        ),
+        projectileCaptureStateBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE * safeCapacity
+        ),
+        projectileCaptureCandidateBuffer: new ArrayBuffer(
+            GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
+                * safeCapacity
         ),
         enemyBehaviorStateBuffer: new ArrayBuffer(
             GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * safeCapacity
@@ -1106,6 +1230,13 @@ function requireStorage(storage) {
         || !(storage.atomicTransformStateBuffer instanceof ArrayBuffer)
         || storage.atomicTransformStateBuffer.byteLength
             !== GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * capacity
+        || !(storage.projectileCaptureStateBuffer instanceof ArrayBuffer)
+        || storage.projectileCaptureStateBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE * capacity
+        || !(storage.projectileCaptureCandidateBuffer instanceof ArrayBuffer)
+        || storage.projectileCaptureCandidateBuffer.byteLength
+            !== GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
+                * capacity
         || !(storage.enemyBehaviorStateBuffer instanceof ArrayBuffer)
         || storage.enemyBehaviorStateBuffer.byteLength
             !== GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * capacity) {
@@ -1821,6 +1952,271 @@ export function readGpuCircleBodyCombatState(storage, index) {
             LITTLE_ENDIAN
         )
     };
+}
+
+/** persistent projectile-capture state 한 slot을 씁니다. */
+export function writeGpuProjectileCaptureState(storage, index, source = {}) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const layout = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE;
+    const offset = slot * layout.STRIDE;
+    const view = new DataView(storage.projectileCaptureStateBuffer);
+    const selfEntityId = requireUint32(
+        source.selfEntityId ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'projectileCaptureState.selfEntityId'
+    );
+    const selfIncarnation = requireUint32(
+        source.selfIncarnation ?? 0,
+        'projectileCaptureState.selfIncarnation'
+    );
+    const peerBodySlot = requireUint32(
+        source.peerBodySlot ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'projectileCaptureState.peerBodySlot'
+    );
+    const peerEntityId = requireUint32(
+        source.peerEntityId ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'projectileCaptureState.peerEntityId'
+    );
+    const peerIncarnation = requireUint32(
+        source.peerIncarnation ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+        'projectileCaptureState.peerIncarnation'
+    );
+    const identityInvalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+    const selfIsTombstone = selfEntityId === identityInvalid
+        && selfIncarnation === 0;
+    const selfIsLive = selfEntityId > 0
+        && selfEntityId !== identityInvalid
+        && selfIncarnation > 0
+        && selfIncarnation !== identityInvalid;
+    if ((!selfIsTombstone && !selfIsLive)
+        || (peerEntityId === identityInvalid)
+            !== (peerIncarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)
+        || (peerEntityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)
+            !== (peerBodySlot === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)) {
+        throw new RangeError('projectile capture state identity pair가 불완전합니다.');
+    }
+    const meta = unpackGpuProjectileCaptureStateMeta(
+        packGpuProjectileCaptureStateMeta(source)
+    );
+    const capturedAtFixedTick = requireUint32(
+        source.capturedAtFixedTick ?? 0,
+        'projectileCaptureState.capturedAtFixedTick'
+    );
+    const releaseDueFixedTick = requireUint32(
+        source.releaseDueFixedTick ?? 0,
+        'projectileCaptureState.releaseDueFixedTick'
+    );
+    const captureSequence = requireUint32(
+        source.captureSequence ?? 0,
+        'projectileCaptureState.captureSequence'
+    );
+    const capturedSpeed = requireFloat32(
+        source.capturedSpeed ?? 0,
+        'projectileCaptureState.capturedSpeed'
+    );
+    const facingX = requireFloat32(
+        source.facingX ?? 0,
+        'projectileCaptureState.facingX'
+    );
+    const facingY = requireFloat32(
+        source.facingY ?? 0,
+        'projectileCaptureState.facingY'
+    );
+    const peerInvalid = peerBodySlot === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+    const activeCapturePhase = meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.HELD
+        || meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.RELEASE_PREPARED;
+    const facingLength = Math.hypot(facingX, facingY);
+    const hasAuthenticCaptureEvidence = !peerInvalid
+        && capturedAtFixedTick > 0
+        && releaseDueFixedTick > capturedAtFixedTick
+        && captureSequence > 0
+        && captureSequence !== GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+        && capturedSpeed > 0
+        && Number.isFinite(facingLength)
+        && Math.abs(facingLength - 1) <= 1e-4;
+    if ((!selfIsLive
+            && !(meta.role === GPU_PROJECTILE_CAPTURE_ROLE.NONE
+                && selfIsTombstone))
+        || meta.flags !== 0
+        || (meta.role === GPU_PROJECTILE_CAPTURE_ROLE.NONE
+            && (meta.phase !== GPU_PROJECTILE_CAPTURE_PHASE.IDLE
+                || meta.profileCode !== 0
+                || meta.policyCode
+                    !== GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE
+                || !peerInvalid
+                || capturedAtFixedTick !== 0
+                || releaseDueFixedTick !== 0
+                || captureSequence !== 0
+                || capturedSpeed !== 0
+                || facingX !== 0
+                || facingY !== 0))
+        || (meta.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            && (meta.profileCode === 0
+                || meta.policyCode
+                    !== GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE
+                || (activeCapturePhase && !hasAuthenticCaptureEvidence)
+                || (meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.IDLE
+                    && (!peerInvalid
+                        || !Number.isFinite(facingLength)
+                        || Math.abs(facingLength - 1) > 1e-4))
+                || meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.TOMBSTONED))
+        || (meta.role === GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+            && (meta.profileCode !== 0
+                || (activeCapturePhase && !hasAuthenticCaptureEvidence)
+                || (meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.IDLE
+                    && (!peerInvalid || facingX !== 0 || facingY !== 0))
+                || (meta.phase === GPU_PROJECTILE_CAPTURE_PHASE.TOMBSTONED
+                    && (!peerInvalid
+                        || captureSequence === 0
+                        || captureSequence
+                            === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT))))
+        || (activeCapturePhase
+            && meta.role !== GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            && meta.role !== GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE)) {
+        throw new RangeError(
+            'projectile capture state role/phase/profile/policy invariant가 유효하지 않습니다.'
+        );
+    }
+    view.setUint32(
+        offset + layout.ROLE_PHASE_PROFILE_POLICY,
+        packGpuProjectileCaptureStateMeta(meta),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(offset + layout.SELF_ENTITY_ID, selfEntityId, LITTLE_ENDIAN);
+    view.setUint32(
+        offset + layout.SELF_INCARNATION,
+        selfIncarnation,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(offset + layout.PEER_BODY_SLOT, peerBodySlot, LITTLE_ENDIAN);
+    view.setUint32(offset + layout.PEER_ENTITY_ID, peerEntityId, LITTLE_ENDIAN);
+    view.setUint32(
+        offset + layout.PEER_INCARNATION,
+        peerIncarnation,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.CAPTURED_AT_FIXED_TICK,
+        capturedAtFixedTick,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.RELEASE_DUE_FIXED_TICK,
+        releaseDueFixedTick,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.CAPTURE_SEQUENCE,
+        captureSequence,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + layout.CAPTURED_SPEED,
+        capturedSpeed,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + layout.FACING_X,
+        facingX,
+        LITTLE_ENDIAN
+    );
+    view.setFloat32(
+        offset + layout.FACING_Y,
+        facingY,
+        LITTLE_ENDIAN
+    );
+    return slot;
+}
+
+export function readGpuProjectileCaptureState(storage, index) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const layout = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE;
+    const offset = slot * layout.STRIDE;
+    const view = new DataView(storage.projectileCaptureStateBuffer);
+    return Object.freeze({
+        ...unpackGpuProjectileCaptureStateMeta(view.getUint32(
+            offset + layout.ROLE_PHASE_PROFILE_POLICY,
+            LITTLE_ENDIAN
+        )),
+        selfEntityId: view.getUint32(offset + layout.SELF_ENTITY_ID, LITTLE_ENDIAN),
+        selfIncarnation: view.getUint32(
+            offset + layout.SELF_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        peerBodySlot: view.getUint32(offset + layout.PEER_BODY_SLOT, LITTLE_ENDIAN),
+        peerEntityId: view.getUint32(offset + layout.PEER_ENTITY_ID, LITTLE_ENDIAN),
+        peerIncarnation: view.getUint32(
+            offset + layout.PEER_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        capturedAtFixedTick: view.getUint32(
+            offset + layout.CAPTURED_AT_FIXED_TICK,
+            LITTLE_ENDIAN
+        ),
+        releaseDueFixedTick: view.getUint32(
+            offset + layout.RELEASE_DUE_FIXED_TICK,
+            LITTLE_ENDIAN
+        ),
+        captureSequence: view.getUint32(
+            offset + layout.CAPTURE_SEQUENCE,
+            LITTLE_ENDIAN
+        ),
+        capturedSpeed: view.getFloat32(
+            offset + layout.CAPTURED_SPEED,
+            LITTLE_ENDIAN
+        ),
+        facingX: view.getFloat32(offset + layout.FACING_X, LITTLE_ENDIAN),
+        facingY: view.getFloat32(offset + layout.FACING_Y, LITTLE_ENDIAN)
+    });
+}
+
+export function writeGpuProjectileCaptureCandidate(
+    storage,
+    index,
+    source = {}
+) {
+    const capacity = requireStorage(storage);
+    assertGpuCircleBodyAbiVersion(storage);
+    const slot = requireSlotIndex(index, capacity);
+    const layout = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE;
+    const offset = slot * layout.STRIDE;
+    const view = new DataView(storage.projectileCaptureCandidateBuffer);
+    const distanceSquaredBits = source.distanceSquaredBits === undefined
+        ? 0x7f800000
+        : requireUint32(
+            source.distanceSquaredBits,
+            'projectileCaptureCandidate.distanceSquaredBits'
+        );
+    view.setUint32(
+        offset + layout.DISTANCE_SQUARED_BITS,
+        distanceSquaredBits,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.PEER_ENTITY_ID,
+        requireUint32(
+            source.peerEntityId ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            'projectileCaptureCandidate.peerEntityId'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.PEER_INCARNATION,
+        requireUint32(
+            source.peerIncarnation ?? GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            'projectileCaptureCandidate.peerIncarnation'
+        ),
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        offset + layout.STATUS,
+        requireUint32(source.status ?? 0, 'projectileCaptureCandidate.status'),
+        LITTLE_ENDIAN
+    );
+    return slot;
 }
 
 function normalizeAtomicTransformIdentityPair(
@@ -2762,6 +3158,31 @@ export function writeGpuCircleBodySpawn(storage, index, spawn) {
             ? undefined
             : incarnation
     });
+    const captureSource = spawn.projectileCaptureState ?? {};
+    const captureRole = captureSource.role ?? GPU_PROJECTILE_CAPTURE_ROLE.NONE;
+    const velocityLength = Math.hypot(velocityX, velocityY);
+    writeGpuProjectileCaptureState(storage, slot, {
+        ...captureSource,
+        role: captureRole,
+        phase: captureSource.phase ?? GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+        selfEntityId: entityId,
+        selfIncarnation: captureRole === GPU_PROJECTILE_CAPTURE_ROLE.NONE
+                && entityId === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+                && incarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+            ? 0
+            : incarnation,
+        facingX: captureSource.facingX
+            ?? (captureRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+                && velocityLength > 0
+                ? Math.fround(velocityX / velocityLength)
+                : 0),
+        facingY: captureSource.facingY
+            ?? (captureRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+                && velocityLength > 0
+                ? Math.fround(velocityY / velocityLength)
+                : 0)
+    });
+    writeGpuProjectileCaptureCandidate(storage, slot);
     writeGpuCircleEnemyBehaviorState(
         storage,
         slot,
@@ -2925,6 +3346,7 @@ export function readGpuCircleBody(storage, index) {
         contactHandler: readGpuCircleContactHandler(storage, slot),
         combatState: readGpuCircleBodyCombatState(storage, slot),
         atomicTransformState: readGpuCircleAtomicTransformState(storage, slot),
+        projectileCaptureState: readGpuProjectileCaptureState(storage, slot),
         enemyBehaviorState: readGpuCircleEnemyBehaviorState(storage, slot)
     };
 }

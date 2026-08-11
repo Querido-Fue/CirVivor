@@ -43,14 +43,18 @@ const CHARGE_CONFIG = Object.freeze({
     telegraphRadiusScale: 1.35
 });
 
-test('Body ABI v7은 charge 80-byte offset을 유지하고 Atomic Transform 48-byte plane을 분리한다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 7);
+test('Body ABI v8은 기존 charge/atomic offset을 유지하고 capture side-plane을 append한다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 8);
     assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
     assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE, 40);
     assert.equal(GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE, 48);
+    assert.equal(GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE, 48);
+    assert.equal(GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE, 16);
     const storage = createGpuCircleBodyAbiStorage(2);
     assert.equal(storage.enemyBehaviorStateBuffer.byteLength, 160);
     assert.equal(storage.atomicTransformStateBuffer.byteLength, 96);
+    assert.equal(storage.projectileCaptureStateBuffer.byteLength, 96);
+    assert.equal(storage.projectileCaptureCandidateBuffer.byteLength, 32);
 
     const spawn = {
         position: { x: 1, y: 2 },

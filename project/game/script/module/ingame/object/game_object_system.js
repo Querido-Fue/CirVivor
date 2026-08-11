@@ -38,6 +38,9 @@ import {
 import {
     JorangSplitLineageDirector
 } from './enemy/jorang_split_lineage_director.js';
+import {
+    RingProjectileCaptureDirector
+} from './enemy/projectile_capture_director.js';
 import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
@@ -67,6 +70,9 @@ import {
 import {
     GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
 } from '../physics/gpu/gpu_atomic_transform_runtime_abi.js';
+import {
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+} from '../physics/gpu/gpu_projectile_capture_runtime_abi.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
@@ -213,6 +219,16 @@ export class GameObjectSystem {
                 'jorangSplitLineageDirectorFactory는 함수여야 합니다.'
             );
         }
+        this.projectileCaptureDirectorFactory
+            = dependencies?.projectileCaptureDirectorFactory
+                ?? ((directorOptions) => new RingProjectileCaptureDirector(
+                    directorOptions
+                ));
+        if (typeof this.projectileCaptureDirectorFactory !== 'function') {
+            throw new TypeError(
+                'projectileCaptureDirectorFactory는 함수여야 합니다.'
+            );
+        }
         this.endpointSessionCount = 0;
         this.enemySimulationEndpoint = null;
         this.enemySimulationBackend = null;
@@ -224,6 +240,7 @@ export class GameObjectSystem {
         this.pentagonEffectDirector = null;
         this.formationRuntimeDirector = null;
         this.jorangSplitLineageDirector = null;
+        this.projectileCaptureDirector = null;
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             try {
                 if (this.gameplayWorldActorsEnabled) {
@@ -245,7 +262,16 @@ export class GameObjectSystem {
                     = this.#createJorangSplitLineageDirector(
                         this.enemySimulationEndpoint
                     );
+                this.projectileCaptureDirector
+                    = this.#createProjectileCaptureDirector(
+                        this.enemySimulationEndpoint
+                    );
             } catch (error) {
+                try {
+                    this.projectileCaptureDirector?.destroy();
+                } catch {
+                    // 최초 capture director 생성 실패의 원래 오류를 보존합니다.
+                }
                 try {
                     this.jorangSplitLineageDirector?.destroy();
                 } catch {
@@ -282,6 +308,7 @@ export class GameObjectSystem {
                 this.pentagonEffectDirector = null;
                 this.formationRuntimeDirector = null;
                 this.jorangSplitLineageDirector = null;
+                this.projectileCaptureDirector = null;
                 this.enemySimulationEndpoint = null;
                 this.enemySimulationBackend = null;
                 this.worldRegistry = null;
@@ -350,6 +377,10 @@ export class GameObjectSystem {
                 ?? createTileMap(this.requestedMapId)
         );
         this.enemySimulationEndpoint.init(this.tileMap);
+        this.#resetProjectileCaptureDirectorBinding(
+            this.projectileCaptureDirector,
+            this.enemySimulationEndpoint
+        );
         this.enemyCoreImpactDirector?.resetGpuBinding?.(
             this.enemySimulationEndpoint,
             this.#coreImpactCleanupBinding?.port ?? null
@@ -511,6 +542,10 @@ export class GameObjectSystem {
         return this.jorangSplitLineageDirector?.getStatus() ?? null;
     }
 
+    getProjectileCaptureStatus() {
+        return this.projectileCaptureDirector?.getStatus() ?? null;
+    }
+
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
     getTerminalStatus() {
         return Object.freeze({
@@ -540,6 +575,7 @@ export class GameObjectSystem {
             pentagonEffect: this.getPentagonEffectStatus(),
             formation: this.getFormationRuntimeStatus(),
             jorangSplitLineage: this.getJorangSplitLineageStatus(),
+            projectileCapture: this.getProjectileCaptureStatus(),
             terminal: this.getTerminalStatus()
         });
     }
@@ -569,7 +605,8 @@ export class GameObjectSystem {
             || this.enemyCoreImpactDirector?.requiresRecovery() === true
             || this.pentagonEffectDirector?.requiresRecovery() === true
             || this.formationRuntimeDirector?.requiresRecovery() === true
-            || this.jorangSplitLineageDirector?.requiresRecovery() === true;
+            || this.jorangSplitLineageDirector?.requiresRecovery() === true
+            || this.projectileCaptureDirector?.requiresRecovery() === true;
     }
 
     isGpuWorldRecoveryRequired() {
@@ -621,15 +658,92 @@ export class GameObjectSystem {
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
-                || this.jorangSplitLineageDirector?.requiresRecovery() === true)) {
+                || this.jorangSplitLineageDirector?.requiresRecovery() === true
+                || this.projectileCaptureDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery();
         }
 
         if (this.pendingEnemyFixedTick === 0) {
+            if (!this.runOutcome.isDefeated()
+                && !this.coreIntegrity.isDepleted()
+                && !this.#refreshProjectileCaptureDirectorBindingAtIdleBoundary(
+                    this.projectileCaptureDirector,
+                    this.enemySimulationEndpoint
+                )) {
+                return this.#pauseForGpuRecovery();
+            }
             // T-1 prepare가 제출됐지만 비동기 GPU readback이 아직 끝나지 않은
             // 경우는 recovery가 아닙니다. 다른 completion domain의 watermark나
             // lifecycle/stage/fixed state를 건드리기 전에 exact T 경계를 그대로
             // 보존하고 다음 frame에서 같은 proposedFixedTick을 재시도합니다.
+            const completedProjectileCapturePrograms
+                = this.enemySimulationEndpoint
+                    .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+                        proposedFixedTick
+                    );
+            if (completedProjectileCapturePrograms.pending === true) {
+                return false;
+            }
+            if (completedProjectileCapturePrograms.protocolFailure) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-completion-protocol',
+                        proposedFixedTick,
+                        completedProjectileCapturePrograms.protocolFailure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            this.projectileCaptureDirector
+                ?.observeCompletedCapturePrograms(
+                    completedProjectileCapturePrograms
+                );
+            if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-completion-observe',
+                        proposedFixedTick,
+                        this.projectileCaptureDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            const completedProjectileCaptureReleasePrograms
+                = this.enemySimulationEndpoint
+                    .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+                        proposedFixedTick
+                    );
+            if (completedProjectileCaptureReleasePrograms.pending === true) {
+                return false;
+            }
+            if (completedProjectileCaptureReleasePrograms.protocolFailure) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-release-completion-protocol',
+                        proposedFixedTick,
+                        completedProjectileCaptureReleasePrograms.protocolFailure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
+            this.projectileCaptureDirector
+                ?.observeCompletedReleasePrograms(
+                    completedProjectileCaptureReleasePrograms
+                );
+            if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-release-completion-observe',
+                        proposedFixedTick,
+                        this.projectileCaptureDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             const completedAtomicTransformPrograms
                 = this.enemySimulationEndpoint
                     .commitCompletedAtomicTransformProgramsAtFixedBoundary(
@@ -728,6 +842,20 @@ export class GameObjectSystem {
                 return this.#pauseForGpuRecovery();
             }
             this.lastCompletedGpuEvents = completedEvents;
+            this.projectileCaptureDirector?.observeCompletedEvents(
+                completedEvents
+            );
+            if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()
+                    || this.coreIntegrity.isDepleted()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-event-observe',
+                        proposedFixedTick,
+                        this.projectileCaptureDirector.getStatus().failure
+                    );
+                }
+                return this.#pauseForGpuRecovery();
+            }
             this.jorangSplitLineageDirector?.observeCompletedEvents(
                 completedEvents
             );
@@ -843,6 +971,17 @@ export class GameObjectSystem {
                         ?.stageShotForFixedTick(targetFixedTick) ?? null;
                 }
 
+                const projectileCaptureStage
+                    = this.projectileCaptureDirector?.stageForFixedTick({
+                        targetFixedTick: proposedFixedTick,
+                        towerTargetHandle: this.#isPrimaryTowerAlive()
+                            ? this.towerHandle
+                            : null
+                    }) ?? null;
+                if (projectileCaptureStage?.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery();
+                }
+
                 const hostileStage = this.hostileAttackDirector?.stageForFixedTick({
                     targetFixedTick: proposedFixedTick,
                     targetHandle: this.#isPrimaryTowerAlive()
@@ -940,6 +1079,24 @@ export class GameObjectSystem {
             }
             if (this.runOutcome.isRunning()
                 && !this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
+                return this.#pauseForGpuRecovery();
+            }
+            this.projectileCaptureDirector?.observeFixedCommit(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            this.projectileCaptureDirector?.observeLifecycle(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'projectile-capture-lifecycle-observe',
+                        proposedFixedTick,
+                        this.projectileCaptureDirector.getStatus().failure
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
             this.pentagonEffectDirector?.observeFixedCommit(
@@ -1061,6 +1218,20 @@ export class GameObjectSystem {
                 );
             }
             if (atomicBackend?.state === 'submitted') {
+                const captureSettlement
+                    = this.#settleTerminalProjectileCaptureReadbacks(
+                        proposedFixedTick
+                    );
+                if (captureSettlement.failure) {
+                    return this.#sealTerminalFailure(
+                        captureSettlement.stage,
+                        proposedFixedTick,
+                        captureSettlement.failure
+                    );
+                }
+                if (captureSettlement.pending) {
+                    return false;
+                }
                 const atomicSettlementPending
                     = atomicBackend.pendingPrepareCount > 0
                     || atomicBackend.pendingTransformCount > 0
@@ -1108,6 +1279,20 @@ export class GameObjectSystem {
         }
 
         if (terminalFinalization) {
+            const captureSettlement
+                = this.#settleTerminalProjectileCaptureReadbacks(
+                    proposedFixedTick
+                );
+            if (captureSettlement.failure) {
+                return this.#sealTerminalFailure(
+                    captureSettlement.stage,
+                    proposedFixedTick,
+                    captureSettlement.failure
+                );
+            }
+            if (captureSettlement.pending) {
+                return false;
+            }
             const atomicTerminal = this.enemySimulationEndpoint
                 .getTerminalAtomicTransformProgramCancelStatus?.() ?? null;
             const atomicBackend = atomicTerminal?.backend;
@@ -1211,7 +1396,8 @@ export class GameObjectSystem {
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
-                || this.jorangSplitLineageDirector?.requiresRecovery() === true;
+                || this.jorangSplitLineageDirector?.requiresRecovery() === true
+                || this.projectileCaptureDirector?.requiresRecovery() === true;
         return submitted;
     }
 
@@ -1242,6 +1428,7 @@ export class GameObjectSystem {
         let replacementPentagonEffectDirector = null;
         let replacementFormationRuntimeDirector = null;
         let replacementJorangSplitLineageDirector = null;
+        let replacementProjectileCaptureDirector = null;
         try {
             const replacement = this.#createGpuEndpoint(false);
             replacementEndpoint = replacement.endpoint;
@@ -1285,7 +1472,16 @@ export class GameObjectSystem {
                 = this.jorangSplitLineageDirector
                 ? this.#createJorangSplitLineageDirector(replacementEndpoint)
                 : null;
+            replacementProjectileCaptureDirector
+                = this.projectileCaptureDirector
+                ? this.#createProjectileCaptureDirector(replacementEndpoint)
+                : null;
         } catch {
+            try {
+                replacementProjectileCaptureDirector?.destroy();
+            } catch {
+                // 실패한 replacement capture roster만 폐기합니다.
+            }
             try {
                 replacementJorangSplitLineageDirector?.destroy();
             } catch {
@@ -1329,6 +1525,7 @@ export class GameObjectSystem {
             return false;
         }
         this.enemySimulationEndpoint.synchronizePresentation();
+        this.projectileCaptureDirector?.destroy();
         this.jorangSplitLineageDirector?.destroy();
         this.formationRuntimeDirector?.destroy();
         this.pentagonEffectDirector?.destroy();
@@ -1355,6 +1552,8 @@ export class GameObjectSystem {
         this.formationRuntimeDirector = replacementFormationRuntimeDirector;
         this.jorangSplitLineageDirector
             = replacementJorangSplitLineageDirector;
+        this.projectileCaptureDirector
+            = replacementProjectileCaptureDirector;
         this.waveDirector = replacementWaveDirector;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -1391,6 +1590,8 @@ export class GameObjectSystem {
         this.pentagonEffectDirector = null;
         this.formationRuntimeDirector?.destroy();
         this.formationRuntimeDirector = null;
+        this.projectileCaptureDirector?.destroy();
+        this.projectileCaptureDirector = null;
         this.jorangSplitLineageDirector?.destroy();
         this.jorangSplitLineageDirector = null;
         this.enemyCoreImpactDirector?.destroy();
@@ -1463,6 +1664,13 @@ export class GameObjectSystem {
         }
         this.terminalState = GPU_WORLD_TERMINAL_STATE.FINAL_COMMIT_PENDING;
         this.terminalFinalizationTick = fixedTick;
+        // Capture terminal cleanup은 lifecycle ingress가 열려 있을 때 exact held
+        // projectile despawn을 먼저 stage해야 합니다. 이미 registry/backend에
+        // published된 release는 roster에 남겨 final readback까지 보존합니다.
+        this.projectileCaptureDirector?.closeForTerminal(
+            fixedTick,
+            'run-defeated'
+        );
         this.pentagonEffectDirector?.closeForTerminal(
             fixedTick,
             'run-defeated'
@@ -1506,6 +1714,56 @@ export class GameObjectSystem {
         return true;
     }
 
+    #settleTerminalProjectileCaptureReadbacks(fixedTick) {
+        const capturePrograms = this.enemySimulationEndpoint
+            .commitCompletedProjectileCaptureProgramsAtFixedBoundary(fixedTick);
+        if (capturePrograms.pending === true) {
+            return Object.freeze({ pending: true, failure: null });
+        }
+        if (capturePrograms.protocolFailure) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-projectile-capture-readback',
+                failure: capturePrograms.protocolFailure
+            });
+        }
+        this.projectileCaptureDirector?.observeCompletedCapturePrograms(
+            capturePrograms
+        );
+        if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-projectile-capture-observe',
+                failure: this.projectileCaptureDirector.getStatus().failure
+            });
+        }
+        const releasePrograms = this.enemySimulationEndpoint
+            .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+                fixedTick
+            );
+        if (releasePrograms.pending === true) {
+            return Object.freeze({ pending: true, failure: null });
+        }
+        if (releasePrograms.protocolFailure) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-projectile-capture-release-readback',
+                failure: releasePrograms.protocolFailure
+            });
+        }
+        this.projectileCaptureDirector?.observeCompletedReleasePrograms(
+            releasePrograms
+        );
+        if (this.projectileCaptureDirector?.requiresRecovery() === true) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-projectile-capture-release-observe',
+                failure: this.projectileCaptureDirector.getStatus().failure
+            });
+        }
+        return Object.freeze({ pending: false, failure: null });
+    }
+
     #sealTerminalSuccess(fixedTick) {
         const terminalCancel = this.enemySimulationEndpoint
             .getTerminalFixedProgramCancelStatus?.() ?? null;
@@ -1530,6 +1788,19 @@ export class GameObjectSystem {
             = atomicTransformTerminalCancel?.backend;
         const atomicTransformRosterEvidence
             = this.jorangSplitLineageDirector?.getStatus() ?? null;
+        const projectileCaptureTerminal = this.enemySimulationEndpoint
+            .getTerminalProjectileCaptureProgramCancelStatus?.() ?? null;
+        const projectileCaptureOwnerEvidence
+            = projectileCaptureTerminal?.owner;
+        const projectileCaptureBackendEvidence
+            = projectileCaptureTerminal?.backend;
+        const projectileCaptureHostCleanupEvidence
+            = projectileCaptureTerminal?.hostCleanup;
+        const projectileCaptureRosterEvidence
+            = this.projectileCaptureDirector?.getStatus() ?? null;
+        const projectileCaptureRuntimeEvidence
+            = this.enemySimulationEndpoint
+                .getProjectileCaptureRuntimeStatus?.() ?? null;
         const endpointStatus = this.enemySimulationEndpoint.getStatus();
         const gpuStatus = endpointStatus.backend?.gpu
             ?? endpointStatus.backend
@@ -1654,6 +1925,59 @@ export class GameObjectSystem {
             && atomicTransformRosterEvidence.terminal.fixedCommitObserved === true
             && atomicTransformRosterEvidence.terminal.lifecycleObserved === true
             && atomicTransformRosterEvidence.terminal.rosterSealed === true;
+        const projectileCaptureSettlementSubmitted
+            = projectileCaptureOwnerEvidence?.accepted === true
+            && projectileCaptureOwnerEvidence.state === 'settled'
+            && projectileCaptureOwnerEvidence.finalFixedTick === fixedTick
+            && projectileCaptureOwnerEvidence.pendingPreparedBatchCount === 0
+            && projectileCaptureOwnerEvidence.armedBatchCount === 0
+            && projectileCaptureOwnerEvidence.terminalHeldDespawnRequestCount
+                === projectileCaptureHostCleanupEvidence
+                    ?.requestedHeldDespawnCount
+            && projectileCaptureOwnerEvidence.failure === null
+            && projectileCaptureBackendEvidence?.abiVersion
+                === GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            && projectileCaptureBackendEvidence.accepted === true
+            && projectileCaptureBackendEvidence.state === 'settled'
+            && projectileCaptureBackendEvidence.finalFixedTick === fixedTick
+            && projectileCaptureBackendEvidence.stagedReleaseCount === 0
+            && projectileCaptureBackendEvidence.commitRequested
+                === projectileCaptureOwnerEvidence.commitRequested
+            && projectileCaptureBackendEvidence.pendingCaptureReadbackCount === 0
+            && projectileCaptureBackendEvidence.pendingReleaseReadbackCount === 0
+            && projectileCaptureBackendEvidence.completedThroughTick >= fixedTick
+            && projectileCaptureBackendEvidence.failure === null
+            && projectileCaptureHostCleanupEvidence?.authority
+                === 'lifecycle-terminal-despawn'
+            && projectileCaptureHostCleanupEvidence.failure === null
+            && projectileCaptureHostCleanupEvidence.requestedHeldDespawnCount
+                === projectileCaptureHostCleanupEvidence
+                    .completedHeldDespawnCount
+            && projectileCaptureHostCleanupEvidence.pendingHeldDespawnCount === 0
+            && projectileCaptureHostCleanupEvidence
+                .releaseCommittedExcluded === true
+            && projectileCaptureRuntimeEvidence?.abiVersion
+                === GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            && projectileCaptureRuntimeEvidence.stagedReleaseCount === 0
+            && projectileCaptureRuntimeEvidence.pendingCaptureReadbackCount === 0
+            && projectileCaptureRuntimeEvidence.pendingReleaseReadbackCount === 0
+            && projectileCaptureRuntimeEvidence.requiresRecovery === false;
+        const projectileCaptureRosterSealed
+            = projectileCaptureRosterEvidence?.recoveryRequired === false
+            && projectileCaptureRosterEvidence.capturedProjectileCount === 0
+            && projectileCaptureRosterEvidence.heldCount === 0
+            && projectileCaptureRosterEvidence.releasePendingCount === 0
+            && projectileCaptureRosterEvidence.pendingBatchCount === 0
+            && projectileCaptureRosterEvidence
+                .terminalCleanupPendingCount === 0
+            && projectileCaptureRosterEvidence.pendingReadbackCount === 0
+            && projectileCaptureRosterEvidence.terminal?.finalFixedTick
+                === fixedTick
+            && projectileCaptureRosterEvidence.terminal.fixedCommitObserved
+                === true
+            && projectileCaptureRosterEvidence.terminal.lifecycleObserved
+                === true
+            && projectileCaptureRosterEvidence.terminal.rosterSealed === true;
         if (!towerGameplayTargetCleared
             || !cancellationSubmitted
             || !effectCancellationSubmitted
@@ -1661,7 +1985,9 @@ export class GameObjectSystem {
             || !formationCancellationSubmitted
             || !formationRosterSealed
             || !atomicTransformCancellationSubmitted
-            || !atomicTransformRosterSealed) {
+            || !atomicTransformRosterSealed
+            || !projectileCaptureSettlementSubmitted
+            || !projectileCaptureRosterSealed) {
             return this.#sealTerminalFailure(
                 !towerGameplayTargetCleared
                     ? 'terminal-tower-gameplay-target-evidence'
@@ -1677,7 +2003,11 @@ export class GameObjectSystem {
                                     ? 'terminal-formation-roster-seal'
                                     : !atomicTransformCancellationSubmitted
                                         ? 'terminal-atomic-transform-program-cancel'
-                                        : 'terminal-atomic-transform-roster-seal',
+                                        : !atomicTransformRosterSealed
+                                            ? 'terminal-atomic-transform-roster-seal'
+                                            : !projectileCaptureSettlementSubmitted
+                                                ? 'terminal-projectile-capture-settlement'
+                                                : 'terminal-projectile-capture-roster-seal',
                 fixedTick,
                 !towerGameplayTargetCleared
                     ? towerGameplayTargetEvidence
@@ -1699,7 +2029,13 @@ export class GameObjectSystem {
                                         ? atomicTransformBackendEvidence
                                             ?? atomicTransformOwnerEvidence
                                             ?? atomicTransformTerminalCancel
-                                        : atomicTransformRosterEvidence
+                                        : !atomicTransformRosterSealed
+                                            ? atomicTransformRosterEvidence
+                                            : !projectileCaptureSettlementSubmitted
+                                                ? projectileCaptureBackendEvidence
+                                                    ?? projectileCaptureOwnerEvidence
+                                                    ?? projectileCaptureTerminal
+                                                : projectileCaptureRosterEvidence
             );
         }
         this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
@@ -1929,6 +2265,149 @@ export class GameObjectSystem {
             );
         }
         return director;
+    }
+
+    #createProjectileCaptureDirector(endpoint) {
+        const protocol = this.#readProjectileCaptureProtocol(endpoint);
+        const director = this.projectileCaptureDirectorFactory({
+            registry: endpoint.getRegistry(),
+            projectileCaptureCommandPort:
+                endpoint.getProjectileCaptureCommandPort(),
+            sessionGeneration: protocol.sessionGeneration,
+            deviceGeneration: protocol.deviceGeneration,
+            authoritativeEpoch: protocol.authoritativeEpoch,
+            capacity: endpoint.getCapacity()
+        });
+        if (!director
+            || typeof director.observeLifecycle !== 'function'
+            || typeof director.observeCompletedEvents !== 'function'
+            || typeof director.observeCompletedCapturePrograms !== 'function'
+            || typeof director.observeCompletedReleasePrograms !== 'function'
+            || typeof director.stageForFixedTick !== 'function'
+            || typeof director.observeFixedCommit !== 'function'
+            || typeof director.requiresRecovery !== 'function'
+            || typeof director.getStatus !== 'function'
+            || typeof director.resetGpuBinding !== 'function'
+            || typeof director.closeForTerminal !== 'function'
+            || typeof director.destroy !== 'function') {
+            try {
+                director?.destroy?.();
+            } catch {
+                // 잘못된 capture director가 old world를 건드리지 않게 합니다.
+            }
+            throw new TypeError(
+                'RingProjectileCaptureDirector contract가 올바르지 않습니다.'
+            );
+        }
+        return director;
+    }
+
+    #resetProjectileCaptureDirectorBinding(director, endpoint) {
+        if (!director) {
+            return;
+        }
+        const protocol = this.#readProjectileCaptureProtocol(endpoint);
+        if (director.resetGpuBinding(
+            endpoint.getRegistry(),
+            endpoint.getProjectileCaptureCommandPort(),
+            protocol.sessionGeneration,
+            protocol.deviceGeneration,
+            protocol.authoritativeEpoch
+        ) !== true) {
+            throw new Error('capture director GPU binding 갱신에 실패했습니다.');
+        }
+    }
+
+    #refreshProjectileCaptureDirectorBindingAtIdleBoundary(director, endpoint) {
+        if (!director) {
+            return true;
+        }
+        let protocol;
+        let runtimeStatus;
+        let directorStatus;
+        try {
+            protocol = this.#readProjectileCaptureProtocol(endpoint);
+            runtimeStatus = endpoint.getProjectileCaptureRuntimeStatus();
+            directorStatus = director.getStatus();
+        } catch {
+            return false;
+        }
+        const bindingMatches
+            = directorStatus.sessionGeneration === protocol.sessionGeneration
+                && directorStatus.deviceGeneration === protocol.deviceGeneration
+                && directorStatus.authoritativeEpoch
+                    === protocol.authoritativeEpoch;
+        if (bindingMatches) {
+            return true;
+        }
+        const exactIdle = directorStatus.destroyed === false
+            && directorStatus.recoveryRequired === false
+            && directorStatus.failure === null
+            && directorStatus.terminal === null
+            && directorStatus.capturedProjectileCount === 0
+            && directorStatus.heldCount === 0
+            && directorStatus.releasePendingCount === 0
+            && directorStatus.pendingBatchCount === 0
+            && directorStatus.terminalCleanupPendingCount === 0
+            && directorStatus.pendingReadbackCount === 0
+            && directorStatus.pendingStaleCompletionCount === 0
+            && runtimeStatus.state === 'idle'
+            && runtimeStatus.ingressOpen === true
+            && runtimeStatus.requiresRecovery === false
+            && runtimeStatus.failure === null
+            && runtimeStatus.terminal === null
+            && runtimeStatus.activeDomainBodyCount === 0
+            && runtimeStatus.pendingCaptureReadbackCount === 0
+            && runtimeStatus.pendingReleaseReadbackCount === 0
+            && runtimeStatus.pendingCaptureBatchCount === 0
+            && runtimeStatus.pendingReleaseBatchCount === 0
+            && runtimeStatus.preparedBatchCount === 0
+            && runtimeStatus.armedReleaseCount === 0
+            && runtimeStatus.stagedReleaseCount === 0
+            && runtimeStatus.commitRequested === false;
+        if (!exactIdle) {
+            return false;
+        }
+        try {
+            return director.resetGpuBinding(
+                endpoint.getRegistry(),
+                endpoint.getProjectileCaptureCommandPort(),
+                protocol.sessionGeneration,
+                protocol.deviceGeneration,
+                protocol.authoritativeEpoch
+            ) === true;
+        } catch {
+            return false;
+        }
+    }
+
+    #readProjectileCaptureProtocol(endpoint) {
+        if (typeof endpoint?.getProjectileCaptureRuntimeStatus !== 'function') {
+            throw new TypeError(
+                'endpoint.getProjectileCaptureRuntimeStatus()가 필요합니다.'
+            );
+        }
+        const status = endpoint.getProjectileCaptureRuntimeStatus();
+        const endpointSessionGeneration = endpoint.getStatus().sessionGeneration;
+        if (status?.abiVersion !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            || !Number.isSafeInteger(status.sessionGeneration)
+            || status.sessionGeneration <= 0
+            || status.sessionGeneration !== endpointSessionGeneration
+            || !Number.isSafeInteger(status.deviceGeneration)
+            || status.deviceGeneration < 0
+            || status.deviceGeneration >= 0xffffffff
+            || !Number.isSafeInteger(status.authoritativeEpoch)
+            || status.authoritativeEpoch < 0
+            || status.authoritativeEpoch >= 0xffffffff) {
+            throw new TypeError(
+                'projectile capture runtime protocol binding이 올바르지 않습니다.'
+            );
+        }
+        return Object.freeze({
+            sessionGeneration: status.sessionGeneration,
+            deviceGeneration: status.deviceGeneration,
+            authoritativeEpoch: status.authoritativeEpoch
+        });
     }
 
     #revokeCoreImpactCleanupBinding() {

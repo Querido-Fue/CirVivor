@@ -179,7 +179,7 @@ test('모든 Formation compute/render profile은 실제 telemetry 기준 storage
     assert.ok(entries.every(([, count]) => Number.isInteger(count)
         && count > 0 && count <= 9));
     assert.equal(GPU_FORMATION_RUNTIME_STORAGE_PROFILE.maximum, 9);
-    assert.equal(GPU_FORMATION_RUNTIME_STORAGE_PROFILE.render, 8);
+    assert.equal(GPU_FORMATION_RUNTIME_STORAGE_PROFILE.render, 9);
     assert.equal(
         GPU_FORMATION_RUNTIME_STORAGE_PROFILE.byEntryPoint
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.SELECT_PREPARE],

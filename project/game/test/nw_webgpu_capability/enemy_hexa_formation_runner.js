@@ -1675,7 +1675,7 @@ async function runPrimaryFormationFixture(device, format) {
     const formationStatus = backend.getFormationRuntimeStatus();
     const effectStatus = backend.getEffectRuntimeStatus();
     const storageProfile = formationStatus.storageProfile;
-    assert(storageProfile?.maximum === 9 && storageProfile?.render === 8,
+    assert(storageProfile?.maximum === 9 && storageProfile?.render === 9,
         `Formation storage telemetry mismatch: ${JSON.stringify(storageProfile)}`);
     assert(formationStatus.terminal?.state === 'submitted'
         && formationStatus.terminal.submittedTick === finalFixedTick,

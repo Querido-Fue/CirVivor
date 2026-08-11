@@ -20,6 +20,9 @@ const {
     GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
     GPU_EFFECT_TERMINAL_CANCEL_ABI_VERSION
 } = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_abi.js');
+const {
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+} = await loadGameModule('ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -449,6 +452,134 @@ function createTrackingPentagonEffectDirectorFactory() {
     };
 }
 
+function createTrackingProjectileCaptureDirectorFactory() {
+    const instances = [];
+    return Object.freeze({
+        instances,
+        factory(options) {
+            const binding = {
+                sessionGeneration: options.sessionGeneration,
+                deviceGeneration: options.deviceGeneration,
+                authoritativeEpoch: options.authoritativeEpoch
+            };
+            let statusOverrides = {};
+            const resetCalls = [];
+            const director = {
+                resetCalls,
+                setStatus(overrides = {}) {
+                    statusOverrides = { ...overrides };
+                },
+                observeLifecycle() { return this.getStatus(); },
+                observeCompletedEvents() { return this.getStatus(); },
+                observeCompletedCapturePrograms() { return this.getStatus(); },
+                observeCompletedReleasePrograms() { return this.getStatus(); },
+                stageForFixedTick({ targetFixedTick } = {}) {
+                    return Object.freeze({
+                        accepted: true,
+                        targetFixedTick,
+                        releaseCount: 0,
+                        commandIds: Object.freeze([])
+                    });
+                },
+                observeFixedCommit() { return this.getStatus(); },
+                requiresRecovery() {
+                    return this.getStatus().recoveryRequired;
+                },
+                getStatus() {
+                    return Object.freeze({
+                        capturedProjectileCount: 0,
+                        heldCount: 0,
+                        releasePendingCount: 0,
+                        pendingBatchCount: 0,
+                        terminalCleanupPendingCount: 0,
+                        pendingReadbackCount: 0,
+                        pendingStaleCompletionCount: 0,
+                        lastCompletedCaptureTick: 0,
+                        lastCompletedReleaseTick: 0,
+                        lastFixedCommitTick: 0,
+                        lastObservedFixedTick: 0,
+                        ...binding,
+                        recoveryRequired: false,
+                        failure: null,
+                        terminal: null,
+                        destroyed: false,
+                        ...statusOverrides
+                    });
+                },
+                resetGpuBinding(
+                    registry,
+                    commandPort,
+                    sessionGeneration,
+                    deviceGeneration,
+                    authoritativeEpoch
+                ) {
+                    resetCalls.push(Object.freeze({
+                        registry,
+                        commandPort,
+                        sessionGeneration,
+                        deviceGeneration,
+                        authoritativeEpoch
+                    }));
+                    binding.sessionGeneration = sessionGeneration;
+                    binding.deviceGeneration = deviceGeneration;
+                    binding.authoritativeEpoch = authoritativeEpoch;
+                    statusOverrides = {};
+                    return true;
+                },
+                closeForTerminal(finalFixedTick) {
+                    statusOverrides = {
+                        ...statusOverrides,
+                        terminal: Object.freeze({ finalFixedTick })
+                    };
+                    return this.getStatus().terminal;
+                },
+                destroy() {
+                    statusOverrides = { ...statusOverrides, destroyed: true };
+                }
+            };
+            instances.push(director);
+            return director;
+        }
+    });
+}
+
+function installProjectileCaptureRuntimeStatus(endpoint, overrides = {}) {
+    const sessionGeneration = endpoint.getStatus().sessionGeneration;
+    const status = Object.freeze({
+        abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+        state: 'idle',
+        sessionGeneration,
+        deviceGeneration: 0,
+        authoritativeEpoch: 1,
+        ingressOpen: true,
+        captureCapacity: endpoint.getCapacity(),
+        releasePreparationCapacity: endpoint.getCapacity(),
+        cleanupCapacity: endpoint.getCapacity(),
+        activeDomainBodyCount: 0,
+        pendingCaptureReadbackCount: 0,
+        pendingReleaseReadbackCount: 0,
+        pendingCaptureBatchCount: 0,
+        pendingReleaseBatchCount: 0,
+        preparedBatchCount: 0,
+        armedReleaseCount: 0,
+        stagedReleaseCount: 0,
+        commitRequested: false,
+        targetFixedTick: 0,
+        sourceTick: 0,
+        completedThroughTick: 0,
+        lastReleaseCommittedTick: 0,
+        runtimeStatus: 0,
+        errorFlags: 0,
+        storageProfile: null,
+        requiresRecovery: false,
+        failure: null,
+        terminal: null,
+        ...overrides
+    });
+    endpoint.getProjectileCaptureRuntimeStatus = () => status;
+    return status;
+}
+
 function createGameSystem({
     fixedResult = true,
     depleteOnFirstObserve = true,
@@ -456,6 +587,7 @@ function createGameSystem({
     gameplayWorldActorsEnabled = false,
     backendFactory = null,
     pentagonEffectDirectorFactory = null,
+    projectileCaptureDirectorFactory = null,
     useRealCoreImpactDirector = false,
     initialCameraZoom = undefined
 } = {}) {
@@ -517,6 +649,9 @@ function createGameSystem({
             : {}),
         ...(pentagonEffectDirectorFactory
             ? { pentagonEffectDirectorFactory }
+            : {}),
+        ...(projectileCaptureDirectorFactory
+            ? { projectileCaptureDirectorFactory }
             : {})
     };
     const gameSystem = new GameSystem(dependencies, {
@@ -1081,6 +1216,115 @@ test('Tower status가 없어도 Core가 남아 있으면 outcome은 RUNNING으�
     assert.equal(gameSystem.getCoreIntegrity().getCurrentIntegrity() > 0, true);
     assert.equal(gameSystem.getRunOutcome().getState(), RUN_OUTCOME_STATE.RUNNING);
     assert.equal(gameSystem.getGameplayStatus().outcome.defeated, false);
+});
+
+test('ProjectileCapture idle tuple drift는 exact-zero roster에서만 GPU binding을 한 번 갱신한다', () => {
+    const captureDirectors = createTrackingProjectileCaptureDirectorFactory();
+    const { gameSystem } = createGameSystem({
+        depleteOnFirstObserve: false,
+        projectileCaptureDirectorFactory: captureDirectors.factory
+    });
+    const objectSystem = gameSystem.getObjectSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    const director = captureDirectors.instances[0];
+    const resetCountBeforeDrift = director.resetCalls.length;
+    const runtime = installProjectileCaptureRuntimeStatus(endpoint);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(director.resetCalls.length, resetCountBeforeDrift + 1);
+    assert.deepEqual({
+        sessionGeneration: director.getStatus().sessionGeneration,
+        deviceGeneration: director.getStatus().deviceGeneration,
+        authoritativeEpoch: director.getStatus().authoritativeEpoch
+    }, {
+        sessionGeneration: runtime.sessionGeneration,
+        deviceGeneration: runtime.deviceGeneration,
+        authoritativeEpoch: runtime.authoritativeEpoch
+    });
+    assert.equal(objectSystem.enemySimulationPaused, false);
+    assert.equal(objectSystem.enemySimulationRecoveryRequired, false);
+    gameSystem.destroy();
+});
+
+test('ProjectileCapture active/pending/terminal/recovery tuple drift는 rebind 없이 fail-closed pause한다', () => {
+    const cases = [
+        Object.freeze({
+            label: 'held-roster',
+            director: Object.freeze({
+                capturedProjectileCount: 1,
+                heldCount: 1
+            })
+        }),
+        Object.freeze({
+            label: 'release-pending-batch',
+            director: Object.freeze({
+                capturedProjectileCount: 1,
+                releasePendingCount: 1,
+                pendingBatchCount: 1
+            })
+        }),
+        Object.freeze({
+            label: 'director-terminal',
+            director: Object.freeze({
+                terminal: Object.freeze({ finalFixedTick: 1 })
+            })
+        }),
+        Object.freeze({
+            label: 'director-recovery',
+            director: Object.freeze({
+                recoveryRequired: true,
+                failure: Object.freeze({ code: 'fixture-director-recovery' })
+            })
+        }),
+        Object.freeze({
+            label: 'backend-active-domain',
+            runtime: Object.freeze({ activeDomainBodyCount: 1 })
+        }),
+        Object.freeze({
+            label: 'backend-terminal',
+            runtime: Object.freeze({
+                ingressOpen: false,
+                terminal: Object.freeze({
+                    state: 'armed',
+                    finalFixedTick: 1
+                })
+            })
+        }),
+        Object.freeze({
+            label: 'backend-recovery',
+            runtime: Object.freeze({
+                requiresRecovery: true,
+                failure: 'fixture-backend-recovery'
+            })
+        })
+    ];
+    for (const scenario of cases) {
+        const captureDirectors = createTrackingProjectileCaptureDirectorFactory();
+        const { gameSystem } = createGameSystem({
+            depleteOnFirstObserve: false,
+            projectileCaptureDirectorFactory: captureDirectors.factory
+        });
+        const objectSystem = gameSystem.getObjectSystem();
+        const endpoint = gameSystem.getGpuSimulationEndpoint();
+        const director = captureDirectors.instances[0];
+        director.setStatus(scenario.director);
+        installProjectileCaptureRuntimeStatus(endpoint, scenario.runtime);
+        const resetCountBeforeDrift = director.resetCalls.length;
+
+        assert.equal(gameSystem.fixedUpdate(), false, scenario.label);
+        assert.equal(
+            director.resetCalls.length,
+            resetCountBeforeDrift,
+            scenario.label
+        );
+        assert.equal(objectSystem.enemySimulationPaused, true, scenario.label);
+        assert.equal(
+            objectSystem.enemySimulationRecoveryRequired,
+            true,
+            scenario.label
+        );
+        gameSystem.destroy();
+    }
 });
 
 test('RUNNING recovery는 CoreIntegrity/RunOutcome identity를 보존하고 Core director를 새 GPU binding으로 교체한다', () => {

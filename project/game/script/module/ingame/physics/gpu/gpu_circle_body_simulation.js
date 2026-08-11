@@ -4,22 +4,33 @@ import {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_APPLIED_EVENT_TYPE,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_FLOW,
     GPU_CIRCLE_BODY_IDENTITY,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
     GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_PROJECTILE_CAPTURE_PHASE,
+    GPU_PROJECTILE_CAPTURE_POLICY_CODE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     assertGpuCircleBodyAbiVersion,
     createGpuCircleBodyAbiStorage,
     decodeGpuCircleBodyFixedPoint,
     normalizeGpuCircleBodyRenderShapeCode,
+    packGpuCircleGameplayMeta,
+    packGpuCircleInteractionMeta,
     readGpuCircleBody,
+    readGpuProjectileCaptureState,
     unpackGpuCircleInteractionMeta,
+    unpackGpuCircleGameplayMeta,
     unpackGpuCircleAppliedEventMeta,
+    unpackGpuProjectileCaptureStateMeta,
     writeGpuCircleBodyCounts,
-    writeGpuCircleBodySpawn
+    writeGpuCircleBodySpawn,
+    writeGpuProjectileCaptureState
 } from './gpu_circle_body_abi.js';
 import {
     GPU_BODY_CONTROL_PROGRAM_ABI_VERSION,
@@ -137,6 +148,32 @@ import {
     GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT
 } from './gpu_atomic_transform_runtime_shaders.js';
 import {
+    GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE,
+    GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
+    GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT,
+    GPU_PROJECTILE_CAPTURE_TICK_STATUS,
+    GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR,
+    createGpuProjectileCaptureReleaseProgramStorage,
+    createGpuProjectileCaptureTickStorage,
+    decodeGpuProjectileCaptureCompletion,
+    readGpuProjectileCaptureReleaseHeader,
+    readGpuProjectileCaptureReleaseRecord,
+    readGpuProjectileCaptureTickHeader,
+    writeGpuProjectileCaptureReleaseHeader,
+    writeGpuProjectileCaptureReleaseRecord
+} from './gpu_projectile_capture_runtime_abi.js';
+import {
+    GPU_PROJECTILE_CAPTURE_RELEASE_WGSL,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+    GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE
+} from './gpu_projectile_capture_runtime_shaders.js';
+import {
+    RING_PROJECTILE_CAPTURE_PROFILE
+} from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -153,6 +190,10 @@ const SPAWN_PROGRAM_READBACK_SLOT_COUNT = 4;
 const TRACKED_POSE_READBACK_SLOT_COUNT = 4;
 const EFFECT_PROGRAM_READBACK_SLOT_COUNT = 4;
 const FORMATION_PROGRAM_READBACK_SLOT_COUNT = 4;
+const PROJECTILE_CAPTURE_READBACK_SLOT_COUNT = 8;
+const PROJECTILE_CAPTURE_PARAMS_BYTE_SIZE = 48;
+const PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE = 16;
+const DEFAULT_PROJECTILE_CAPTURE_COMPLETION_CAPACITY = 256;
 const OVERFLOW_READBACK_INTERVAL_TICKS = 4;
 const OVERFLOW_TELEMETRY_MAX_AGE_TICKS = 60;
 const DEFAULT_MIN_CONTACT_CAPACITY = 1024;
@@ -166,6 +207,50 @@ const COMPUTE_PARAMS_FLOW_STAGE_OFFSET = 96;
 const COMPUTE_PARAMS_FLOW_STAGE_STRIDE = 16;
 const COMPUTE_PARAMS_MAX_CONTACTS_OFFSET = COMPUTE_PARAMS_FLOW_STAGE_OFFSET
     + (GPU_CIRCLE_BODY_FLOW.MAX_FIELD_COUNT * COMPUTE_PARAMS_FLOW_STAGE_STRIDE);
+
+function fingerprintProjectileCaptureCommandId(value) {
+    const text = String(value);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    return hash === 0 || hash === UINT32_MAX ? 1 : hash;
+}
+
+function projectileCapturePreparationKey(
+    batchIdFingerprint,
+    projectileHandle,
+    captureSequence,
+    prepareFingerprint
+) {
+    return [
+        batchIdFingerprint,
+        projectileHandle?.entityId,
+        projectileHandle?.incarnation,
+        captureSequence,
+        prepareFingerprint
+    ].join(':');
+}
+
+function mixProjectileCaptureFingerprint(a, b, c) {
+    let value = (
+        Math.imul(a >>> 0, 0x9e3779b1)
+        ^ Math.imul(b >>> 0, 0x85ebca6b)
+        ^ Math.imul(c >>> 0, 0xc2b2ae35)
+    ) >>> 0;
+    value = (value ^ (value >>> 16)) >>> 0;
+    value = Math.imul(value, 0x7feb352d) >>> 0;
+    value = (value ^ (value >>> 15)) >>> 0;
+    return value === 0 || value === UINT32_MAX ? 1 : value;
+}
+
+function projectileCaptureFloat32Bits(value) {
+    const buffer = new ArrayBuffer(4);
+    const view = new DataView(buffer);
+    view.setFloat32(0, Math.fround(value), LITTLE_ENDIAN);
+    return view.getUint32(0, LITTLE_ENDIAN);
+}
 const COMPUTE_PARAMS_MAX_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_CONTACTS_OFFSET + 4;
 const COMPUTE_PARAMS_MAX_DEATH_EVENTS_OFFSET = COMPUTE_PARAMS_MAX_EVENTS_OFFSET + 4;
 const COMPUTE_PARAMS_MAXIMUM_BODY_RADIUS_OFFSET
@@ -390,6 +475,10 @@ function requireNonNegativeInteger(value, label) {
 }
 
 function requireEffectUint32(value, label, { positive = false } = {}) {
+    return requireNonSentinelUint32(value, label, { positive });
+}
+
+function requireNonSentinelUint32(value, label, { positive = false } = {}) {
     const number = Number(value);
     if (!Number.isSafeInteger(number)
         || number < (positive ? 1 : 0)
@@ -928,6 +1017,14 @@ function copyBodySlot(sourceStorage, sourceIndex, targetStorage, targetIndex) {
             GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
         ],
         [
+            'projectileCaptureStateBuffer',
+            GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE
+        ],
+        [
+            'projectileCaptureCandidateBuffer',
+            GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
+        ],
+        [
             'enemyBehaviorStateBuffer',
             GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
         ]
@@ -1181,6 +1278,27 @@ export class GpuCircleBodySimulation {
             DEFAULT_MAX_EFFECT_EVENT_CAPACITY,
             'effectEventCapacity'
         );
+        this.projectileCaptureCompletionCapacity = resolveCapacityOption(
+            options,
+            ['projectileCaptureCompletionCapacity'],
+            Math.min(this.capacity, DEFAULT_PROJECTILE_CAPTURE_COMPLETION_CAPACITY),
+            this.capacity,
+            'projectileCaptureCompletionCapacity'
+        );
+        this.projectileCaptureReleasePreparationCapacity = resolveCapacityOption(
+            options,
+            ['projectileCaptureReleasePreparationCapacity'],
+            this.projectileCaptureCompletionCapacity,
+            this.capacity,
+            'projectileCaptureReleasePreparationCapacity'
+        );
+        this.projectileCaptureCleanupCapacity = resolveCapacityOption(
+            options,
+            ['projectileCaptureCleanupCapacity'],
+            this.projectileCaptureCompletionCapacity,
+            this.capacity,
+            'projectileCaptureCleanupCapacity'
+        );
         this.worldSize = normalizeSize2(options.worldSize, 'worldSize');
         this.gridCellSize = normalizeSize2(options.gridCellSize ?? 1, 'gridCellSize');
         this.maxBodiesPerCell = requirePositiveInteger(
@@ -1273,12 +1391,28 @@ export class GpuCircleBodySimulation {
         this.hostSpawnProgram = createGpuSpawnProgramStorage(
             this.spawnProgramCapacity
         );
+        this.hostProjectileCaptureTick = createGpuProjectileCaptureTickStorage(
+            this.projectileCaptureCompletionCapacity,
+            this.projectileCaptureReleasePreparationCapacity,
+            this.projectileCaptureCleanupCapacity
+        );
+        this.hostProjectileCaptureReleaseProgram
+            = createGpuProjectileCaptureReleaseProgramStorage(
+                this.projectileCaptureReleasePreparationCapacity
+            );
+        this.projectileCaptureParamsBytes = new ArrayBuffer(
+            PROJECTILE_CAPTURE_PARAMS_BYTE_SIZE
+        );
+        this.projectileCaptureTargetConfigBytes = new ArrayBuffer(
+            PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE
+        );
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: 0 });
         this.bodyCount = 0;
         this.activeBodyCount = 0;
         this.pendingBodyCount = 0;
         this.slotActive = new Uint8Array(this.capacity);
         this.slotEventProducing = new Uint8Array(this.capacity);
+        this.slotProjectileCaptureDomain = new Uint8Array(this.capacity);
         this.slotHandles = new Array(this.capacity).fill(null);
         this.handleToSlot = new Map();
         this.pendingSlotHandles = new Array(this.capacity).fill(null);
@@ -1290,14 +1424,17 @@ export class GpuCircleBodySimulation {
         this.armedFormationTransform = null;
         this.stagedAtomicTransformPrepareBatch = null;
         this.armedAtomicTransform = null;
+        this.armedProjectileCaptureRelease = null;
         this.fixedProgramIngressOpen = true;
         this.effectProgramIngressOpen = true;
         this.formationProgramIngressOpen = true;
         this.atomicTransformProgramIngressOpen = true;
+        this.projectileCaptureProgramIngressOpen = true;
         this.terminalFixedProgramCancelStatus = null;
         this.terminalEffectProgramCancelStatus = null;
         this.terminalFormationProgramCancelStatus = null;
         this.terminalAtomicTransformProgramCancelStatus = null;
+        this.terminalProjectileCaptureProgramCancelStatus = null;
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
@@ -1339,6 +1476,22 @@ export class GpuCircleBodySimulation {
         this.eventCompletedThroughTick = 0;
         this.idleReleasePending = false;
         this.eventBackpressureCount = 0;
+        this.projectileCaptureDomainBodyCount = 0;
+        this.projectileCaptureReadbackSlots = [];
+        this.projectileCaptureReadbackLease = 0;
+        this.projectileCaptureReadbackCursor = 0;
+        this.pendingProjectileCaptureReadbacks = 0;
+        this.pendingProjectileCaptureReleaseReadbacks = 0;
+        this.projectileCaptureBatchQueue = [];
+        this.projectileCaptureReleaseBatchQueue = [];
+        this.authenticProjectileCapturePreparationByKey = new Map();
+        this.authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
+        this.lastProjectileCaptureSourceTick = 0;
+        this.projectileCaptureCompletedThroughTick = 0;
+        this.lastProjectileCaptureReleaseCommittedTick = 0;
+        this.lastProjectileCaptureRuntimeStatus
+            = GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET;
+        this.lastProjectileCaptureErrorFlags = 0;
         this.lastEventReadbackSourceTick = 0;
         this.lastEventReadbackSubmittedTick = 0;
         this.lastEventReadbackCompletedTick = 0;
@@ -4187,6 +4340,714 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    /** Authenticated T-1 release preparation을 same-slot T submit용으로 arm합니다. */
+    armPreparedProjectileCaptureReleaseBatch(request = {}) {
+        const reject = (reason, requiresRecovery = false, retryable = false) => (
+            Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                accepted: false,
+                reason,
+                requiresRecovery,
+                retryable,
+                receipt: null
+            })
+        );
+        if (!this.projectileCaptureProgramIngressOpen
+            || this.terminalProjectileCaptureProgramCancelStatus) {
+            return reject('projectile-capture-release-ingress-closed');
+        }
+        if (!Array.isArray(request.records)
+            || request.records.length === 0
+            || request.records.length
+                > this.projectileCaptureReleasePreparationCapacity
+            || this.armedProjectileCaptureRelease) {
+            return reject(
+                this.armedProjectileCaptureRelease
+                    ? 'projectile-capture-release-already-armed'
+                    : 'projectile-capture-release-arm-contract',
+                this.armedProjectileCaptureRelease !== null
+            );
+        }
+        let prepareSourceTick;
+        let targetFixedTick;
+        let batchIdFingerprint;
+        let requestedCommandIdFingerprint;
+        try {
+            prepareSourceTick = requireNonSentinelUint32(
+                request.prepareSourceTick,
+                'prepareSourceTick',
+                { positive: true }
+            );
+            targetFixedTick = requireNonSentinelUint32(
+                request.targetFixedTick,
+                'targetFixedTick',
+                { positive: true }
+            );
+            batchIdFingerprint = requireNonSentinelUint32(
+                request.batchIdFingerprint,
+                'batchIdFingerprint',
+                { positive: true }
+            );
+            requestedCommandIdFingerprint = requireNonSentinelUint32(
+                request.commandIdFingerprint,
+                'commandIdFingerprint',
+                { positive: true }
+            );
+        } catch (error) {
+            return reject(
+                `projectile-capture-release-arm-contract:${error.message}`,
+                true
+            );
+        }
+        if (targetFixedTick !== prepareSourceTick + 1
+            || this.lastSubmittedSourceTick !== prepareSourceTick) {
+            return reject('projectile-capture-release-arm-stale', false, true);
+        }
+        const commandIdFingerprint = fingerprintProjectileCaptureCommandId(
+            request.commandId
+        );
+        if (requestedCommandIdFingerprint !== commandIdFingerprint) {
+            return reject(
+                'projectile-capture-release-command-fingerprint',
+                false,
+                true
+            );
+        }
+        const invalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+        const normalized = [];
+        const seenProjectiles = new Set();
+        try {
+            for (let index = 0; index < request.records.length; index++) {
+                const input = request.records[index];
+                const projectileHandle = normalizeEntityHandle(
+                    input.projectileHandle,
+                    `projectileCaptureRelease[${index}].projectileHandle`
+                );
+                const captorHandle = normalizeEntityHandle(
+                    input.captorHandle,
+                    `projectileCaptureRelease[${index}].captorHandle`
+                );
+                const projectileKey = entityHandleKey(projectileHandle);
+                const projectileBodySlot = this.handleToSlot.get(projectileKey);
+                const captureSequence = requireNonSentinelUint32(
+                    input.captureSequence,
+                    `projectileCaptureRelease[${index}].captureSequence`,
+                    { positive: true }
+                );
+                const releaseReason = requireNonSentinelUint32(
+                    input.releaseReason,
+                    `projectileCaptureRelease[${index}].releaseReason`,
+                    { positive: true }
+                );
+                const evidence = input.prepareEvidence;
+                if (seenProjectiles.has(projectileKey)
+                    || projectileBodySlot === undefined
+                    || this.slotActive[projectileBodySlot] !== 1
+                    || releaseReason
+                        < GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+                    || releaseReason
+                        > GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                            .CAPTOR_CORE_IMPACT
+                    || !evidence || typeof evidence !== 'object'
+                    || evidence.baseReason !== releaseReason
+                    || evidence.projectileBodySlot !== projectileBodySlot
+                    || evidence.captureSequence !== captureSequence) {
+                    throw new RangeError('release projectile/evidence가 stale입니다.');
+                }
+                seenProjectiles.add(projectileKey);
+                const captorBodySlot = requireNonSentinelUint32(
+                    evidence.captorBodySlot,
+                    `projectileCaptureRelease[${index}].captorBodySlot`
+                );
+                const capturedAtFixedTick = requireNonSentinelUint32(
+                    evidence.capturedAtFixedTick,
+                    `projectileCaptureRelease[${index}].capturedAtFixedTick`,
+                    { positive: true }
+                );
+                const prepareFingerprint = requireNonSentinelUint32(
+                    evidence.prepareFingerprint,
+                    `projectileCaptureRelease[${index}].prepareFingerprint`,
+                    { positive: true }
+                );
+                const authenticKey = projectileCapturePreparationKey(
+                    batchIdFingerprint,
+                    projectileHandle,
+                    captureSequence,
+                    prepareFingerprint
+                );
+                const authentic
+                    = this.authenticProjectileCapturePreparationByKey.get(
+                        authenticKey
+                    );
+                if (!authentic
+                    || authentic.prepareSourceTick !== prepareSourceTick
+                    || authentic.releaseReason !== releaseReason
+                    || authentic.captorHandle.entityId !== captorHandle.entityId
+                    || authentic.captorHandle.incarnation
+                        !== captorHandle.incarnation
+                    || authentic.projectileBodySlot !== projectileBodySlot
+                    || authentic.captorBodySlot !== captorBodySlot
+                    || evidence !== authentic.prepareEvidence
+                    || authentic.prepareEvidence.prepareFingerprint
+                        !== prepareFingerprint) {
+                    throw new RangeError('authentic release preparation이 없습니다.');
+                }
+                const state = readGpuProjectileCaptureState(
+                    this.hostStorage,
+                    projectileBodySlot
+                );
+                if (state.role !== GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+                    || state.phase
+                        !== GPU_PROJECTILE_CAPTURE_PHASE.RELEASE_PREPARED
+                    || state.captureSequence !== captureSequence
+                    || state.peerEntityId !== captorHandle.entityId
+                    || state.peerIncarnation !== captorHandle.incarnation
+                    || state.peerBodySlot !== captorBodySlot) {
+                    throw new RangeError('host capture state가 release proof와 다릅니다.');
+                }
+                const facingX = Math.fround(Number(evidence.facing?.x));
+                const facingY = Math.fround(Number(evidence.facing?.y));
+                const capturedSpeed = Math.fround(
+                    Number(evidence.capturedSpeed)
+                );
+                const anchorX = Math.fround(Number(evidence.anchor?.x));
+                const anchorY = Math.fround(Number(evidence.anchor?.y));
+                const facingLength = Math.hypot(facingX, facingY);
+                if (!Number.isFinite(facingLength)
+                    || Math.abs(facingLength - 1) > 1e-4
+                    || !Number.isFinite(capturedSpeed) || capturedSpeed <= 0
+                    || !Number.isFinite(anchorX) || !Number.isFinite(anchorY)) {
+                    throw new RangeError('release pose/speed proof가 손상됐습니다.');
+                }
+                const targetSelector = requireNonSentinelUint32(
+                    evidence.targetSelector,
+                    `projectileCaptureRelease[${index}].targetSelector`
+                );
+                let targetBodySlot = invalid;
+                let targetHandle = Object.freeze({
+                    entityId: invalid,
+                    incarnation: invalid
+                });
+                if (targetSelector
+                        === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER) {
+                    const exactTarget = normalizeEntityHandle(
+                        input.targetHandle,
+                        `projectileCaptureRelease[${index}].targetHandle`
+                    );
+                    targetBodySlot = this.handleToSlot.get(
+                        entityHandleKey(exactTarget)
+                    );
+                    if (releaseReason
+                            !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+                        || targetBodySlot === undefined
+                        || this.slotActive[targetBodySlot] !== 1
+                        || evidence.targetBodySlot !== targetBodySlot
+                        || evidence.targetHandle?.entityId
+                            !== exactTarget.entityId
+                        || evidence.targetHandle?.incarnation
+                            !== exactTarget.incarnation) {
+                        throw new RangeError('release Tower proof가 stale입니다.');
+                    }
+                    targetHandle = Object.freeze({ ...exactTarget });
+                } else if (targetSelector
+                        !== GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
+                            .INVALID_FORWARD
+                    || input.targetHandle !== null
+                    || evidence.targetHandle !== null
+                    || releaseReason
+                        !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+                        && targetSelector
+                            !== GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
+                                .INVALID_FORWARD) {
+                    throw new RangeError('release forward proof가 잘못됐습니다.');
+                }
+                const currentBody = readGpuCircleBody(
+                    this.hostStorage,
+                    projectileBodySlot
+                );
+                const gameplay = unpackGpuCircleGameplayMeta(
+                    currentBody.gameplayMeta
+                );
+                const interaction = unpackGpuCircleInteractionMeta(
+                    currentBody.interactionMeta
+                );
+                const nextMetadata = input.nextMetadata;
+                const coreImpactReceipt = input.coreImpactReceipt;
+                const coreReceiptNamesCaptor = coreImpactReceipt
+                    && ((coreImpactReceipt.entityId === captorHandle.entityId
+                            && coreImpactReceipt.incarnation
+                                === captorHandle.incarnation)
+                        || (coreImpactReceipt.otherEntityId
+                                === captorHandle.entityId
+                            && coreImpactReceipt.otherIncarnation
+                                === captorHandle.incarnation));
+                const coreReceiptAuthentic = releaseReason
+                        === GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                            .CAPTOR_CORE_IMPACT
+                    ? this.authenticProjectileCaptureCoreImpactReceipts
+                        .has(coreImpactReceipt)
+                        && coreImpactReceipt.sessionGeneration
+                            === this.sessionGeneration
+                        && coreImpactReceipt.deviceGeneration
+                            === this.deviceGeneration
+                        && coreImpactReceipt.authoritativeEpoch
+                            === this.authoritativeEpoch
+                        && coreImpactReceipt.sourceTick === prepareSourceTick
+                        && coreImpactReceipt.type === 'contact'
+                        && coreImpactReceipt.eventType === 'interaction-enter'
+                        && coreImpactReceipt.disposition === 'applied'
+                        && coreReceiptNamesCaptor
+                    : coreImpactReceipt === null;
+                if (!nextMetadata
+                    || nextMetadata.teamId !== GAMEPLAY_TEAM_ID.HOSTILE
+                    || nextMetadata.allegiancePolicy
+                        !== GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
+                    || nextMetadata.damagePolicyId
+                        !== gameplay.damagePolicyId
+                    || nextMetadata.targetPolicyId
+                        !== RING_PROJECTILE_CAPTURE_PROFILE
+                            .releaseTargetPolicyId
+                    || !coreReceiptAuthentic) {
+                    throw new RangeError('release metadata materialization이 잘못됐습니다.');
+                }
+                const nextMetadataRevision = requireNonSentinelUint32(
+                    input.nextMetadataRevision,
+                    `projectileCaptureRelease[${index}].nextMetadataRevision`,
+                    { positive: true }
+                );
+                normalized.push(Object.freeze({
+                    commandIdFingerprint,
+                    prepareFingerprint,
+                    captorBodySlot,
+                    captorHandle: Object.freeze({ ...captorHandle }),
+                    projectileBodySlot,
+                    projectileHandle: Object.freeze({ ...projectileHandle }),
+                    captureSequence,
+                    capturedAtFixedTick,
+                    preparedAtFixedTick: prepareSourceTick,
+                    releaseReason,
+                    position: Object.freeze({ x: anchorX, y: anchorY }),
+                    velocity: Object.freeze({
+                        x: Math.fround(facingX * capturedSpeed),
+                        y: Math.fround(facingY * capturedSpeed)
+                    }),
+                    capturedSpeed,
+                    targetSelector,
+                    targetBodySlot,
+                    targetHandle,
+                    nextGameplayMeta: packGpuCircleGameplayMeta(
+                        GAMEPLAY_TEAM_ID.HOSTILE,
+                        gameplay.damagePolicyId,
+                        gameplay.damageResolutionPolicyId
+                    ),
+                    nextInteractionMeta: packGpuCircleInteractionMeta(
+                        interaction.interactionLayer,
+                        GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                            | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+                    ),
+                    nextTargetLayerMask:
+                        GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+                        | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
+                    teamId: nextMetadata.teamId,
+                    allegiancePolicy: nextMetadata.allegiancePolicy,
+                    damagePolicyId: nextMetadata.damagePolicyId,
+                    targetPolicyId: nextMetadata.targetPolicyId,
+                    metadataRevision: nextMetadataRevision,
+                    authenticKey
+                }));
+            }
+        } catch (error) {
+            return reject(
+                `projectile-capture-release-arm-auth:${error.message}`,
+                false,
+                true
+            );
+        }
+        const storage = createGpuProjectileCaptureReleaseProgramStorage(
+            this.projectileCaptureReleasePreparationCapacity
+        );
+        const view = new DataView(storage.buffer);
+        try {
+            writeGpuProjectileCaptureReleaseHeader(view, {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: Math.max(0, this.deviceGeneration),
+                authoritativeEpoch: this.authoritativeEpoch,
+                publicationFixedTick: targetFixedTick,
+                recordCount: normalized.length,
+                batchIdFingerprint,
+                flags: 0
+            });
+            normalized.forEach((record, index) => (
+                writeGpuProjectileCaptureReleaseRecord(view, index, record)
+            ));
+        } catch (error) {
+            return reject(
+                `projectile-capture-release-program:${error.message}`,
+                true
+            );
+        }
+        for (const record of normalized) {
+            this.authenticProjectileCapturePreparationByKey.delete(
+                record.authenticKey
+            );
+        }
+        for (const input of request.records) {
+            if (input.releaseReason
+                    === GPU_PROJECTILE_CAPTURE_RELEASE_REASON
+                        .CAPTOR_CORE_IMPACT) {
+                this.authenticProjectileCaptureCoreImpactReceipts.delete(
+                    input.coreImpactReceipt
+                );
+            }
+        }
+        const receipt = Object.freeze({
+            receiptId: Object.freeze({}),
+            targetFixedTick,
+            batchIdFingerprint,
+            commandIdFingerprint
+        });
+        this.hostProjectileCaptureReleaseProgram = storage;
+        this.armedProjectileCaptureRelease = {
+            commandId: request.commandId,
+            commandIdFingerprint,
+            prepareSourceTick,
+            targetFixedTick,
+            batchIdFingerprint,
+            records: Object.freeze(normalized),
+            receipt,
+            commitRequested: false
+        };
+        return Object.freeze({
+            abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+            accepted: true,
+            receipt,
+            armedCount: normalized.length,
+            commandIdFingerprint,
+            requiresRecovery: false
+        });
+    }
+
+    /** Registry metadata CAS 성공 뒤 submit-start release commit을 요청합니다. */
+    commitArmedProjectileCaptureReleaseBatch(receipt) {
+        const armed = this.armedProjectileCaptureRelease;
+        if (!armed || armed.receipt !== receipt || armed.commitRequested) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-receipt-invalid',
+                requiresRecovery: true
+            });
+        }
+        writeGpuProjectileCaptureReleaseHeader(
+            new DataView(this.hostProjectileCaptureReleaseProgram.buffer),
+            {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: Math.max(0, this.deviceGeneration),
+                authoritativeEpoch: this.authoritativeEpoch,
+                publicationFixedTick: armed.targetFixedTick,
+                recordCount: armed.records.length,
+                batchIdFingerprint: armed.batchIdFingerprint,
+                flags: GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG
+                    .COMMIT_REQUESTED
+            }
+        );
+        armed.commitRequested = true;
+        return Object.freeze({
+            abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+            accepted: true,
+            targetFixedTick: armed.targetFixedTick,
+            committedCount: armed.records.length,
+            commandIdFingerprint: armed.commandIdFingerprint,
+            requiresRecovery: false
+        });
+    }
+
+    cancelArmedProjectileCaptureReleaseBatch(receipt, reason = 'cancelled') {
+        const armed = this.armedProjectileCaptureRelease;
+        if (!armed || armed.receipt !== receipt || armed.commitRequested) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-release-receipt-invalid',
+                requiresRecovery: false
+            });
+        }
+        this.armedProjectileCaptureRelease = null;
+        return Object.freeze({
+            accepted: true,
+            cancelled: true,
+            reason: String(reason)
+        });
+    }
+
+    drainCompletedProjectileCaptureBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('ProjectileCapture drain 대상은 배열이어야 합니다.');
+        }
+        const entry = this.projectileCaptureBatchQueue[0];
+        if (entry?.completed === true) {
+            this.projectileCaptureBatchQueue.shift();
+            out.push(entry.completion ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                sessionGeneration: entry.sessionGeneration,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                sourceTick: entry.sourceTick,
+                completedThroughTick: this.projectileCaptureCompletedThroughTick,
+                pending: false,
+                captures: Object.freeze([]),
+                releasePreparations: Object.freeze([]),
+                cleanups: Object.freeze([]),
+                failure: entry.failure
+            }));
+        }
+        this.#completeDeferredIdleRelease();
+        return out;
+    }
+
+    drainCompletedProjectileCaptureReleaseBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('ProjectileCapture release drain 대상은 배열이어야 합니다.');
+        }
+        const entry = this.projectileCaptureReleaseBatchQueue[0];
+        if (entry?.completed === true) {
+            this.projectileCaptureReleaseBatchQueue.shift();
+            out.push(entry.completion ?? Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                sessionGeneration: entry.sessionGeneration,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                sourceTick: entry.sourceTick,
+                completedThroughTick: entry.sourceTick,
+                pending: false,
+                releaseCompletions: Object.freeze([]),
+                failure: entry.failure
+            }));
+        }
+        this.#completeDeferredIdleRelease();
+        return out;
+    }
+
+    discardPreparedProjectileCaptureBatch({ batchIdFingerprint } = {}) {
+        const fingerprint = Number(batchIdFingerprint);
+        if (!Number.isSafeInteger(fingerprint)
+            || fingerprint <= 0 || fingerprint >= UINT32_MAX) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-discard-contract'
+            });
+        }
+        if (this.armedProjectileCaptureRelease?.batchIdFingerprint
+            === fingerprint) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'projectile-capture-discard-armed'
+            });
+        }
+        for (const [key, record] of this
+            .authenticProjectileCapturePreparationByKey) {
+            if (record.batchIdFingerprint === fingerprint) {
+                this.authenticProjectileCapturePreparationByKey.delete(key);
+            }
+        }
+        return Object.freeze({
+            accepted: true,
+            batchIdFingerprint: fingerprint
+        });
+    }
+
+    cancelPendingProjectileCaptureProgramsForTerminal(request = {}) {
+        const finalFixedTick = Number(request.finalFixedTick);
+        if (!Number.isSafeInteger(finalFixedTick) || finalFixedTick <= 0) {
+            this.terminalProjectileCaptureProgramCancelStatus = Object.freeze({
+                abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                state: 'failed',
+                finalFixedTick: 0,
+                failure: 'projectile-capture-terminal-contract'
+            });
+            return this.terminalProjectileCaptureProgramCancelStatus;
+        }
+        this.projectileCaptureProgramIngressOpen = false;
+        let unpublishedCancelledCount
+            = this.authenticProjectileCapturePreparationByKey.size;
+        this.authenticProjectileCapturePreparationByKey.clear();
+        if (this.armedProjectileCaptureRelease
+            && !this.armedProjectileCaptureRelease.commitRequested) {
+            unpublishedCancelledCount
+                += this.armedProjectileCaptureRelease.records.length;
+            this.armedProjectileCaptureRelease = null;
+        }
+        this.terminalProjectileCaptureProgramCancelStatus = Object.freeze({
+            abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+            state: 'armed',
+            finalFixedTick,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: this.authoritativeEpoch,
+            unpublishedCancelledCount,
+            publishedCommitRequestedCount:
+                this.armedProjectileCaptureRelease?.commitRequested === true
+                    ? this.armedProjectileCaptureRelease.records.length
+                    : 0,
+            commitRequested:
+                this.armedProjectileCaptureRelease?.commitRequested === true,
+            failure: null
+        });
+        return this.getTerminalProjectileCaptureProgramCancelStatus();
+    }
+
+    getTerminalProjectileCaptureProgramCancelStatus() {
+        const terminal = this.terminalProjectileCaptureProgramCancelStatus;
+        if (!terminal) return null;
+        const pendingCompletionBatchCount
+            = this.projectileCaptureBatchQueue.length
+                + this.projectileCaptureReleaseBatchQueue.length;
+        const pendingReadbackCount = this.pendingProjectileCaptureReadbacks
+            + this.pendingProjectileCaptureReleaseReadbacks;
+        const settled = terminal.state === 'submitted'
+            && this.armedProjectileCaptureRelease === null
+            && this.pendingProjectileCaptureReadbacks === 0
+            && this.pendingProjectileCaptureReleaseReadbacks === 0
+            && pendingCompletionBatchCount === 0
+            && this.authenticProjectileCapturePreparationByKey.size === 0;
+        return Object.freeze({
+            ...terminal,
+            accepted: terminal.state !== 'failed',
+            state: terminal.state === 'failed'
+                ? 'failed'
+                : settled ? 'settled' : 'armed',
+            stagedReleaseCount:
+                this.armedProjectileCaptureRelease?.records.length ?? 0,
+            commitRequested: terminal.commitRequested === true,
+            pendingCaptureReadbackCount:
+                this.pendingProjectileCaptureReadbacks,
+            pendingReadbackCount,
+            pendingReleaseReadbackCount:
+                this.pendingProjectileCaptureReleaseReadbacks,
+            pendingCompletionBatchCount,
+            unpublishedPreparedProofCount:
+                this.authenticProjectileCapturePreparationByKey.size,
+            completedThroughTick: terminal.completedThroughTick
+                ?? this.projectileCaptureCompletedThroughTick,
+            lastReleaseCommittedTick: terminal.lastReleaseCommittedTick
+                ?? this.lastProjectileCaptureReleaseCommittedTick,
+            failure: terminal.failure ?? this.failure
+        });
+    }
+
+    getProjectileCaptureRuntimeStatus() {
+        const armed = this.armedProjectileCaptureRelease;
+        const terminal = this.terminalProjectileCaptureProgramCancelStatus;
+        const terminalSnapshot = terminal?.state === 'submitted'
+                && terminal.failure === null
+                && terminal.sessionGeneration === this.sessionGeneration
+                && Number.isSafeInteger(terminal.deviceGeneration)
+                && terminal.deviceGeneration >= 0
+                && Number.isSafeInteger(terminal.authoritativeEpoch)
+                && terminal.authoritativeEpoch >= 0
+                && Number.isSafeInteger(terminal.finalFixedTick)
+                && terminal.finalFixedTick > 0
+                && terminal.submittedTick === terminal.finalFixedTick
+                && terminal.completedThroughTick === terminal.finalFixedTick
+                && Number.isSafeInteger(terminal.lastReleaseCommittedTick)
+                && terminal.lastReleaseCommittedTick >= 0
+                && terminal.lastReleaseCommittedTick
+                    <= terminal.completedThroughTick
+            ? terminal
+            : null;
+        return Object.freeze({
+            abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+            state: this.state,
+            sessionGeneration:
+                terminalSnapshot?.sessionGeneration ?? this.sessionGeneration,
+            deviceGeneration: terminalSnapshot?.deviceGeneration
+                ?? Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: terminalSnapshot?.authoritativeEpoch
+                ?? this.authoritativeEpoch,
+            ingressOpen: this.projectileCaptureProgramIngressOpen,
+            captureCapacity: this.projectileCaptureCompletionCapacity,
+            releasePreparationCapacity:
+                this.projectileCaptureReleasePreparationCapacity,
+            cleanupCapacity: this.projectileCaptureCleanupCapacity,
+            activeDomainBodyCount: this.projectileCaptureDomainBodyCount,
+            pendingCaptureReadbackCount: this.pendingProjectileCaptureReadbacks,
+            pendingReleaseReadbackCount:
+                this.pendingProjectileCaptureReleaseReadbacks,
+            pendingCaptureBatchCount: this.projectileCaptureBatchQueue.length,
+            pendingReleaseBatchCount:
+                this.projectileCaptureReleaseBatchQueue.length,
+            preparedBatchCount:
+                this.authenticProjectileCapturePreparationByKey.size,
+            armedReleaseCount: armed?.records.length ?? 0,
+            stagedReleaseCount: armed?.records.length ?? 0,
+            commitRequested: armed?.commitRequested === true,
+            targetFixedTick: armed?.targetFixedTick ?? 0,
+            sourceTick: this.lastProjectileCaptureSourceTick,
+            completedThroughTick: terminalSnapshot?.completedThroughTick
+                ?? this.projectileCaptureCompletedThroughTick,
+            lastReleaseCommittedTick: terminalSnapshot?.lastReleaseCommittedTick
+                ?? this.lastProjectileCaptureReleaseCommittedTick,
+            runtimeStatus: this.lastProjectileCaptureRuntimeStatus,
+            errorFlags: this.lastProjectileCaptureErrorFlags,
+            storageProfile: GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE,
+            requiresRecovery: this.requiresAuthoritativeRebuild
+                || this.state === 'failed'
+                || this.failure !== null
+                || this.lastProjectileCaptureErrorFlags !== 0
+                || this.terminalProjectileCaptureProgramCancelStatus
+                    ?.state === 'failed',
+            failure: this.failure,
+            terminal: this.getTerminalProjectileCaptureProgramCancelStatus()
+        });
+    }
+
+    /** Endpoint coherent generic-event publication만 authentic Core receipt를 등록합니다. */
+    registerProjectileCaptureCoreImpactReceipt(receipt) {
+        if (!receipt || typeof receipt !== 'object' || !Object.isFrozen(receipt)
+            || receipt.sessionGeneration !== this.sessionGeneration
+            || receipt.deviceGeneration !== this.deviceGeneration
+            || receipt.authoritativeEpoch !== this.authoritativeEpoch
+            || receipt.sourceTick !== this.projectileCaptureCompletedThroughTick
+            || receipt.type !== 'contact'
+            || receipt.eventType !== 'interaction-enter'
+            || receipt.disposition !== 'applied'
+            || !Number.isSafeInteger(receipt.entityId)
+            || receipt.entityId <= 0
+            || !Number.isSafeInteger(receipt.incarnation)
+            || receipt.incarnation <= 0
+            || !Number.isSafeInteger(receipt.otherEntityId)
+            || receipt.otherEntityId <= 0
+            || !Number.isSafeInteger(receipt.otherIncarnation)
+            || receipt.otherIncarnation <= 0) {
+            return false;
+        }
+        this.authenticProjectileCaptureCoreImpactReceipts.add(receipt);
+        return true;
+    }
+
+    getProjectileCaptureBodyState(handle) {
+        const exact = normalizeEntityHandle(handle, 'projectileCaptureHandle');
+        const slot = this.handleToSlot.get(entityHandleKey(exact));
+        if (slot === undefined || this.slotActive[slot] !== 1) return null;
+        const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
+        const flags = new DataView(this.hostStorage.simulationBuffer).getUint32(
+            simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.FLAGS,
+            LITTLE_ENDIAN
+        );
+        return Object.freeze({
+            handle: Object.freeze({ ...exact }),
+            bodySlot: slot,
+            state: readGpuProjectileCaptureState(this.hostStorage, slot),
+            capturedMirror: (
+                flags & GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED
+            ) !== 0,
+            releaseCommitRequested: this.armedProjectileCaptureRelease
+                ?.commitRequested === true
+                && this.armedProjectileCaptureRelease.records.some((record) => (
+                    record.projectileHandle.entityId === exact.entityId
+                    && record.projectileHandle.incarnation === exact.incarnation
+                ))
+        });
+    }
+
     /**
      * Terminal final submit 앞에서 unresolved destination programs를 exact-set으로
      * tombstone하고 모든 fixed-program/readback lease를 퇴역시킵니다. queue.writeBuffer
@@ -4682,10 +5543,13 @@ export class GpuCircleBodySimulation {
             = this.terminalFormationProgramCancelStatus;
         const terminalAtomicTransformCancel
             = this.terminalAtomicTransformProgramCancelStatus;
+        const terminalProjectileCaptureCancel
+            = this.terminalProjectileCaptureProgramCancelStatus;
         const terminalFinalSubmit = terminalCancel?.state === 'armed'
             || terminalEffectCancel?.state === 'armed'
             || terminalFormationCancel?.state === 'armed'
-            || terminalAtomicTransformCancel?.state === 'armed';
+            || terminalAtomicTransformCancel?.state === 'armed'
+            || terminalProjectileCaptureCancel?.state === 'armed';
         if (terminalCancel?.state === 'submitted'
             || terminalCancel?.state === 'failed'
             || terminalEffectCancel?.state === 'submitted'
@@ -4693,7 +5557,9 @@ export class GpuCircleBodySimulation {
             || terminalFormationCancel?.state === 'submitted'
             || terminalFormationCancel?.state === 'failed'
             || terminalAtomicTransformCancel?.state === 'submitted'
-            || terminalAtomicTransformCancel?.state === 'failed') {
+            || terminalAtomicTransformCancel?.state === 'failed'
+            || terminalProjectileCaptureCancel?.state === 'submitted'
+            || terminalProjectileCaptureCancel?.state === 'failed') {
             return false;
         }
         if (terminalCancel?.state === 'armed'
@@ -4734,6 +5600,16 @@ export class GpuCircleBodySimulation {
             });
             return false;
         }
+        if (terminalProjectileCaptureCancel?.state === 'armed'
+            && requestedSourceTick
+                !== terminalProjectileCaptureCancel.finalFixedTick) {
+            this.terminalProjectileCaptureProgramCancelStatus = Object.freeze({
+                ...terminalProjectileCaptureCancel,
+                state: 'failed',
+                failure: 'terminal-final-fixed-tick-mismatch'
+            });
+            return false;
+        }
         const stagedPrograms = this.stagedFixedPrograms;
         const stagedEffectBatch = this.stagedEffectPulseBatch;
         const stagedFormationPrepare = this.stagedFormationPrepareBatch;
@@ -4741,6 +5617,8 @@ export class GpuCircleBodySimulation {
         const stagedAtomicTransformPrepare
             = this.stagedAtomicTransformPrepareBatch;
         const armedAtomicTransform = this.armedAtomicTransform;
+        const armedProjectileCaptureRelease
+            = this.armedProjectileCaptureRelease;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
@@ -4806,6 +5684,16 @@ export class GpuCircleBodySimulation {
             this.requiresAuthoritativeRebuild = true;
             return false;
         }
+        if (armedProjectileCaptureRelease?.commitRequested
+            && requestedSourceTick
+                !== armedProjectileCaptureRelease.targetFixedTick) {
+            this.failure = captureFailure(
+                'projectile-capture-release-tick',
+                new Error('armed projectile capture release tick mismatch')
+            );
+            this.requiresAuthoritativeRebuild = true;
+            return false;
+        }
         this.lastFixedDelta = delta;
         try {
             assertGpuCircleBodyAbiVersion(this.hostStorage);
@@ -4826,7 +5714,8 @@ export class GpuCircleBodySimulation {
             && !stagedFormationPrepare
             && !armedFormationTransform?.commitRequested
             && !stagedAtomicTransformPrepare
-            && !armedAtomicTransform?.commitRequested) {
+            && !armedAtomicTransform?.commitRequested
+            && !armedProjectileCaptureRelease?.commitRequested) {
             return false;
         }
         if (this.state === 'telemetry-backpressure') {
@@ -4856,6 +5745,10 @@ export class GpuCircleBodySimulation {
             || stagedSpawnCount > 0
             || stagedControlCount > 0
         );
+        const needsProjectileCaptureReadback
+            = this.projectileCaptureDomainBodyCount > 0
+                || armedProjectileCaptureRelease?.commitRequested === true
+                || terminalProjectileCaptureCancel?.state === 'armed';
         if (this.state === 'event-backpressure') {
             if (needsEventReadback && !this.#hasFreeEventReadbackSlot()) {
                 return false;
@@ -4873,6 +5766,19 @@ export class GpuCircleBodySimulation {
                 stage: 'event-readback-backpressure',
                 name: 'EventBackpressure',
                 message: 'GPU contact event staging ring에 빈 slot이 없습니다.'
+            });
+            return false;
+        }
+        const projectileCaptureSlot = needsProjectileCaptureReadback
+            ? this.#claimProjectileCaptureReadbackSlot()
+            : null;
+        if (needsProjectileCaptureReadback && !projectileCaptureSlot) {
+            this.#releaseClaimedEventReadbackSlot(eventSlot);
+            this.state = 'event-backpressure';
+            this.failure = Object.freeze({
+                stage: 'projectile-capture-readback-backpressure',
+                name: 'ProjectileCaptureBackpressure',
+                message: 'GPU projectile capture staging ring에 빈 slot이 없습니다.'
             });
             return false;
         }
@@ -4901,6 +5807,9 @@ export class GpuCircleBodySimulation {
             if ((tick - this.lastOverflowSampleCompletedTick)
                 >= OVERFLOW_TELEMETRY_MAX_AGE_TICKS) {
                 this.#releaseClaimedEventReadbackSlot(eventSlot);
+                this.#releaseClaimedProjectileCaptureReadbackSlot(
+                    projectileCaptureSlot
+                );
                 this.#releaseClaimedTrackedPoseReadbackSlot(trackedPoseSlot);
                 this.state = 'telemetry-backpressure';
                 this.failure = Object.freeze({
@@ -4917,6 +5826,7 @@ export class GpuCircleBodySimulation {
         const authoritativeEpoch = this.authoritativeEpoch;
         const overflowLease = this.overflowReadbackLease;
         const eventLease = this.eventReadbackLease;
+        const projectileCaptureLease = this.projectileCaptureReadbackLease;
         const spawnProgramLease = this.spawnProgramReadbackLease;
         const effectProgramLease = this.effectProgramReadbackLease;
         const formationPrepareLease = this.formationPrepareReadbackLease;
@@ -4928,6 +5838,14 @@ export class GpuCircleBodySimulation {
         let encoder;
         try {
             this.#writeComputeParams(delta, resolvedSourceTick);
+            this.#writeProjectileCaptureParams(resolvedSourceTick);
+            if (armedProjectileCaptureRelease?.commitRequested) {
+                this.device.queue.writeBuffer(
+                    this.buffers.projectileCaptureReleaseProgram,
+                    0,
+                    this.hostProjectileCaptureReleaseProgram.buffer
+                );
+            }
             if (stagedPrograms) {
                 this.device.queue.writeBuffer(
                     this.buffers.bodyControlProgram,
@@ -5032,8 +5950,9 @@ export class GpuCircleBodySimulation {
             }
             if (armedAtomicTransform?.commitRequested) {
                 // commitArmed already published registry/host identities. Only the
-                // counts/indirect headers may be uploaded here; uploading the live
-                // body planes would overwrite the still-authoritative GPU pose.
+                // counts/indirect headers and template-owned side planes may be
+                // uploaded here; a bulk live-plane upload would overwrite the
+                // still-authoritative GPU pose.
                 this.#uploadBodyCountState();
                 this.device.queue.writeBuffer(
                     this.buffers.atomicTransformProgram,
@@ -5055,6 +5974,34 @@ export class GpuCircleBodySimulation {
                     ['atomicTransformTemplateBodyControlStates', this.hostAtomicTransformTemplateBodyControlStates]
                 ]) {
                     this.device.queue.writeBuffer(this.buffers[bufferKey], 0, source);
+                }
+                for (const record of armedAtomicTransform.records) {
+                    for (const destinationSlot of record.destinationSlots) {
+                        for (const [bufferKey, source, stride] of [
+                            [
+                                'projectileCaptureStates',
+                                this.hostAtomicTransformTemplateStorage
+                                    .projectileCaptureStateBuffer,
+                                GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE
+                            ],
+                            [
+                                'projectileCaptureCandidates',
+                                this.hostAtomicTransformTemplateStorage
+                                    .projectileCaptureCandidateBuffer,
+                                GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE
+                                    .STRIDE
+                            ]
+                        ]) {
+                            const offset = destinationSlot * stride;
+                            this.device.queue.writeBuffer(
+                                this.buffers[bufferKey],
+                                offset,
+                                source,
+                                offset,
+                                stride
+                            );
+                        }
+                    }
                 }
             } else {
                 writeGpuAtomicTransformProgramHeader(
@@ -5079,6 +6026,30 @@ export class GpuCircleBodySimulation {
             pass.setPipeline(this.pipelines.updateIndirectArgs);
             pass.setBindGroup(0, this.bindGroups.indirect);
             pass.dispatchWorkgroups(1);
+
+            if (armedProjectileCaptureRelease?.commitRequested) {
+                for (const entryPoint of [
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.PREFLIGHT_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SEAL_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.COMMIT_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.FINALIZE_RELEASES
+                ]) {
+                    this.#setProjectileCaptureReleaseEntry(pass, entryPoint);
+                    const oneWorkgroup = entryPoint
+                        === GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_RELEASES
+                        || entryPoint
+                            === GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SEAL_RELEASES
+                        || entryPoint
+                            === GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.FINALIZE_RELEASES;
+                    pass.dispatchWorkgroups(oneWorkgroup
+                        ? 1
+                        : Math.ceil(
+                            armedProjectileCaptureRelease.records.length
+                                / BODY_WORKGROUP_SIZE
+                        ));
+                }
+            }
 
             if (armedAtomicTransform?.commitRequested) {
                 this.#setAtomicTransformEntry(
@@ -5332,6 +6303,23 @@ export class GpuCircleBodySimulation {
                 );
                 pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
             }
+            if (needsProjectileCaptureReadback) {
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_TICK
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.VALIDATE_HELD
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.UPDATE_FACING
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             pass.setPipeline(this.pipelines.compute.clear_grid);
             pass.dispatchWorkgroups(Math.ceil(
@@ -5358,6 +6346,46 @@ export class GpuCircleBodySimulation {
                     COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS
                 );
                 this.#dispatchBodies(pass, 'generate_world_contacts');
+                if (needsProjectileCaptureReadback) {
+                    for (const entryPoint of [
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                            .SELECT_PROJECTILE_DISTANCES,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SELECT_CAPTORS,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                            .SELECT_RING_DISTANCES,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SELECT_PROJECTILES,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.PREFLIGHT_CAPTURE
+                    ]) {
+                        this.#setProjectileCaptureEntry(pass, entryPoint);
+                        pass.dispatchWorkgroups(Math.ceil(
+                            this.contactCapacity / BODY_WORKGROUP_SIZE
+                        ));
+                    }
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SEAL_CAPTURE
+                    );
+                    pass.dispatchWorkgroups(1);
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.COMMIT_CAPTURE
+                    );
+                    pass.dispatchWorkgroups(Math.ceil(
+                        this.contactCapacity / BODY_WORKGROUP_SIZE
+                    ));
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.FINALIZE_CAPTURE
+                    );
+                    pass.dispatchWorkgroups(1);
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.MARK_CORE_IMPACTS
+                    );
+                    pass.dispatchWorkgroups(Math.ceil(
+                        this.contactCapacity / BODY_WORKGROUP_SIZE
+                    ));
+                }
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER
@@ -5498,6 +6526,47 @@ export class GpuCircleBodySimulation {
                 );
                 this.#dispatchBodies(pass, 'apply_enemy_charge_recoil');
             }
+            if (needsProjectileCaptureReadback) {
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.ATTACH_HELD
+                );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                        .CLEAR_RELEASE_PREPARATIONS
+                );
+                pass.dispatchWorkgroups(1);
+                if (!terminalFinalSubmit) {
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                            .PREFLIGHT_RELEASE_PREPARATIONS
+                    );
+                    pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                }
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                        .SEAL_RELEASE_PREPARATIONS
+                );
+                pass.dispatchWorkgroups(1);
+                if (!terminalFinalSubmit) {
+                    this.#setProjectileCaptureEntry(
+                        pass,
+                        GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                            .COMMIT_RELEASE_PREPARATIONS
+                    );
+                    pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+                }
+                this.#setProjectileCaptureEntry(
+                    pass,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
+                        .FINALIZE_RELEASE_PREPARATIONS
+                );
+                pass.dispatchWorkgroups(1);
+            }
             if (!terminalFinalSubmit && stagedFormationPrepare) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
                 pass.setPipeline(this.pipelines.compute.clear_grid);
@@ -5583,6 +6652,23 @@ export class GpuCircleBodySimulation {
                     armedAtomicTransform.readbackSlot.buffer,
                     0,
                     this.hostAtomicTransformProgram.buffer.byteLength
+                );
+            }
+            if (projectileCaptureSlot) {
+                const releaseOffset = this.hostProjectileCaptureTick.buffer.byteLength;
+                encoder.copyBufferToBuffer(
+                    this.buffers.projectileCaptureRuntime,
+                    0,
+                    projectileCaptureSlot.buffer,
+                    0,
+                    this.hostProjectileCaptureTick.buffer.byteLength
+                );
+                encoder.copyBufferToBuffer(
+                    this.buffers.projectileCaptureReleaseProgram,
+                    0,
+                    projectileCaptureSlot.buffer,
+                    releaseOffset,
+                    this.hostProjectileCaptureReleaseProgram.buffer.byteLength
                 );
             }
             if (eventSlot) {
@@ -5690,6 +6776,9 @@ export class GpuCircleBodySimulation {
         } catch (error) {
             this.#releaseClaimedOverflowReadbackSlot(overflowSlot);
             this.#releaseClaimedEventReadbackSlot(eventSlot);
+            this.#releaseClaimedProjectileCaptureReadbackSlot(
+                projectileCaptureSlot
+            );
             this.#releaseClaimedTrackedPoseReadbackSlot(trackedPoseSlot);
             this.#releaseClaimedSpawnProgramReadbackSlot(
                 stagedPrograms?.readbackSlot ?? null
@@ -5743,6 +6832,14 @@ export class GpuCircleBodySimulation {
                     failure: 'terminal-final-fixed-submit-failed'
                 });
             }
+            if (terminalProjectileCaptureCancel?.state === 'armed') {
+                this.terminalProjectileCaptureProgramCancelStatus
+                    = Object.freeze({
+                        ...terminalProjectileCaptureCancel,
+                        state: 'failed',
+                        failure: 'terminal-final-fixed-submit-failed'
+                    });
+            }
             this.requiresAuthoritativeRebuild = this.hasGpuAuthoritativeState
                 && this.activeBodyCount > 0;
             if (this.requiresAuthoritativeRebuild) {
@@ -5768,6 +6865,45 @@ export class GpuCircleBodySimulation {
                 generation,
                 overflowLease,
                 authoritativeEpoch
+            );
+        }
+        if (projectileCaptureSlot) {
+            const captureQueueEntry = {
+                sessionGeneration: this.sessionGeneration,
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch,
+                completed: false,
+                completion: null,
+                failure: null
+            };
+            const releaseQueueEntry = armedProjectileCaptureRelease
+                ?.commitRequested === true
+                ? {
+                    sessionGeneration: this.sessionGeneration,
+                    sourceTick: resolvedSourceTick,
+                    submittedTick: tick,
+                    deviceGeneration: generation,
+                    authoritativeEpoch,
+                    batchIdFingerprint:
+                        armedProjectileCaptureRelease.batchIdFingerprint,
+                    records: armedProjectileCaptureRelease.records,
+                    completed: false,
+                    completion: null,
+                    failure: null
+                }
+                : null;
+            this.projectileCaptureBatchQueue.push(captureQueueEntry);
+            if (releaseQueueEntry) {
+                this.projectileCaptureReleaseBatchQueue.push(releaseQueueEntry);
+            }
+            this.lastProjectileCaptureSourceTick = resolvedSourceTick;
+            this.#beginProjectileCaptureReadback(
+                projectileCaptureSlot,
+                captureQueueEntry,
+                releaseQueueEntry,
+                projectileCaptureLease
             );
         }
         if (eventSlot) {
@@ -6012,6 +7148,13 @@ export class GpuCircleBodySimulation {
             );
             this.armedAtomicTransform = null;
         }
+        if (armedProjectileCaptureRelease?.commitRequested) {
+            this.armedProjectileCaptureRelease = null;
+        } else if (armedProjectileCaptureRelease
+            && resolvedSourceTick
+                >= armedProjectileCaptureRelease.targetFixedTick) {
+            this.armedProjectileCaptureRelease = null;
+        }
         if (!terminalFinalSubmit) {
             this.effectActivePoolIndex = this.effectActivePoolIndex === 0 ? 1 : 0;
         }
@@ -6056,6 +7199,14 @@ export class GpuCircleBodySimulation {
                 pendingPrepareCount: 0,
                 pendingTransformCount: 0,
                 pendingReadbackCount: terminalTransformReadbackPending,
+                failure: null
+            });
+        }
+        if (terminalProjectileCaptureCancel?.state === 'armed') {
+            this.terminalProjectileCaptureProgramCancelStatus = Object.freeze({
+                ...terminalProjectileCaptureCancel,
+                state: 'submitted',
+                submittedTick: resolvedSourceTick,
                 failure: null
             });
         }
@@ -6662,7 +7813,9 @@ export class GpuCircleBodySimulation {
         this.hasGpuAuthoritativeState = false;
         this.slotActive.fill(0);
         this.slotEventProducing.fill(0);
+        this.slotProjectileCaptureDomain.fill(0);
         this.eventProducingBodyCount = 0;
+        this.projectileCaptureDomainBodyCount = 0;
         this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
         this.slotHandles.fill(null);
@@ -6816,11 +7969,16 @@ export class GpuCircleBodySimulation {
         );
         let eventProducingBodyCount = 0;
         let atomicTransformFirstHitBodyCount = 0;
+        let projectileCaptureDomainBodyCount = 0;
         let maximumBodyRadius = 0;
         const activeEntityIds = new Set();
         this.slotEventProducing.fill(0);
+        this.slotProjectileCaptureDomain.fill(0);
         const atomicTransformStateView = new DataView(
             this.hostStorage.atomicTransformStateBuffer
+        );
+        const projectileCaptureStateView = new DataView(
+            this.hostStorage.projectileCaptureStateBuffer
         );
         for (let slot = 0; slot < this.bodyCount; slot++) {
             if (this.slotActive[slot] !== 1) {
@@ -6882,6 +8040,20 @@ export class GpuCircleBodySimulation {
             ) === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT) {
                 atomicTransformFirstHitBodyCount++;
             }
+            const captureMeta = unpackGpuProjectileCaptureStateMeta(
+                projectileCaptureStateView.getUint32(
+                    (slot * GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE)
+                        + GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE
+                            .ROLE_PHASE_PROFILE_POLICY,
+                    LITTLE_ENDIAN
+                )
+            );
+            // Capture scan/readback는 authored R CAPTOR가 있을 때만 필요합니다.
+            // Capturable projectile만 존재하는 default path는 hot passes를 열지 않습니다.
+            if (captureMeta.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR) {
+                this.slotProjectileCaptureDomain[slot] = 1;
+                projectileCaptureDomainBodyCount++;
+            }
             maximumBodyRadius = Math.max(
                 maximumBodyRadius,
                 physicsView.getFloat32(
@@ -6893,6 +8065,7 @@ export class GpuCircleBodySimulation {
         this.eventProducingBodyCount = eventProducingBodyCount;
         this.atomicTransformFirstHitBodyCount
             = atomicTransformFirstHitBodyCount;
+        this.projectileCaptureDomainBodyCount = projectileCaptureDomainBodyCount;
         this.maximumBodyRadius = maximumBodyRadius;
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
@@ -6922,6 +8095,16 @@ export class GpuCircleBodySimulation {
                     'atomicTransformStates',
                     'atomicTransformStateBuffer',
                     GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
+                ],
+                [
+                    'projectileCaptureStates',
+                    'projectileCaptureStateBuffer',
+                    GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE
+                ],
+                [
+                    'projectileCaptureCandidates',
+                    'projectileCaptureCandidateBuffer',
+                    GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
                 ],
                 [
                     'enemyBehaviorStates',
@@ -8520,6 +9703,818 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    #claimProjectileCaptureReadbackSlot() {
+        const slotCount = this.projectileCaptureReadbackSlots.length;
+        for (let offset = 0; offset < slotCount; offset++) {
+            const index = (this.projectileCaptureReadbackCursor + offset)
+                % slotCount;
+            const slot = this.projectileCaptureReadbackSlots[index];
+            if (slot.inFlight) {
+                continue;
+            }
+            slot.inFlight = true;
+            this.pendingProjectileCaptureReadbacks++;
+            this.projectileCaptureReadbackCursor = (index + 1) % slotCount;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedProjectileCaptureReadbackSlot(slot, hadRelease = false) {
+        if (!slot?.inFlight) {
+            return;
+        }
+        slot.inFlight = false;
+        this.pendingProjectileCaptureReadbacks = Math.max(
+            0,
+            this.pendingProjectileCaptureReadbacks - 1
+        );
+        if (hadRelease) {
+            this.pendingProjectileCaptureReleaseReadbacks = Math.max(
+                0,
+                this.pendingProjectileCaptureReleaseReadbacks - 1
+            );
+        }
+    }
+
+    #normalizeProjectileCaptureCompletion(record, sourceTick, batchIdFingerprint) {
+        const invalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+        const facingLength = Math.hypot(record?.facing?.x, record?.facing?.y);
+        if (!record || record.flags !== 0 || record.reserved !== 0
+            || record.captorBodySlot >= this.capacity
+            || record.projectileBodySlot >= this.capacity
+            || record.captorHandle?.entityId <= 0
+            || record.captorHandle?.entityId === invalid
+            || record.captorHandle?.incarnation <= 0
+            || record.captorHandle?.incarnation === invalid
+            || record.projectileHandle?.entityId <= 0
+            || record.projectileHandle?.entityId === invalid
+            || record.projectileHandle?.incarnation <= 0
+            || record.projectileHandle?.incarnation === invalid
+            || record.captureSequence === 0
+            || record.captureSequence === invalid
+            || record.capturedAtFixedTick === 0
+            || record.capturedAtFixedTick > sourceTick
+            || record.releaseDueFixedTick <= record.capturedAtFixedTick
+            || record.profileCode !== RING_PROJECTILE_CAPTURE_PROFILE.definitionCode
+            || !Number.isFinite(record.anchor.x)
+            || !Number.isFinite(record.anchor.y)
+            || !Number.isFinite(record.facing.x)
+            || !Number.isFinite(record.facing.y)
+            || !Number.isFinite(facingLength)
+            || Math.abs(facingLength - 1) > 1e-4
+            || !Number.isFinite(record.capturedSpeed)
+            || record.capturedSpeed <= 0) {
+            throw new RangeError('projectile capture completion record가 손상되었습니다.');
+        }
+        const captureFingerprint = mixProjectileCaptureFingerprint(
+            record.captorHandle.entityId,
+            record.projectileHandle.entityId,
+            record.captureSequence
+        );
+        const prepareFingerprint = mixProjectileCaptureFingerprint(
+            record.captorHandle.entityId,
+            record.projectileHandle.entityId,
+            (record.captureSequence ^ sourceTick) >>> 0
+        );
+        const forwardTarget = record.targetSelector
+                === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD
+            && record.targetBodySlot === invalid
+            && record.targetHandle.entityId === invalid
+            && record.targetHandle.incarnation === invalid;
+        const common = {
+            projectileHandle: record.projectileHandle,
+            captorHandle: record.captorHandle,
+            projectileBodySlot: record.projectileBodySlot,
+            captorBodySlot: record.captorBodySlot,
+            captureSequence: record.captureSequence,
+            sourceTick
+        };
+        if (record.type === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.CAPTURED) {
+            if (record.reason !== 0 || !forwardTarget
+                || record.prepareFingerprint !== captureFingerprint) {
+                throw new RangeError('capture completion fingerprint/type이 다릅니다.');
+            }
+            return Object.freeze({ kind: 'capture', value: Object.freeze(common) });
+        }
+        if (record.type
+                === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.HELD_PROJECTILE_EXPIRED) {
+            if (record.reason !== 0 || !forwardTarget
+                || record.prepareFingerprint !== prepareFingerprint) {
+                throw new RangeError('cleanup completion fingerprint/type이 다릅니다.');
+            }
+            return Object.freeze({
+                kind: 'cleanup',
+                value: Object.freeze({
+                    ...common,
+                    reason: record.reason
+                })
+            });
+        }
+        const releaseTypes = new Set([
+            GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.RELEASE_PREPARED_NORMAL,
+            GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.RELEASE_PREPARED_CAPTOR_DEATH,
+            GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE
+                .RELEASE_PREPARED_CAPTOR_CORE_IMPACT
+        ]);
+        if (!releaseTypes.has(record.type)) {
+            throw new RangeError('알 수 없는 projectile capture completion type입니다.');
+        }
+        const expectedReason = record.type
+                === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE
+                    .RELEASE_PREPARED_NORMAL
+            ? GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+            : record.type
+                    === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE
+                        .RELEASE_PREPARED_CAPTOR_DEATH
+                ? GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_DEATH
+                : GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_CORE_IMPACT;
+        const towerTarget = record.targetSelector
+                === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER
+            && record.targetBodySlot < this.capacity
+            && record.targetHandle.entityId > 0
+            && record.targetHandle.entityId !== invalid
+            && record.targetHandle.incarnation > 0
+            && record.targetHandle.incarnation !== invalid;
+        if (record.reason !== expectedReason
+            || record.prepareFingerprint !== prepareFingerprint
+            || (expectedReason === GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE
+                ? !forwardTarget && !towerTarget
+                : !forwardTarget)) {
+            throw new RangeError('release preparation fingerprint/type이 다릅니다.');
+        }
+        const targetHandle = record.targetSelector
+                === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER
+            ? record.targetHandle
+            : null;
+        return Object.freeze({
+            kind: 'releasePreparation',
+            value: Object.freeze({
+                ...common,
+                releaseReason: record.reason,
+                prepareSourceTick: sourceTick,
+                batchIdFingerprint,
+                prepareEvidence: Object.freeze({
+                    baseReason: record.reason,
+                    prepareFingerprint: record.prepareFingerprint,
+                    captorBodySlot: record.captorBodySlot,
+                    projectileBodySlot: record.projectileBodySlot,
+                    captureSequence: record.captureSequence,
+                    anchor: record.anchor,
+                    facing: record.facing,
+                    capturedSpeed: record.capturedSpeed,
+                    targetSelector: record.targetSelector,
+                    targetHandle,
+                    targetBodySlot: record.targetBodySlot,
+                    profileCode: record.profileCode,
+                    capturedAtFixedTick: record.capturedAtFixedTick,
+                    releaseDueFixedTick: record.releaseDueFixedTick
+                })
+            })
+        });
+    }
+
+    #setHostProjectileCapturedFlag(slot, enabled) {
+        const layout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+        const offset = slot * layout.STRIDE + layout.FLAGS;
+        const view = new DataView(this.hostStorage.simulationBuffer);
+        const current = view.getUint32(offset, LITTLE_ENDIAN);
+        view.setUint32(
+            offset,
+            enabled
+                ? current | GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED
+                : current & ~GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED,
+            LITTLE_ENDIAN
+        );
+    }
+
+    #mirrorProjectileCaptureTickRecords(records) {
+        const invalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+        for (const record of records) {
+            const captorSlot = record.captorBodySlot;
+            const projectileSlot = record.projectileBodySlot;
+            const captorExact = this.slotActive[captorSlot] === 1
+                && this.slotHandles[captorSlot]?.entityId
+                    === record.captorHandle.entityId
+                && this.slotHandles[captorSlot]?.incarnation
+                    === record.captorHandle.incarnation;
+            const projectileExact = this.slotActive[projectileSlot] === 1
+                && this.slotHandles[projectileSlot]?.entityId
+                    === record.projectileHandle.entityId
+                && this.slotHandles[projectileSlot]?.incarnation
+                    === record.projectileHandle.incarnation;
+            if (!projectileExact
+                || (!captorExact
+                    && record.type
+                        !== GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE
+                            .HELD_PROJECTILE_EXPIRED)) {
+                throw new RangeError('capture completion host identity가 stale입니다.');
+            }
+            if (record.type
+                    === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE
+                        .HELD_PROJECTILE_EXPIRED) {
+                if (captorExact) {
+                    const current = readGpuProjectileCaptureState(
+                        this.hostStorage,
+                        captorSlot
+                    );
+                    writeGpuProjectileCaptureState(this.hostStorage, captorSlot, {
+                        ...current,
+                        phase: GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+                        peerBodySlot: invalid,
+                        peerEntityId: invalid,
+                        peerIncarnation: invalid
+                    });
+                }
+                const current = readGpuProjectileCaptureState(
+                    this.hostStorage,
+                    projectileSlot
+                );
+                writeGpuProjectileCaptureState(this.hostStorage, projectileSlot, {
+                    ...current,
+                    phase: GPU_PROJECTILE_CAPTURE_PHASE.TOMBSTONED,
+                    peerBodySlot: invalid,
+                    peerEntityId: invalid,
+                    peerIncarnation: invalid
+                });
+                this.#setHostProjectileCapturedFlag(projectileSlot, false);
+                continue;
+            }
+            const phase = record.type
+                    === GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.CAPTURED
+                ? GPU_PROJECTILE_CAPTURE_PHASE.HELD
+                : GPU_PROJECTILE_CAPTURE_PHASE.RELEASE_PREPARED;
+            const shared = {
+                phase,
+                peerBodySlot: projectileSlot,
+                peerEntityId: record.projectileHandle.entityId,
+                peerIncarnation: record.projectileHandle.incarnation,
+                capturedAtFixedTick: record.capturedAtFixedTick,
+                releaseDueFixedTick: record.releaseDueFixedTick,
+                captureSequence: record.captureSequence,
+                capturedSpeed: record.capturedSpeed,
+                facingX: record.facing.x,
+                facingY: record.facing.y
+            };
+            writeGpuProjectileCaptureState(this.hostStorage, captorSlot, {
+                role: GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR,
+                profileCode: record.profileCode,
+                policyCode: GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE,
+                flags: 0,
+                selfEntityId: record.captorHandle.entityId,
+                selfIncarnation: record.captorHandle.incarnation,
+                ...shared
+            });
+            writeGpuProjectileCaptureState(this.hostStorage, projectileSlot, {
+                role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE,
+                profileCode: 0,
+                policyCode: GPU_PROJECTILE_CAPTURE_POLICY_CODE.CAPTURABLE,
+                flags: 0,
+                selfEntityId: record.projectileHandle.entityId,
+                selfIncarnation: record.projectileHandle.incarnation,
+                ...shared,
+                peerBodySlot: captorSlot,
+                peerEntityId: record.captorHandle.entityId,
+                peerIncarnation: record.captorHandle.incarnation
+            });
+            this.#setHostProjectileCapturedFlag(projectileSlot, true);
+        }
+    }
+
+    #mirrorProjectileCaptureReleaseRecords(records) {
+        const invalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
+        const physicsView = new DataView(this.hostStorage.physicsBuffer);
+        const simulationView = new DataView(this.hostStorage.simulationBuffer);
+        const temporaryView = new DataView(this.hostStorage.temporaryBuffer);
+        const combatView = new DataView(this.hostStorage.combatStateBuffer);
+        for (const record of records) {
+            const projectileSlot = record.projectileBodySlot;
+            if (this.slotActive[projectileSlot] !== 1
+                || this.slotHandles[projectileSlot]?.entityId
+                    !== record.projectileHandle.entityId
+                || this.slotHandles[projectileSlot]?.incarnation
+                    !== record.projectileHandle.incarnation) {
+                throw new RangeError('release completion projectile가 stale입니다.');
+            }
+            const captorSlot = record.captorBodySlot;
+            if (this.slotActive[captorSlot] === 1
+                && this.slotHandles[captorSlot]?.entityId
+                    === record.captorHandle.entityId
+                && this.slotHandles[captorSlot]?.incarnation
+                    === record.captorHandle.incarnation) {
+                const captor = readGpuProjectileCaptureState(
+                    this.hostStorage,
+                    captorSlot
+                );
+                writeGpuProjectileCaptureState(this.hostStorage, captorSlot, {
+                    ...captor,
+                    phase: GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+                    peerBodySlot: invalid,
+                    peerEntityId: invalid,
+                    peerIncarnation: invalid
+                });
+            }
+            const projectile = readGpuProjectileCaptureState(
+                this.hostStorage,
+                projectileSlot
+            );
+            writeGpuProjectileCaptureState(this.hostStorage, projectileSlot, {
+                ...projectile,
+                phase: GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
+                peerBodySlot: invalid,
+                peerEntityId: invalid,
+                peerIncarnation: invalid,
+                facingX: 0,
+                facingY: 0
+            });
+            const physicsOffset = projectileSlot
+                * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
+            physicsView.setFloat32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.POSITION_X,
+                record.position.x,
+                LITTLE_ENDIAN
+            );
+            physicsView.setFloat32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.POSITION_Y,
+                record.position.y,
+                LITTLE_ENDIAN
+            );
+            physicsView.setFloat32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.VELOCITY_X,
+                record.velocity.x,
+                LITTLE_ENDIAN
+            );
+            physicsView.setFloat32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.VELOCITY_Y,
+                record.velocity.y,
+                LITTLE_ENDIAN
+            );
+            physicsView.setUint32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.INTERACTION_META,
+                record.nextInteractionMeta,
+                LITTLE_ENDIAN
+            );
+            const simulationOffset = projectileSlot
+                * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
+            simulationView.setUint32(
+                simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.GAMEPLAY_META,
+                record.nextGameplayMeta,
+                LITTLE_ENDIAN
+            );
+            this.#setHostProjectileCapturedFlag(projectileSlot, false);
+            const temporaryOffset = projectileSlot
+                * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
+            for (const field of [
+                GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_X,
+                GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_X
+            ]) {
+                temporaryView.setFloat32(
+                    temporaryOffset + field,
+                    record.position.x,
+                    LITTLE_ENDIAN
+                );
+            }
+            for (const field of [
+                GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_Y,
+                GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_Y
+            ]) {
+                temporaryView.setFloat32(
+                    temporaryOffset + field,
+                    record.position.y,
+                    LITTLE_ENDIAN
+                );
+            }
+            temporaryView.setFloat32(
+                temporaryOffset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_X,
+                0,
+                LITTLE_ENDIAN
+            );
+            temporaryView.setFloat32(
+                temporaryOffset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_Y,
+                0,
+                LITTLE_ENDIAN
+            );
+            temporaryView.setInt32(
+                temporaryOffset + GPU_CIRCLE_BODY_ABI.TEMPORARY.GRID_INDEX,
+                -1,
+                LITTLE_ENDIAN
+            );
+            combatView.setUint32(
+                projectileSlot * GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+                    + GPU_CIRCLE_BODY_ABI.COMBAT_STATE
+                        .TARGET_INTERACTION_LAYER_MASK,
+                record.nextTargetLayerMask,
+                LITTLE_ENDIAN
+            );
+        }
+    }
+
+    #beginProjectileCaptureReadback(
+        slot,
+        captureQueueEntry,
+        releaseQueueEntry,
+        lease
+    ) {
+        if (releaseQueueEntry) {
+            this.pendingProjectileCaptureReleaseReadbacks++;
+        }
+        slot.lease = lease;
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            const authentic = !this.destroyed
+                && lease === this.projectileCaptureReadbackLease
+                && slot.lease === lease
+                && captureQueueEntry.deviceGeneration === this.deviceGeneration
+                && captureQueueEntry.authoritativeEpoch === this.authoritativeEpoch;
+            if (!authentic) {
+                try { slot.buffer.unmap(); } catch { /* retired */ }
+                if (lease === this.projectileCaptureReadbackLease) {
+                    this.#releaseClaimedProjectileCaptureReadbackSlot(
+                        slot,
+                        releaseQueueEntry !== null
+                    );
+                } else {
+                    slot.inFlight = false;
+                }
+                return;
+            }
+            try {
+                const view = new DataView(slot.buffer.getMappedRange());
+                const header = readGpuProjectileCaptureTickHeader(view);
+                if (header.abiVersion
+                        !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+                    || header.sessionGeneration !== this.sessionGeneration
+                    || header.deviceGeneration !== captureQueueEntry.deviceGeneration
+                    || header.authoritativeEpoch
+                        !== captureQueueEntry.authoritativeEpoch
+                    || header.sourceTick !== captureQueueEntry.sourceTick
+                    || header.completedThroughTick !== captureQueueEntry.sourceTick
+                    || header.status !== GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+                    || header.errorFlags !== 0
+                    || header.overflowFlags !== 0
+                    || header.reserved !== 0
+                    || header.selectedCount
+                        !== header.releasePreparationCount + header.cleanupCount
+                    || header.captureCount
+                        > this.projectileCaptureCompletionCapacity
+                    || header.releasePreparationCount
+                        > this.projectileCaptureReleasePreparationCapacity
+                    || header.cleanupCount > this.projectileCaptureCleanupCapacity) {
+                    throw new RangeError('projectile capture tick header 인증에 실패했습니다.');
+                }
+                const captures = [];
+                const releasePreparations = [];
+                const cleanups = [];
+                const decodedTickRecords = [];
+                let releasePreparationFingerprint = 0;
+                const completionStride
+                    = GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.COMPLETION.STRIDE;
+                const captureBase
+                    = GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.TICK_HEADER.STRIDE;
+                const releaseBase = captureBase
+                    + this.projectileCaptureCompletionCapacity * completionStride;
+                const cleanupBase = releaseBase
+                    + this.projectileCaptureReleasePreparationCapacity
+                        * completionStride;
+                for (const [count, base, expectedKind] of [
+                    [header.captureCount, captureBase, 'capture'],
+                    [header.releasePreparationCount, releaseBase, 'releasePreparation'],
+                    [header.cleanupCount, cleanupBase, 'cleanup']
+                ]) {
+                    for (let index = 0; index < count; index++) {
+                        const decoded = decodeGpuProjectileCaptureCompletion(
+                            view,
+                            base + index * completionStride
+                        );
+                        const normalized = this.#normalizeProjectileCaptureCompletion(
+                            decoded,
+                            header.sourceTick,
+                            header.batchIdFingerprint
+                        );
+                        decodedTickRecords.push(decoded);
+                        if (normalized.kind !== expectedKind) {
+                            throw new RangeError(
+                                'projectile capture completion partition type이 다릅니다.'
+                            );
+                        }
+                        if (normalized.kind === 'capture') {
+                            captures.push(normalized.value);
+                        } else if (normalized.kind === 'releasePreparation') {
+                            releasePreparations.push(normalized.value);
+                            releasePreparationFingerprint = (
+                                releasePreparationFingerprint
+                                ^ decoded.prepareFingerprint
+                            ) >>> 0;
+                        } else {
+                            cleanups.push(normalized.value);
+                        }
+                    }
+                }
+                const expectedReleasePreparationFingerprint
+                    = header.releasePreparationCount > 0
+                        && (releasePreparationFingerprint === 0
+                            || releasePreparationFingerprint === UINT32_MAX)
+                        ? 1
+                        : releasePreparationFingerprint;
+                if (header.batchIdFingerprint
+                    !== expectedReleasePreparationFingerprint) {
+                    throw new RangeError(
+                        'projectile capture release-prepare fingerprint가 다릅니다.'
+                    );
+                }
+                const preparedEntries = [];
+                for (const preparation of releasePreparations) {
+                    const key = projectileCapturePreparationKey(
+                        header.batchIdFingerprint,
+                        preparation.projectileHandle,
+                        preparation.captureSequence,
+                        preparation.prepareEvidence.prepareFingerprint
+                    );
+                    const prior = this
+                        .authenticProjectileCapturePreparationByKey.get(key);
+                    if (prior) {
+                        throw new RangeError(
+                            'projectile capture prepare fingerprint가 충돌했습니다.'
+                        );
+                    }
+                    preparedEntries.push([key, preparation]);
+                }
+                let releaseHeader = null;
+                let releaseCompletion = null;
+                if (releaseQueueEntry) {
+                    const releaseOffset = this.hostProjectileCaptureTick.buffer.byteLength;
+                    const releaseView = new DataView(
+                        view.buffer,
+                        view.byteOffset + releaseOffset,
+                        this.hostProjectileCaptureReleaseProgram.buffer.byteLength
+                    );
+                    releaseHeader = readGpuProjectileCaptureReleaseHeader(
+                        releaseView
+                    );
+                    if (releaseHeader.abiVersion
+                            !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+                        || releaseHeader.sessionGeneration !== this.sessionGeneration
+                        || releaseHeader.deviceGeneration
+                            !== releaseQueueEntry.deviceGeneration
+                        || releaseHeader.authoritativeEpoch
+                            !== releaseQueueEntry.authoritativeEpoch
+                        || releaseHeader.publicationFixedTick
+                            !== releaseQueueEntry.sourceTick
+                        || releaseHeader.status
+                            !== GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+                        || releaseHeader.errorFlags !== 0
+                        || releaseHeader.recordCount
+                            !== releaseQueueEntry.records.length
+                        || releaseHeader.validatedCount
+                            !== releaseHeader.recordCount
+                        || releaseHeader.committedCount !== releaseHeader.recordCount
+                        || releaseHeader.batchIdFingerprint
+                            !== releaseQueueEntry.batchIdFingerprint
+                        || releaseHeader.resultFingerprint
+                            !== releaseHeader.batchIdFingerprint
+                        || releaseHeader.flags
+                            !== GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG
+                                .COMMIT_REQUESTED
+                        || releaseHeader.reserved0 !== 0
+                        || releaseHeader.reserved1 !== 0
+                        || releaseHeader.reserved2 !== 0) {
+                        throw new RangeError(
+                            'projectile capture release header 인증에 실패했습니다.'
+                        );
+                    }
+                    for (let index = 0;
+                        index < releaseQueueEntry.records.length;
+                        index++) {
+                        const expected = releaseQueueEntry.records[index];
+                        const actual = readGpuProjectileCaptureReleaseRecord(
+                            releaseView,
+                            index
+                        );
+                        if (actual.commandIdFingerprint
+                                !== expected.commandIdFingerprint
+                            || actual.prepareFingerprint
+                                !== expected.prepareFingerprint
+                            || actual.captorBodySlot !== expected.captorBodySlot
+                            || actual.captorHandle.entityId
+                                !== expected.captorHandle.entityId
+                            || actual.captorHandle.incarnation
+                                !== expected.captorHandle.incarnation
+                            || actual.projectileBodySlot
+                                !== expected.projectileBodySlot
+                            || actual.projectileHandle.entityId
+                                !== expected.projectileHandle.entityId
+                            || actual.projectileHandle.incarnation
+                                !== expected.projectileHandle.incarnation
+                            || actual.captureSequence !== expected.captureSequence
+                            || actual.capturedAtFixedTick
+                                !== expected.capturedAtFixedTick
+                            || actual.preparedAtFixedTick
+                                !== expected.preparedAtFixedTick
+                            || actual.releaseReason !== expected.releaseReason
+                            || actual.positionBits.x
+                                !== projectileCaptureFloat32Bits(
+                                    expected.position.x
+                                )
+                            || actual.positionBits.y
+                                !== projectileCaptureFloat32Bits(
+                                    expected.position.y
+                                )
+                            || actual.velocityBits.x
+                                !== projectileCaptureFloat32Bits(
+                                    expected.velocity.x
+                                )
+                            || actual.velocityBits.y
+                                !== projectileCaptureFloat32Bits(
+                                    expected.velocity.y
+                                )
+                            || actual.capturedSpeedBits
+                                !== projectileCaptureFloat32Bits(
+                                    expected.capturedSpeed
+                                )
+                            || actual.targetSelector !== expected.targetSelector
+                            || actual.targetBodySlot !== expected.targetBodySlot
+                            || actual.targetHandle.entityId
+                                !== expected.targetHandle.entityId
+                            || actual.targetHandle.incarnation
+                                !== expected.targetHandle.incarnation
+                            || actual.nextGameplayMeta
+                                !== expected.nextGameplayMeta
+                            || actual.nextInteractionMeta
+                                !== expected.nextInteractionMeta
+                            || actual.nextTargetLayerMask
+                                !== expected.nextTargetLayerMask) {
+                            throw new RangeError(
+                                `projectile capture release record[${index}] 인증에 실패했습니다.`
+                            );
+                        }
+                    }
+                    const releaseCompletions = releaseQueueEntry.records.map((record) => (
+                        Object.freeze({
+                            projectileHandle: record.projectileHandle,
+                            captorHandle: record.captorHandle,
+                            captureSequence: record.captureSequence,
+                            sourceTick: releaseHeader.publicationFixedTick,
+                            batchIdFingerprint: releaseHeader.batchIdFingerprint,
+                            releaseReason: record.releaseReason,
+                            prepareFingerprint: record.prepareFingerprint,
+                            commandIdFingerprint: record.commandIdFingerprint,
+                            publicationFixedTick:
+                                releaseHeader.publicationFixedTick,
+                            targetSelector: record.targetSelector,
+                            targetHandle: record.targetSelector
+                                    === GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER
+                                ? record.targetHandle
+                                : null,
+                            teamId: record.teamId,
+                            allegiancePolicy: record.allegiancePolicy,
+                            damagePolicyId: record.damagePolicyId,
+                            targetPolicyId: record.targetPolicyId,
+                            metadataRevision: record.metadataRevision
+                        })
+                    ));
+                    releaseCompletion = Object.freeze({
+                        ...releaseHeader,
+                        sourceTick: releaseHeader.publicationFixedTick,
+                        completedThroughTick: releaseHeader.publicationFixedTick,
+                        pending: false,
+                        releaseCompletions: Object.freeze(releaseCompletions)
+                    });
+                }
+                const affectedSlots = new Set();
+                for (const record of decodedTickRecords) {
+                    affectedSlots.add(record.captorBodySlot);
+                    affectedSlots.add(record.projectileBodySlot);
+                }
+                for (const record of releaseQueueEntry?.records ?? []) {
+                    affectedSlots.add(record.captorBodySlot);
+                    affectedSlots.add(record.projectileBodySlot);
+                }
+                const hostPlanes = [
+                    [
+                        this.hostStorage.projectileCaptureStateBuffer,
+                        GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE
+                    ],
+                    [
+                        this.hostStorage.simulationBuffer,
+                        GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+                    ],
+                    [
+                        this.hostStorage.physicsBuffer,
+                        GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE
+                    ],
+                    [
+                        this.hostStorage.temporaryBuffer,
+                        GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE
+                    ],
+                    [
+                        this.hostStorage.combatStateBuffer,
+                        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+                    ]
+                ];
+                const hostSlotBackups = [];
+                for (const bodySlot of affectedSlots) {
+                    if (!Number.isInteger(bodySlot)
+                        || bodySlot < 0 || bodySlot >= this.capacity) {
+                        throw new RangeError(
+                            'projectile capture mirror slot이 범위를 벗어났습니다.'
+                        );
+                    }
+                    for (const [buffer, stride] of hostPlanes) {
+                        const offset = bodySlot * stride;
+                        hostSlotBackups.push({
+                            buffer,
+                            offset,
+                            bytes: buffer.slice(offset, offset + stride)
+                        });
+                    }
+                }
+                try {
+                    this.#mirrorProjectileCaptureTickRecords(decodedTickRecords);
+                    if (releaseQueueEntry) {
+                        this.#mirrorProjectileCaptureReleaseRecords(
+                            releaseQueueEntry.records
+                        );
+                    }
+                } catch (error) {
+                    for (const backup of hostSlotBackups) {
+                        new Uint8Array(
+                            backup.buffer,
+                            backup.offset,
+                            backup.bytes.byteLength
+                        ).set(new Uint8Array(backup.bytes));
+                    }
+                    throw error;
+                }
+                for (const [key, preparation] of preparedEntries) {
+                    this.authenticProjectileCapturePreparationByKey.set(
+                        key,
+                        preparation
+                    );
+                }
+                captureQueueEntry.completion = Object.freeze({
+                    ...header,
+                    pending: false,
+                    captures: Object.freeze(captures),
+                    releasePreparations: Object.freeze(releasePreparations),
+                    cleanups: Object.freeze(cleanups)
+                });
+                captureQueueEntry.completed = true;
+                this.lastProjectileCaptureRuntimeStatus = header.status;
+                this.lastProjectileCaptureErrorFlags = header.errorFlags;
+                this.#advanceProjectileCaptureCompletionWatermark();
+                if (releaseQueueEntry) {
+                    releaseQueueEntry.completion = releaseCompletion;
+                    releaseQueueEntry.completed = true;
+                    this.lastProjectileCaptureReleaseCommittedTick
+                        = releaseHeader.publicationFixedTick;
+                }
+                slot.buffer.unmap();
+                this.#releaseClaimedProjectileCaptureReadbackSlot(
+                    slot,
+                    releaseQueueEntry !== null
+                );
+                this.#completeDeferredIdleRelease();
+            } catch (error) {
+                try { slot.buffer.unmap(); } catch { /* ignored */ }
+                this.#releaseClaimedProjectileCaptureReadbackSlot(
+                    slot,
+                    releaseQueueEntry !== null
+                );
+                const failure = captureFailure(
+                    'projectile-capture-readback',
+                    error
+                );
+                captureQueueEntry.failure = failure;
+                captureQueueEntry.completed = true;
+                if (releaseQueueEntry) {
+                    releaseQueueEntry.failure = failure;
+                    releaseQueueEntry.completed = true;
+                }
+                this.failure = failure;
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.state = this.requiresAuthoritativeRebuild
+                    ? 'requires-rebuild'
+                    : 'failed';
+            }
+        }).catch((error) => {
+            this.#releaseClaimedProjectileCaptureReadbackSlot(
+                slot,
+                releaseQueueEntry !== null
+            );
+            const failure = captureFailure('projectile-capture-readback', error);
+            captureQueueEntry.failure = failure;
+            captureQueueEntry.completed = true;
+            if (releaseQueueEntry) {
+                releaseQueueEntry.failure = failure;
+                releaseQueueEntry.completed = true;
+            }
+            this.failure = failure;
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+        });
+    }
+
     #claimEventReadbackSlot() {
         const slotCount = this.eventReadbackSlots.length;
         for (let offset = 0; offset < slotCount; offset++) {
@@ -8571,6 +10566,20 @@ export class GpuCircleBodySimulation {
         this.eventCompletedThroughTick = completedThroughTick;
     }
 
+    #advanceProjectileCaptureCompletionWatermark() {
+        let completedThroughTick = this.projectileCaptureCompletedThroughTick;
+        for (const entry of this.projectileCaptureBatchQueue) {
+            if (!entry.completed || entry.failure) {
+                break;
+            }
+            completedThroughTick = Math.max(
+                completedThroughTick,
+                entry.sourceTick
+            );
+        }
+        this.projectileCaptureCompletedThroughTick = completedThroughTick;
+    }
+
     #completeDeferredIdleRelease() {
         if (!this.idleReleasePending
             || this.activeBodyCount !== 0
@@ -8582,6 +10591,8 @@ export class GpuCircleBodySimulation {
             || this.pendingFormationTransformReadbacks !== 0
             || this.pendingAtomicTransformPrepareReadbacks !== 0
             || this.pendingAtomicTransformReadbacks !== 0
+            || this.pendingProjectileCaptureReadbacks !== 0
+            || this.pendingProjectileCaptureReleaseReadbacks !== 0
             || this.pendingTrackedPoseReadbacks !== 0
             || this.eventBatchQueue.length !== 0
             || this.bodyControlProgramBatchQueue.length !== 0
@@ -8589,11 +10600,15 @@ export class GpuCircleBodySimulation {
             || this.effectProgramBatchQueue.length !== 0
             || this.formationPrepareBatchQueue.length !== 0
             || this.atomicTransformPrepareBatchQueue.length !== 0
+            || this.projectileCaptureBatchQueue.length !== 0
+            || this.projectileCaptureReleaseBatchQueue.length !== 0
             || this.stagedFormationPrepareBatch !== null
             || this.armedFormationTransform !== null
             || this.stagedAtomicTransformPrepareBatch !== null
             || this.armedAtomicTransform !== null
             || this.authenticAtomicTransformPrepareByFingerprint.size !== 0
+            || this.armedProjectileCaptureRelease !== null
+            || this.authenticProjectileCapturePreparationByKey.size !== 0
             || this.pendingBodyCount !== 0
             || (this.state !== 'ready'
                 && this.state !== 'telemetry-backpressure'
@@ -8680,6 +10695,38 @@ export class GpuCircleBodySimulation {
         this.lastAtomicTransformEffectRekeyCount = 0;
         this.lastAtomicTransformRuntimeStatus
             = GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK;
+        this.hostProjectileCaptureTick = createGpuProjectileCaptureTickStorage(
+            this.projectileCaptureCompletionCapacity,
+            this.projectileCaptureReleasePreparationCapacity,
+            this.projectileCaptureCleanupCapacity
+        );
+        this.hostProjectileCaptureReleaseProgram
+            = createGpuProjectileCaptureReleaseProgramStorage(
+                this.projectileCaptureReleasePreparationCapacity
+            );
+        if (this.terminalProjectileCaptureProgramCancelStatus
+                ?.state === 'submitted') {
+            this.terminalProjectileCaptureProgramCancelStatus = Object.freeze({
+                ...this.terminalProjectileCaptureProgramCancelStatus,
+                completedThroughTick:
+                    this.projectileCaptureCompletedThroughTick,
+                lastReleaseCommittedTick:
+                    this.lastProjectileCaptureReleaseCommittedTick
+            });
+        }
+        this.armedProjectileCaptureRelease = null;
+        this.projectileCaptureBatchQueue.length = 0;
+        this.projectileCaptureReleaseBatchQueue.length = 0;
+        this.authenticProjectileCapturePreparationByKey.clear();
+        this.pendingProjectileCaptureReadbacks = 0;
+        this.pendingProjectileCaptureReleaseReadbacks = 0;
+        this.projectileCaptureReadbackCursor = 0;
+        this.lastProjectileCaptureSourceTick = 0;
+        this.projectileCaptureCompletedThroughTick = 0;
+        this.lastProjectileCaptureReleaseCommittedTick = 0;
+        this.lastProjectileCaptureRuntimeStatus
+            = GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET;
+        this.lastProjectileCaptureErrorFlags = 0;
         this.authoritativeEpoch = nextAuthoritativeEpoch;
         this.#releaseGpuResources();
         this.state = 'idle';
@@ -9437,6 +11484,43 @@ export class GpuCircleBodySimulation {
                     * this.capacity,
                 storageUsage
             ),
+            projectileCaptureStates: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-states',
+                GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            projectileCaptureCandidates: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-candidates',
+                GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
+                    * this.capacity,
+                storageUsage
+            ),
+            projectileCaptureRuntime: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-runtime',
+                this.hostProjectileCaptureTick.buffer.byteLength,
+                storageUsage
+            ),
+            projectileCaptureReleaseProgram: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-release-program',
+                this.hostProjectileCaptureReleaseProgram.buffer.byteLength,
+                storageUsage
+            ),
+            projectileCaptureParams: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-params',
+                PROJECTILE_CAPTURE_PARAMS_BYTE_SIZE,
+                usage.UNIFORM | usage.COPY_DST
+            ),
+            projectileCaptureTargetConfig: createBuffer(
+                device,
+                'cirvivor-gpu-projectile-capture-target-config',
+                PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE,
+                usage.UNIFORM | usage.COPY_DST
+            ),
             enemyBehaviorStates: createBuffer(
                 device,
                 'cirvivor-gpu-circle-enemy-behavior-states',
@@ -9778,6 +11862,30 @@ export class GpuCircleBodySimulation {
         );
         this.eventReadbackCursor = 0;
         this.pendingEventReadbacks = 0;
+        const projectileCaptureReadbackLease
+            = ++this.projectileCaptureReadbackLease;
+        const projectileCaptureReadbackByteSize
+            = this.hostProjectileCaptureTick.buffer.byteLength
+                + this.hostProjectileCaptureReleaseProgram.buffer.byteLength;
+        this.projectileCaptureReadbackSlots = Array.from(
+            { length: PROJECTILE_CAPTURE_READBACK_SLOT_COUNT },
+            (_, index) => ({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-projectile-capture-readback-${index}`,
+                    projectileCaptureReadbackByteSize,
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                tick: 0,
+                generation: this.deviceGeneration,
+                authoritativeEpoch: this.authoritativeEpoch,
+                lease: projectileCaptureReadbackLease
+            })
+        );
+        this.projectileCaptureReadbackCursor = 0;
+        this.pendingProjectileCaptureReadbacks = 0;
+        this.pendingProjectileCaptureReleaseReadbacks = 0;
         const spawnProgramReadbackLease = ++this.spawnProgramReadbackLease;
         this.spawnProgramReadbackSlots = [];
         for (let index = 0; index < SPAWN_PROGRAM_READBACK_SLOT_COUNT; index++) {
@@ -10071,7 +12179,9 @@ export class GpuCircleBodySimulation {
                 { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'storage' } }
             ]
         });
-        const renderBodyStorageBindings = Object.freeze([0, 1, 2, 3, 4, 5, 6, 7]);
+        const renderBodyStorageBindings = Object.freeze([
+            0, 1, 2, 3, 4, 5, 6, 7, 8
+        ]);
         if (renderBodyStorageBindings.length
             !== GPU_FORMATION_RUNTIME_STORAGE_PROFILE.render) {
             throw new RangeError('Formation render storage profile drift');
@@ -10422,6 +12532,58 @@ export class GpuCircleBodySimulation {
                 })];
             })
         );
+        const projectileCaptureBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-projectile-capture-bodies-layout',
+            entries: [
+                storageLayoutEntry(0, 'read-only-storage'),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(3),
+                storageLayoutEntry(4),
+                storageLayoutEntry(5, 'read-only-storage'),
+                storageLayoutEntry(6),
+                storageLayoutEntry(7),
+                storageLayoutEntry(8)
+            ]
+        });
+        const projectileCaptureParamsLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-projectile-capture-params-layout',
+            entries: [
+                {
+                    binding: 0,
+                    visibility: stage.COMPUTE,
+                    buffer: { type: 'uniform' }
+                },
+                {
+                    binding: 1,
+                    visibility: stage.COMPUTE,
+                    buffer: { type: 'uniform' }
+                }
+            ]
+        });
+        const projectileCapturePipelineLayout = device.createPipelineLayout({
+            label: 'cirvivor-gpu-projectile-capture-pipeline-layout',
+            bindGroupLayouts: [
+                projectileCaptureBodiesLayout,
+                projectileCaptureParamsLayout
+            ]
+        });
+        const projectileCaptureReleaseLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-projectile-capture-release-layout',
+            entries: [
+                storageLayoutEntry(0, 'read-only-storage'),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(3),
+                storageLayoutEntry(4),
+                storageLayoutEntry(5),
+                storageLayoutEntry(6)
+            ]
+        });
+        const projectileCaptureReleasePipelineLayout = device.createPipelineLayout({
+            label: 'cirvivor-gpu-projectile-capture-release-pipeline-layout',
+            bindGroupLayouts: [projectileCaptureReleaseLayout]
+        });
 
         const computeModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-compute-shader',
@@ -10438,6 +12600,14 @@ export class GpuCircleBodySimulation {
         const atomicTransformModule = device.createShaderModule({
             label: 'cirvivor-gpu-atomic-transform-runtime-compute-shader',
             code: GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
+        });
+        const projectileCaptureModule = device.createShaderModule({
+            label: 'cirvivor-gpu-projectile-capture-runtime-shader',
+            code: GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL
+        });
+        const projectileCaptureReleaseModule = device.createShaderModule({
+            label: 'cirvivor-gpu-projectile-capture-release-shader',
+            code: GPU_PROJECTILE_CAPTURE_RELEASE_WGSL
         });
         const indirectModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-indirect-shader',
@@ -10493,11 +12663,45 @@ export class GpuCircleBodySimulation {
                 })
             ])
         );
+        const projectileCapture = Object.fromEntries(
+            Object.values(GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT)
+                .filter((entryPoint) => ![
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.PREFLIGHT_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SEAL_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.COMMIT_RELEASES,
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.FINALIZE_RELEASES
+                ].includes(entryPoint))
+                .map((entryPoint) => [
+                    entryPoint,
+                    device.createComputePipeline({
+                        label: `cirvivor-gpu-projectile-capture-${entryPoint}`,
+                        layout: projectileCapturePipelineLayout,
+                        compute: { module: projectileCaptureModule, entryPoint }
+                    })
+                ])
+        );
+        const projectileCaptureRelease = Object.fromEntries([
+            GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_RELEASES,
+            GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.PREFLIGHT_RELEASES,
+            GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.SEAL_RELEASES,
+            GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.COMMIT_RELEASES,
+            GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.FINALIZE_RELEASES
+        ].map((entryPoint) => [
+            entryPoint,
+            device.createComputePipeline({
+                label: `cirvivor-gpu-projectile-capture-release-${entryPoint}`,
+                layout: projectileCaptureReleasePipelineLayout,
+                compute: { module: projectileCaptureReleaseModule, entryPoint }
+            })
+        ]));
         this.pipelines = {
             compute,
             effect,
             formation,
             atomicTransform,
+            projectileCapture,
+            projectileCaptureRelease,
             updateIndirectArgs: device.createComputePipeline({
                 label: 'cirvivor-gpu-circle-update-indirect-args',
                 layout: indirectPipelineLayout,
@@ -10953,10 +13157,54 @@ export class GpuCircleBodySimulation {
                 { binding: 9, resource: resource(this.buffers.trackedPoseOutput) }
             ]
         });
+        const projectileCaptureBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-projectile-capture-bodies',
+            layout: projectileCaptureBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.temporary) },
+                { binding: 4, resource: resource(this.buffers.contactState) },
+                { binding: 5, resource: resource(this.buffers.contacts) },
+                { binding: 6, resource: resource(this.buffers.projectileCaptureStates) },
+                { binding: 7, resource: resource(this.buffers.projectileCaptureCandidates) },
+                { binding: 8, resource: resource(this.buffers.projectileCaptureRuntime) }
+            ]
+        });
+        const projectileCaptureParams = device.createBindGroup({
+            label: 'cirvivor-gpu-projectile-capture-params',
+            layout: projectileCaptureParamsLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.projectileCaptureParams) },
+                {
+                    binding: 1,
+                    resource: resource(this.buffers.projectileCaptureTargetConfig)
+                }
+            ]
+        });
+        const projectileCaptureReleaseBindGroup = device.createBindGroup({
+            label: 'cirvivor-gpu-projectile-capture-release',
+            layout: projectileCaptureReleaseLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.temporary) },
+                { binding: 4, resource: resource(this.buffers.combatStates) },
+                { binding: 5, resource: resource(this.buffers.projectileCaptureStates) },
+                {
+                    binding: 6,
+                    resource: resource(this.buffers.projectileCaptureReleaseProgram)
+                }
+            ]
+        });
         this.bindGroups = {
             effectByPool,
             formationByPool,
             atomicTransformByPool,
+            projectileCapture: [projectileCaptureBodies, projectileCaptureParams],
+            projectileCaptureRelease: projectileCaptureReleaseBindGroup,
             computeProfiles: {
                 [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
                     computeBodiesBase,
@@ -11045,7 +13293,11 @@ export class GpuCircleBodySimulation {
                     { binding: 4, resource: resource(this.buffers.simulation) },
                     { binding: 5, resource: resource(this.buffers.enemyBehaviorStates) },
                     { binding: 6, resource: resource(this.buffers.effectSummaries) },
-                    { binding: 7, resource: resource(this.buffers.formationStates) }
+                    { binding: 7, resource: resource(this.buffers.formationStates) },
+                    {
+                        binding: 8,
+                        resource: resource(this.buffers.projectileCaptureStates)
+                    }
                 ]
             }),
             renderParams: device.createBindGroup({
@@ -11177,6 +13429,20 @@ export class GpuCircleBodySimulation {
                 bodyCount * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE
             );
             queue.writeBuffer(
+                this.buffers.projectileCaptureStates,
+                0,
+                this.hostStorage.projectileCaptureStateBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE
+            );
+            queue.writeBuffer(
+                this.buffers.projectileCaptureCandidates,
+                0,
+                this.hostStorage.projectileCaptureCandidateBuffer,
+                0,
+                bodyCount * GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
+            );
+            queue.writeBuffer(
                 this.buffers.enemyBehaviorStates,
                 0,
                 this.hostStorage.enemyBehaviorStateBuffer,
@@ -11251,6 +13517,7 @@ export class GpuCircleBodySimulation {
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
         this.#writeComputeParams(this.lastFixedDelta, 0);
+        this.#writeProjectileCaptureParams(0);
     }
 
     #writeComputeParams(fixedDelta, fixedTick = 0) {
@@ -11326,6 +13593,82 @@ export class GpuCircleBodySimulation {
         this.uploadedComputeFixedTick = uploadedFixedTick;
     }
 
+    #writeProjectileCaptureParams(fixedTick) {
+        const tick = requireNonNegativeInteger(fixedTick, 'projectileCapture.fixedTick');
+        const view = new DataView(this.projectileCaptureParamsBytes);
+        view.setUint32(0, tick, LITTLE_ENDIAN);
+        view.setUint32(4, this.contactCapacity, LITTLE_ENDIAN);
+        view.setUint32(8, this.projectileCaptureCompletionCapacity, LITTLE_ENDIAN);
+        view.setUint32(
+            12,
+            this.projectileCaptureReleasePreparationCapacity,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(16, this.projectileCaptureCleanupCapacity, LITTLE_ENDIAN);
+        view.setUint32(20, RING_PROJECTILE_CAPTURE_PROFILE.definitionCode, LITTLE_ENDIAN);
+        view.setUint32(
+            24,
+            RING_PROJECTILE_CAPTURE_PROFILE.captureDelayFixedTicks,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(28, this.sessionGeneration, LITTLE_ENDIAN);
+        view.setUint32(32, Math.max(0, this.deviceGeneration), LITTLE_ENDIAN);
+        view.setUint32(36, this.authoritativeEpoch, LITTLE_ENDIAN);
+        view.setFloat32(
+            40,
+            Math.fround(Math.cos(
+                RING_PROJECTILE_CAPTURE_PROFILE.funnelHalfAngleRadians
+            )),
+            LITTLE_ENDIAN
+        );
+        view.setFloat32(
+            44,
+            Math.fround(RING_PROJECTILE_CAPTURE_PROFILE.exitClearanceTiles),
+            LITTLE_ENDIAN
+        );
+        const targetView = new DataView(this.projectileCaptureTargetConfigBytes);
+        const targetHandle = this.towerGameplayTargetHandle;
+        const hasTower = targetHandle !== null && this.towerGameplayTargetSlot >= 0;
+        targetView.setUint32(
+            0,
+            hasTower
+                ? this.towerGameplayTargetSlot
+                : GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        targetView.setUint32(
+            4,
+            hasTower
+                ? targetHandle.entityId
+                : GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        targetView.setUint32(
+            8,
+            hasTower
+                ? targetHandle.incarnation
+                : GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+            LITTLE_ENDIAN
+        );
+        targetView.setUint32(
+            12,
+            hasTower
+                ? GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.TOWER
+                : GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD,
+            LITTLE_ENDIAN
+        );
+        this.device.queue.writeBuffer(
+            this.buffers.projectileCaptureParams,
+            0,
+            this.projectileCaptureParamsBytes
+        );
+        this.device.queue.writeBuffer(
+            this.buffers.projectileCaptureTargetConfig,
+            0,
+            this.projectileCaptureTargetConfigBytes
+        );
+    }
+
     #writeRenderParams(camera, target) {
         const state = this.presentationClock.getShaderState(this.shaderStateScratch);
         const view = this.renderParamsView;
@@ -11399,6 +13742,35 @@ export class GpuCircleBodySimulation {
         pass.setBindGroup(0, bindGroup);
     }
 
+    #setProjectileCaptureEntry(pass, entryPoint) {
+        const pipeline = this.pipelines.projectileCapture[entryPoint];
+        if (!pipeline) {
+            throw new RangeError(
+                `등록되지 않은 ProjectileCapture pipeline입니다: ${entryPoint}`
+            );
+        }
+        pass.setPipeline(pipeline);
+        for (let groupIndex = 0;
+            groupIndex < this.bindGroups.projectileCapture.length;
+            groupIndex++) {
+            pass.setBindGroup(
+                groupIndex,
+                this.bindGroups.projectileCapture[groupIndex]
+            );
+        }
+    }
+
+    #setProjectileCaptureReleaseEntry(pass, entryPoint) {
+        const pipeline = this.pipelines.projectileCaptureRelease[entryPoint];
+        if (!pipeline) {
+            throw new RangeError(
+                `등록되지 않은 ProjectileCaptureRelease pipeline입니다: ${entryPoint}`
+            );
+        }
+        pass.setPipeline(pipeline);
+        pass.setBindGroup(0, this.bindGroups.projectileCaptureRelease);
+    }
+
     #releaseGpuResources() {
         this.idleReleasePending = false;
         this.overflowReadbackLease++;
@@ -11469,6 +13841,20 @@ export class GpuCircleBodySimulation {
         this.stagedAtomicTransformPrepareBatch = null;
         this.armedAtomicTransform = null;
         this.authenticAtomicTransformPrepareByFingerprint.clear();
+        this.projectileCaptureReadbackLease++;
+        for (const slot of this.projectileCaptureReadbackSlots) {
+            slot.inFlight = false;
+            try { slot.buffer?.destroy?.(); } catch { /* retired */ }
+        }
+        this.projectileCaptureReadbackSlots = [];
+        this.pendingProjectileCaptureReadbacks = 0;
+        this.pendingProjectileCaptureReleaseReadbacks = 0;
+        this.projectileCaptureReadbackCursor = 0;
+        this.projectileCaptureBatchQueue.length = 0;
+        this.projectileCaptureReleaseBatchQueue.length = 0;
+        this.armedProjectileCaptureRelease = null;
+        this.authenticProjectileCapturePreparationByKey.clear();
+        this.authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
         this.trackedPoseReadbackLease++;
         for (const slot of this.trackedPoseReadbackSlots) {
             slot.inFlight = false;

@@ -126,7 +126,7 @@ function assertThrowsNamed(callback, expectedName) {
 }
 
 // std430/WGSL과 공유할 stride 및 모든 field offset을 고정합니다.
-assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 7);
+assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 8);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 0);
 assert.equal(GPU_CIRCLE_BODY_ABI.COUNTS.ADDITION_COUNT, 4);
@@ -209,6 +209,28 @@ assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE }, {
     SOURCE_ENTITY_ID: 0,
     CONTACT_INDEX: 4,
     MATCH_COUNT: 8,
+    STATUS: 12
+});
+assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE }, {
+    STRIDE: 48,
+    ROLE_PHASE_PROFILE_POLICY: 0,
+    SELF_ENTITY_ID: 4,
+    SELF_INCARNATION: 8,
+    PEER_BODY_SLOT: 12,
+    PEER_ENTITY_ID: 16,
+    PEER_INCARNATION: 20,
+    CAPTURED_AT_FIXED_TICK: 24,
+    RELEASE_DUE_FIXED_TICK: 28,
+    CAPTURE_SEQUENCE: 32,
+    CAPTURED_SPEED: 36,
+    FACING_X: 40,
+    FACING_Y: 44
+});
+assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE }, {
+    STRIDE: 16,
+    DISTANCE_SQUARED_BITS: 0,
+    PEER_ENTITY_ID: 4,
+    PEER_INCARNATION: 8,
     STATUS: 12
 });
 assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
@@ -425,6 +447,14 @@ assert.equal(
 assert.equal(
     storage.atomicTransformStateBuffer.byteLength,
     GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * storage.capacity
+);
+assert.equal(
+    storage.projectileCaptureStateBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE * storage.capacity
+);
+assert.equal(
+    storage.projectileCaptureCandidateBuffer.byteLength,
+    GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE * storage.capacity
 );
 new Uint8Array(storage.physicsBuffer).fill(0xff);
 new Uint8Array(storage.simulationBuffer).fill(0xff);
