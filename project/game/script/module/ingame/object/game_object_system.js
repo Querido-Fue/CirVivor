@@ -41,6 +41,12 @@ import {
 import {
     RingProjectileCaptureDirector
 } from './enemy/projectile_capture_director.js';
+import {
+    CorkRouteClosureDirector
+} from './enemy/cork_route_closure_director.js';
+import {
+    ROUTE_AVAILABILITY_ABI_VERSION
+} from '../contract/route_availability_contract.js';
 import { TheCore } from './the_core.js';
 import { TheCoreRenderer } from './the_core_renderer.js';
 import { TheTower } from './the_tower.js';
@@ -229,6 +235,16 @@ export class GameObjectSystem {
                 'projectileCaptureDirectorFactory는 함수여야 합니다.'
             );
         }
+        this.corkRouteClosureDirectorFactory
+            = dependencies?.corkRouteClosureDirectorFactory
+                ?? ((directorOptions) => new CorkRouteClosureDirector(
+                    directorOptions
+                ));
+        if (typeof this.corkRouteClosureDirectorFactory !== 'function') {
+            throw new TypeError(
+                'corkRouteClosureDirectorFactory는 함수여야 합니다.'
+            );
+        }
         this.endpointSessionCount = 0;
         this.enemySimulationEndpoint = null;
         this.enemySimulationBackend = null;
@@ -241,6 +257,7 @@ export class GameObjectSystem {
         this.formationRuntimeDirector = null;
         this.jorangSplitLineageDirector = null;
         this.projectileCaptureDirector = null;
+        this.corkRouteClosureDirector = null;
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             try {
                 if (this.gameplayWorldActorsEnabled) {
@@ -377,6 +394,14 @@ export class GameObjectSystem {
                 ?? createTileMap(this.requestedMapId)
         );
         this.enemySimulationEndpoint.init(this.tileMap);
+        if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+            && typeof this.tileMap.getRouteGraph === 'function'
+            && this.tileMap.getRouteGraph() !== null) {
+            this.corkRouteClosureDirector
+                = this.#createCorkRouteClosureDirector(
+                    this.enemySimulationEndpoint
+                );
+        }
         this.#resetProjectileCaptureDirectorBinding(
             this.projectileCaptureDirector,
             this.enemySimulationEndpoint
@@ -546,6 +571,10 @@ export class GameObjectSystem {
         return this.projectileCaptureDirector?.getStatus() ?? null;
     }
 
+    getCorkRouteClosureStatus() {
+        return this.corkRouteClosureDirector?.getStatus() ?? null;
+    }
+
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
     getTerminalStatus() {
         return Object.freeze({
@@ -576,6 +605,7 @@ export class GameObjectSystem {
             formation: this.getFormationRuntimeStatus(),
             jorangSplitLineage: this.getJorangSplitLineageStatus(),
             projectileCapture: this.getProjectileCaptureStatus(),
+            routeClosure: this.getCorkRouteClosureStatus(),
             terminal: this.getTerminalStatus()
         });
     }
@@ -606,7 +636,8 @@ export class GameObjectSystem {
             || this.pentagonEffectDirector?.requiresRecovery() === true
             || this.formationRuntimeDirector?.requiresRecovery() === true
             || this.jorangSplitLineageDirector?.requiresRecovery() === true
-            || this.projectileCaptureDirector?.requiresRecovery() === true;
+            || this.projectileCaptureDirector?.requiresRecovery() === true
+            || this.corkRouteClosureDirector?.requiresRecovery() === true;
     }
 
     isGpuWorldRecoveryRequired() {
@@ -659,11 +690,20 @@ export class GameObjectSystem {
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
-                || this.projectileCaptureDirector?.requiresRecovery() === true)) {
+                || this.projectileCaptureDirector?.requiresRecovery() === true
+                || this.corkRouteClosureDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery();
         }
 
         if (this.pendingEnemyFixedTick === 0) {
+            if (!this.runOutcome.isDefeated()
+                && !this.coreIntegrity.isDepleted()
+                && !this.#refreshCorkRouteClosureDirectorBindingAtIdleBoundary(
+                    this.corkRouteClosureDirector,
+                    this.enemySimulationEndpoint
+                )) {
+                return this.#pauseForGpuRecovery();
+            }
             if (!this.runOutcome.isDefeated()
                 && !this.coreIntegrity.isDepleted()
                 && !this.#refreshProjectileCaptureDirectorBindingAtIdleBoundary(
@@ -829,6 +869,73 @@ export class GameObjectSystem {
                 }
                 return this.#pauseForGpuRecovery();
             }
+            if (this.corkRouteClosureDirector) {
+                const completedRoutePrograms = this.enemySimulationEndpoint
+                    .commitCompletedRouteAvailabilityProgramsAtFixedBoundary(
+                        proposedFixedTick
+                    );
+                if (completedRoutePrograms.pending === true) {
+                    return false;
+                }
+                if (completedRoutePrograms.protocolFailure) {
+                    if (this.runOutcome.isDefeated()
+                        || this.coreIntegrity.isDepleted()) {
+                        return this.#sealTerminalFailure(
+                            'route-availability-completion-protocol',
+                            proposedFixedTick,
+                            completedRoutePrograms.protocolFailure
+                        );
+                    }
+                    return this.#pauseForGpuRecovery();
+                }
+                this.corkRouteClosureDirector.observeCompletedPrograms(
+                    completedRoutePrograms
+                );
+                if (this.corkRouteClosureDirector.requiresRecovery()) {
+                    if (this.runOutcome.isDefeated()
+                        || this.coreIntegrity.isDepleted()) {
+                        return this.#sealTerminalFailure(
+                            'route-availability-completion-observe',
+                            proposedFixedTick,
+                            this.corkRouteClosureDirector.getStatus().failure
+                        );
+                    }
+                    return this.#pauseForGpuRecovery();
+                }
+                // 마지막 old-epoch cleanup batch를 drain하면 backend가 exact idle
+                // resource를 즉시 release해 route epoch/version을 새 all-open tuple로
+                // 전진시킬 수 있습니다. Status를 인증하기 전에 zero-only rebind를
+                // 한 번 더 허용해 old completion과 새 idle tuple의 경계를 봉인합니다.
+                if (!this.#refreshCorkRouteClosureDirectorBindingAtIdleBoundary(
+                    this.corkRouteClosureDirector,
+                    this.enemySimulationEndpoint
+                )) {
+                    if (this.runOutcome.isDefeated()
+                        || this.coreIntegrity.isDepleted()) {
+                        return this.#sealTerminalFailure(
+                            'route-availability-post-drain-binding',
+                            proposedFixedTick,
+                            this.corkRouteClosureDirector.getStatus()
+                        );
+                    }
+                    return this.#pauseForGpuRecovery();
+                }
+                this.corkRouteClosureDirector.observeRuntimeStatus(
+                    this.enemySimulationEndpoint
+                        .getRouteAvailabilityRuntimeStatus()
+                );
+                if (this.corkRouteClosureDirector.requiresRecovery()) {
+                    if (this.runOutcome.isDefeated()
+                        || this.coreIntegrity.isDepleted()) {
+                        return this.#sealTerminalFailure(
+                            'route-availability-completion-observe',
+                            proposedFixedTick,
+                            this.corkRouteClosureDirector.getStatus().failure
+                        );
+                    }
+                    return this.#pauseForGpuRecovery();
+                }
+            }
             const completedEvents = this.enemySimulationEndpoint
                 .commitCompletedEventsAtFixedBoundary(proposedFixedTick);
             if (completedEvents.protocolFailure) {
@@ -947,7 +1054,9 @@ export class GameObjectSystem {
             if (this.runOutcome.isRunning()) {
                 this.waveDirector?.queueSpawnsForFixedTick(
                     proposedFixedTick,
-                    this.enemySimulationEndpoint
+                    this.enemySimulationEndpoint,
+                    this.corkRouteClosureDirector
+                        ?.getAvailabilitySnapshot() ?? null
                 );
                 if (!this.#queueGpuWorldActorsForFixedTick(proposedFixedTick)) {
                     return this.#pauseForGpuRecovery();
@@ -1031,6 +1140,14 @@ export class GameObjectSystem {
             const lifecycleResult = this.enemySimulationEndpoint
                 .commitAtFixedBoundary(proposedFixedTick);
             if (lifecycleResult.recoveryRequired) {
+                this.corkRouteClosureDirector?.observeFixedCommit(
+                    lifecycleResult,
+                    proposedFixedTick
+                );
+                this.corkRouteClosureDirector?.observeLifecycle(
+                    lifecycleResult,
+                    proposedFixedTick
+                );
                 if (this.runOutcome.isDefeated()) {
                     this.enemyCoreImpactDirector?.observeFixedCommit(
                         lifecycleResult,
@@ -1047,7 +1164,9 @@ export class GameObjectSystem {
                             .getTerminalAtomicTransformProgramCancelStatus?.()
                             ?? null;
                     return this.#sealTerminalFailure(
-                        atomicTransformTerminalCancel?.owner?.state === 'failed'
+                        this.corkRouteClosureDirector?.requiresRecovery() === true
+                            ? 'terminal-route-availability-lifecycle-observe'
+                            : atomicTransformTerminalCancel?.owner?.state === 'failed'
                             ? 'terminal-atomic-transform-program-cancel'
                             : formationTerminalCancel?.owner?.state === 'failed'
                             ? 'terminal-formation-program-cancel'
@@ -1058,7 +1177,9 @@ export class GameObjectSystem {
                             ? 'terminal-fixed-program-cancel'
                             : 'terminal-lifecycle-commit',
                         proposedFixedTick,
-                        atomicTransformTerminalCancel?.owner?.state === 'failed'
+                        this.corkRouteClosureDirector?.requiresRecovery() === true
+                            ? this.corkRouteClosureDirector.getStatus().failure
+                            : atomicTransformTerminalCancel?.owner?.state === 'failed'
                             ? atomicTransformTerminalCancel.owner
                             : formationTerminalCancel?.owner?.state === 'failed'
                             ? formationTerminalCancel.owner
@@ -1079,6 +1200,24 @@ export class GameObjectSystem {
             }
             if (this.runOutcome.isRunning()
                 && !this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
+                return this.#pauseForGpuRecovery();
+            }
+            this.corkRouteClosureDirector?.observeFixedCommit(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            this.corkRouteClosureDirector?.observeLifecycle(
+                lifecycleResult,
+                proposedFixedTick
+            );
+            if (this.corkRouteClosureDirector?.requiresRecovery() === true) {
+                if (this.runOutcome.isDefeated()) {
+                    return this.#sealTerminalFailure(
+                        'route-availability-lifecycle-observe',
+                        proposedFixedTick,
+                        this.corkRouteClosureDirector.getStatus().failure
+                    );
+                }
                 return this.#pauseForGpuRecovery();
             }
             this.projectileCaptureDirector?.observeFixedCommit(
@@ -1232,6 +1371,23 @@ export class GameObjectSystem {
                 if (captureSettlement.pending) {
                     return false;
                 }
+                // Route completion은 generic AppliedEvent batch를 확정하므로, 같은
+                // terminal T의 Capture protocol을 먼저 T까지 정착시켜야 coherent
+                // watermark gate가 T-1 snapshot을 오탐하지 않습니다.
+                const routeSettlement
+                    = this.#settleTerminalRouteAvailabilityReadbacks(
+                        proposedFixedTick
+                    );
+                if (routeSettlement.failure) {
+                    return this.#sealTerminalFailure(
+                        routeSettlement.stage,
+                        proposedFixedTick,
+                        routeSettlement.failure
+                    );
+                }
+                if (routeSettlement.pending) {
+                    return false;
+                }
                 const atomicSettlementPending
                     = atomicBackend.pendingPrepareCount > 0
                     || atomicBackend.pendingTransformCount > 0
@@ -1291,6 +1447,20 @@ export class GameObjectSystem {
                 );
             }
             if (captureSettlement.pending) {
+                return false;
+            }
+            const routeSettlement
+                = this.#settleTerminalRouteAvailabilityReadbacks(
+                    proposedFixedTick
+                );
+            if (routeSettlement.failure) {
+                return this.#sealTerminalFailure(
+                    routeSettlement.stage,
+                    proposedFixedTick,
+                    routeSettlement.failure
+                );
+            }
+            if (routeSettlement.pending) {
                 return false;
             }
             const atomicTerminal = this.enemySimulationEndpoint
@@ -1397,7 +1567,8 @@ export class GameObjectSystem {
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
-                || this.projectileCaptureDirector?.requiresRecovery() === true;
+                || this.projectileCaptureDirector?.requiresRecovery() === true
+                || this.corkRouteClosureDirector?.requiresRecovery() === true;
         return submitted;
     }
 
@@ -1429,6 +1600,7 @@ export class GameObjectSystem {
         let replacementFormationRuntimeDirector = null;
         let replacementJorangSplitLineageDirector = null;
         let replacementProjectileCaptureDirector = null;
+        let replacementCorkRouteClosureDirector = null;
         try {
             const replacement = this.#createGpuEndpoint(false);
             replacementEndpoint = replacement.endpoint;
@@ -1476,7 +1648,16 @@ export class GameObjectSystem {
                 = this.projectileCaptureDirector
                 ? this.#createProjectileCaptureDirector(replacementEndpoint)
                 : null;
+            replacementCorkRouteClosureDirector
+                = this.corkRouteClosureDirector
+                ? this.#createCorkRouteClosureDirector(replacementEndpoint)
+                : null;
         } catch {
+            try {
+                replacementCorkRouteClosureDirector?.destroy();
+            } catch {
+                // 실패한 replacement route mirror만 폐기합니다.
+            }
             try {
                 replacementProjectileCaptureDirector?.destroy();
             } catch {
@@ -1526,6 +1707,7 @@ export class GameObjectSystem {
         }
         this.enemySimulationEndpoint.synchronizePresentation();
         this.projectileCaptureDirector?.destroy();
+        this.corkRouteClosureDirector?.destroy();
         this.jorangSplitLineageDirector?.destroy();
         this.formationRuntimeDirector?.destroy();
         this.pentagonEffectDirector?.destroy();
@@ -1554,6 +1736,8 @@ export class GameObjectSystem {
             = replacementJorangSplitLineageDirector;
         this.projectileCaptureDirector
             = replacementProjectileCaptureDirector;
+        this.corkRouteClosureDirector
+            = replacementCorkRouteClosureDirector;
         this.waveDirector = replacementWaveDirector;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -1592,6 +1776,8 @@ export class GameObjectSystem {
         this.formationRuntimeDirector = null;
         this.projectileCaptureDirector?.destroy();
         this.projectileCaptureDirector = null;
+        this.corkRouteClosureDirector?.destroy();
+        this.corkRouteClosureDirector = null;
         this.jorangSplitLineageDirector?.destroy();
         this.jorangSplitLineageDirector = null;
         this.enemyCoreImpactDirector?.destroy();
@@ -1683,6 +1869,10 @@ export class GameObjectSystem {
             fixedTick,
             'run-defeated'
         );
+        this.corkRouteClosureDirector?.closeForTerminal(
+            fixedTick,
+            'run-defeated'
+        );
         this.enemySimulationEndpoint.closeGameplayIngress?.(
             'run-defeated',
             fixedTick
@@ -1712,6 +1902,38 @@ export class GameObjectSystem {
         // runFailedFact는 RunOutcome의 immutable single fact이며 상태 snapshot에서 보존됩니다.
         void runFailedFact;
         return true;
+    }
+
+    #settleTerminalRouteAvailabilityReadbacks(fixedTick) {
+        if (!this.corkRouteClosureDirector) {
+            return Object.freeze({ pending: false, failure: null });
+        }
+        const programs = this.enemySimulationEndpoint
+            .commitCompletedRouteAvailabilityProgramsAtFixedBoundary(fixedTick);
+        if (programs.pending === true) {
+            return Object.freeze({ pending: true, failure: null });
+        }
+        if (programs.protocolFailure) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-route-availability-readback',
+                failure: programs.protocolFailure
+            });
+        }
+        this.corkRouteClosureDirector.observeCompletedPrograms(programs);
+        // terminal completion envelope는 final submit의 prior authenticated
+        // tuple/T watermark를 보존하지만 live runtime status는 마지막 drain 뒤
+        // 새 idle epoch/version1일 수 있습니다. Terminal Director는 의도적으로
+        // rebind 불가이므로 여기서 live tuple을 섞지 않고, 아래 success seal이
+        // preserved owner/backend/lifecycle evidence를 별도로 exact 대조합니다.
+        if (this.corkRouteClosureDirector.requiresRecovery()) {
+            return Object.freeze({
+                pending: false,
+                stage: 'terminal-route-availability-observe',
+                failure: this.corkRouteClosureDirector.getStatus().failure
+            });
+        }
+        return Object.freeze({ pending: false, failure: null });
     }
 
     #settleTerminalProjectileCaptureReadbacks(fixedTick) {
@@ -1801,6 +2023,18 @@ export class GameObjectSystem {
         const projectileCaptureRuntimeEvidence
             = this.enemySimulationEndpoint
                 .getProjectileCaptureRuntimeStatus?.() ?? null;
+        const routeAvailabilityTerminal = this.corkRouteClosureDirector
+            ? this.enemySimulationEndpoint
+                .getTerminalRouteAvailabilityProgramCancelStatus?.() ?? null
+            : null;
+        const routeAvailabilityOwnerEvidence
+            = routeAvailabilityTerminal?.owner;
+        const routeAvailabilityBackendEvidence
+            = routeAvailabilityTerminal?.backend;
+        const routeAvailabilityCleanupEvidence
+            = routeAvailabilityTerminal?.lifecycleCleanup;
+        const routeAvailabilityRosterEvidence
+            = this.corkRouteClosureDirector?.getStatus() ?? null;
         const endpointStatus = this.enemySimulationEndpoint.getStatus();
         const gpuStatus = endpointStatus.backend?.gpu
             ?? endpointStatus.backend
@@ -1978,6 +2212,87 @@ export class GameObjectSystem {
             && projectileCaptureRosterEvidence.terminal.lifecycleObserved
                 === true
             && projectileCaptureRosterEvidence.terminal.rosterSealed === true;
+        const routeAvailabilitySettlementSubmitted
+            = this.corkRouteClosureDirector === null
+                || (routeAvailabilityTerminal?.abiVersion
+                        === ROUTE_AVAILABILITY_ABI_VERSION
+                    && routeAvailabilityTerminal.state === 'settled'
+                    && routeAvailabilityTerminal.accepted === true
+                    && routeAvailabilityTerminal.finalFixedTick === fixedTick
+                    && routeAvailabilityTerminal.failure === null
+                    && routeAvailabilityOwnerEvidence?.state === 'settled'
+                    && routeAvailabilityOwnerEvidence.accepted === true
+                    && routeAvailabilityOwnerEvidence.finalFixedTick === fixedTick
+                    && routeAvailabilityOwnerEvidence.completedThroughTick
+                        >= fixedTick
+                    && routeAvailabilityOwnerEvidence.failure === null
+                    && routeAvailabilityOwnerEvidence.rosterSealed === true
+                    && routeAvailabilityOwnerEvidence.rosterCount === 0
+                    && Array.isArray(
+                        routeAvailabilityOwnerEvidence.closedPathIds
+                    )
+                    && routeAvailabilityOwnerEvidence.closedPathIds.length === 0
+                    && routeAvailabilityBackendEvidence?.state === 'settled'
+                    && routeAvailabilityBackendEvidence.accepted === true
+                    && routeAvailabilityBackendEvidence.finalFixedTick
+                        === fixedTick
+                    && routeAvailabilityBackendEvidence.completedThroughTick
+                        >= fixedTick
+                    && routeAvailabilityBackendEvidence.failure === null
+                    && routeAvailabilityBackendEvidence.rosterCount === 0
+                    && routeAvailabilityBackendEvidence.allOpen === true
+                    && routeAvailabilityBackendEvidence.leaseCount === 0
+                    && Array.isArray(
+                        routeAvailabilityBackendEvidence.closedPathIds
+                    )
+                    && routeAvailabilityBackendEvidence.closedPathIds.length === 0
+                    && routeAvailabilityBackendEvidence.stagedCount === 0
+                    && routeAvailabilityBackendEvidence.commitRequested === false
+                    && routeAvailabilityBackendEvidence.pendingReadbackCount === 0
+                    && routeAvailabilityBackendEvidence
+                        .pendingCompletionBatchCount === 0
+                    && routeAvailabilityBackendEvidence
+                        .lifecycleReservationCount === 0
+                    && routeAvailabilityBackendEvidence.sessionGeneration
+                        === routeAvailabilityRosterEvidence?.sessionGeneration
+                    && routeAvailabilityBackendEvidence.deviceGeneration
+                        === routeAvailabilityRosterEvidence?.deviceGeneration
+                    && routeAvailabilityBackendEvidence.authoritativeEpoch
+                        === routeAvailabilityRosterEvidence?.authoritativeEpoch
+                    && routeAvailabilityBackendEvidence.availabilityVersion
+                        === routeAvailabilityRosterEvidence?.availabilityVersion
+                    && routeAvailabilityCleanupEvidence?.state === 'settled'
+                    && routeAvailabilityCleanupEvidence.accepted === true
+                    && routeAvailabilityCleanupEvidence.finalFixedTick
+                        === fixedTick
+                    && routeAvailabilityCleanupEvidence.completedThroughTick
+                        >= fixedTick
+                    && routeAvailabilityCleanupEvidence.failure === null
+                    && routeAvailabilityCleanupEvidence.reservationCount === 0
+                    && routeAvailabilityCleanupEvidence.stagedCount === 0
+                    && routeAvailabilityCleanupEvidence.pendingReadbackCount === 0
+                    && routeAvailabilityCleanupEvidence.pendingCount === 0
+                    && routeAvailabilityCleanupEvidence.requestedCount
+                        === routeAvailabilityCleanupEvidence.completedCount);
+        const routeAvailabilityRosterSealed
+            = this.corkRouteClosureDirector === null
+                || (routeAvailabilityRosterEvidence?.recoveryRequired === false
+                    && routeAvailabilityRosterEvidence.rosterCount === 0
+                    && routeAvailabilityRosterEvidence.assignedLeaseCount === 0
+                    && routeAvailabilityRosterEvidence.pendingAssignmentCount === 0
+                    && routeAvailabilityRosterEvidence.pendingCleanupCount === 0
+                    && routeAvailabilityRosterEvidence.pending === false
+                    && routeAvailabilityRosterEvidence.closedPathIds.length === 0
+                    && routeAvailabilityRosterEvidence.completedThroughTick
+                        >= fixedTick
+                    && routeAvailabilityRosterEvidence.terminal?.finalFixedTick
+                        === fixedTick
+                    && routeAvailabilityRosterEvidence.terminal
+                        .fixedCommitObserved === true
+                    && routeAvailabilityRosterEvidence.terminal
+                        .lifecycleObserved === true
+                    && routeAvailabilityRosterEvidence.terminal.rosterSealed
+                        === true);
         if (!towerGameplayTargetCleared
             || !cancellationSubmitted
             || !effectCancellationSubmitted
@@ -1987,7 +2302,9 @@ export class GameObjectSystem {
             || !atomicTransformCancellationSubmitted
             || !atomicTransformRosterSealed
             || !projectileCaptureSettlementSubmitted
-            || !projectileCaptureRosterSealed) {
+            || !projectileCaptureRosterSealed
+            || !routeAvailabilitySettlementSubmitted
+            || !routeAvailabilityRosterSealed) {
             return this.#sealTerminalFailure(
                 !towerGameplayTargetCleared
                     ? 'terminal-tower-gameplay-target-evidence'
@@ -2007,7 +2324,11 @@ export class GameObjectSystem {
                                             ? 'terminal-atomic-transform-roster-seal'
                                             : !projectileCaptureSettlementSubmitted
                                                 ? 'terminal-projectile-capture-settlement'
-                                                : 'terminal-projectile-capture-roster-seal',
+                                                : !projectileCaptureRosterSealed
+                                                    ? 'terminal-projectile-capture-roster-seal'
+                                                    : !routeAvailabilitySettlementSubmitted
+                                                        ? 'terminal-route-availability-settlement'
+                                                        : 'terminal-route-availability-roster-seal',
                 fixedTick,
                 !towerGameplayTargetCleared
                     ? towerGameplayTargetEvidence
@@ -2035,7 +2356,14 @@ export class GameObjectSystem {
                                                 ? projectileCaptureBackendEvidence
                                                     ?? projectileCaptureOwnerEvidence
                                                     ?? projectileCaptureTerminal
-                                                : projectileCaptureRosterEvidence
+                                                : !projectileCaptureRosterSealed
+                                                    ? projectileCaptureRosterEvidence
+                                                    : !routeAvailabilitySettlementSubmitted
+                                                        ? routeAvailabilityBackendEvidence
+                                                            ?? routeAvailabilityOwnerEvidence
+                                                            ?? routeAvailabilityCleanupEvidence
+                                                            ?? routeAvailabilityTerminal
+                                                        : routeAvailabilityRosterEvidence
             );
         }
         this.enemySimulationEndpoint.finalizeClosedGameplayIngress?.();
@@ -2302,6 +2630,98 @@ export class GameObjectSystem {
         return director;
     }
 
+    #createCorkRouteClosureDirector(endpoint) {
+        const routeGraph = this.tileMap?.getRouteGraph?.() ?? null;
+        if (routeGraph === null) {
+            return null;
+        }
+        const runtimeStatus = this.#readRouteAvailabilityProtocol(endpoint);
+        const director = this.corkRouteClosureDirectorFactory({
+            routeGraph,
+            graphContentKey: runtimeStatus.graphContentKey,
+            sessionGeneration: runtimeStatus.sessionGeneration,
+            deviceGeneration: runtimeStatus.deviceGeneration,
+            authoritativeEpoch: runtimeStatus.authoritativeEpoch,
+            capacity: runtimeStatus.capacity,
+            runtimeStatus
+        });
+        if (!director
+            || typeof director.observeCompletedPrograms !== 'function'
+            || typeof director.observeRuntimeStatus !== 'function'
+            || typeof director.observeLifecycle !== 'function'
+            || typeof director.observeFixedCommit !== 'function'
+            || typeof director.getAvailabilitySnapshot !== 'function'
+            || typeof director.requiresRecovery !== 'function'
+            || typeof director.getStatus !== 'function'
+            || typeof director.resetGpuBinding !== 'function'
+            || typeof director.closeForTerminal !== 'function'
+            || typeof director.destroy !== 'function'
+            || director.requiresRecovery() === true) {
+            try {
+                director?.destroy?.();
+            } catch {
+                // 잘못된 route mirror가 endpoint generation을 건드리지 않게 합니다.
+            }
+            throw new TypeError('CorkRouteClosureDirector contract가 올바르지 않습니다.');
+        }
+        return director;
+    }
+
+    #readRouteAvailabilityProtocol(endpoint) {
+        if (typeof endpoint?.getRouteAvailabilityRuntimeStatus !== 'function') {
+            throw new TypeError(
+                'endpoint.getRouteAvailabilityRuntimeStatus()가 필요합니다.'
+            );
+        }
+        const status = endpoint.getRouteAvailabilityRuntimeStatus();
+        const endpointSessionGeneration = endpoint.getStatus().sessionGeneration;
+        const routeGraph = this.tileMap?.getRouteGraph?.() ?? null;
+        const expectedClosureCount = Array.isArray(routeGraph?.closures)
+            ? routeGraph.closures.length
+            : 0;
+        if (status?.abiVersion !== ROUTE_AVAILABILITY_ABI_VERSION
+            || !Number.isSafeInteger(status.sessionGeneration)
+            || status.sessionGeneration <= 0
+            || status.sessionGeneration !== endpointSessionGeneration
+            || !Number.isSafeInteger(status.deviceGeneration)
+            || status.deviceGeneration < 0
+            || status.deviceGeneration >= 0xffffffff
+            || !Number.isSafeInteger(status.authoritativeEpoch)
+            || status.authoritativeEpoch < 0
+            || status.authoritativeEpoch >= 0xffffffff
+            || typeof status.graphContentKey !== 'string'
+            || status.graphContentKey.length === 0
+            || status.graphEnabled !== true
+            || status.closureCount !== expectedClosureCount
+            || !Number.isSafeInteger(status.availabilityVersion)
+            || status.availabilityVersion <= 0
+            || status.availabilityVersion >= 0xffffffff
+            || status.capacity !== 8
+            || !Array.isArray(status.closedPathIds)
+            || !Number.isSafeInteger(status.rosterCount)
+            || status.rosterCount < 0
+            || !Number.isSafeInteger(status.leaseCount)
+            || status.leaseCount < 0
+            || !Number.isSafeInteger(status.lifecycleReservationCount)
+            || status.lifecycleReservationCount < 0
+            || !Number.isSafeInteger(status.stagedCount)
+            || status.stagedCount < 0
+            || typeof status.commitRequested !== 'boolean'
+            || !Number.isSafeInteger(status.pendingReadbackCount)
+            || status.pendingReadbackCount < 0
+            || !Number.isSafeInteger(status.queuedBatchCount)
+            || status.queuedBatchCount < 0
+            || status.ingressOpen !== true
+            || status.runtimeStatus !== 0
+            || status.requiresRecovery !== false
+            || status.failure !== null) {
+            throw new TypeError(
+                'route availability runtime protocol binding이 올바르지 않습니다.'
+            );
+        }
+        return status;
+    }
+
     #resetProjectileCaptureDirectorBinding(director, endpoint) {
         if (!director) {
             return;
@@ -2315,6 +2735,90 @@ export class GameObjectSystem {
             protocol.authoritativeEpoch
         ) !== true) {
             throw new Error('capture director GPU binding 갱신에 실패했습니다.');
+        }
+    }
+
+    #refreshCorkRouteClosureDirectorBindingAtIdleBoundary(director, endpoint) {
+        if (!director) {
+            return true;
+        }
+        let runtimeStatus;
+        let directorStatus;
+        try {
+            runtimeStatus = this.#readRouteAvailabilityProtocol(endpoint);
+            directorStatus = director.getStatus();
+        } catch {
+            return false;
+        }
+        const bindingMatches
+            = directorStatus.sessionGeneration
+                === runtimeStatus.sessionGeneration
+                && directorStatus.deviceGeneration
+                    === runtimeStatus.deviceGeneration
+                && directorStatus.authoritativeEpoch
+                    === runtimeStatus.authoritativeEpoch
+                && directorStatus.graphContentKey
+                    === runtimeStatus.graphContentKey;
+        if (bindingMatches) {
+            return true;
+        }
+        const exactIdle = directorStatus.destroyed === false
+            && directorStatus.recoveryRequired === false
+            && directorStatus.failure === null
+            && directorStatus.terminal === null
+            && directorStatus.pending === false
+            && directorStatus.rosterCount === 0
+            && directorStatus.assignedLeaseCount === 0
+            && directorStatus.pendingAssignmentCount === 0
+            && directorStatus.pendingCleanupCount === 0
+            && directorStatus.closedPathIds.length === 0
+            && runtimeStatus.ingressOpen === true
+            && runtimeStatus.requiresRecovery === false
+            && runtimeStatus.failure === null
+            && runtimeStatus.terminal === null
+            && runtimeStatus.rosterCount === 0
+            && runtimeStatus.leaseCount === 0
+            && runtimeStatus.lifecycleReservationCount === 0
+            && runtimeStatus.stagedCount === 0
+            && runtimeStatus.commitRequested === false
+            && runtimeStatus.pendingReadbackCount === 0
+            && runtimeStatus.queuedBatchCount === 0
+            && runtimeStatus.closedPathIds.length === 0
+            && runtimeStatus.availabilityVersion === 1;
+        if (!exactIdle) {
+            return false;
+        }
+        try {
+            const resetBinding = Object.freeze({
+                graphContentKey: runtimeStatus.graphContentKey,
+                sessionGeneration: runtimeStatus.sessionGeneration,
+                deviceGeneration: runtimeStatus.deviceGeneration,
+                authoritativeEpoch: runtimeStatus.authoritativeEpoch,
+                availabilityVersion: runtimeStatus.availabilityVersion
+            });
+            const waveResetSnapshot = Object.freeze({
+                graphContentKey: resetBinding.graphContentKey,
+                availabilityVersion: resetBinding.availabilityVersion,
+                closedPathIds: Object.freeze([])
+            });
+            if (this.waveDirector !== null
+                && this.waveDirector.canResetRouteAvailabilityBinding(
+                    waveResetSnapshot
+                ) !== true) {
+                return false;
+            }
+            if (director.resetGpuBinding(resetBinding) !== true) {
+                return false;
+            }
+            // Director tuple과 Wave selection cache는 같은 synchronous idle
+            // boundary에서만 교체합니다. 막힌 authored schedule은 Wave가 보존하고
+            // 구 epoch에 결속된 group path/version cache만 폐기합니다.
+            return this.waveDirector === null
+                || this.waveDirector.resetRouteAvailabilityBinding(
+                    waveResetSnapshot
+                ) === true;
+        } catch {
+            return false;
         }
     }
 

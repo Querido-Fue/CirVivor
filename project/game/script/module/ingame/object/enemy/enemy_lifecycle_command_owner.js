@@ -28,6 +28,7 @@ import {
 } from '../../contract/enemy_orbit_directional_defense_contract.js';
 import {
     createGpuPrivateHexaTransformDestinationIntent,
+    materializeNaturalCorkRouteClosureActivation,
     materializeNaturalJorangAtomicTransformActivation,
     materializeNaturalHexaFormationActivation,
     normalizeGpuPrivateHexaTransformDestinationIntent
@@ -69,12 +70,31 @@ import {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
     GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
 } from '../../physics/gpu/gpu_projectile_capture_runtime_abi.js';
+import {
+    ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_route_closure_catalog_data.js';
+import {
+    BASIC_CORK_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_cork_enemy_data.js';
+import {
+    ROUTE_AVAILABILITY_ABI_VERSION,
+    ROUTE_AVAILABILITY_MAX_CORK_ROSTER
+} from '../../contract/route_availability_contract.js';
+import {
+    GPU_ROUTE_LIFECYCLE_ABI_VERSION
+} from '../../physics/gpu/gpu_route_runtime_abi.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
 export const ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE = 'orbit-slot-capacity';
 export const ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE = (
     'orbit-slot-metadata-corruption'
+);
+export const ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE = (
+    'route-roster-capacity'
+);
+export const ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION = (
+    'cork-route-terminal-cleanup'
 );
 // 외부 options/reason이나 reflection으로 재현할 수 없는 command identity marker입니다.
 // fixed commit payload에는 노출하지 않고 terminal close의 보존 여부만 지배합니다.
@@ -155,6 +175,74 @@ function fingerprintProjectileCaptureCommandId(value) {
         hash = Math.imul(hash, 0x01000193) >>> 0;
     }
     return hash === 0 || hash === INVALID_HANDLE_COMPONENT ? 1 : hash;
+}
+
+function fingerprintRouteLifecycleBatch(targetFixedTick, plans) {
+    const identities = plans.map((plan) => plan.commandId).sort();
+    return fingerprintProjectileCaptureCommandId(
+        `route-lifecycle:${targetFixedTick}:${identities.join('\u0000')}`
+    );
+}
+
+function resolveRouteClosureProfile(intent, label) {
+    const profileId = intent?.routeClosureProfileId;
+    if (profileId === undefined || profileId === null) {
+        return null;
+    }
+    if (typeof profileId !== 'string' || profileId.length === 0) {
+        throw new TypeError(`${label}.routeClosureProfileId가 유효하지 않습니다.`);
+    }
+    const profile = ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID[profileId];
+    if (!profile) {
+        throw new RangeError(`${label} route closure profile이 없습니다: ${profileId}`);
+    }
+    if (intent.definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || intent.enemyDefinitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || intent.routeClosureProfileCode !== profile.definitionCode) {
+        throw new RangeError(
+            `${label} route closure profile/definition/code 조합이 canonical Cork가 아닙니다.`
+        );
+    }
+    return profile;
+}
+
+function snapshotRouteRuntimeBinding(source, label) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        throw new TypeError(`${label} route runtime binding이 필요합니다.`);
+    }
+    const graphContentKey = requireNonEmptyString(
+        source.graphContentKey,
+        `${label}.graphContentKey`
+    );
+    const rosterCount = requireNonNegativeSafeInteger(
+        source.rosterCount,
+        `${label}.rosterCount`
+    );
+    if (source.abiVersion !== ROUTE_AVAILABILITY_ABI_VERSION
+        || source.sessionGeneration <= 0
+        || !Number.isSafeInteger(source.sessionGeneration)
+        || source.sessionGeneration >= INVALID_HANDLE_COMPONENT
+        || !Number.isSafeInteger(source.deviceGeneration)
+        || source.deviceGeneration < 0
+        || source.deviceGeneration >= INVALID_HANDLE_COMPONENT
+        || !Number.isSafeInteger(source.authoritativeEpoch)
+        || source.authoritativeEpoch < 0
+        || source.authoritativeEpoch >= INVALID_HANDLE_COMPONENT
+        || !Number.isSafeInteger(source.availabilityVersion)
+        || source.availabilityVersion <= 0
+        || source.availabilityVersion >= INVALID_HANDLE_COMPONENT
+        || rosterCount > ROUTE_AVAILABILITY_MAX_CORK_ROSTER) {
+        throw new RangeError(`${label} route runtime binding이 canonical 범위를 벗어났습니다.`);
+    }
+    return Object.freeze({
+        abiVersion: source.abiVersion,
+        sessionGeneration: source.sessionGeneration,
+        deviceGeneration: source.deviceGeneration,
+        authoritativeEpoch: source.authoritativeEpoch,
+        graphContentKey,
+        availabilityVersion: source.availabilityVersion,
+        rosterCount
+    });
 }
 
 function requirePositiveSafeInteger(value, label) {
@@ -469,6 +557,19 @@ function assertProjectileCaptureReleaseTransactionPort(source) {
     return source;
 }
 
+function assertRouteLifecyclePort(source) {
+    for (const method of [
+        'preflightRouteLifecycleBatch',
+        'commitRouteLifecycleBatch',
+        'cancelRouteLifecycleBatch'
+    ]) {
+        if (typeof source?.[method] !== 'function') {
+            throw new TypeError(`routeLifecyclePort.${method}()가 필요합니다.`);
+        }
+    }
+    return source;
+}
+
 function copyFrozenPrimitiveMetadata(source, label) {
     if (!source || typeof source !== 'object' || !Object.isFrozen(source)) {
         throw new TypeError(`${label}은 frozen metadata object여야 합니다.`);
@@ -592,6 +693,10 @@ function freezeCommitResult(result) {
         projectileCaptureReleases: Object.freeze(
             result.projectileCaptureReleases.map((entry) => Object.freeze(entry))
         ),
+        routeLifecycle: Object.freeze(
+            result.routeLifecycle.map((entry) => Object.freeze(entry))
+        ),
+        routeRuntimeBinding: result.routeRuntimeBinding,
         rejected: Object.freeze(result.rejected.map((entry) => Object.freeze(entry))),
         recoveryRequired: result.recoveryRequired === true,
         backendState: result.backendState,
@@ -646,12 +751,13 @@ export class EnemyLifecycleCommandOwner {
     #projectileCaptureReleaseAuthority;
     #activeMetadataMutationRegistryAuthority;
     #projectileCaptureReleaseTransactionPort;
+    #routeLifecyclePort;
     #authoredFormationProvenanceLedger;
 
     /**
      * @param {object} backend - EnemySimulationBackend public port입니다.
      * @param {object} registry - WorldRegistry입니다.
-     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null,atomicTransformAuthority?:object|null,atomicTransformRegistryAuthority?:object|null,atomicTransformTransactionPort?:object|null,enemyAtomicTransformTransactionPort?:object|null,projectileCaptureReleaseAuthority?:object|null,activeMetadataMutationRegistryAuthority?:object|null,projectileCaptureReleaseTransactionPort?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 privileged authority입니다.
+     * @param {{commandHistoryCapacity?:number,terminalCleanupAuthority?:object|null,atomicTransformAuthority?:object|null,atomicTransformRegistryAuthority?:object|null,atomicTransformTransactionPort?:object|null,enemyAtomicTransformTransactionPort?:object|null,projectileCaptureReleaseAuthority?:object|null,activeMetadataMutationRegistryAuthority?:object|null,projectileCaptureReleaseTransactionPort?:object|null,routeLifecyclePort?:object|null}} [options={}] - 중복 command 억제 범위와 비공개 privileged authority입니다.
      */
     constructor(backend, registry, options = {}) {
         this.backend = assertBackend(backend);
@@ -787,6 +893,16 @@ export class EnemyLifecycleCommandOwner {
                 projectileCaptureReleaseTransactionPort
             )
             : null;
+        this.#routeLifecyclePort = options.routeLifecyclePort === undefined
+            || options.routeLifecyclePort === null
+            ? null
+            : assertRouteLifecyclePort(options.routeLifecyclePort);
+        if (this.#routeLifecyclePort
+            && typeof this.registry.copyEntityView !== 'function') {
+            throw new TypeError(
+                'route lifecycle integration에는 registry.copyEntityView()가 필요합니다.'
+            );
+        }
         this.pendingCommands = [];
         this.knownCommandIds = new Set();
         this.completedCommandIds = [];
@@ -941,6 +1057,12 @@ export class EnemyLifecycleCommandOwner {
                 === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
             && typeof commandId === 'string'
             && commandId.startsWith('ring-projectile-capture-terminal:');
+        const requestedRouteTerminalCleanup
+            = reason === ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+            && options?.disposition
+                === ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+            && typeof commandId === 'string'
+            && commandId.startsWith('cork-route-terminal:');
         const authenticCoreImpactCleanup = validTerminalCleanupPermit
             && requestedCoreImpactCleanup;
         const authenticGpuDeathCleanup = validTerminalCleanupPermit
@@ -948,9 +1070,12 @@ export class EnemyLifecycleCommandOwner {
         const authenticProjectileCaptureTerminalCleanup
             = validTerminalCleanupPermit
             && requestedProjectileCaptureTerminalCleanup;
+        const authenticRouteTerminalCleanup = validTerminalCleanupPermit
+            && requestedRouteTerminalCleanup;
         const authenticTerminalCleanup = authenticCoreImpactCleanup
             || authenticGpuDeathCleanup
-            || authenticProjectileCaptureTerminalCleanup;
+            || authenticProjectileCaptureTerminalCleanup
+            || authenticRouteTerminalCleanup;
         const privilegedTerminalCleanup = !this.ingressOpen
             && authenticTerminalCleanup;
         if (!this.ingressOpen && !privilegedTerminalCleanup) {
@@ -969,6 +1094,9 @@ export class EnemyLifecycleCommandOwner {
                 === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
                 && authenticProjectileCaptureTerminalCleanup
             ? PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+            : options.disposition === ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+                && authenticRouteTerminalCleanup
+            ? ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
             : assertEnemyLifecycleDisposition(options.disposition);
         if (disposition !== null
             && PRIVILEGED_TRANSFORM_DISPOSITIONS.has(disposition)) {
@@ -982,7 +1110,8 @@ export class EnemyLifecycleCommandOwner {
             const existing = this.pendingCommands[pendingDespawnIndex];
             const sameFixedTick = existing.targetFixedTick === tick;
             if ((authenticCoreImpactCleanup
-                    || authenticProjectileCaptureTerminalCleanup)
+                    || authenticProjectileCaptureTerminalCleanup
+                    || authenticRouteTerminalCleanup)
                 && existing.targetFixedTick < tick) {
                 // committed Core arrival의 current boundary보다 앞선 command는 이미
                 // missed-boundary desync입니다. 과거로 retarget하지 않고 recovery합니다.
@@ -1003,6 +1132,8 @@ export class EnemyLifecycleCommandOwner {
             const shouldRetargetProjectileCaptureTerminal
                 = authenticProjectileCaptureTerminalCleanup
                 && existing.targetFixedTick > tick;
+            const shouldRetargetRouteTerminal = authenticRouteTerminalCleanup
+                && existing.targetFixedTick > tick;
             const shouldUpgradeCoreImpact = authenticCoreImpactCleanup
                 && normalizedReason === 'core-impact'
                 && disposition === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
@@ -1010,6 +1141,7 @@ export class EnemyLifecycleCommandOwner {
                     !== ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT;
             const shouldAuthenticateExisting = authenticCoreImpactCleanup
                 || authenticProjectileCaptureTerminalCleanup
+                || authenticRouteTerminalCleanup
                 || (sameFixedTick
                     && authenticGpuDeathCleanup
                     && existing.reason === 'gpu-death');
@@ -1024,15 +1156,22 @@ export class EnemyLifecycleCommandOwner {
                         !== PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
                     || existing.disposition
                         !== PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION);
+            const shouldUpgradeRouteTerminal = authenticRouteTerminalCleanup
+                && (existing.reason !== ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+                    || existing.disposition
+                        !== ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION);
             if (shouldRetargetCoreImpact
                 || shouldRetargetProjectileCaptureTerminal
+                || shouldRetargetRouteTerminal
                 || dispositionUpgraded
                 || provenanceUpgraded
-                || shouldUpgradeProjectileCaptureTerminal) {
+                || shouldUpgradeProjectileCaptureTerminal
+                || shouldUpgradeRouteTerminal) {
                 const upgradedCommand = Object.freeze({
                     ...existing,
                     ...(shouldRetargetCoreImpact
                         || shouldRetargetProjectileCaptureTerminal
+                        || shouldRetargetRouteTerminal
                         ? { targetFixedTick: tick }
                         : null),
                     ...(dispositionUpgraded
@@ -1047,6 +1186,12 @@ export class EnemyLifecycleCommandOwner {
                                 PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION,
                             disposition:
                                 PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+                        }
+                        : null),
+                    ...(shouldUpgradeRouteTerminal
+                        ? {
+                            reason: ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION,
+                            disposition: ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
                         }
                         : null)
                 });
@@ -1065,7 +1210,8 @@ export class EnemyLifecycleCommandOwner {
                     : resolvedExisting.disposition,
                 dispositionUpgraded,
                 targetFixedTickRetargeted: shouldRetargetCoreImpact
-                    || shouldRetargetProjectileCaptureTerminal,
+                    || shouldRetargetProjectileCaptureTerminal
+                    || shouldRetargetRouteTerminal,
                 authenticTerminalCleanup: shouldAuthenticateExisting
                     && AUTHENTIC_TERMINAL_CLEANUP_COMMANDS.has(
                         resolvedExisting
@@ -1746,7 +1892,8 @@ export class EnemyLifecycleCommandOwner {
     }
 
     /**
-     * due command snapshot을 despawn → H → J → projectile release → spawn 순서로
+     * due command snapshot을 despawn(+route cleanup) → H → J → projectile release
+     * → spawn(+route roster) 순서로
      * fixed boundary에서만 commit합니다.
      * @returns {object} 불변 commit result snapshot입니다.
      */
@@ -1760,6 +1907,8 @@ export class EnemyLifecycleCommandOwner {
             despawned: [],
             atomicTransforms: [],
             projectileCaptureReleases: [],
+            routeLifecycle: [],
+            routeRuntimeBinding: null,
             rejected: [],
             recoveryRequired: false,
             backendState: this.backend.getRuntimeState(),
@@ -1931,6 +2080,7 @@ export class EnemyLifecycleCommandOwner {
         this.#projectileCaptureReleaseAuthority = null;
         this.#activeMetadataMutationRegistryAuthority = null;
         this.#projectileCaptureReleaseTransactionPort = null;
+        this.#routeLifecyclePort = null;
         this.#authoredFormationProvenanceLedger.clear();
         this.lastCommitResult = null;
     }
@@ -2103,12 +2253,114 @@ export class EnemyLifecycleCommandOwner {
             return 'complete';
         }
 
+        const routePlans = [];
+        try {
+            for (const command of validCommands) {
+                const view = this.registry.copyEntityView?.(command.handle, {});
+                const profile = resolveRouteClosureProfile(
+                    view?.metadata,
+                    `despawn ${command.commandId}`
+                );
+                if (view?.definitionId === BASIC_CORK_ENEMY_DEFINITION_ID
+                    && profile === null) {
+                    throw new RangeError(
+                        'active Cork registry metadata에 route profile이 없습니다.'
+                    );
+                }
+                if (profile === null) {
+                    continue;
+                }
+                routePlans.push(Object.freeze({
+                    commandId: command.commandId,
+                    commandIdFingerprint:
+                        fingerprintProjectileCaptureCommandId(command.commandId),
+                    handle: command.handle,
+                    reason: command.reason,
+                    disposition: command.disposition
+                }));
+            }
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: validCommands[0].commandId,
+                code: 'route-despawn-preflight-materialization',
+                message: String(error?.message ?? error)
+            });
+            return 'recovery';
+        }
+        let routeTransaction = null;
+        if (routePlans.length > 0) {
+            if (!this.#routeLifecyclePort) {
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: routePlans[0].commandId,
+                    code: 'route-lifecycle-port-required'
+                });
+                return 'recovery';
+            }
+            const targetFixedTick = validCommands[0].targetFixedTick;
+            const batchIdFingerprint = fingerprintRouteLifecycleBatch(
+                targetFixedTick,
+                routePlans
+            );
+            try {
+                const preflight = this.#routeLifecyclePort
+                    .preflightRouteLifecycleBatch(Object.freeze({
+                        abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                        targetFixedTick,
+                        batchIdFingerprint,
+                        spawnPlans: Object.freeze([]),
+                        despawnPlans: Object.freeze(routePlans)
+                    }));
+                if (preflight?.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                    || preflight?.accepted !== true
+                    || preflight.requiresRecovery === true
+                    || preflight.targetFixedTick !== targetFixedTick
+                    || preflight.batchIdFingerprint !== batchIdFingerprint
+                    || preflight.spawnReservationCount !== 0
+                    || preflight.cleanupReservationCount !== routePlans.length
+                    || !preflight.receipt
+                    || typeof preflight.receipt !== 'object') {
+                    throw new RangeError(
+                        preflight?.reason ?? 'route-despawn-preflight-rejected'
+                    );
+                }
+                routeTransaction = Object.freeze({
+                    receipt: preflight.receipt,
+                    targetFixedTick,
+                    batchIdFingerprint,
+                    plans: Object.freeze(routePlans)
+                });
+            } catch (error) {
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: routePlans[0].commandId,
+                    code: 'route-despawn-preflight',
+                    message: String(error?.message ?? error)
+                });
+                return 'recovery';
+            }
+        }
+
         let backendResult;
         try {
             backendResult = this.backend.despawnBodies(
                 validCommands.map((command) => command.handle)
             );
         } catch (error) {
+            if (routeTransaction) {
+                try {
+                    this.#routeLifecyclePort.cancelRouteLifecycleBatch(
+                        routeTransaction.receipt,
+                        'despawn-exception'
+                    );
+                } catch {
+                    result.recoveryRequired = true;
+                }
+            }
             result.state = 'failed';
             result.recoveryRequired = true;
             result.rejected.push({
@@ -2137,6 +2389,8 @@ export class EnemyLifecycleCommandOwner {
                     despawned.disposition = command.disposition;
                     despawned.bountyEligible = command.disposition
                         === PROJECTILE_CAPTURE_TERMINAL_CLEANUP_DISPOSITION
+                        || command.disposition
+                            === ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
                         ? false
                         : isEnemyDispositionBountyEligible(
                             command.disposition
@@ -2146,7 +2400,90 @@ export class EnemyLifecycleCommandOwner {
                 consumedCommandIds.add(command.commandId);
             }
         }
-        if (!fullyRemoved
+        if (routeTransaction) {
+            const removedByCommandId = new Map(
+                result.despawned.map((entry) => [entry.commandId, entry])
+            );
+            const routeDespawns = routeTransaction.plans
+                .filter((plan) => removedByCommandId.has(plan.commandId))
+                .map((plan) => Object.freeze({
+                    commandId: plan.commandId,
+                    commandIdFingerprint: plan.commandIdFingerprint,
+                    handle: plan.handle
+                }));
+            if (routeDespawns.length === 0) {
+                try {
+                    const cancelled = this.#routeLifecyclePort
+                        .cancelRouteLifecycleBatch(
+                            routeTransaction.receipt,
+                            'despawn-not-published'
+                        );
+                    if (cancelled?.abiVersion
+                            !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                        || cancelled?.accepted !== true
+                        || cancelled.cancelledSpawnReservationCount !== 0
+                        || cancelled.cancelledCleanupReservationCount
+                            !== routeTransaction.plans.length) {
+                        result.recoveryRequired = true;
+                    }
+                } catch {
+                    result.recoveryRequired = true;
+                }
+            } else {
+                try {
+                    const committed = this.#routeLifecyclePort
+                        .commitRouteLifecycleBatch(
+                            routeTransaction.receipt,
+                            Object.freeze({
+                                abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                                targetFixedTick: routeTransaction.targetFixedTick,
+                                batchIdFingerprint:
+                                    routeTransaction.batchIdFingerprint,
+                                spawned: Object.freeze([]),
+                                despawned: Object.freeze(routeDespawns)
+                            })
+                        );
+                    if (committed?.abiVersion
+                            !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                        || committed?.accepted !== true
+                        || committed.requiresRecovery === true
+                        || committed.targetFixedTick
+                            !== routeTransaction.targetFixedTick
+                        || committed.batchIdFingerprint
+                            !== routeTransaction.batchIdFingerprint
+                        || committed.spawnedCount !== 0
+                        || committed.cleanedCount !== routeDespawns.length) {
+                        throw new RangeError(
+                            committed?.reason ?? 'route-despawn-commit-mismatch'
+                        );
+                    }
+                    result.routeRuntimeBinding = snapshotRouteRuntimeBinding(
+                        committed.runtimeBinding,
+                        'route despawn commit'
+                    );
+                    for (const despawned of routeDespawns) {
+                        result.routeLifecycle.push({
+                            action: 'cleanup',
+                            commandId: despawned.commandId,
+                            commandIdFingerprint: despawned.commandIdFingerprint,
+                            handle: despawned.handle,
+                            targetFixedTick: routeTransaction.targetFixedTick,
+                            batchIdFingerprint:
+                                routeTransaction.batchIdFingerprint
+                        });
+                    }
+                } catch (error) {
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: routeTransaction.plans[0].commandId,
+                        code: 'route-despawn-commit',
+                        message: String(error?.message ?? error)
+                    });
+                }
+            }
+        }
+        if (result.recoveryRequired
+            || !fullyRemoved
             || removedThisBatch < validCommands.length
             || backendResult?.requiresRecovery === true
             || this.backend.requiresRecovery()) {
@@ -3260,7 +3597,7 @@ export class EnemyLifecycleCommandOwner {
             }
             return;
         }
-        const reservations = [];
+        let reservations = [];
         for (const command of commands) {
             const handle = this.registry.reserveEntity({
                 kindId: command.intent.kindId,
@@ -3299,6 +3636,14 @@ export class EnemyLifecycleCommandOwner {
                             command.intent,
                             handle
                         );
+                } else if (command.intent.kindId === 'enemy'
+                    && command.intent.definitionId
+                        === BASIC_CORK_ENEMY_DEFINITION_ID) {
+                    activationIntent
+                        = materializeNaturalCorkRouteClosureActivation(
+                            command.intent,
+                            handle
+                        );
                 }
             } catch (error) {
                 this.registry.cancelReservation(handle);
@@ -3315,6 +3660,148 @@ export class EnemyLifecycleCommandOwner {
                 return;
             }
             reservations.push({ command, handle, activationIntent });
+        }
+
+        let routeTransaction = null;
+        const routeReservations = [];
+        try {
+            for (const reservation of reservations) {
+                const profile = resolveRouteClosureProfile(
+                    reservation.activationIntent,
+                    `spawn ${reservation.command.commandId}`
+                );
+                if (profile === null) {
+                    continue;
+                }
+                routeReservations.push(Object.freeze({
+                    reservation,
+                    plan: Object.freeze({
+                        commandId: reservation.command.commandId,
+                        commandIdFingerprint: fingerprintProjectileCaptureCommandId(
+                            reservation.command.commandId
+                        ),
+                        sequence: reservation.command.sequence,
+                        definitionId: reservation.activationIntent.definitionId,
+                        routeClosureProfileId: profile.id,
+                        routeClosureProfileCode: profile.definitionCode,
+                        handle: reservation.handle
+                    })
+                }));
+            }
+        } catch (error) {
+            for (const reservation of reservations) {
+                this.registry.cancelReservation(reservation.handle);
+            }
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: reservations[0].command.commandId,
+                code: 'route-spawn-preflight-materialization',
+                message: String(error?.message ?? error)
+            });
+            return;
+        }
+        if (routeReservations.length > 0) {
+            if (!this.#routeLifecyclePort) {
+                for (const reservation of reservations) {
+                    this.registry.cancelReservation(reservation.handle);
+                }
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: routeReservations[0].plan.commandId,
+                    code: 'route-lifecycle-port-required'
+                });
+                return;
+            }
+            const targetFixedTick = routeReservations[0]
+                .reservation.command.targetFixedTick;
+            const plans = routeReservations.map((entry) => entry.plan);
+            const batchIdFingerprint = fingerprintRouteLifecycleBatch(
+                targetFixedTick,
+                plans
+            );
+            let preflight;
+            try {
+                preflight = this.#routeLifecyclePort
+                    .preflightRouteLifecycleBatch(Object.freeze({
+                        abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                        targetFixedTick,
+                        batchIdFingerprint,
+                        spawnPlans: Object.freeze(plans),
+                        despawnPlans: Object.freeze([])
+                    }));
+            } catch (error) {
+                preflight = Object.freeze({
+                    accepted: false,
+                    requiresRecovery: true,
+                    reason: String(error?.message ?? error)
+                });
+            }
+            if (preflight?.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                || preflight?.accepted !== true) {
+                if (preflight?.abiVersion === GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                    && preflight?.requiresRecovery !== true
+                    && preflight?.reason
+                        === ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE) {
+                    const rejectedCommandIds = new Set(
+                        routeReservations.map((entry) => (
+                            entry.reservation.command.commandId
+                        ))
+                    );
+                    for (const entry of routeReservations) {
+                        this.registry.cancelReservation(entry.reservation.handle);
+                        result.rejected.push({
+                            commandId: entry.reservation.command.commandId,
+                            code: ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE
+                        });
+                        consumedCommandIds.add(entry.reservation.command.commandId);
+                    }
+                    reservations = reservations.filter((reservation) => (
+                        !rejectedCommandIds.has(reservation.command.commandId)
+                    ));
+                } else {
+                    for (const reservation of reservations) {
+                        this.registry.cancelReservation(reservation.handle);
+                    }
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: routeReservations[0].plan.commandId,
+                        code: 'route-spawn-preflight',
+                        message: preflight?.reason ?? 'route-spawn-preflight-rejected'
+                    });
+                    return;
+                }
+            } else {
+                if (preflight.requiresRecovery === true
+                    || preflight.targetFixedTick !== targetFixedTick
+                    || preflight.batchIdFingerprint !== batchIdFingerprint
+                    || preflight.spawnReservationCount !== plans.length
+                    || preflight.cleanupReservationCount !== 0
+                    || !preflight.receipt
+                    || typeof preflight.receipt !== 'object') {
+                    for (const reservation of reservations) {
+                        this.registry.cancelReservation(reservation.handle);
+                    }
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: routeReservations[0].plan.commandId,
+                        code: 'route-spawn-preflight-contract'
+                    });
+                    return;
+                }
+                routeTransaction = Object.freeze({
+                    receipt: preflight.receipt,
+                    targetFixedTick,
+                    batchIdFingerprint,
+                    plans: Object.freeze(plans)
+                });
+            }
+        }
+        if (reservations.length === 0) {
+            return;
         }
 
         const bodies = reservations.map(({ activationIntent, handle }) => ({
@@ -3335,6 +3822,11 @@ export class EnemyLifecycleCommandOwner {
                     this.registry.cancelReservation(reservation.handle);
                 }
             }
+            this.#finalizeRouteSpawnTransaction(
+                routeTransaction,
+                reservations,
+                result
+            );
             result.state = 'failed';
             result.recoveryRequired = true;
             result.rejected.push({
@@ -3346,8 +3838,8 @@ export class EnemyLifecycleCommandOwner {
         }
 
         const accepted = Number(backendResult?.accepted ?? 0);
-        const rejected = Number(backendResult?.rejected ?? commands.length);
-        const isFullSuccess = accepted === commands.length && rejected === 0;
+        const rejected = Number(backendResult?.rejected ?? reservations.length);
+        const isFullSuccess = accepted === reservations.length && rejected === 0;
         if (backendResult?.handles !== undefined) {
             if (!Array.isArray(backendResult.handles)
                 || backendResult.handles.length !== accepted) {
@@ -3388,10 +3880,10 @@ export class EnemyLifecycleCommandOwner {
             && Number.isSafeInteger(rejected)
             && accepted >= 0
             && rejected >= 0
-            && accepted + rejected === commands.length;
+            && accepted + rejected === reservations.length;
         const cleanZeroAcceptance = countsAreValid
             && accepted === 0
-            && rejected === commands.length
+            && rejected === reservations.length
             && observedActiveCount === 0;
         const backendRecoveryRequired = backendResult?.requiresRecovery === true
             || this.backend.requiresRecovery();
@@ -3408,6 +3900,11 @@ export class EnemyLifecycleCommandOwner {
                 ? 'stalled'
                 : 'failed';
             result.recoveryRequired = true;
+            this.#finalizeRouteSpawnTransaction(
+                routeTransaction,
+                reservations,
+                result
+            );
             return;
         }
         if (!countsAreValid
@@ -3419,6 +3916,96 @@ export class EnemyLifecycleCommandOwner {
         if (backendRecoveryRequired) {
             result.state = 'failed';
             result.recoveryRequired = true;
+        }
+        this.#finalizeRouteSpawnTransaction(
+            routeTransaction,
+            reservations,
+            result
+        );
+    }
+
+    #finalizeRouteSpawnTransaction(transaction, reservations, result) {
+        if (!transaction) {
+            return;
+        }
+        const planByCommandId = new Map(
+            transaction.plans.map((plan) => [plan.commandId, plan])
+        );
+        const spawned = [];
+        for (const reservation of reservations) {
+            const plan = planByCommandId.get(reservation.command.commandId);
+            if (plan && this.backend.hasBody(reservation.handle)) {
+                spawned.push(Object.freeze({
+                    commandId: plan.commandId,
+                    commandIdFingerprint: plan.commandIdFingerprint,
+                    handle: plan.handle
+                }));
+            }
+        }
+        if (spawned.length === 0) {
+            try {
+                const cancelled = this.#routeLifecyclePort
+                    .cancelRouteLifecycleBatch(
+                        transaction.receipt,
+                        'spawn-not-published'
+                    );
+                if (cancelled?.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                    || cancelled?.accepted !== true
+                    || cancelled.cancelledSpawnReservationCount
+                        !== transaction.plans.length
+                    || cancelled.cancelledCleanupReservationCount !== 0) {
+                    result.recoveryRequired = true;
+                }
+            } catch {
+                result.recoveryRequired = true;
+            }
+            return;
+        }
+        try {
+            const committed = this.#routeLifecyclePort
+                .commitRouteLifecycleBatch(
+                    transaction.receipt,
+                    Object.freeze({
+                        abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                        targetFixedTick: transaction.targetFixedTick,
+                        batchIdFingerprint: transaction.batchIdFingerprint,
+                        spawned: Object.freeze(spawned),
+                        despawned: Object.freeze([])
+                    })
+                );
+            if (committed?.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                || committed?.accepted !== true
+                || committed.requiresRecovery === true
+                || committed.targetFixedTick !== transaction.targetFixedTick
+                || committed.batchIdFingerprint !== transaction.batchIdFingerprint
+                || committed.spawnedCount !== spawned.length
+                || committed.cleanedCount !== 0) {
+                throw new RangeError(
+                    committed?.reason ?? 'route-spawn-commit-mismatch'
+                );
+            }
+            result.routeRuntimeBinding = snapshotRouteRuntimeBinding(
+                committed.runtimeBinding,
+                'route spawn commit'
+            );
+            for (const entry of spawned) {
+                result.routeLifecycle.push({
+                    action: 'spawn',
+                    commandId: entry.commandId,
+                    commandIdFingerprint: entry.commandIdFingerprint,
+                    handle: entry.handle,
+                    targetFixedTick: transaction.targetFixedTick,
+                    batchIdFingerprint: transaction.batchIdFingerprint
+                });
+            }
+        } catch (error) {
+            result.state = 'failed';
+            result.recoveryRequired = true;
+            result.rejected.push({
+                commandId: transaction.plans[0].commandId,
+                code: 'route-spawn-commit',
+                message: String(error?.message ?? error)
+            });
         }
     }
 

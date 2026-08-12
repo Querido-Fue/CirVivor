@@ -86,6 +86,14 @@ import {
     ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_CODE,
     ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID
 } from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
+    ENEMY_ROUTE_CLOSURE_PROFILE_BY_CODE,
+    ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID
+} from 'data/object/enemy/enemy_route_closure_catalog_data.js';
+import {
+    BASIC_CORK_ENEMY_CAPABILITY_MASK,
+    BASIC_CORK_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_cork_enemy_data.js';
 
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 
@@ -223,6 +231,90 @@ function normalizeOptionalEnemyProjectileCaptureMetadata(intent, capabilityMask)
     return Object.freeze({
         projectileCaptureProfileId: profileId,
         projectileCaptureProfileCode: profileCode
+    });
+}
+
+function normalizeOptionalEnemyRouteClosureMetadata(
+    intent,
+    capabilityMask,
+    definitionId
+) {
+    const hasCapability = capabilityMask !== null
+        && hasEnemyCapability(
+            capabilityMask,
+            ENEMY_CAPABILITY_ID.ROUTE_CLOSURE,
+            'spawnIntent.capabilityMask'
+        );
+    const hasProfileId = intent.routeClosureProfileId !== undefined
+        && intent.routeClosureProfileId !== null;
+    const hasProfileCode = intent.routeClosureProfileCode !== undefined
+        && intent.routeClosureProfileCode !== null;
+    if (hasCapability !== hasProfileId || hasProfileId !== hasProfileCode) {
+        throw new RangeError(
+            'ROUTE_CLOSURE capability과 route profile id/code가 함께 있어야 합니다.'
+        );
+    }
+    if (Object.prototype.hasOwnProperty.call(intent, 'routeRuntimeState')) {
+        throw new TypeError(
+            'raw Enemy spawn은 privileged routeRuntimeState를 제공할 수 없습니다.'
+        );
+    }
+    const routeSetId = intent.routeSetId === undefined || intent.routeSetId === null
+        ? null
+        : requireNonEmptyString(intent.routeSetId, 'spawnIntent.routeSetId');
+    const routeGraphContentKey = intent.routeGraphContentKey === undefined
+            || intent.routeGraphContentKey === null
+        ? null
+        : requireNonEmptyString(
+            intent.routeGraphContentKey,
+            'spawnIntent.routeGraphContentKey'
+        );
+    const routeAvailabilityVersion = requireUint32(
+        intent.routeAvailabilityVersion ?? 1,
+        'spawnIntent.routeAvailabilityVersion',
+        false
+    );
+    if (routeAvailabilityVersion === 0
+        || routeAvailabilityVersion === INVALID_HANDLE_COMPONENT
+        || (routeSetId === null) !== (routeGraphContentKey === null)) {
+        throw new RangeError(
+            'route snapshot은 non-sentinel version과 paired routeSet/contentKey여야 합니다.'
+        );
+    }
+    if (!hasCapability) {
+        return Object.freeze({
+            routeSetId,
+            routeAvailabilityVersion,
+            routeGraphContentKey
+        });
+    }
+    const profileId = requireNonEmptyString(
+        intent.routeClosureProfileId,
+        'spawnIntent.routeClosureProfileId'
+    );
+    const profileCode = requireUint32(
+        intent.routeClosureProfileCode,
+        'spawnIntent.routeClosureProfileCode',
+        false
+    );
+    const byId = ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID[profileId];
+    const byCode = ENEMY_ROUTE_CLOSURE_PROFILE_BY_CODE[profileCode];
+    if (definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || capabilityMask !== BASIC_CORK_ENEMY_CAPABILITY_MASK
+        || routeSetId === null
+        || !byId
+        || byId !== byCode
+        || byId.definitionCode !== profileCode) {
+        throw new RangeError(
+            'natural Cork route profile/snapshot이 exact catalog와 다릅니다.'
+        );
+    }
+    return Object.freeze({
+        routeClosureProfileId: profileId,
+        routeClosureProfileCode: profileCode,
+        routeSetId,
+        routeAvailabilityVersion,
+        routeGraphContentKey
     });
 }
 
@@ -1615,6 +1707,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     let normalizedEffectEmitterState = null;
     let normalizedOrbitLease = null;
     let normalizedProjectileCaptureProfile = null;
+    let normalizedRouteClosureMetadata = null;
     if (kindId === 'enemy') {
         const spawnPolicy = requireNonEmptyString(
             snapshot.spawnPolicy,
@@ -1644,6 +1737,12 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
             = normalizeOptionalEnemyProjectileCaptureMetadata(
                 snapshot,
                 capabilityMask
+            );
+        normalizedRouteClosureMetadata
+            = normalizeOptionalEnemyRouteClosureMetadata(
+                snapshot,
+                capabilityMask,
+                definitionId
             );
         validateRawEnemyAtomicTransformIngress(
             snapshot,
@@ -1689,6 +1788,12 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
         || hasEnemyOrbitBehaviorProgram(snapshot)
         || snapshot.projectileCaptureProfileId !== undefined
         || snapshot.projectileCaptureProfileCode !== undefined
+        || snapshot.routeClosureProfileId !== undefined
+        || snapshot.routeClosureProfileCode !== undefined
+        || snapshot.routeSetId !== undefined
+        || snapshot.routeAvailabilityVersion !== undefined
+        || snapshot.routeGraphContentKey !== undefined
+        || snapshot.routeRuntimeState !== undefined
         || (kindId !== 'projectile'
             && snapshot.projectileCaptureState !== undefined)) {
         throw new TypeError('Enemy capability metadata/state는 Enemy spawn에만 허용됩니다.');
@@ -1716,6 +1821,7 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
             effectEmitterState: normalizedEffectEmitterState
         }),
         ...(normalizedProjectileCaptureProfile ?? {}),
+        ...(normalizedRouteClosureMetadata ?? {}),
         ...(projectileCaptureIngress ?? {}),
         ...(projectileCaptureState === null ? {} : { projectileCaptureState }),
         contactHandler
@@ -1756,6 +1862,17 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             ...(intent.projectileCaptureProfileId === undefined ? {} : {
                 projectileCaptureProfileId: intent.projectileCaptureProfileId,
                 projectileCaptureProfileCode: intent.projectileCaptureProfileCode
+            }),
+            routeSetId: intent.routeSetId ?? null,
+            routeAvailabilityVersion: requireUint32(
+                intent.routeAvailabilityVersion ?? 1,
+                'spawnIntent.routeAvailabilityVersion',
+                false
+            ),
+            routeGraphContentKey: intent.routeGraphContentKey ?? null,
+            ...(intent.routeClosureProfileId === undefined ? {} : {
+                routeClosureProfileId: intent.routeClosureProfileId,
+                routeClosureProfileCode: intent.routeClosureProfileCode
             }),
             ...copyOptionalEnemyAtomicTransformMetadata(intent),
             ...copyOptionalEnemyOrbitMetadata(intent),

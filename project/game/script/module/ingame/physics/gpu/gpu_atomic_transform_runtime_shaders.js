@@ -59,6 +59,9 @@ const STATUS_SOURCE_CONFLICT: u32 = ${GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.SOURCE
 const STATUS_DESTINATION_CONFLICT: u32 = ${GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.DESTINATION_CONFLICT}u;
 const STATUS_EFFECT_REKEY_MISMATCH: u32 = ${GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.EFFECT_REKEY_MISMATCH}u;
 const STATUS_COMMIT_COUNT_MISMATCH: u32 = ${GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.COMMIT_COUNT_MISMATCH}u;
+const ROUTE_ROLE_NONE: u32 = 0u;
+const ROUTE_ROLE_ACTOR: u32 = 1u;
+const ROUTE_ROLE_CLOSER: u32 = 2u;
 
 struct BodyCounts { body_count: u32, addition_count: u32, removal_count: u32, abi_version: u32 }
 struct BodyPhysics {
@@ -90,6 +93,14 @@ struct AtomicTransformState {
     lineage_root_incarnation: u32, branch_index: u32, bounty_budget: u32,
     trigger_source_tick: atomic<u32>, trigger_sequence: atomic<u32>,
     command_generation: atomic<u32>,
+}
+struct RouteRuntimeState {
+    meta: u32, self_entity_id: u32, self_incarnation: u32,
+    current_path_index: u32, route_set_index: u32, closure_index: u32,
+    observed_availability_version: u32, phase_entered_fixed_tick: u32,
+    travel_radius: f32, blocker_radius: f32,
+    expansion_duration_fixed_ticks: u32, pending_field_index: u32,
+    lease_generation: u32, profile_code: u32, reserved_0: u32, reserved_1: u32,
 }
 struct TemplateBodySimulation {
     lifetime: f32, health: i32, gameplay_meta: u32, flags: u32,
@@ -160,6 +171,7 @@ struct TemporaryBuffer { values: array<BodyTemporary> }
 struct ContactHandlerBuffer { values: array<ContactHandler> }
 struct CombatStateBuffer { values: array<CombatState> }
 struct AtomicTransformStateBuffer { values: array<AtomicTransformState> }
+struct RouteRuntimeStateBuffer { values: array<RouteRuntimeState> }
 struct TemplateSimulationBuffer { values: array<TemplateBodySimulation> }
 struct TemplateCombatStateBuffer { values: array<TemplateCombatState> }
 struct TemplateAtomicTransformStateBuffer {
@@ -199,6 +211,7 @@ struct AtomicRawU32Buffer { values: array<atomic<u32>> }
 @group(0) @binding(27) var<storage, read> template_enemy_behavior_words: RawU32Buffer;
 @group(0) @binding(28) var<storage, read> template_body_control_words: RawU32Buffer;
 @group(0) @binding(29) var<storage, read_write> effect_pool_words: AtomicRawU32Buffer;
+@group(0) @binding(30) var<storage, read_write> route_states: RouteRuntimeStateBuffer;
 
 fn mix_fingerprint(value: u32, next: u32) -> u32 {
     return (value ^ (next + 0x9e3779b9u + (value << 6u) + (value >> 2u)));
@@ -411,6 +424,33 @@ fn inactive_identity_pair(entity_id: u32, incarnation: u32) -> bool {
     return (entity_id == 0u && incarnation == 0u)
         || (entity_id == INVALID_U32 && incarnation == INVALID_U32);
 }
+fn route_role(meta: u32) -> u32 { return meta & 255u; }
+fn source_route_state_is_transformable(record: TransformRecord) -> bool {
+    let source_route_state = route_states.values[record.source_slot];
+    let role = route_role(source_route_state.meta);
+    return role != ROUTE_ROLE_CLOSER
+        && ((role == ROUTE_ROLE_NONE
+                && source_route_state.meta == 0u
+                && source_route_state.self_entity_id == 0u
+                && source_route_state.self_incarnation == 0u
+                && source_route_state.current_path_index == 0u
+                && source_route_state.route_set_index == 0u
+                && source_route_state.closure_index == 0u
+                && source_route_state.observed_availability_version == 0u
+                && source_route_state.phase_entered_fixed_tick == 0u
+                && source_route_state.travel_radius == 0.0
+                && source_route_state.blocker_radius == 0.0
+                && source_route_state.expansion_duration_fixed_ticks == 0u
+                && source_route_state.pending_field_index == 0u
+                && source_route_state.lease_generation == 0u
+                && source_route_state.profile_code == 0u
+                && source_route_state.reserved_0 == 0u
+                && source_route_state.reserved_1 == 0u)
+            || (role == ROUTE_ROLE_ACTOR
+                && source_route_state.self_entity_id == record.source_entity_id
+                && source_route_state.self_incarnation
+                    == record.source_incarnation));
+}
 
 fn transform_record_is_disjoint(index: u32, record: TransformRecord) -> bool {
     for (var other_index = 0u;
@@ -618,7 +658,8 @@ fn preflight_atomic_transform_records(@builtin(global_invocation_id) id: vec3u) 
         || record.command_generation == 0u
         || record.command_generation >= INVALID_U32 - 1u
         || source_trigger_tick != record.trigger_source_tick
-        || source_trigger_sequence != record.trigger_sequence) {
+        || source_trigger_sequence != record.trigger_sequence
+        || !source_route_state_is_transformable(record)) {
         fail_transform(index, STATUS_SOURCE_CONFLICT);
         return;
     }
@@ -931,6 +972,49 @@ fn commit_control_destination(destination_slot: u32, template_slot: u32) {
         &body_control_words.values, &template_body_control_words.values);
 }
 
+fn write_route_state_destination(
+    destination_slot: u32,
+    destination_entity_id: u32,
+    destination_incarnation: u32,
+    source_route_state: RouteRuntimeState
+) {
+    route_states.values[destination_slot] = source_route_state;
+    if (route_role(source_route_state.meta) == ROUTE_ROLE_NONE) {
+        route_states.values[destination_slot].self_entity_id = 0u;
+        route_states.values[destination_slot].self_incarnation = 0u;
+        return;
+    }
+    route_states.values[destination_slot].self_entity_id = destination_entity_id;
+    route_states.values[destination_slot].self_incarnation
+        = destination_incarnation;
+}
+
+@compute @workgroup_size(256)
+fn commit_atomic_transform_route_state(
+    @builtin(global_invocation_id) id: vec3u
+) {
+    let index = id.x;
+    if (atomicLoad(&transform_program.header.batch_accepted) == 0u
+        || index >= transform_program.header.count) { return; }
+    let record = transform_program.records[index];
+    // Snapshot before destination0 (which is the source slot) rewrites identity.
+    let source_route_state = route_states.values[record.source_slot];
+    write_route_state_destination(
+        record.destination_0_slot,
+        record.destination_0_entity_id,
+        record.destination_0_incarnation,
+        source_route_state
+    );
+    if (record.destination_count == 2u) {
+        write_route_state_destination(
+            record.destination_1_slot,
+            record.destination_1_entity_id,
+            record.destination_1_incarnation,
+            source_route_state
+        );
+    }
+}
+
 @compute @workgroup_size(256)
 fn commit_atomic_transform_control(@builtin(global_invocation_id) id: vec3u) {
     let index = id.x;
@@ -1046,6 +1130,7 @@ export const GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT = Object.freeze({
     COMMIT_STATE: 'commit_atomic_transform_state',
     COMMIT_AUXILIARY: 'commit_atomic_transform_auxiliary',
     COMMIT_CONTROL: 'commit_atomic_transform_control',
+    COMMIT_ROUTE_STATE: 'commit_atomic_transform_route_state',
     REKEY_EFFECTS: 'rekey_atomic_transform_effect_instances',
     FINALIZE_TRANSFORM: 'finalize_atomic_transform_program'
 });

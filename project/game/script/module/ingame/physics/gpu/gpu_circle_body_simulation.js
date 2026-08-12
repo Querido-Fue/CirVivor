@@ -174,6 +174,30 @@ import {
     RING_PROJECTILE_CAPTURE_PROFILE
 } from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
 import {
+    GPU_ROUTE_AVAILABILITY_STATE,
+    GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+    GPU_ROUTE_RUNTIME_ABI,
+    GPU_ROUTE_RUNTIME_ABI_VERSION,
+    GPU_ROUTE_RUNTIME_INVALID_INDEX,
+    GPU_ROUTE_RUNTIME_MAX_CLOSERS,
+    GPU_ROUTE_RUNTIME_ROLE,
+    GPU_ROUTE_RUNTIME_STATUS,
+    copyGpuRouteRuntimeStateSlot,
+    createGpuRouteAvailabilityBuffer,
+    createGpuRouteCleanupProgram,
+    createGpuRouteRuntimeStateBuffer,
+    createGpuRouteRuntimeTopology,
+    readGpuRouteRuntimeState,
+    writeGpuRouteCleanupProgram,
+    writeGpuRouteRuntimeParams,
+    writeGpuRouteRuntimeState
+} from './gpu_route_runtime_abi.js';
+import {
+    GPU_ROUTE_RUNTIME_ENTRY_POINT,
+    GPU_ROUTE_RUNTIME_STORAGE_PROFILE,
+    GPU_ROUTE_RUNTIME_WGSL
+} from './gpu_route_runtime_shaders.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -191,6 +215,7 @@ const TRACKED_POSE_READBACK_SLOT_COUNT = 4;
 const EFFECT_PROGRAM_READBACK_SLOT_COUNT = 4;
 const FORMATION_PROGRAM_READBACK_SLOT_COUNT = 4;
 const PROJECTILE_CAPTURE_READBACK_SLOT_COUNT = 8;
+const ROUTE_RUNTIME_READBACK_SLOT_COUNT = 4;
 const PROJECTILE_CAPTURE_PARAMS_BYTE_SIZE = 48;
 const PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE = 16;
 const DEFAULT_PROJECTILE_CAPTURE_COMPLETION_CAPACITY = 256;
@@ -564,6 +589,14 @@ function appliedEventTypeName(type) {
             return 'enemy-charge-contact-recoil-started';
         case GPU_CIRCLE_APPLIED_EVENT_TYPE.CORE_DAMAGE_REQUEST:
             return 'core-damage-request';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_ASSIGNED:
+            return 'route-assigned';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_CLOSED:
+            return 'route-closed';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_REOPENED:
+            return 'route-reopened';
+        case GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_CLEANED:
+            return 'route-cleaned';
         default:
             throw new RangeError(`알 수 없는 GPU applied event type입니다: ${type}`);
     }
@@ -623,6 +656,44 @@ function decodeAppliedEvent(view, offset, sequence) {
     const eventMeta = view.getUint32(offset + 20, LITTLE_ENDIAN);
     const { type: eventTypeCode, flags } = unpackGpuCircleAppliedEventMeta(eventMeta);
     const eventType = appliedEventTypeName(eventTypeCode);
+    const isRouteEvent = eventTypeCode
+            === GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_ASSIGNED
+        || eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_CLOSED
+        || eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_REOPENED
+        || eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.ROUTE_CLEANED;
+    if (isRouteEvent) {
+        const position = Object.freeze({
+            x: view.getFloat32(offset + 24, LITTLE_ENDIAN),
+            y: view.getFloat32(offset + 28, LITTLE_ENDIAN)
+        });
+        if (flags !== 0
+            || entityId === 0 || entityId === UINT32_MAX
+            || incarnation === 0 || incarnation === UINT32_MAX
+            || otherEntityId === UINT32_MAX
+            || otherIncarnation === 0 || otherIncarnation === UINT32_MAX
+            || valueFixedPoint <= 0
+            || !Number.isFinite(position.x)
+            || !Number.isFinite(position.y)) {
+            throw new RangeError('GPU route applied event 계약이 잘못되었습니다.');
+        }
+        return Object.freeze({
+            type: 'route',
+            eventType,
+            eventTypeCode,
+            sequence,
+            entityId,
+            incarnation,
+            ownerHandle: Object.freeze({ entityId, incarnation }),
+            routeIndex: otherEntityId,
+            leaseGeneration: otherIncarnation,
+            availabilityVersion: valueFixedPoint,
+            position,
+            valueFixedPoint,
+            eventMeta,
+            flags,
+            reason: eventType
+        });
+    }
     const isDamage = eventTypeCode === GPU_CIRCLE_APPLIED_EVENT_TYPE.DAMAGE_APPLIED;
     const isChargeBehavior = eventTypeCode
             === GPU_CIRCLE_APPLIED_EVENT_TYPE.ENEMY_CHARGE_WINDUP_STARTED
@@ -796,7 +867,9 @@ function normalizeFlowFieldAtlas(atlas) {
             integrationCosts: new Float32Array([
                 FLOW_INTEGRATION_UNREACHABLE_COST
             ]),
-            stages: Object.freeze([])
+            stages: Object.freeze([]),
+            contentKey: null,
+            routeGraph: null
         });
     }
     const cols = requirePositiveInteger(atlas.cols ?? atlas.width, 'flowFieldAtlas.cols');
@@ -910,7 +983,9 @@ function normalizeFlowFieldAtlas(atlas) {
         cellSize,
         directions,
         integrationCosts,
-        stages: Object.freeze(stages)
+        stages: Object.freeze(stages),
+        contentKey: String(atlas.contentKey ?? ''),
+        routeGraph: atlas.routeGraph ?? null
     });
 }
 
@@ -1318,6 +1393,9 @@ export class GpuCircleBodySimulation {
         this.maxSpeed = normalizeNonNegativeFinite(options.maxSpeed, 0);
         this.sdf = normalizeSignedDistanceField(options.sdf);
         this.flowFieldAtlas = normalizeFlowFieldAtlas(options.flowFieldAtlas);
+        this.routeRuntimeTopology = createGpuRouteRuntimeTopology(
+            this.flowFieldAtlas
+        );
         const inferredSourceWorldUnitScale = this.sdf.enabled
             ? Math.min(
                 this.worldSize.x / this.sdf.cols,
@@ -1342,6 +1420,23 @@ export class GpuCircleBodySimulation {
                 ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION
         });
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
+        this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
+            this.capacity
+        );
+        this.hostRouteAvailability = createGpuRouteAvailabilityBuffer(
+            this.routeRuntimeTopology,
+            {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 1
+            }
+        );
+        this.hostRouteCleanupProgram = createGpuRouteCleanupProgram(
+            GPU_ROUTE_RUNTIME_MAX_CLOSERS
+        );
+        this.routeRuntimeParamsBytes = new ArrayBuffer(
+            GPU_ROUTE_RUNTIME_ABI.PARAMS.STRIDE
+        );
         this.hostEffectBodyState = createGpuEffectBodyStateStorage(this.capacity);
         this.hostEffectPoolState = createGpuEffectPoolStateStorage(
             this.sessionGeneration
@@ -1372,6 +1467,8 @@ export class GpuCircleBodySimulation {
             = createGpuEffectBodyStateStorage(this.capacity);
         this.hostAtomicTransformTemplateFormationBodyState
             = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRouteRuntimeStates
+            = createGpuRouteRuntimeStateBuffer(this.capacity);
         this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
             BODY_RENDER_STYLE_STRIDE * this.capacity
         );
@@ -1413,6 +1510,7 @@ export class GpuCircleBodySimulation {
         this.slotActive = new Uint8Array(this.capacity);
         this.slotEventProducing = new Uint8Array(this.capacity);
         this.slotProjectileCaptureDomain = new Uint8Array(this.capacity);
+        this.slotRouteRuntimeDomain = new Uint8Array(this.capacity);
         this.slotHandles = new Array(this.capacity).fill(null);
         this.handleToSlot = new Map();
         this.pendingSlotHandles = new Array(this.capacity).fill(null);
@@ -1430,11 +1528,13 @@ export class GpuCircleBodySimulation {
         this.formationProgramIngressOpen = true;
         this.atomicTransformProgramIngressOpen = true;
         this.projectileCaptureProgramIngressOpen = true;
+        this.routeRuntimeIngressOpen = true;
         this.terminalFixedProgramCancelStatus = null;
         this.terminalEffectProgramCancelStatus = null;
         this.terminalFormationProgramCancelStatus = null;
         this.terminalAtomicTransformProgramCancelStatus = null;
         this.terminalProjectileCaptureProgramCancelStatus = null;
+        this.terminalRouteAvailabilityProgramCancelStatus = null;
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
@@ -1450,6 +1550,7 @@ export class GpuCircleBodySimulation {
         this.lastSubmittedSourceTick = 0;
         this.hasGpuAuthoritativeState = false;
         this.authoritativeEpoch = 0;
+        this.routeAuthoritativeEpoch = 1;
         this.requiresAuthoritativeRebuild = false;
         this.overflowReadbackSlots = [];
         this.overflowReadbackLease = 0;
@@ -1492,6 +1593,19 @@ export class GpuCircleBodySimulation {
         this.lastProjectileCaptureRuntimeStatus
             = GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET;
         this.lastProjectileCaptureErrorFlags = 0;
+        this.routeRuntimeReadbackSlots = [];
+        this.routeRuntimeReadbackLease = 0;
+        this.routeRuntimeReadbackCursor = 0;
+        this.pendingRouteRuntimeReadbacks = 0;
+        this.routeRuntimeBatchQueue = [];
+        this.routeRuntimeCompletedThroughTick = 0;
+        this.lastRouteRuntimeSourceTick = 0;
+        this.lastRouteAvailabilityVersion = 1;
+        this.lastRouteRuntimeStatus = 0;
+        this.routeRuntimeRosterCount = 0;
+        this.stagedRouteCleanupBatch = null;
+        this.routeLifecycleReservations = new Map();
+        this.nextRouteLifecycleReceiptId = 1;
         this.lastEventReadbackSourceTick = 0;
         this.lastEventReadbackSubmittedTick = 0;
         this.lastEventReadbackCompletedTick = 0;
@@ -1685,10 +1799,22 @@ export class GpuCircleBodySimulation {
                 capacity: this.capacity
             });
         }
+        if (this.routeLifecycleReservations.size !== 0
+            || this.stagedRouteCleanupBatch !== null) {
+            return Object.freeze({
+                accepted: 0,
+                rejected: bodies.length,
+                capacity: this.capacity,
+                reason: 'route-lifecycle-reservation-active'
+            });
+        }
 
         const nextStorage = createGpuCircleBodyAbiStorage(this.capacity);
         const nextEffectBodyState = createGpuEffectBodyStateStorage(this.capacity);
         const nextFormationBodyState = createGpuFormationBodyStateStorage(
+            this.capacity
+        );
+        const nextRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
             this.capacity
         );
         const nextStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * this.capacity);
@@ -1699,6 +1825,10 @@ export class GpuCircleBodySimulation {
         for (let index = 0; index < bodies.length; index++) {
             const body = bodies[index];
             this.#validateBody(body, index);
+            const routeRuntimeState = this.#resolveRouteRuntimeSpawnState(
+                body,
+                `body[${index}]`
+            );
             const handle = normalizeEntityHandle(body, `body[${index}]`, false);
             if (handle) {
                 const key = entityHandleKey(handle);
@@ -1715,6 +1845,12 @@ export class GpuCircleBodySimulation {
             writeGpuCircleBodySpawn(nextStorage, index, body);
             writeGpuEffectBodyStateSpawn(nextEffectBodyState, index, body);
             writeGpuFormationBodyStateSpawn(nextFormationBodyState, index, body);
+            writeGpuRouteRuntimeState(
+                nextRouteRuntimeStates,
+                this.capacity,
+                index,
+                routeRuntimeState
+            );
             writeRenderStyle(styleView, index, body);
         }
         writeGpuCircleBodyCounts(nextStorage, { bodyCount: bodies.length });
@@ -1739,22 +1875,37 @@ export class GpuCircleBodySimulation {
             || this.pendingFormationTransformReadbacks > 0
             || this.pendingAtomicTransformPrepareReadbacks > 0
             || this.pendingAtomicTransformReadbacks > 0
+            || this.pendingRouteRuntimeReadbacks > 0
             || this.pendingTrackedPoseReadbacks > 0
             || this.eventBatchQueue.length > 0
             || this.bodyControlProgramBatchQueue.length > 0
             || this.spawnProgramBatchQueue.length > 0
             || this.effectProgramBatchQueue.length > 0
             || this.atomicTransformPrepareBatchQueue.length > 0
+            || this.routeRuntimeBatchQueue.length > 0
             || this.stagedEffectPulseBatch !== null
             || this.stagedFormationPrepareBatch !== null
             || this.armedFormationTransform !== null
             || this.stagedAtomicTransformPrepareBatch !== null
             || this.armedAtomicTransform !== null
+            || this.stagedRouteCleanupBatch !== null
             || this.authenticAtomicTransformPrepareByFingerprint.size > 0
             || this.requiresAuthoritativeRebuild;
         this.hostStorage = nextStorage;
         this.hostEffectBodyState = nextEffectBodyState;
         this.hostFormationBodyState = nextFormationBodyState;
+        this.hostRouteRuntimeStates = nextRouteRuntimeStates;
+        this.hostRouteAvailability = createGpuRouteAvailabilityBuffer(
+            this.routeRuntimeTopology,
+            {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: Math.max(0, this.deviceGeneration),
+                authoritativeEpoch: this.routeAuthoritativeEpoch + 1
+            }
+        );
+        this.hostRouteCleanupProgram = createGpuRouteCleanupProgram(
+            GPU_ROUTE_RUNTIME_MAX_CLOSERS
+        );
         this.hostEffectPoolState = createGpuEffectPoolStateStorage(
             this.authoritativeEpoch + 1
         );
@@ -1781,6 +1932,8 @@ export class GpuCircleBodySimulation {
             = createGpuEffectBodyStateStorage(this.capacity);
         this.hostAtomicTransformTemplateFormationBodyState
             = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRouteRuntimeStates
+            = createGpuRouteRuntimeStateBuffer(this.capacity);
         this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
             BODY_RENDER_STYLE_STRIDE * this.capacity
         );
@@ -1793,6 +1946,11 @@ export class GpuCircleBodySimulation {
         this.activeBodyCount = bodies.length;
         this.slotActive.fill(0);
         this.slotActive.fill(1, 0, bodies.length);
+        this.slotRouteRuntimeDomain.fill(0);
+        for (let slot = 0; slot < bodies.length; slot++) {
+            this.slotRouteRuntimeDomain[slot]
+                = bodies[slot].routeRuntimeState ? 1 : 0;
+        }
         this.slotHandles = nextSlotHandles;
         this.handleToSlot = nextHandleToSlot;
         this.pendingSlotHandles.fill(null);
@@ -1842,6 +2000,19 @@ export class GpuCircleBodySimulation {
         this.lastAtomicTransformEffectRekeyCount = 0;
         this.lastAtomicTransformRuntimeStatus
             = GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK;
+        this.routeRuntimeReadbackLease++;
+        this.routeRuntimeBatchQueue.length = 0;
+        this.pendingRouteRuntimeReadbacks = 0;
+        this.routeRuntimeReadbackCursor = 0;
+        this.routeRuntimeCompletedThroughTick = 0;
+        this.lastRouteRuntimeSourceTick = 0;
+        this.lastRouteAvailabilityVersion = 1;
+        this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
+        this.stagedRouteCleanupBatch = null;
+        this.routeLifecycleReservations.clear();
+        if (this.terminalRouteAvailabilityProgramCancelStatus === null) {
+            this.routeRuntimeIngressOpen = true;
+        }
         if (this.terminalEffectProgramCancelStatus === null) {
             this.effectProgramIngressOpen = true;
         }
@@ -1858,6 +2029,7 @@ export class GpuCircleBodySimulation {
         this.lastSubmittedSourceTick = 0;
         this.hasGpuAuthoritativeState = false;
         this.authoritativeEpoch++;
+        this.routeAuthoritativeEpoch++;
         this.requiresAuthoritativeRebuild = false;
         this.#resetOverflowTelemetry();
         this.#resetContactEventTelemetry();
@@ -1929,6 +2101,9 @@ export class GpuCircleBodySimulation {
         const stagingFormationBodyState = createGpuFormationBodyStateStorage(
             bodies.length
         );
+        const stagingRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
+            bodies.length
+        );
         const stagingStyles = new ArrayBuffer(BODY_RENDER_STYLE_STRIDE * bodies.length);
         const stagingStyleView = new DataView(stagingStyles);
         const handles = new Array(bodies.length);
@@ -1955,6 +2130,10 @@ export class GpuCircleBodySimulation {
         for (let index = 0; index < bodies.length; index++) {
             const body = bodies[index];
             this.#validateBody(body, index);
+            const routeRuntimeState = this.#resolveRouteRuntimeSpawnState(
+                body,
+                `spawn[${index}]`
+            );
             const handle = normalizeEntityHandle(body, `spawn[${index}]`);
             const key = entityHandleKey(handle);
             if (batchKeys.has(key)
@@ -1973,6 +2152,12 @@ export class GpuCircleBodySimulation {
                 stagingFormationBodyState,
                 index,
                 body
+            );
+            writeGpuRouteRuntimeState(
+                stagingRouteRuntimeStates,
+                bodies.length,
+                index,
+                routeRuntimeState
             );
             writeRenderStyle(stagingStyleView, index, body);
         }
@@ -2012,10 +2197,20 @@ export class GpuCircleBodySimulation {
                 this.hostFormationBodyState,
                 slot
             );
+            copyGpuRouteRuntimeStateSlot(
+                stagingRouteRuntimeStates,
+                bodies.length,
+                index,
+                this.hostRouteRuntimeStates,
+                this.capacity,
+                slot
+            );
             copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
             this.slotActive[slot] = 1;
             this.slotHandles[slot] = handles[index];
             this.handleToSlot.set(entityHandleKey(handles[index]), slot);
+            this.slotRouteRuntimeDomain[slot]
+                = bodies[index].routeRuntimeState ? 1 : 0;
             clearBodyControlStateSlot(this.hostBodyControlStates, slot);
         }
         this.freeSlots.length -= reusedCount;
@@ -2027,6 +2222,7 @@ export class GpuCircleBodySimulation {
             } else {
                 this.authoritativeEpoch++;
                 this.#resetContactEventTelemetry();
+                this.#bindRouteAvailabilityProtocolTuple(true);
             }
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
@@ -2118,6 +2314,9 @@ export class GpuCircleBodySimulation {
         const stagingFormationBodyState = createGpuFormationBodyStateStorage(
             selectedSlots.length
         );
+        const stagingRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
+            selectedSlots.length
+        );
         const stagingStyles = new ArrayBuffer(
             BODY_RENDER_STYLE_STRIDE * selectedSlots.length
         );
@@ -2133,6 +2332,12 @@ export class GpuCircleBodySimulation {
                 stagingFormationBodyState,
                 index,
                 TOMBSTONE_BODY
+            );
+            writeGpuRouteRuntimeState(
+                stagingRouteRuntimeStates,
+                selectedSlots.length,
+                index,
+                null
             );
             writeRenderStyle(stagingStyleView, index, TOMBSTONE_BODY);
         }
@@ -2151,10 +2356,19 @@ export class GpuCircleBodySimulation {
                 this.hostFormationBodyState,
                 slot
             );
+            copyGpuRouteRuntimeStateSlot(
+                stagingRouteRuntimeStates,
+                selectedSlots.length,
+                index,
+                this.hostRouteRuntimeStates,
+                this.capacity,
+                slot
+            );
             copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
             this.slotActive[slot] = 0;
             this.slotHandles[slot] = null;
             this.handleToSlot.delete(selectedKeys[index]);
+            this.slotRouteRuntimeDomain[slot] = 0;
             clearBodyControlStateSlot(this.hostBodyControlStates, slot);
             this.freeSlots.push(slot);
         }
@@ -2389,6 +2603,7 @@ export class GpuCircleBodySimulation {
         let stagingStorage = null;
         let stagingEffectBodyState = null;
         let stagingFormationBodyState = null;
+        let stagingRouteRuntimeStates = null;
         let stagingStyles = null;
         let reusableCount = 0;
         let readbackSlot = null;
@@ -2410,6 +2625,9 @@ export class GpuCircleBodySimulation {
                 sourceRelativeSpawns.length
             );
             stagingFormationBodyState = createGpuFormationBodyStateStorage(
+                sourceRelativeSpawns.length
+            );
+            stagingRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
                 sourceRelativeSpawns.length
             );
             stagingStyles = new ArrayBuffer(
@@ -2512,12 +2730,22 @@ export class GpuCircleBodySimulation {
                     incarnation: destinationHandle.incarnation
                 };
                 this.#validateBody(body, index);
+                const routeRuntimeState = this.#resolveRouteRuntimeSpawnState(
+                    body,
+                    `sourceRelativeSpawn[${index}]`
+                );
                 writeGpuCircleBodySpawn(stagingStorage, index, body);
                 writeGpuEffectBodyStateSpawn(stagingEffectBodyState, index, body);
                 writeGpuFormationBodyStateSpawn(
                     stagingFormationBodyState,
                     index,
                     body
+                );
+                writeGpuRouteRuntimeState(
+                    stagingRouteRuntimeStates,
+                    sourceRelativeSpawns.length,
+                    index,
+                    routeRuntimeState
                 );
                 writeRenderStyle(stagingStyleView, index, body);
                 const simulationView = new DataView(stagingStorage.simulationBuffer);
@@ -2597,6 +2825,7 @@ export class GpuCircleBodySimulation {
                 selectedSlots = [];
                 stagingStorage = null;
                 stagingEffectBodyState = null;
+                stagingRouteRuntimeStates = null;
                 stagingStyles = null;
                 reusableCount = 0;
                 spawnProgram = createGpuSpawnProgramStorage(this.spawnProgramCapacity);
@@ -2623,9 +2852,20 @@ export class GpuCircleBodySimulation {
                     this.hostFormationBodyState,
                     slot
                 );
+                copyGpuRouteRuntimeStateSlot(
+                    stagingRouteRuntimeStates,
+                    normalizedSpawns.length,
+                    index,
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    slot
+                );
                 copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
                 clearBodyControlStateSlot(this.hostBodyControlStates, slot);
                 this.slotActive[slot] = 2;
+                this.slotRouteRuntimeDomain[slot]
+                    = sourceRelativeSpawns[index].destinationSpawn
+                        ?.routeRuntimeState ? 1 : 0;
                 this.pendingSlotHandles[slot] = spawn.destinationHandle;
                 this.pendingHandleToSlot.set(
                     entityHandleKey(spawn.destinationHandle),
@@ -3952,12 +4192,18 @@ export class GpuCircleBodySimulation {
                 usedSourceEntityIds.add(sourceHandle.entityId);
                 const split = input.topologyId === 'ONE_TO_MANY';
                 const delayed = input.topologyId === 'ONE_TO_ONE_DELAYED';
+                const sourceRouteState = readGpuRouteRuntimeState(
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    sourceSlot
+                );
                 if ((!split && !delayed)
                     || !Array.isArray(input.destinationHandles)
                     || !Array.isArray(input.destinationIntents)
                     || input.destinationHandles.length !== (split ? 2 : 1)
                     || input.destinationIntents.length !== (split ? 2 : 1)
-                    || input.effectTransferDestinationIndex !== 0) {
+                    || input.effectTransferDestinationIndex !== 0
+                    || sourceRouteState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
                     throw new RangeError('atomic transform topology/cardinality가 다릅니다.');
                 }
                 const destinationHandles = input.destinationHandles.map(
@@ -4017,10 +4263,19 @@ export class GpuCircleBodySimulation {
                     const slot = destinationSlots[destinationIndex];
                     const handle = destinationHandles[destinationIndex];
                     const intent = input.destinationIntents[destinationIndex];
+                    const routeRuntimeState = sourceRouteState.role
+                            === GPU_ROUTE_RUNTIME_ROLE.NONE
+                        ? null
+                        : Object.freeze({
+                            ...sourceRouteState,
+                            selfEntityId: handle.entityId,
+                            selfIncarnation: handle.incarnation
+                        });
                     const template = Object.freeze({
                         ...intent,
                         entityId: handle.entityId,
                         incarnation: handle.incarnation,
+                        ...(routeRuntimeState ? { routeRuntimeState } : {}),
                         atomicTransformState: Object.freeze({
                             ...intent.atomicTransformState,
                             entityId: handle.entityId,
@@ -4041,6 +4296,12 @@ export class GpuCircleBodySimulation {
                         this.hostAtomicTransformTemplateFormationBodyState,
                         slot,
                         template
+                    );
+                    writeGpuRouteRuntimeState(
+                        this.hostAtomicTransformTemplateRouteRuntimeStates,
+                        this.capacity,
+                        slot,
+                        routeRuntimeState
                     );
                     writeRenderStyle(
                         new DataView(this.hostAtomicTransformTemplateRenderStyles),
@@ -4193,6 +4454,14 @@ export class GpuCircleBodySimulation {
                     this.hostFormationBodyState,
                     slot
                 );
+                copyGpuRouteRuntimeStateSlot(
+                    this.hostAtomicTransformTemplateRouteRuntimeStates,
+                    this.capacity,
+                    slot,
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    slot
+                );
                 copyRenderStyleSlot(
                     this.hostAtomicTransformTemplateRenderStyles,
                     slot,
@@ -4201,6 +4470,11 @@ export class GpuCircleBodySimulation {
                 );
                 clearBodyControlStateSlot(this.hostBodyControlStates, slot);
                 this.slotActive[slot] = 1;
+                this.slotRouteRuntimeDomain[slot] = readGpuRouteRuntimeState(
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    slot
+                ).role === GPU_ROUTE_RUNTIME_ROLE.NONE ? 0 : 1;
                 this.slotHandles[slot] = Object.freeze({
                     entityId: destination.entityId,
                     incarnation: destination.incarnation
@@ -4221,6 +4495,9 @@ export class GpuCircleBodySimulation {
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
         this.#refreshHostBodyDerivedState();
+        // RouteState의 current path/lease/version은 GPU 권위입니다. Host template
+        // mirror는 role/identity bookkeeping에만 쓰고, submit 초기에 전용 WGSL
+        // rekey가 live source state를 destination들로 복제합니다.
         armed.commitRequested = true;
         return Object.freeze({
             abiVersion: GPU_ATOMIC_TRANSFORM_PROGRAM_ABI_VERSION,
@@ -4999,6 +5276,624 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    drainCompletedRouteAvailabilityBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('RouteAvailability drain 대상은 배열이어야 합니다.');
+        }
+        while (this.routeRuntimeBatchQueue[0]?.completed === true) {
+            const entry = this.routeRuntimeBatchQueue.shift();
+            if (entry.completion && entry.readbackBytes instanceof ArrayBuffer) {
+                if (entry.sourceTick <= this.routeRuntimeCompletedThroughTick
+                    || entry.completion.completedThroughTick !== entry.sourceTick
+                    || entry.completion.availabilityVersion
+                        < this.lastRouteAvailabilityVersion) {
+                    this.failure = captureFailure(
+                        'route-runtime-readback-order',
+                        new Error('route availability queue-front가 회귀했습니다.')
+                    );
+                    this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                    this.state = this.requiresAuthoritativeRebuild
+                        ? 'requires-rebuild'
+                        : 'failed';
+                    entry.failure = this.failure;
+                } else {
+                    new Uint8Array(this.hostRouteAvailability).set(
+                        new Uint8Array(entry.readbackBytes)
+                    );
+                    this.routeRuntimeCompletedThroughTick = entry.sourceTick;
+                    this.lastRouteAvailabilityVersion
+                        = entry.completion.availabilityVersion;
+                    this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
+                    if (entry.expectedTerminalFinalSubmit
+                        && this.terminalRouteAvailabilityProgramCancelStatus
+                            ?.state === 'submitted') {
+                        const snapshot = this.#readHostRouteAvailabilitySnapshot();
+                        this.terminalRouteAvailabilityProgramCancelStatus
+                            = Object.freeze({
+                                ...this.terminalRouteAvailabilityProgramCancelStatus,
+                                completedThroughTick: entry.sourceTick,
+                                availabilityVersion: snapshot.availabilityVersion,
+                                closedPathIds: snapshot.closedPathIds,
+                                failure: null
+                            });
+                    }
+                }
+            }
+            out.push(entry.failure ? Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                sessionGeneration: entry.sessionGeneration,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                sourceTick: entry.sourceTick,
+                completedThroughTick: this.routeRuntimeCompletedThroughTick,
+                availabilityVersion: this.lastRouteAvailabilityVersion,
+                pending: false,
+                records: Object.freeze([]),
+                closedPathIndices: Object.freeze([]),
+                failure: entry.failure
+            }) : entry.completion ?? Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                sessionGeneration: entry.sessionGeneration,
+                deviceGeneration: entry.deviceGeneration,
+                authoritativeEpoch: entry.authoritativeEpoch,
+                sourceTick: entry.sourceTick,
+                completedThroughTick: this.routeRuntimeCompletedThroughTick,
+                availabilityVersion: this.lastRouteAvailabilityVersion,
+                pending: false,
+                records: Object.freeze([]),
+                closedPathIndices: Object.freeze([]),
+                failure: entry.failure
+            }));
+        }
+        this.#completeDeferredIdleRelease();
+        return out;
+    }
+
+    getRouteAvailabilityRuntimeStatus() {
+        const terminal = this.terminalRouteAvailabilityProgramCancelStatus;
+        const snapshot = this.#readHostRouteAvailabilitySnapshot();
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+            state: this.state,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: this.routeAuthoritativeEpoch,
+            ingressOpen: this.routeRuntimeIngressOpen,
+            graphEnabled: this.routeRuntimeTopology.enabled,
+            graphContentKey: this.routeRuntimeTopology.contentKey,
+            closureCount: this.routeRuntimeTopology.graph?.closures.length ?? 0,
+            availabilityVersion: snapshot.availabilityVersion,
+            closedPathIds: snapshot.closedPathIds,
+            rosterCount: this.routeRuntimeRosterCount,
+            capacity: GPU_ROUTE_RUNTIME_MAX_CLOSERS,
+            leaseCount: snapshot.leaseCount,
+            lifecycleReservationCount: this.routeLifecycleReservations.size,
+            stagedCount: this.stagedRouteCleanupBatch?.records.length ?? 0,
+            commitRequested: this.stagedRouteCleanupBatch !== null,
+            pendingReadbackCount: this.pendingRouteRuntimeReadbacks,
+            queuedBatchCount: this.routeRuntimeBatchQueue.length,
+            completedThroughTick: this.routeRuntimeCompletedThroughTick,
+            runtimeStatus: this.lastRouteRuntimeStatus,
+            storageBuffersPerStage: 9,
+            requiresRecovery: this.requiresAuthoritativeRebuild
+                || this.state === 'failed'
+                || this.failure !== null
+                || this.lastRouteRuntimeStatus !== GPU_ROUTE_RUNTIME_STATUS.OK
+                || terminal?.state === 'failed',
+            failure: terminal?.failure ?? this.failure,
+            terminal: this.getTerminalRouteAvailabilityProgramCancelStatus()
+        });
+    }
+
+    cancelPendingRouteAvailabilityProgramsForTerminal(request = {}) {
+        let finalFixedTick;
+        try {
+            finalFixedTick = requireNonSentinelUint32(
+                request.finalFixedTick,
+                'routeTerminal.finalFixedTick',
+                { positive: true }
+            );
+        } catch (error) {
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                state: 'failed',
+                accepted: false,
+                finalFixedTick: 0,
+                failure: `route-terminal-contract:${error.message}`
+            });
+            return this.getTerminalRouteAvailabilityProgramCancelStatus();
+        }
+        this.routeRuntimeIngressOpen = false;
+        if (!this.routeRuntimeTopology.enabled) {
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                state: 'submitted',
+                accepted: true,
+                finalFixedTick,
+                submittedTick: finalFixedTick,
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: Math.max(0, this.deviceGeneration),
+                authoritativeEpoch: this.routeAuthoritativeEpoch,
+                availabilityVersion: 1,
+                closedPathIds: Object.freeze([]),
+                completedThroughTick: finalFixedTick,
+                failure: null
+            });
+            return this.getTerminalRouteAvailabilityProgramCancelStatus();
+        }
+        if (this.routeRuntimeRosterCount !== 0
+            || this.routeLifecycleReservations.size !== 0) {
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                state: 'failed',
+                accepted: false,
+                finalFixedTick,
+                failure: 'route-terminal-roster-not-sealed'
+            });
+            return this.getTerminalRouteAvailabilityProgramCancelStatus();
+        }
+        const snapshot = this.#readHostRouteAvailabilitySnapshot();
+        this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+            abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+            state: 'armed',
+            accepted: true,
+            finalFixedTick,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: this.routeAuthoritativeEpoch,
+            availabilityVersion: snapshot.availabilityVersion,
+            closedPathIds: snapshot.closedPathIds,
+            failure: null
+        });
+        return this.getTerminalRouteAvailabilityProgramCancelStatus();
+    }
+
+    getTerminalRouteAvailabilityProgramCancelStatus() {
+        const terminal = this.terminalRouteAvailabilityProgramCancelStatus;
+        if (!terminal) return null;
+        const snapshot = this.#readHostRouteAvailabilitySnapshot();
+        const allOpen = snapshot.closedPathIds.length === 0
+            && snapshot.records.every(
+                (record) => record.state === GPU_ROUTE_AVAILABILITY_STATE.OPEN
+                    && record.ownerSlot === UINT32_MAX
+                    && record.ownerHandle === null
+                    && record.leaseGeneration === 0
+            );
+        const settled = terminal.state === 'submitted'
+            && this.routeRuntimeRosterCount === 0
+            && this.routeLifecycleReservations.size === 0
+            && this.stagedRouteCleanupBatch === null
+            && this.pendingRouteRuntimeReadbacks === 0
+            && this.routeRuntimeBatchQueue.length === 0
+            && allOpen
+            && (terminal.completedThroughTick
+                ?? this.routeRuntimeCompletedThroughTick) >= terminal.finalFixedTick;
+        return Object.freeze({
+            ...terminal,
+            accepted: terminal.state !== 'failed',
+            state: terminal.state === 'failed'
+                ? 'failed'
+                : settled ? 'settled' : terminal.state,
+            finalFixedTick: terminal.finalFixedTick,
+            completedThroughTick: terminal.completedThroughTick
+                ?? this.routeRuntimeCompletedThroughTick,
+            availabilityVersion: terminal.availabilityVersion
+                ?? snapshot.availabilityVersion,
+            rosterCount: this.routeRuntimeRosterCount,
+            closedPathIds: terminal.closedPathIds ?? snapshot.closedPathIds,
+            allOpen,
+            leaseCount: snapshot.leaseCount,
+            stagedCount: this.stagedRouteCleanupBatch?.records.length ?? 0,
+            commitRequested: this.stagedRouteCleanupBatch !== null,
+            pendingReadbackCount: this.pendingRouteRuntimeReadbacks,
+            pendingCompletionBatchCount: this.routeRuntimeBatchQueue.length,
+            lifecycleReservationCount: this.routeLifecycleReservations.size,
+            failure: terminal.failure ?? this.failure
+        });
+    }
+
+    resolveExactRouteBodySlot(handle) {
+        let exact;
+        try {
+            exact = normalizeEntityHandle(handle, 'routeBodyHandle');
+        } catch {
+            return null;
+        }
+        if (exact.entityId === 0 || exact.incarnation === 0) return null;
+        const bodySlot = this.handleToSlot.get(entityHandleKey(exact));
+        if (bodySlot === undefined || this.slotActive[bodySlot] !== 1) return null;
+        const routeState = readGpuRouteRuntimeState(
+            this.hostRouteRuntimeStates,
+            this.capacity,
+            bodySlot
+        );
+        if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.NONE
+            || routeState.selfEntityId !== exact.entityId
+            || routeState.selfIncarnation !== exact.incarnation) {
+            return null;
+        }
+        const availability = this.#readHostRouteAvailabilitySnapshot();
+        const availabilityRecord = availability.records.find((record) => (
+            record.ownerHandle?.entityId === exact.entityId
+                && record.ownerHandle?.incarnation === exact.incarnation
+        )) ?? null;
+        return Object.freeze({
+            bodySlot,
+            handle: Object.freeze({ ...exact }),
+            role: routeState.role,
+            routeSetIndex: routeState.routeSetIndex,
+            profileCode: routeState.profileCode,
+            availabilityVersion: availability.availabilityVersion,
+            closureIndex: availabilityRecord?.closureIndex
+                ?? GPU_ROUTE_RUNTIME_INVALID_INDEX,
+            leaseGeneration: availabilityRecord?.leaseGeneration ?? 0,
+            availabilityState: availabilityRecord?.state
+                ?? GPU_ROUTE_AVAILABILITY_STATE.OPEN
+        });
+    }
+
+    preflightRouteLifecycleBatch(request = {}) {
+        const reject = (reason, requiresRecovery = false) => Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: false,
+            reason,
+            requiresRecovery,
+            targetFixedTick: Number.isSafeInteger(Number(request.targetFixedTick))
+                ? Number(request.targetFixedTick)
+                : 0,
+            batchIdFingerprint:
+                Number.isSafeInteger(Number(request.batchIdFingerprint))
+                    ? Number(request.batchIdFingerprint)
+                    : 0,
+            spawnReservationCount: 0,
+            cleanupReservationCount: 0,
+            receipt: null
+        });
+        if (!this.routeRuntimeIngressOpen) {
+            return reject('route-lifecycle-ingress-closed');
+        }
+        let targetFixedTick;
+        let batchIdFingerprint;
+        let spawnPlans;
+        let despawnPlans;
+        try {
+            if (request.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION) {
+                throw new RangeError('route lifecycle ABI version mismatch');
+            }
+            targetFixedTick = requireNonSentinelUint32(
+                request.targetFixedTick,
+                'routeLifecycle.targetFixedTick',
+                { positive: true }
+            );
+            batchIdFingerprint = requireNonSentinelUint32(
+                request.batchIdFingerprint,
+                'routeLifecycle.batchIdFingerprint',
+                { positive: true }
+            );
+            spawnPlans = request.spawnPlans ?? [];
+            despawnPlans = request.despawnPlans ?? [];
+            if (!Array.isArray(spawnPlans) || !Array.isArray(despawnPlans)
+                || (spawnPlans.length === 0) === (despawnPlans.length === 0)
+                || spawnPlans.length > GPU_ROUTE_RUNTIME_MAX_CLOSERS
+                || despawnPlans.length > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
+                throw new RangeError('route lifecycle은 exact 단일 sub-batch여야 합니다.');
+            }
+        } catch (error) {
+            return reject(`route-lifecycle-contract:${error.message}`);
+        }
+        const kind = spawnPlans.length > 0 ? 'spawn' : 'despawn';
+        const normalizedPlans = [];
+        const cleanupRecords = [];
+        const seenHandles = new Set();
+        const seenCommandFingerprints = new Set();
+        try {
+            const plans = kind === 'spawn' ? spawnPlans : despawnPlans;
+            for (let index = 0; index < plans.length; index++) {
+                const plan = plans[index];
+                if (!plan || typeof plan !== 'object' || Array.isArray(plan)) {
+                    throw new TypeError(`routeLifecycle.${kind}[${index}]가 객체가 아닙니다.`);
+                }
+                const commandIdFingerprint = requireNonSentinelUint32(
+                    plan.commandIdFingerprint,
+                    `routeLifecycle.${kind}[${index}].commandIdFingerprint`,
+                    { positive: true }
+                );
+                const exactHandle = normalizeEntityHandle(
+                    plan.handle,
+                    `routeLifecycle.${kind}[${index}].handle`
+                );
+                if (exactHandle.entityId === 0 || exactHandle.incarnation === 0) {
+                    throw new RangeError('route lifecycle handle은 positive여야 합니다.');
+                }
+                const handleKey = entityHandleKey(exactHandle);
+                if (seenHandles.has(handleKey)
+                    || seenCommandFingerprints.has(commandIdFingerprint)) {
+                    throw new RangeError('route lifecycle identity가 중복되었습니다.');
+                }
+                seenHandles.add(handleKey);
+                seenCommandFingerprints.add(commandIdFingerprint);
+                if (kind === 'spawn') {
+                    const sequence = requireNonSentinelUint32(
+                        plan.sequence,
+                        `routeLifecycle.spawn[${index}].sequence`
+                    );
+                    if (typeof plan.definitionId !== 'string'
+                        || plan.definitionId.length === 0
+                        || typeof plan.routeClosureProfileId !== 'string'
+                        || plan.routeClosureProfileId.length === 0
+                        || requireNonSentinelUint32(
+                            plan.routeClosureProfileCode,
+                            `routeLifecycle.spawn[${index}].profileCode`,
+                            { positive: true }
+                        ) !== 1
+                        || this.handleToSlot.has(handleKey)) {
+                        throw new RangeError('route lifecycle spawn plan이 canonical하지 않습니다.');
+                    }
+                    normalizedPlans.push(Object.freeze({
+                        commandId: String(plan.commandId),
+                        commandIdFingerprint,
+                        sequence,
+                        definitionId: plan.definitionId,
+                        routeClosureProfileId: plan.routeClosureProfileId,
+                        routeClosureProfileCode: plan.routeClosureProfileCode,
+                        handle: Object.freeze({ ...exactHandle })
+                    }));
+                } else {
+                    const exactBody = this.resolveExactRouteBodySlot(exactHandle);
+                    if (!exactBody
+                        || exactBody.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                        throw new RangeError('despawn 대상이 active exact Cork가 아닙니다.');
+                    }
+                    normalizedPlans.push(Object.freeze({
+                        commandId: String(plan.commandId),
+                        commandIdFingerprint,
+                        handle: Object.freeze({ ...exactHandle }),
+                        reason: String(plan.reason),
+                        disposition: String(plan.disposition),
+                        exactBody
+                    }));
+                    if (exactBody.closureIndex !== GPU_ROUTE_RUNTIME_INVALID_INDEX
+                        && exactBody.leaseGeneration > 0) {
+                        cleanupRecords.push(Object.freeze({
+                            bodySlot: exactBody.bodySlot,
+                            entityId: exactHandle.entityId,
+                            incarnation: exactHandle.incarnation,
+                            closureIndex: exactBody.closureIndex,
+                            leaseGeneration: exactBody.leaseGeneration,
+                            observedAvailabilityVersion:
+                                exactBody.availabilityVersion,
+                            commandIdFingerprint
+                        }));
+                    }
+                }
+            }
+        } catch (error) {
+            return reject(`route-lifecycle-contract:${error.message}`);
+        }
+        if (kind === 'spawn') {
+            let pendingSpawnCount = 0;
+            for (const reservation of this.routeLifecycleReservations.values()) {
+                if (reservation.kind === 'spawn') {
+                    pendingSpawnCount += reservation.plans.length;
+                }
+            }
+            if (this.routeRuntimeRosterCount
+                + pendingSpawnCount + normalizedPlans.length
+                > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
+                return reject('route-roster-capacity');
+            }
+        } else if (this.stagedRouteCleanupBatch !== null
+            || [...this.routeLifecycleReservations.values()].some(
+                (reservation) => reservation.kind === 'despawn'
+            )) {
+            return reject('route-cleanup-reservation-busy');
+        }
+        const receipt = Object.freeze({
+            receiptId: this.nextRouteLifecycleReceiptId++,
+            token: Object.freeze({})
+        });
+        this.routeLifecycleReservations.set(receipt, Object.freeze({
+            kind,
+            targetFixedTick,
+            batchIdFingerprint,
+            plans: Object.freeze(normalizedPlans),
+            cleanupRecords: Object.freeze(cleanupRecords),
+            rosterCountBefore: this.routeRuntimeRosterCount
+        }));
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: true,
+            reason: null,
+            requiresRecovery: false,
+            targetFixedTick,
+            batchIdFingerprint,
+            spawnReservationCount: kind === 'spawn' ? normalizedPlans.length : 0,
+            cleanupReservationCount: kind === 'despawn'
+                ? normalizedPlans.length
+                : 0,
+            receipt
+        });
+    }
+
+    commitRouteLifecycleBatch(receipt, publication = {}) {
+        const reservation = this.routeLifecycleReservations.get(receipt);
+        const reject = (reason) => {
+            const error = new Error(reason);
+            this.failure = captureFailure('route-lifecycle-commit', error);
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+            return Object.freeze({
+                abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                accepted: false,
+                reason,
+                requiresRecovery: true,
+                targetFixedTick: reservation?.targetFixedTick ?? 0,
+                batchIdFingerprint: reservation?.batchIdFingerprint ?? 0,
+                spawnedCount: 0,
+                cleanedCount: 0,
+                runtimeBinding: null
+            });
+        };
+        if (!reservation) return reject('route-lifecycle-receipt-invalid');
+        let records;
+        try {
+            if (publication.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
+                || publication.targetFixedTick !== reservation.targetFixedTick
+                || publication.batchIdFingerprint
+                    !== reservation.batchIdFingerprint) {
+                throw new RangeError('route lifecycle publication header mismatch');
+            }
+            const expectedKey = reservation.kind === 'spawn'
+                ? 'spawned'
+                : 'despawned';
+            const emptyKey = reservation.kind === 'spawn'
+                ? 'despawned'
+                : 'spawned';
+            records = publication[expectedKey];
+            if (!Array.isArray(records)
+                || records.length !== reservation.plans.length
+                || !Array.isArray(publication[emptyKey])
+                || publication[emptyKey].length !== 0) {
+                throw new RangeError('route lifecycle publication cardinality mismatch');
+            }
+            for (let index = 0; index < records.length; index++) {
+                const record = records[index];
+                const plan = reservation.plans[index];
+                const exactHandle = normalizeEntityHandle(
+                    record.handle,
+                    `routeLifecycle.publication[${index}].handle`
+                );
+                if (record.commandIdFingerprint !== plan.commandIdFingerprint
+                    || String(record.commandId) !== plan.commandId
+                    || exactHandle.entityId !== plan.handle.entityId
+                    || exactHandle.incarnation !== plan.handle.incarnation) {
+                    throw new RangeError('route lifecycle publication identity mismatch');
+                }
+            }
+            if (reservation.kind === 'spawn') {
+                for (const plan of reservation.plans) {
+                    const exactBody = this.resolveExactRouteBodySlot(plan.handle);
+                    if (!exactBody
+                        || exactBody.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                        || exactBody.profileCode !== plan.routeClosureProfileCode) {
+                        throw new RangeError('spawned Cork body binding mismatch');
+                    }
+                }
+                if (this.routeRuntimeRosterCount
+                    > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
+                    throw new RangeError('route roster capacity exceeded after publication');
+                }
+            } else {
+                for (const plan of reservation.plans) {
+                    if (this.resolveExactRouteBodySlot(plan.handle) !== null) {
+                        throw new RangeError('despawned Cork body가 아직 active입니다.');
+                    }
+                }
+                if (reservation.cleanupRecords.length > 0) {
+                    this.stageRouteLifecycleCleanupBatch({
+                        targetFixedTick: reservation.targetFixedTick,
+                        batchIdFingerprint: reservation.batchIdFingerprint,
+                        records: reservation.cleanupRecords
+                    });
+                }
+            }
+        } catch (error) {
+            return reject(`route-lifecycle-publication:${error.message}`);
+        }
+        this.routeLifecycleReservations.delete(receipt);
+        const runtimeBinding = this.#getRouteRuntimeBinding();
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: true,
+            reason: null,
+            requiresRecovery: false,
+            targetFixedTick: reservation.targetFixedTick,
+            batchIdFingerprint: reservation.batchIdFingerprint,
+            spawnedCount: reservation.kind === 'spawn' ? records.length : 0,
+            cleanedCount: reservation.kind === 'despawn' ? records.length : 0,
+            rosterCount: this.routeRuntimeRosterCount,
+            runtimeBinding
+        });
+    }
+
+    cancelRouteLifecycleBatch(receipt, reason = 'cancelled') {
+        const reservation = this.routeLifecycleReservations.get(receipt);
+        if (!reservation) {
+            return Object.freeze({
+                abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                accepted: false,
+                reason: 'route-lifecycle-receipt-invalid',
+                cancelledSpawnReservationCount: 0,
+                cancelledCleanupReservationCount: 0
+            });
+        }
+        this.routeLifecycleReservations.delete(receipt);
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: true,
+            reason: String(reason),
+            cancelledSpawnReservationCount: reservation.kind === 'spawn'
+                ? reservation.plans.length
+                : 0,
+            cancelledCleanupReservationCount: reservation.kind === 'despawn'
+                ? reservation.plans.length
+                : 0
+        });
+    }
+
+    stageRouteLifecycleCleanupBatch(request = {}) {
+        if (this.stagedRouteCleanupBatch !== null) {
+            throw new Error('route cleanup batch가 이미 staged 상태입니다.');
+        }
+        const targetFixedTick = requireNonSentinelUint32(
+            request.targetFixedTick,
+            'routeCleanup.targetFixedTick',
+            { positive: true }
+        );
+        const batchIdFingerprint = requireNonSentinelUint32(
+            request.batchIdFingerprint,
+            'routeCleanup.batchIdFingerprint',
+            { positive: true }
+        );
+        const records = request.records ?? [];
+        if (!Array.isArray(records)
+            || records.length === 0
+            || records.length > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
+            throw new RangeError('route cleanup batch cardinality가 유효하지 않습니다.');
+        }
+        writeGpuRouteCleanupProgram(this.hostRouteCleanupProgram, {
+            targetFixedTick,
+            batchIdFingerprint,
+            records
+        });
+        this.stagedRouteCleanupBatch = Object.freeze({
+            targetFixedTick,
+            batchIdFingerprint,
+            records: Object.freeze([...records])
+        });
+        return Object.freeze({
+            accepted: true,
+            targetFixedTick,
+            batchIdFingerprint,
+            stagedCount: records.length
+        });
+    }
+
+    #getRouteRuntimeBinding() {
+        const snapshot = this.#readHostRouteAvailabilitySnapshot();
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: Math.max(0, this.deviceGeneration),
+            authoritativeEpoch: this.routeAuthoritativeEpoch,
+            graphContentKey: this.routeRuntimeTopology.contentKey,
+            availabilityVersion: snapshot.availabilityVersion,
+            rosterCount: this.routeRuntimeRosterCount
+        });
+    }
+
     /** Endpoint coherent generic-event publication만 authentic Core receipt를 등록합니다. */
     registerProjectileCaptureCoreImpactReceipt(receipt) {
         if (!receipt || typeof receipt !== 'object' || !Object.isFrozen(receipt)
@@ -5545,11 +6440,14 @@ export class GpuCircleBodySimulation {
             = this.terminalAtomicTransformProgramCancelStatus;
         const terminalProjectileCaptureCancel
             = this.terminalProjectileCaptureProgramCancelStatus;
+        const terminalRouteAvailabilityCancel
+            = this.terminalRouteAvailabilityProgramCancelStatus;
         const terminalFinalSubmit = terminalCancel?.state === 'armed'
             || terminalEffectCancel?.state === 'armed'
             || terminalFormationCancel?.state === 'armed'
             || terminalAtomicTransformCancel?.state === 'armed'
-            || terminalProjectileCaptureCancel?.state === 'armed';
+            || terminalProjectileCaptureCancel?.state === 'armed'
+            || terminalRouteAvailabilityCancel?.state === 'armed';
         if (terminalCancel?.state === 'submitted'
             || terminalCancel?.state === 'failed'
             || terminalEffectCancel?.state === 'submitted'
@@ -5559,7 +6457,9 @@ export class GpuCircleBodySimulation {
             || terminalAtomicTransformCancel?.state === 'submitted'
             || terminalAtomicTransformCancel?.state === 'failed'
             || terminalProjectileCaptureCancel?.state === 'submitted'
-            || terminalProjectileCaptureCancel?.state === 'failed') {
+            || terminalProjectileCaptureCancel?.state === 'failed'
+            || terminalRouteAvailabilityCancel?.state === 'submitted'
+            || terminalRouteAvailabilityCancel?.state === 'failed') {
             return false;
         }
         if (terminalCancel?.state === 'armed'
@@ -5610,6 +6510,16 @@ export class GpuCircleBodySimulation {
             });
             return false;
         }
+        if (terminalRouteAvailabilityCancel?.state === 'armed'
+            && requestedSourceTick
+                !== terminalRouteAvailabilityCancel.finalFixedTick) {
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                ...terminalRouteAvailabilityCancel,
+                state: 'failed',
+                failure: 'terminal-final-fixed-tick-mismatch'
+            });
+            return false;
+        }
         const stagedPrograms = this.stagedFixedPrograms;
         const stagedEffectBatch = this.stagedEffectPulseBatch;
         const stagedFormationPrepare = this.stagedFormationPrepareBatch;
@@ -5619,6 +6529,7 @@ export class GpuCircleBodySimulation {
         const armedAtomicTransform = this.armedAtomicTransform;
         const armedProjectileCaptureRelease
             = this.armedProjectileCaptureRelease;
+        const stagedRouteCleanup = this.stagedRouteCleanupBatch;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
@@ -5694,6 +6605,15 @@ export class GpuCircleBodySimulation {
             this.requiresAuthoritativeRebuild = true;
             return false;
         }
+        if (stagedRouteCleanup
+            && requestedSourceTick !== stagedRouteCleanup.targetFixedTick) {
+            this.failure = captureFailure(
+                'route-cleanup-tick',
+                new Error('staged route cleanup tick mismatch')
+            );
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            return false;
+        }
         this.lastFixedDelta = delta;
         try {
             assertGpuCircleBodyAbiVersion(this.hostStorage);
@@ -5715,7 +6635,9 @@ export class GpuCircleBodySimulation {
             && !armedFormationTransform?.commitRequested
             && !stagedAtomicTransformPrepare
             && !armedAtomicTransform?.commitRequested
-            && !armedProjectileCaptureRelease?.commitRequested) {
+            && !armedProjectileCaptureRelease?.commitRequested
+            && !stagedRouteCleanup
+            && terminalRouteAvailabilityCancel?.state !== 'armed') {
             return false;
         }
         if (this.state === 'telemetry-backpressure') {
@@ -5740,11 +6662,16 @@ export class GpuCircleBodySimulation {
             0
         ) ?? 0;
         const stagedLegacySpawnCount = stagedSpawnCount - stagedSelectedSpawnCount;
-        const needsEventReadback = !terminalFinalSubmit && (
-            this.eventProducingBodyCount > 0
-            || stagedSpawnCount > 0
-            || stagedControlCount > 0
-        );
+        const needsRouteRuntimeReadback = this.routeRuntimeTopology.enabled
+            && (this.routeRuntimeRosterCount > 0
+                || stagedRouteCleanup !== null
+                || terminalRouteAvailabilityCancel?.state === 'armed');
+        const needsEventReadback = needsRouteRuntimeReadback
+            || (!terminalFinalSubmit && (
+                this.eventProducingBodyCount > 0
+                || stagedSpawnCount > 0
+                || stagedControlCount > 0
+            ));
         const needsProjectileCaptureReadback
             = this.projectileCaptureDomainBodyCount > 0
                 || armedProjectileCaptureRelease?.commitRequested === true
@@ -5782,6 +6709,22 @@ export class GpuCircleBodySimulation {
             });
             return false;
         }
+        const routeRuntimeSlot = needsRouteRuntimeReadback
+            ? this.#claimRouteRuntimeReadbackSlot()
+            : null;
+        if (needsRouteRuntimeReadback && !routeRuntimeSlot) {
+            this.#releaseClaimedEventReadbackSlot(eventSlot);
+            this.#releaseClaimedProjectileCaptureReadbackSlot(
+                projectileCaptureSlot
+            );
+            this.state = 'event-backpressure';
+            this.failure = Object.freeze({
+                stage: 'route-runtime-readback-backpressure',
+                name: 'RouteRuntimeBackpressure',
+                message: 'GPU route availability staging ring에 빈 slot이 없습니다.'
+            });
+            return false;
+        }
 
         const trackedPoseSlot = !terminalFinalSubmit && this.trackedPoseHandle
             ? this.#claimTrackedPoseReadbackSlot()
@@ -5810,6 +6753,9 @@ export class GpuCircleBodySimulation {
                 this.#releaseClaimedProjectileCaptureReadbackSlot(
                     projectileCaptureSlot
                 );
+                this.#releaseClaimedRouteRuntimeReadbackSlot(
+                    routeRuntimeSlot
+                );
                 this.#releaseClaimedTrackedPoseReadbackSlot(trackedPoseSlot);
                 this.state = 'telemetry-backpressure';
                 this.failure = Object.freeze({
@@ -5824,9 +6770,11 @@ export class GpuCircleBodySimulation {
         const device = this.device;
         const generation = this.deviceGeneration;
         const authoritativeEpoch = this.authoritativeEpoch;
+        const routeAuthoritativeEpoch = this.routeAuthoritativeEpoch;
         const overflowLease = this.overflowReadbackLease;
         const eventLease = this.eventReadbackLease;
         const projectileCaptureLease = this.projectileCaptureReadbackLease;
+        const routeRuntimeLease = this.routeRuntimeReadbackLease;
         const spawnProgramLease = this.spawnProgramReadbackLease;
         const effectProgramLease = this.effectProgramReadbackLease;
         const formationPrepareLease = this.formationPrepareReadbackLease;
@@ -5839,6 +6787,33 @@ export class GpuCircleBodySimulation {
         try {
             this.#writeComputeParams(delta, resolvedSourceTick);
             this.#writeProjectileCaptureParams(resolvedSourceTick);
+            this.#writeRouteRuntimeParams(
+                resolvedSourceTick,
+                terminalFinalSubmit
+            );
+            if (stagedRouteCleanup) {
+                this.device.queue.writeBuffer(
+                    this.buffers.routeCleanupProgram,
+                    0,
+                    this.hostRouteCleanupProgram.buffer
+                );
+            } else {
+                writeGpuRouteCleanupProgram(
+                    this.hostRouteCleanupProgram,
+                    {
+                        targetFixedTick: resolvedSourceTick,
+                        batchIdFingerprint: 1,
+                        records: []
+                    }
+                );
+                this.device.queue.writeBuffer(
+                    this.buffers.routeCleanupProgram,
+                    0,
+                    this.hostRouteCleanupProgram.buffer,
+                    0,
+                    GPU_ROUTE_RUNTIME_ABI.CLEANUP_HEADER.STRIDE
+                );
+            }
             if (armedProjectileCaptureRelease?.commitRequested) {
                 this.device.queue.writeBuffer(
                     this.buffers.projectileCaptureReleaseProgram,
@@ -6084,7 +7059,8 @@ export class GpuCircleBodySimulation {
                     GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_BODIES,
                     GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_STATE,
                     GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY,
-                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_CONTROL
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_CONTROL,
+                    GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE
                 ]) {
                     this.#setAtomicTransformEntry(pass, entryPoint);
                     pass.dispatchWorkgroups(Math.ceil(
@@ -6122,6 +7098,13 @@ export class GpuCircleBodySimulation {
                 ));
                 this.#setFormationEntry(
                     pass,
+                    GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    armedFormationTransform.records.length / BODY_WORKGROUP_SIZE
+                ));
+                this.#setFormationEntry(
+                    pass,
                     GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS
                 );
                 pass.dispatchWorkgroups(Math.ceil(
@@ -6138,6 +7121,13 @@ export class GpuCircleBodySimulation {
                 );
                 pass.dispatchWorkgroups(Math.ceil(
                     this.effectInstanceCapacity / BODY_WORKGROUP_SIZE
+                ));
+                this.#setFormationEntry(
+                    pass,
+                    GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE
+                );
+                pass.dispatchWorkgroups(Math.ceil(
+                    armedFormationTransform.records.length / BODY_WORKGROUP_SIZE
                 ));
                 this.#setFormationEntry(
                     pass,
@@ -6274,6 +7264,11 @@ export class GpuCircleBodySimulation {
                 this.#dispatchBodies(pass, 'advance_octagon_orbit');
                 this.#dispatchBodies(pass, 'advance_enemy_charge');
             }
+            if (this.routeRuntimeTopology.enabled) {
+                pass.setPipeline(this.pipelines.routeRuntime.advance);
+                pass.setBindGroup(0, this.bindGroups.routeRuntime);
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             this.#dispatchBodies(pass, 'prepare_bodies');
             if (!terminalFinalSubmit) {
@@ -6301,6 +7296,13 @@ export class GpuCircleBodySimulation {
                     pass,
                     GPU_EFFECT_RUNTIME_ENTRY_POINT.ADVANCE_PENTA_NAVIGATION
                 );
+                pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
+            if (this.routeRuntimeTopology.enabled) {
+                // Route WAIT is enforced only after Formation/Penta had a chance
+                // to claim this tick's external motion ownership.
+                pass.setPipeline(this.pipelines.routeRuntime.enforceWait);
+                pass.setBindGroup(0, this.bindGroups.routeRuntimeWait);
                 pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
             }
             if (needsProjectileCaptureReadback) {
@@ -6506,6 +7508,11 @@ export class GpuCircleBodySimulation {
                 );
                 this.#dispatchBodies(pass, 'mark_dead');
             }
+            if (this.routeRuntimeTopology.enabled) {
+                pass.setPipeline(this.pipelines.routeRuntime.finalize);
+                pass.setBindGroup(0, this.bindGroups.routeRuntime);
+                pass.dispatchWorkgroups(1);
+            }
 
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.PHYSICS);
             for (let iteration = 0; iteration < this.solverIterations; iteration++) {
@@ -6671,6 +7678,15 @@ export class GpuCircleBodySimulation {
                     this.hostProjectileCaptureReleaseProgram.buffer.byteLength
                 );
             }
+            if (routeRuntimeSlot) {
+                encoder.copyBufferToBuffer(
+                    this.buffers.routeAvailability,
+                    0,
+                    routeRuntimeSlot.buffer,
+                    0,
+                    this.hostRouteAvailability.byteLength
+                );
+            }
             if (eventSlot) {
                 const deathOffset = EVENT_READBACK_HEADER_BYTE_SIZE
                     + (this.eventCapacity * APPLIED_EVENT_BYTE_SIZE);
@@ -6779,6 +7795,7 @@ export class GpuCircleBodySimulation {
             this.#releaseClaimedProjectileCaptureReadbackSlot(
                 projectileCaptureSlot
             );
+            this.#releaseClaimedRouteRuntimeReadbackSlot(routeRuntimeSlot);
             this.#releaseClaimedTrackedPoseReadbackSlot(trackedPoseSlot);
             this.#releaseClaimedSpawnProgramReadbackSlot(
                 stagedPrograms?.readbackSlot ?? null
@@ -6837,6 +7854,15 @@ export class GpuCircleBodySimulation {
                     = Object.freeze({
                         ...terminalProjectileCaptureCancel,
                         state: 'failed',
+                        failure: 'terminal-final-fixed-submit-failed'
+                    });
+            }
+            if (terminalRouteAvailabilityCancel?.state === 'armed') {
+                this.terminalRouteAvailabilityProgramCancelStatus
+                    = Object.freeze({
+                        ...terminalRouteAvailabilityCancel,
+                        state: 'failed',
+                        accepted: false,
                         failure: 'terminal-final-fixed-submit-failed'
                     });
             }
@@ -6904,6 +7930,28 @@ export class GpuCircleBodySimulation {
                 captureQueueEntry,
                 releaseQueueEntry,
                 projectileCaptureLease
+            );
+        }
+        if (routeRuntimeSlot) {
+            const routeQueueEntry = {
+                sessionGeneration: this.sessionGeneration,
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch: routeAuthoritativeEpoch,
+                expectedGraphContentFingerprint:
+                    this.routeRuntimeTopology.contentFingerprint,
+                expectedTerminalFinalSubmit: terminalFinalSubmit,
+                completed: false,
+                completion: null,
+                failure: null
+            };
+            this.routeRuntimeBatchQueue.push(routeQueueEntry);
+            this.lastRouteRuntimeSourceTick = resolvedSourceTick;
+            this.#beginRouteRuntimeReadback(
+                routeRuntimeSlot,
+                routeQueueEntry,
+                routeRuntimeLease
             );
         }
         if (eventSlot) {
@@ -7130,6 +8178,7 @@ export class GpuCircleBodySimulation {
         this.stagedEffectPulseBatch = null;
         this.stagedFormationPrepareBatch = null;
         this.stagedAtomicTransformPrepareBatch = null;
+        this.stagedRouteCleanupBatch = null;
         if (armedFormationTransform?.commitRequested) {
             this.armedFormationTransform = null;
         } else if (armedFormationTransform
@@ -7207,6 +8256,16 @@ export class GpuCircleBodySimulation {
                 ...terminalProjectileCaptureCancel,
                 state: 'submitted',
                 submittedTick: resolvedSourceTick,
+                failure: null
+            });
+        }
+        if (terminalRouteAvailabilityCancel?.state === 'armed') {
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                ...terminalRouteAvailabilityCancel,
+                state: 'submitted',
+                accepted: true,
+                submittedTick: resolvedSourceTick,
+                pendingReadbackCount: this.pendingRouteRuntimeReadbacks,
                 failure: null
             });
         }
@@ -7814,6 +8873,7 @@ export class GpuCircleBodySimulation {
         this.slotActive.fill(0);
         this.slotEventProducing.fill(0);
         this.slotProjectileCaptureDomain.fill(0);
+        this.slotRouteRuntimeDomain.fill(0);
         this.eventProducingBodyCount = 0;
         this.projectileCaptureDomainBodyCount = 0;
         this.atomicTransformFirstHitBodyCount = 0;
@@ -7961,6 +9021,132 @@ export class GpuCircleBodySimulation {
         }
     }
 
+    #readHostRouteAvailabilitySnapshot() {
+        const header = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER;
+        const recordAbi = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_RECORD;
+        const view = new DataView(this.hostRouteAvailability);
+        const availabilityVersion = view.getUint32(
+            header.AVAILABILITY_VERSION,
+            LITTLE_ENDIAN
+        );
+        const closureCount = view.getUint32(header.CLOSURE_COUNT, LITTLE_ENDIAN);
+        const records = [];
+        const closedPathIds = [];
+        let leaseCount = 0;
+        for (let closureIndex = 0; closureIndex < closureCount; closureIndex++) {
+            const offset = header.STRIDE + closureIndex * recordAbi.STRIDE;
+            const state = view.getUint32(offset + recordAbi.STATE, LITTLE_ENDIAN);
+            const pathIndex = this.routeRuntimeTopology.graph
+                ?.closures?.[closureIndex]?.pathIndex ?? GPU_ROUTE_RUNTIME_INVALID_INDEX;
+            const pathId = pathIndex === GPU_ROUTE_RUNTIME_INVALID_INDEX
+                ? null
+                : this.routeRuntimeTopology.pathIds[pathIndex] ?? null;
+            const entityId = view.getUint32(
+                offset + recordAbi.OWNER_ENTITY_ID,
+                LITTLE_ENDIAN
+            );
+            const incarnation = view.getUint32(
+                offset + recordAbi.OWNER_INCARNATION,
+                LITTLE_ENDIAN
+            );
+            if (state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED && pathId !== null) {
+                closedPathIds.push(pathId);
+            }
+            const leaseGeneration = view.getUint32(
+                offset + recordAbi.LEASE_GENERATION,
+                LITTLE_ENDIAN
+            );
+            if (leaseGeneration !== 0) leaseCount++;
+            records.push(Object.freeze({
+                closureIndex,
+                pathIndex,
+                pathId,
+                closureId: this.routeRuntimeTopology.closureIds[closureIndex] ?? null,
+                state,
+                ownerSlot: view.getUint32(
+                    offset + recordAbi.OWNER_SLOT,
+                    LITTLE_ENDIAN
+                ),
+                ownerHandle: entityId === UINT32_MAX
+                    && incarnation === UINT32_MAX
+                    ? null
+                    : Object.freeze({ entityId, incarnation }),
+                leaseGeneration,
+                changedAtFixedTick: view.getUint32(
+                    offset + recordAbi.CHANGED_AT_FIXED_TICK,
+                    LITTLE_ENDIAN
+                )
+            }));
+        }
+        closedPathIds.sort();
+        return Object.freeze({
+            availabilityVersion,
+            records: Object.freeze(records),
+            closedPathIds: Object.freeze(closedPathIds),
+            leaseCount
+        });
+    }
+
+    #resolveRouteRuntimeSpawnState(body, label) {
+        const explicit = body?.routeRuntimeState ?? null;
+        const routeSetId = explicit?.routeSetId ?? body?.routeSetId ?? null;
+        if (routeSetId === null || routeSetId === undefined) {
+            if (explicit !== null) {
+                throw new TypeError(`${label}.routeRuntimeState에는 routeSetId가 필요합니다.`);
+            }
+            return null;
+        }
+        if (!this.routeRuntimeTopology.enabled) {
+            throw new RangeError(`${label} route runtime에는 authored routeGraph가 필요합니다.`);
+        }
+        if (typeof routeSetId !== 'string' || routeSetId.length === 0) {
+            throw new TypeError(`${label}.routeSetId는 비어 있지 않은 문자열이어야 합니다.`);
+        }
+        if (body.routeGraphContentKey !== this.routeRuntimeTopology.contentKey) {
+            throw new RangeError(`${label}.routeGraphContentKey가 current atlas와 다릅니다.`);
+        }
+        const availabilityVersion = requireNonSentinelUint32(
+            body.routeAvailabilityVersion,
+            `${label}.routeAvailabilityVersion`,
+            { positive: true }
+        );
+        if (availabilityVersion !== this.lastRouteAvailabilityVersion) {
+            throw new RangeError(`${label}.routeAvailabilityVersion이 stale입니다.`);
+        }
+        const routeSetIndex = this.routeRuntimeTopology.routeSetIndexById[routeSetId];
+        if (!Number.isSafeInteger(routeSetIndex)) {
+            throw new RangeError(`${label}.routeSetId가 current graph에 없습니다.`);
+        }
+        const exactHandle = normalizeEntityHandle(body, `${label}.handle`);
+        if (exactHandle.entityId === 0 || exactHandle.incarnation === 0) {
+            throw new RangeError(`${label}.handle은 positive exact identity여야 합니다.`);
+        }
+        if (explicit !== null) {
+            if (explicit.selfEntityId !== exactHandle.entityId
+                || explicit.selfIncarnation !== exactHandle.incarnation
+                || explicit.observedAvailabilityVersion !== availabilityVersion) {
+                throw new RangeError(`${label}.routeRuntimeState identity/version이 다릅니다.`);
+            }
+            return Object.freeze({
+                ...explicit,
+                routeSetIndex
+            });
+        }
+        return Object.freeze({
+            role: GPU_ROUTE_RUNTIME_ROLE.ACTOR,
+            selfEntityId: exactHandle.entityId,
+            selfIncarnation: exactHandle.incarnation,
+            currentPathIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+            routeSetIndex,
+            closureIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+            observedAvailabilityVersion: availabilityVersion,
+            phaseEnteredFixedTick: 0,
+            pendingFieldIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+            leaseGeneration: 0,
+            profileCode: 0
+        });
+    }
+
     #refreshHostBodyDerivedState() {
         const physicsView = new DataView(this.hostStorage.physicsBuffer);
         const simulationView = new DataView(this.hostStorage.simulationBuffer);
@@ -7970,10 +9156,12 @@ export class GpuCircleBodySimulation {
         let eventProducingBodyCount = 0;
         let atomicTransformFirstHitBodyCount = 0;
         let projectileCaptureDomainBodyCount = 0;
+        let routeRuntimeRosterCount = 0;
         let maximumBodyRadius = 0;
         const activeEntityIds = new Set();
         this.slotEventProducing.fill(0);
         this.slotProjectileCaptureDomain.fill(0);
+        this.slotRouteRuntimeDomain.fill(0);
         const atomicTransformStateView = new DataView(
             this.hostStorage.atomicTransformStateBuffer
         );
@@ -8054,6 +9242,21 @@ export class GpuCircleBodySimulation {
                 this.slotProjectileCaptureDomain[slot] = 1;
                 projectileCaptureDomainBodyCount++;
             }
+            const routeState = readGpuRouteRuntimeState(
+                this.hostRouteRuntimeStates,
+                this.capacity,
+                slot
+            );
+            if (routeState.role !== GPU_ROUTE_RUNTIME_ROLE.NONE) {
+                this.slotRouteRuntimeDomain[slot] = 1;
+                if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                    routeRuntimeRosterCount++;
+                    maximumBodyRadius = Math.max(
+                        maximumBodyRadius,
+                        routeState.blockerRadius
+                    );
+                }
+            }
             maximumBodyRadius = Math.max(
                 maximumBodyRadius,
                 physicsView.getFloat32(
@@ -8066,6 +9269,7 @@ export class GpuCircleBodySimulation {
         this.atomicTransformFirstHitBodyCount
             = atomicTransformFirstHitBodyCount;
         this.projectileCaptureDomainBodyCount = projectileCaptureDomainBodyCount;
+        this.routeRuntimeRosterCount = routeRuntimeRosterCount;
         this.maximumBodyRadius = maximumBodyRadius;
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
@@ -8156,6 +9360,13 @@ export class GpuCircleBodySimulation {
                 count * GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE
             );
             this.device.queue.writeBuffer(
+                this.buffers.routeRuntimeStates,
+                start * GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE,
+                this.hostRouteRuntimeStates,
+                start * GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE,
+                count * GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE
+            );
+            this.device.queue.writeBuffer(
                 this.buffers.renderStyles,
                 start * BODY_RENDER_STYLE_STRIDE,
                 this.hostRenderStyles,
@@ -8188,6 +9399,32 @@ export class GpuCircleBodySimulation {
         this.drawIndirectArgs[2] = 0;
         this.drawIndirectArgs[3] = 0;
         queue.writeBuffer(this.buffers.drawIndirect, 0, this.drawIndirectArgs);
+    }
+
+    #uploadRouteRuntimeSlotRanges(slots) {
+        if (!this.device || !this.buffers || slots.length === 0) return;
+        const stride = GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE;
+        const ordered = [...new Set(slots)].sort((left, right) => left - right);
+        let rangeStart = ordered[0];
+        let rangeEnd = rangeStart;
+        const upload = (start, end) => this.device.queue.writeBuffer(
+            this.buffers.routeRuntimeStates,
+            start * stride,
+            this.hostRouteRuntimeStates,
+            start * stride,
+            (end - start + 1) * stride
+        );
+        for (let index = 1; index < ordered.length; index++) {
+            const slot = ordered[index];
+            if (slot === rangeEnd + 1) {
+                rangeEnd = slot;
+            } else {
+                upload(rangeStart, rangeEnd);
+                rangeStart = slot;
+                rangeEnd = slot;
+            }
+        }
+        upload(rangeStart, rangeEnd);
     }
 
     #isOverflowDegradedState() {
@@ -9737,6 +10974,29 @@ export class GpuCircleBodySimulation {
         }
     }
 
+    #claimRouteRuntimeReadbackSlot() {
+        const slotCount = this.routeRuntimeReadbackSlots.length;
+        for (let offset = 0; offset < slotCount; offset++) {
+            const index = (this.routeRuntimeReadbackCursor + offset) % slotCount;
+            const slot = this.routeRuntimeReadbackSlots[index];
+            if (slot.inFlight) continue;
+            slot.inFlight = true;
+            this.pendingRouteRuntimeReadbacks++;
+            this.routeRuntimeReadbackCursor = (index + 1) % slotCount;
+            return slot;
+        }
+        return null;
+    }
+
+    #releaseClaimedRouteRuntimeReadbackSlot(slot) {
+        if (!slot?.inFlight) return;
+        slot.inFlight = false;
+        this.pendingRouteRuntimeReadbacks = Math.max(
+            0,
+            this.pendingRouteRuntimeReadbacks - 1
+        );
+    }
+
     #normalizeProjectileCaptureCompletion(record, sourceTick, batchIdFingerprint) {
         const invalid = GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT;
         const facingLength = Math.hypot(record?.facing?.x, record?.facing?.y);
@@ -10515,6 +11775,254 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    #beginRouteRuntimeReadback(slot, queueEntry, lease) {
+        slot.tick = queueEntry.submittedTick;
+        slot.generation = queueEntry.deviceGeneration;
+        slot.authoritativeEpoch = queueEntry.authoritativeEpoch;
+        slot.lease = lease;
+        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+            const authentic = !this.destroyed
+                && lease === this.routeRuntimeReadbackLease
+                && slot.lease === lease
+                && queueEntry.deviceGeneration === this.deviceGeneration
+                && slot.generation === this.deviceGeneration
+                && queueEntry.authoritativeEpoch === this.routeAuthoritativeEpoch
+                && slot.authoritativeEpoch === this.routeAuthoritativeEpoch;
+            if (!authentic) {
+                try { slot.buffer.unmap(); } catch { /* retired */ }
+                if (lease === this.routeRuntimeReadbackLease) {
+                    this.#releaseClaimedRouteRuntimeReadbackSlot(slot);
+                } else {
+                    slot.inFlight = false;
+                }
+                return;
+            }
+            try {
+                const mapped = slot.buffer.getMappedRange();
+                const mappedBytes = new Uint8Array(mapped);
+                const view = new DataView(
+                    mappedBytes.buffer,
+                    mappedBytes.byteOffset,
+                    mappedBytes.byteLength
+                );
+                const header = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER;
+                const recordAbi = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_RECORD;
+                const abiVersion = view.getUint32(
+                    header.ABI_VERSION,
+                    LITTLE_ENDIAN
+                );
+                const status = view.getUint32(header.STATUS, LITTLE_ENDIAN);
+                const availabilityVersion = view.getUint32(
+                    header.AVAILABILITY_VERSION,
+                    LITTLE_ENDIAN
+                );
+                const sourceTick = view.getUint32(header.SOURCE_TICK, LITTLE_ENDIAN);
+                const completedThroughTick = view.getUint32(
+                    header.COMPLETED_THROUGH_TICK,
+                    LITTLE_ENDIAN
+                );
+                const terminalFlags = view.getUint32(
+                    header.TERMINAL_FLAGS,
+                    LITTLE_ENDIAN
+                );
+                const graphContentFingerprint = view.getUint32(
+                    header.GRAPH_CONTENT_FINGERPRINT,
+                    LITTLE_ENDIAN
+                );
+                const closureCount = view.getUint32(
+                    header.CLOSURE_COUNT,
+                    LITTLE_ENDIAN
+                );
+                const sessionGeneration = view.getUint32(
+                    header.SESSION_GENERATION,
+                    LITTLE_ENDIAN
+                );
+                const deviceGeneration = view.getUint32(
+                    header.DEVICE_GENERATION,
+                    LITTLE_ENDIAN
+                );
+                const authoritativeEpoch = view.getUint32(
+                    header.AUTHORITATIVE_EPOCH,
+                    LITTLE_ENDIAN
+                );
+                const nextLeaseGeneration = view.getUint32(
+                    header.NEXT_LEASE_GENERATION,
+                    LITTLE_ENDIAN
+                );
+                const lastEventBase = view.getUint32(
+                    header.LAST_EVENT_BASE,
+                    LITTLE_ENDIAN
+                );
+                const lastEventCount = view.getUint32(
+                    header.LAST_EVENT_COUNT,
+                    LITTLE_ENDIAN
+                );
+                const expectedClosureCount
+                    = this.routeRuntimeTopology.graph?.closures?.length ?? 0;
+                if (abiVersion !== GPU_ROUTE_RUNTIME_ABI_VERSION
+                    || status !== GPU_ROUTE_RUNTIME_STATUS.OK
+                    || availabilityVersion === 0
+                    || availabilityVersion === UINT32_MAX
+                    || sourceTick !== queueEntry.sourceTick
+                    || completedThroughTick !== queueEntry.sourceTick
+                    || terminalFlags
+                        !== (queueEntry.expectedTerminalFinalSubmit ? 1 : 0)
+                    || graphContentFingerprint
+                        !== queueEntry.expectedGraphContentFingerprint
+                    || closureCount !== expectedClosureCount
+                    || sessionGeneration !== queueEntry.sessionGeneration
+                    || deviceGeneration !== queueEntry.deviceGeneration
+                    || authoritativeEpoch !== queueEntry.authoritativeEpoch
+                    || nextLeaseGeneration === 0
+                    || nextLeaseGeneration === UINT32_MAX
+                    || lastEventBase > this.eventCapacity
+                    || lastEventCount > this.eventCapacity - lastEventBase
+                    || view.getUint32(header.RESERVED_0, LITTLE_ENDIAN) !== 0
+                    || view.getUint32(header.RESERVED_1, LITTLE_ENDIAN) !== 0) {
+                    throw new RangeError(
+                        'route availability readback header 인증에 실패했습니다.'
+                    );
+                }
+                const records = [];
+                const closedPathIndices = [];
+                const seenOwnerHandles = new Set();
+                for (let index = 0; index < closureCount; index++) {
+                    const offset = header.STRIDE + index * recordAbi.STRIDE;
+                    const state = view.getUint32(
+                        offset + recordAbi.STATE,
+                        LITTLE_ENDIAN
+                    );
+                    const ownerSlot = view.getUint32(
+                        offset + recordAbi.OWNER_SLOT,
+                        LITTLE_ENDIAN
+                    );
+                    const entityId = view.getUint32(
+                        offset + recordAbi.OWNER_ENTITY_ID,
+                        LITTLE_ENDIAN
+                    );
+                    const incarnation = view.getUint32(
+                        offset + recordAbi.OWNER_INCARNATION,
+                        LITTLE_ENDIAN
+                    );
+                    const leaseGeneration = view.getUint32(
+                        offset + recordAbi.LEASE_GENERATION,
+                        LITTLE_ENDIAN
+                    );
+                    const changedAtFixedTick = view.getUint32(
+                        offset + recordAbi.CHANGED_AT_FIXED_TICK,
+                        LITTLE_ENDIAN
+                    );
+                    if (view.getUint32(
+                        offset + recordAbi.RESERVED_0,
+                        LITTLE_ENDIAN
+                    ) !== 0 || view.getUint32(
+                        offset + recordAbi.RESERVED_1,
+                        LITTLE_ENDIAN
+                    ) !== 0) {
+                        throw new RangeError('route availability reserved word가 0이 아닙니다.');
+                    }
+                    const isOpen = state === GPU_ROUTE_AVAILABILITY_STATE.OPEN;
+                    const isUnowned = ownerSlot === UINT32_MAX
+                        && entityId === UINT32_MAX
+                        && incarnation === UINT32_MAX
+                        && leaseGeneration === 0;
+                    const isOwned = ownerSlot < this.capacity
+                        && entityId !== UINT32_MAX
+                        && incarnation !== UINT32_MAX
+                        && leaseGeneration !== 0
+                        && leaseGeneration !== UINT32_MAX;
+                    if ((!isOpen
+                            && state !== GPU_ROUTE_AVAILABILITY_STATE.LEASED
+                            && state !== GPU_ROUTE_AVAILABILITY_STATE.CLOSED)
+                        || (isOpen && !isUnowned && !isOwned)
+                        || (!isOpen && !isOwned)
+                        || (isOwned && (changedAtFixedTick === 0
+                            || changedAtFixedTick > sourceTick))) {
+                        throw new RangeError('route availability record 인증에 실패했습니다.');
+                    }
+                    const ownerHandle = isUnowned
+                        ? null
+                        : Object.freeze({ entityId, incarnation });
+                    if (ownerHandle) {
+                        const ownerKey = `${entityId}:${incarnation}`;
+                        if (seenOwnerHandles.has(ownerKey)) {
+                            throw new RangeError('route availability owner가 중복되었습니다.');
+                        }
+                        seenOwnerHandles.add(ownerKey);
+                    }
+                    const closure = this.routeRuntimeTopology.graph.closures[index];
+                    if (!isOpen && state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED) {
+                        closedPathIndices.push(closure.pathIndex);
+                    }
+                    records.push(Object.freeze({
+                        closureIndex: index,
+                        pathIndex: closure.pathIndex,
+                        state,
+                        ownerSlot: isOpen ? null : ownerSlot,
+                        ownerHandle,
+                        leaseGeneration,
+                        changedAtFixedTick
+                    }));
+                }
+                closedPathIndices.sort((left, right) => left - right);
+                const readbackBytes = mappedBytes.slice().buffer;
+                const completion = Object.freeze({
+                    abiVersion,
+                    sessionGeneration,
+                    deviceGeneration,
+                    authoritativeEpoch,
+                    sourceTick,
+                    completedThroughTick,
+                    availabilityVersion,
+                    graphContentFingerprint,
+                    terminal: terminalFlags === 1,
+                    lastEventBase,
+                    lastEventCount,
+                    records: Object.freeze(records),
+                    closedPathIndices: Object.freeze(closedPathIndices)
+                });
+                queueEntry.completion = completion;
+                queueEntry.readbackBytes = readbackBytes;
+                queueEntry.completed = true;
+                slot.buffer.unmap();
+                this.#releaseClaimedRouteRuntimeReadbackSlot(slot);
+                this.#completeDeferredIdleRelease();
+            } catch (error) {
+                try { slot.buffer.unmap(); } catch { /* ignored */ }
+                this.#releaseClaimedRouteRuntimeReadbackSlot(slot);
+                const failure = captureFailure('route-runtime-readback', error);
+                queueEntry.failure = failure;
+                queueEntry.completed = true;
+                this.failure = failure;
+                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+                this.state = this.requiresAuthoritativeRebuild
+                    ? 'requires-rebuild'
+                    : 'failed';
+            }
+        }).catch((error) => {
+            const authentic = !this.destroyed
+                && lease === this.routeRuntimeReadbackLease
+                && slot.lease === lease
+                && queueEntry.deviceGeneration === this.deviceGeneration
+                && slot.generation === this.deviceGeneration
+                && queueEntry.authoritativeEpoch === this.routeAuthoritativeEpoch
+                && slot.authoritativeEpoch === this.routeAuthoritativeEpoch;
+            if (!authentic) {
+                slot.inFlight = false;
+                return;
+            }
+            this.#releaseClaimedRouteRuntimeReadbackSlot(slot);
+            const failure = captureFailure('route-runtime-readback', error);
+            queueEntry.failure = failure;
+            queueEntry.completed = true;
+            this.failure = failure;
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            this.state = this.requiresAuthoritativeRebuild
+                ? 'requires-rebuild'
+                : 'failed';
+        });
+    }
+
     #claimEventReadbackSlot() {
         const slotCount = this.eventReadbackSlots.length;
         for (let offset = 0; offset < slotCount; offset++) {
@@ -10593,6 +12101,7 @@ export class GpuCircleBodySimulation {
             || this.pendingAtomicTransformReadbacks !== 0
             || this.pendingProjectileCaptureReadbacks !== 0
             || this.pendingProjectileCaptureReleaseReadbacks !== 0
+            || this.pendingRouteRuntimeReadbacks !== 0
             || this.pendingTrackedPoseReadbacks !== 0
             || this.eventBatchQueue.length !== 0
             || this.bodyControlProgramBatchQueue.length !== 0
@@ -10602,6 +12111,7 @@ export class GpuCircleBodySimulation {
             || this.atomicTransformPrepareBatchQueue.length !== 0
             || this.projectileCaptureBatchQueue.length !== 0
             || this.projectileCaptureReleaseBatchQueue.length !== 0
+            || this.routeRuntimeBatchQueue.length !== 0
             || this.stagedFormationPrepareBatch !== null
             || this.armedFormationTransform !== null
             || this.stagedAtomicTransformPrepareBatch !== null
@@ -10609,6 +12119,9 @@ export class GpuCircleBodySimulation {
             || this.authenticAtomicTransformPrepareByFingerprint.size !== 0
             || this.armedProjectileCaptureRelease !== null
             || this.authenticProjectileCapturePreparationByKey.size !== 0
+            || this.stagedRouteCleanupBatch !== null
+            || this.routeLifecycleReservations.size !== 0
+            || this.routeRuntimeRosterCount !== 0
             || this.pendingBodyCount !== 0
             || (this.state !== 'ready'
                 && this.state !== 'telemetry-backpressure'
@@ -10678,6 +12191,8 @@ export class GpuCircleBodySimulation {
             = createGpuEffectBodyStateStorage(this.capacity);
         this.hostAtomicTransformTemplateFormationBodyState
             = createGpuFormationBodyStateStorage(this.capacity);
+        this.hostAtomicTransformTemplateRouteRuntimeStates
+            = createGpuRouteRuntimeStateBuffer(this.capacity);
         this.hostAtomicTransformTemplateRenderStyles = new ArrayBuffer(
             BODY_RENDER_STYLE_STRIDE * this.capacity
         );
@@ -10727,6 +12242,44 @@ export class GpuCircleBodySimulation {
         this.lastProjectileCaptureRuntimeStatus
             = GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET;
         this.lastProjectileCaptureErrorFlags = 0;
+        const nextRouteAuthoritativeEpoch = this.routeAuthoritativeEpoch + 1;
+        if (this.terminalRouteAvailabilityProgramCancelStatus
+                ?.state === 'submitted') {
+            const routeSnapshot = this.#readHostRouteAvailabilitySnapshot();
+            this.terminalRouteAvailabilityProgramCancelStatus = Object.freeze({
+                ...this.terminalRouteAvailabilityProgramCancelStatus,
+                completedThroughTick: this.routeRuntimeCompletedThroughTick,
+                availabilityVersion: routeSnapshot.availabilityVersion,
+                closedPathIds: routeSnapshot.closedPathIds,
+                failure: null
+            });
+        }
+        this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
+            this.capacity
+        );
+        this.hostRouteAvailability = createGpuRouteAvailabilityBuffer(
+            this.routeRuntimeTopology,
+            {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: Math.max(0, this.deviceGeneration),
+                authoritativeEpoch: nextRouteAuthoritativeEpoch
+            }
+        );
+        this.hostRouteCleanupProgram = createGpuRouteCleanupProgram(
+            GPU_ROUTE_RUNTIME_MAX_CLOSERS
+        );
+        this.routeRuntimeBatchQueue.length = 0;
+        this.pendingRouteRuntimeReadbacks = 0;
+        this.routeRuntimeReadbackCursor = 0;
+        this.routeRuntimeCompletedThroughTick = 0;
+        this.lastRouteRuntimeSourceTick = 0;
+        this.lastRouteAvailabilityVersion = 1;
+        this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
+        this.routeRuntimeRosterCount = 0;
+        this.stagedRouteCleanupBatch = null;
+        this.routeLifecycleReservations.clear();
+        this.slotRouteRuntimeDomain.fill(0);
+        this.routeAuthoritativeEpoch = nextRouteAuthoritativeEpoch;
         this.authoritativeEpoch = nextAuthoritativeEpoch;
         this.#releaseGpuResources();
         this.state = 'idle';
@@ -11521,6 +13074,36 @@ export class GpuCircleBodySimulation {
                 PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE,
                 usage.UNIFORM | usage.COPY_DST
             ),
+            routeRuntimeStates: createBuffer(
+                device,
+                'cirvivor-gpu-route-runtime-states',
+                GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            routeRuntimeTopology: createBuffer(
+                device,
+                'cirvivor-gpu-route-runtime-topology',
+                this.routeRuntimeTopology.buffer.byteLength,
+                usage.STORAGE | usage.COPY_DST
+            ),
+            routeAvailability: createBuffer(
+                device,
+                'cirvivor-gpu-route-availability',
+                this.hostRouteAvailability.byteLength,
+                storageUsage
+            ),
+            routeCleanupProgram: createBuffer(
+                device,
+                'cirvivor-gpu-route-cleanup-program',
+                this.hostRouteCleanupProgram.buffer.byteLength,
+                storageUsage
+            ),
+            routeRuntimeParams: createBuffer(
+                device,
+                'cirvivor-gpu-route-runtime-params',
+                GPU_ROUTE_RUNTIME_ABI.PARAMS.STRIDE,
+                usage.UNIFORM | usage.COPY_DST
+            ),
             enemyBehaviorStates: createBuffer(
                 device,
                 'cirvivor-gpu-circle-enemy-behavior-states',
@@ -11886,6 +13469,25 @@ export class GpuCircleBodySimulation {
         this.projectileCaptureReadbackCursor = 0;
         this.pendingProjectileCaptureReadbacks = 0;
         this.pendingProjectileCaptureReleaseReadbacks = 0;
+        const routeRuntimeReadbackLease = ++this.routeRuntimeReadbackLease;
+        this.routeRuntimeReadbackSlots = Array.from(
+            { length: ROUTE_RUNTIME_READBACK_SLOT_COUNT },
+            (_, index) => ({
+                buffer: createBuffer(
+                    device,
+                    `cirvivor-gpu-route-runtime-readback-${index}`,
+                    this.hostRouteAvailability.byteLength,
+                    usage.COPY_DST | usage.MAP_READ
+                ),
+                inFlight: false,
+                tick: 0,
+                generation: this.deviceGeneration,
+                authoritativeEpoch: this.routeAuthoritativeEpoch,
+                lease: routeRuntimeReadbackLease
+            })
+        );
+        this.routeRuntimeReadbackCursor = 0;
+        this.pendingRouteRuntimeReadbacks = 0;
         const spawnProgramReadbackLease = ++this.spawnProgramReadbackLease;
         this.spawnProgramReadbackSlots = [];
         for (let index = 0; index < SPAWN_PROGRAM_READBACK_SLOT_COUNT; index++) {
@@ -12400,6 +14002,9 @@ export class GpuCircleBodySimulation {
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS]: [
                 [1, 2, 6, 7, 9, 10], [6], true
             ],
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS]: [
+                [9, 17], [], false
+            ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: [
                 [7, 9, 13, 14], [], false
             ],
@@ -12411,6 +14016,9 @@ export class GpuCircleBodySimulation {
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_BODIES]: [
                 [1, 2, 3, 4, 5, 9], [], false
+            ],
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE]: [
+                [9, 17], [], false
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: [
                 [6, 7, 9, 10, 11, 12, 15, 16], [], false
@@ -12482,7 +14090,7 @@ export class GpuCircleBodySimulation {
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREPARE]: [0, 2, 6, 7, 9],
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.CLEAR_TRANSFORM]: [8],
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORM]: [
-                0, 2, 6, 8, 9, 18, 22, 23
+                0, 2, 6, 8, 9, 18, 22, 23, 30
             ],
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: [
                 8, 16, 29
@@ -12500,6 +14108,9 @@ export class GpuCircleBodySimulation {
             ],
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_CONTROL]: [
                 8, 14, 15, 27, 28
+            ],
+            [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE]: [
+                8, 30
             ],
             [GPU_ATOMIC_TRANSFORM_RUNTIME_ENTRY_POINT.FINALIZE_TRANSFORM]: [8]
         });
@@ -12584,6 +14195,52 @@ export class GpuCircleBodySimulation {
             label: 'cirvivor-gpu-projectile-capture-release-pipeline-layout',
             bindGroupLayouts: [projectileCaptureReleaseLayout]
         });
+        if (GPU_ROUTE_RUNTIME_STORAGE_PROFILE.maximum
+            > REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE) {
+            throw new RangeError('RouteRuntime storage profile이 <=9 계약을 위반합니다.');
+        }
+        const routeRuntimeLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-route-runtime-layout',
+            entries: [
+                storageLayoutEntry(0, 'read-only-storage'),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(3),
+                storageLayoutEntry(4, 'read-only-storage'),
+                storageLayoutEntry(5),
+                storageLayoutEntry(6),
+                storageLayoutEntry(7),
+                storageLayoutEntry(8),
+                {
+                    binding: 9,
+                    visibility: stage.COMPUTE,
+                    buffer: { type: 'uniform' }
+                }
+            ]
+        });
+        const routeRuntimePipelineLayout = device.createPipelineLayout({
+            label: 'cirvivor-gpu-route-runtime-pipeline-layout',
+            bindGroupLayouts: [routeRuntimeLayout]
+        });
+        const routeRuntimeWaitLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-route-runtime-wait-layout',
+            entries: [
+                storageLayoutEntry(0, 'read-only-storage'),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(3),
+                {
+                    binding: 9,
+                    visibility: stage.COMPUTE,
+                    buffer: { type: 'uniform' }
+                },
+                storageLayoutEntry(10)
+            ]
+        });
+        const routeRuntimeWaitPipelineLayout = device.createPipelineLayout({
+            label: 'cirvivor-gpu-route-runtime-wait-pipeline-layout',
+            bindGroupLayouts: [routeRuntimeWaitLayout]
+        });
 
         const computeModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-compute-shader',
@@ -12608,6 +14265,10 @@ export class GpuCircleBodySimulation {
         const projectileCaptureReleaseModule = device.createShaderModule({
             label: 'cirvivor-gpu-projectile-capture-release-shader',
             code: GPU_PROJECTILE_CAPTURE_RELEASE_WGSL
+        });
+        const routeRuntimeModule = device.createShaderModule({
+            label: 'cirvivor-gpu-route-runtime-shader',
+            code: GPU_ROUTE_RUNTIME_WGSL
         });
         const indirectModule = device.createShaderModule({
             label: 'cirvivor-gpu-circle-indirect-shader',
@@ -12695,6 +14356,32 @@ export class GpuCircleBodySimulation {
                 compute: { module: projectileCaptureReleaseModule, entryPoint }
             })
         ]));
+        const routeRuntime = Object.freeze({
+            advance: device.createComputePipeline({
+                label: 'cirvivor-gpu-route-runtime-advance',
+                layout: routeRuntimePipelineLayout,
+                compute: {
+                    module: routeRuntimeModule,
+                    entryPoint: GPU_ROUTE_RUNTIME_ENTRY_POINT.ADVANCE
+                }
+            }),
+            enforceWait: device.createComputePipeline({
+                label: 'cirvivor-gpu-route-runtime-enforce-wait',
+                layout: routeRuntimeWaitPipelineLayout,
+                compute: {
+                    module: routeRuntimeModule,
+                    entryPoint: GPU_ROUTE_RUNTIME_ENTRY_POINT.ENFORCE_WAIT
+                }
+            }),
+            finalize: device.createComputePipeline({
+                label: 'cirvivor-gpu-route-runtime-finalize',
+                layout: routeRuntimePipelineLayout,
+                compute: {
+                    module: routeRuntimeModule,
+                    entryPoint: GPU_ROUTE_RUNTIME_ENTRY_POINT.FINALIZE
+                }
+            })
+        });
         this.pipelines = {
             compute,
             effect,
@@ -12702,6 +14389,7 @@ export class GpuCircleBodySimulation {
             atomicTransform,
             projectileCapture,
             projectileCaptureRelease,
+            routeRuntime,
             updateIndirectArgs: device.createComputePipeline({
                 label: 'cirvivor-gpu-circle-update-indirect-args',
                 layout: indirectPipelineLayout,
@@ -12827,7 +14515,8 @@ export class GpuCircleBodySimulation {
             12: this.buffers.renderStyles,
             14: this.buffers.effectPoolState,
             15: this.buffers.enemyBehaviorStates,
-            16: this.buffers.bodyControlStates
+            16: this.buffers.bodyControlStates,
+            17: this.buffers.routeRuntimeStates
         };
         const formationWorldBuffers = {
             0: this.buffers.gridCounts,
@@ -12914,7 +14603,8 @@ export class GpuCircleBodySimulation {
             26: this.buffers.atomicTransformTemplateRenderStyles,
             27: this.buffers.atomicTransformTemplateEnemyBehaviorStates,
             28: this.buffers.atomicTransformTemplateBodyControlStates,
-            29: this.buffers.effectPoolState
+            29: this.buffers.effectPoolState,
+            30: this.buffers.routeRuntimeStates
         };
         const createAtomicTransformBindGroupsForPool = (poolIndex) => {
             const buffers = {
@@ -13199,12 +14889,42 @@ export class GpuCircleBodySimulation {
                 }
             ]
         });
+        const routeRuntimeBindGroup = device.createBindGroup({
+            label: 'cirvivor-gpu-route-runtime',
+            layout: routeRuntimeLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.routeRuntimeStates) },
+                { binding: 4, resource: resource(this.buffers.routeRuntimeTopology) },
+                { binding: 5, resource: resource(this.buffers.routeAvailability) },
+                { binding: 6, resource: resource(this.buffers.routeCleanupProgram) },
+                { binding: 7, resource: resource(this.buffers.contactState) },
+                { binding: 8, resource: resource(this.buffers.appliedEvents) },
+                { binding: 9, resource: resource(this.buffers.routeRuntimeParams) }
+            ]
+        });
+        const routeRuntimeWaitBindGroup = device.createBindGroup({
+            label: 'cirvivor-gpu-route-runtime-wait',
+            layout: routeRuntimeWaitLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 3, resource: resource(this.buffers.routeRuntimeStates) },
+                { binding: 9, resource: resource(this.buffers.routeRuntimeParams) },
+                { binding: 10, resource: resource(this.buffers.temporary) }
+            ]
+        });
         this.bindGroups = {
             effectByPool,
             formationByPool,
             atomicTransformByPool,
             projectileCapture: [projectileCaptureBodies, projectileCaptureParams],
             projectileCaptureRelease: projectileCaptureReleaseBindGroup,
+            routeRuntime: routeRuntimeBindGroup,
+            routeRuntimeWait: routeRuntimeWaitBindGroup,
             computeProfiles: {
                 [COMPUTE_PIPELINE_PROFILE.PHYSICS]: [
                     computeBodiesBase,
@@ -13310,6 +15030,7 @@ export class GpuCircleBodySimulation {
 
     #uploadHostState() {
         assertGpuCircleBodyAbiVersion(this.hostStorage);
+        this.#bindRouteAvailabilityProtocolTuple(false);
         const queue = this.device.queue;
         const bodyCount = this.bodyCount;
         queue.writeBuffer(this.buffers.counts, 0, this.hostStorage.countsBuffer);
@@ -13328,6 +15049,21 @@ export class GpuCircleBodySimulation {
             this.buffers.spawnProgram,
             0,
             this.hostSpawnProgram.buffer
+        );
+        queue.writeBuffer(
+            this.buffers.routeRuntimeTopology,
+            0,
+            this.routeRuntimeTopology.buffer
+        );
+        queue.writeBuffer(
+            this.buffers.routeAvailability,
+            0,
+            this.hostRouteAvailability
+        );
+        queue.writeBuffer(
+            this.buffers.routeCleanupProgram,
+            0,
+            this.hostRouteCleanupProgram.buffer
         );
         queue.writeBuffer(
             this.buffers.effectPoolState,
@@ -13471,6 +15207,13 @@ export class GpuCircleBodySimulation {
                 bodyCount * GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE
             );
             queue.writeBuffer(
+                this.buffers.routeRuntimeStates,
+                0,
+                this.hostRouteRuntimeStates,
+                0,
+                bodyCount * GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE
+            );
+            queue.writeBuffer(
                 this.buffers.renderStyles,
                 0,
                 this.hostRenderStyles,
@@ -13518,6 +15261,50 @@ export class GpuCircleBodySimulation {
         this.uploadedComputeFixedTick = -1;
         this.#writeComputeParams(this.lastFixedDelta, 0);
         this.#writeProjectileCaptureParams(0);
+        this.#writeRouteRuntimeParams(0, false);
+    }
+
+    #bindRouteAvailabilityProtocolTuple(uploadHeader) {
+        const header = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER;
+        const view = new DataView(this.hostRouteAvailability);
+        view.setUint32(
+            header.SESSION_GENERATION,
+            this.sessionGeneration,
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            header.DEVICE_GENERATION,
+            Math.max(0, this.deviceGeneration),
+            LITTLE_ENDIAN
+        );
+        view.setUint32(
+            header.AUTHORITATIVE_EPOCH,
+            this.routeAuthoritativeEpoch,
+            LITTLE_ENDIAN
+        );
+        if (uploadHeader && this.device && this.buffers?.routeAvailability) {
+            this.device.queue.writeBuffer(
+                this.buffers.routeAvailability,
+                0,
+                this.hostRouteAvailability,
+                0,
+                header.STRIDE
+            );
+        }
+    }
+
+    #writeRouteRuntimeParams(fixedTick, terminalFinalSubmit = false) {
+        writeGpuRouteRuntimeParams(this.routeRuntimeParamsBytes, {
+            fixedTick,
+            maxEvents: this.eventCapacity,
+            terminalFinalSubmit,
+            fixedDelta: this.lastFixedDelta
+        });
+        this.device.queue.writeBuffer(
+            this.buffers.routeRuntimeParams,
+            0,
+            this.routeRuntimeParamsBytes
+        );
     }
 
     #writeComputeParams(fixedDelta, fixedTick = 0) {
@@ -13855,6 +15642,15 @@ export class GpuCircleBodySimulation {
         this.armedProjectileCaptureRelease = null;
         this.authenticProjectileCapturePreparationByKey.clear();
         this.authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
+        this.routeRuntimeReadbackLease++;
+        for (const slot of this.routeRuntimeReadbackSlots) {
+            slot.inFlight = false;
+            try { slot.buffer?.destroy?.(); } catch { /* retired */ }
+        }
+        this.routeRuntimeReadbackSlots = [];
+        this.pendingRouteRuntimeReadbacks = 0;
+        this.routeRuntimeReadbackCursor = 0;
+        this.routeRuntimeBatchQueue.length = 0;
         this.trackedPoseReadbackLease++;
         for (const slot of this.trackedPoseReadbackSlots) {
             slot.inFlight = false;

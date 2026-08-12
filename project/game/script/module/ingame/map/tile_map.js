@@ -3,6 +3,9 @@ import { assertTileNavigationSource } from '../contract/tile_navigation_contract
 import {
     normalizeEnemyModifierSet
 } from '../object/enemy/resolved_enemy_spawn_stats.js';
+import {
+    normalizeEnemyRouteGraph
+} from '../contract/enemy_route_closure_contract.js';
 
 const MAX_TILE_CELLS = 1000000;
 
@@ -182,6 +185,14 @@ export class TileMap {
 
         this.#markRouteFloors(definition.enemySpawnRoutes);
         this.spawnRoutes = this.#buildSpawnRoutes(definition.enemySpawnRoutes);
+        this.routeGraph = definition.routeGraph === undefined
+            || definition.routeGraph === null
+            ? null
+            : normalizeEnemyRouteGraph(
+                definition.routeGraph,
+                { routes: definition.enemySpawnRoutes },
+                `${definition.id}.routeGraph`
+            );
         this.corePosition = Object.freeze(
             this.#macroCellToWorldPosition(definition.coreMacroCell)
         );
@@ -214,6 +225,14 @@ export class TileMap {
     /** @returns {object[]} gate/path/waypoint를 포함한 복수 적 진입 route입니다. */
     getSpawnRoutes() {
         return this.spawnRoutes;
+    }
+
+    /**
+     * @returns {object|null} optional v1 route topology입니다.
+     * Legacy map은 null이며 runtime closure를 지원하지 않습니다.
+     */
+    getRouteGraph() {
+        return this.routeGraph;
     }
 
     /** @returns {{x:number,y:number,row:number,column:number}} Core 중심입니다. */

@@ -94,6 +94,7 @@ function definitionSource(definition, overrides = {}) {
         formationDefinitionId: definition.formationDefinitionId,
         atomicTransformProfileId: definition.atomicTransformProfileId,
         projectileCaptureProfileId: definition.projectileCaptureProfileId,
+        routeClosureProfileId: definition.routeClosureProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

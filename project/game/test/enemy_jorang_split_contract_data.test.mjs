@@ -86,6 +86,7 @@ function createDefinitionSource(definition, overrides = {}) {
         effectEmitterProfileId: definition.effectEmitterProfileId,
         formationDefinitionId: definition.formationDefinitionId,
         atomicTransformProfileId: definition.atomicTransformProfileId,
+        routeClosureProfileId: definition.routeClosureProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

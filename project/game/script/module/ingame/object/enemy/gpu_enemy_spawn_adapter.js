@@ -13,6 +13,10 @@ import {
     GPU_EFFECT_LAST_PULSE_TICK_INVALID
 } from '../../physics/gpu/gpu_effect_runtime_abi.js';
 import {
+    GPU_ROUTE_RUNTIME_PHASE,
+    GPU_ROUTE_RUNTIME_ROLE
+} from '../../physics/gpu/gpu_route_runtime_abi.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -61,6 +65,15 @@ import {
     ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_ID,
     RING_PROJECTILE_CAPTURE_PROFILE_ID
 } from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
+    CORK_ROUTE_CLOSURE_PROFILE_ID,
+    ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID,
+    GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE
+} from 'data/object/enemy/enemy_route_closure_catalog_data.js';
+import {
+    BASIC_CORK_ENEMY_CAPABILITY_MASK,
+    BASIC_CORK_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_cork_enemy_data.js';
 import {
     BASIC_RING_ENEMY_CAPABILITY_MASK,
     BASIC_RING_ENEMY_DEFINITION_ID
@@ -262,6 +275,33 @@ function assertProjectileCaptureCapabilityDefinition(definition) {
     }
 }
 
+function assertRouteClosureCapabilityDefinition(definition) {
+    const profileId = requireNonEmptyString(
+        definition.routeClosureProfileId,
+        'enemy routeClosureProfileId'
+    );
+    const profile = ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID[profileId];
+    const capabilityMask = createEnemyCapabilityMask(
+        definition.capabilityIds,
+        'enemy route closure capabilityIds'
+    );
+    const shapeCode = resolveEnemyRenderShapeCode(
+        definition.shapeDefinitionId ?? definition.shapeType
+    );
+    if (definition.id !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || profileId !== CORK_ROUTE_CLOSURE_PROFILE_ID
+        || capabilityMask !== BASIC_CORK_ENEMY_CAPABILITY_MASK
+        || profile?.definitionCode
+            !== GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE.CORK_SINGLE_LOGICAL_CIRCLE
+        || profile.expandedRadiusTiles * 2 !== profile.blockerDiameterTiles
+        || profile.expansionDurationFixedTicks !== 60
+        || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE) {
+        throw new RangeError(
+            'enemy-route-closure capability에는 exact single-circle Cork profile이 필요합니다.'
+        );
+    }
+}
+
 function assertEffectEmitterCapabilityDefinition(definition) {
     const effectEmitterProfileId = requireNonEmptyString(
         definition.effectEmitterProfileId,
@@ -455,6 +495,11 @@ export const GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY = (
             capabilityId: ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE,
             implementationId: 'gpu-ring-projectile-capture',
             assertDefinition: assertProjectileCaptureCapabilityDefinition
+        }),
+        Object.freeze({
+            capabilityId: ENEMY_CAPABILITY_ID.ROUTE_CLOSURE,
+            implementationId: 'gpu-cork-route-runtime',
+            assertDefinition: assertRouteClosureCapabilityDefinition
         })
     ])
 );
@@ -716,6 +761,7 @@ function isCanonicalEnemyDefinition(definition) {
         'projectileCaptureProfileId',
         'formationDefinitionId',
         'atomicTransformProfileId',
+        'routeClosureProfileId',
         'capabilityIds',
         'render'
     ];
@@ -1000,6 +1046,11 @@ export function createGpuEnemySpawnIntent(options) {
         ENEMY_CAPABILITY_ID.PROJECTILE_CAPTURE,
         'enemy capabilityMask'
     );
+    const hasRouteClosure = hasEnemyCapability(
+        capabilityMask,
+        ENEMY_CAPABILITY_ID.ROUTE_CLOSURE,
+        'enemy capabilityMask'
+    );
     const isNaturalJorang = enemyDefinitionId === BASIC_JORANG_ENEMY_DEFINITION_ID;
     if (isNaturalJorang
         && (definition.atomicTransformProfileId
@@ -1108,10 +1159,41 @@ export function createGpuEnemySpawnIntent(options) {
             definition.projectileCaptureProfileId
         ]
         : null;
+    const routeClosureProfile = hasRouteClosure
+        ? ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID[definition.routeClosureProfileId]
+        : null;
     if (hasProjectileCapture && !projectileCaptureProfile) {
         throw new RangeError(
             'enemy-projectile-capture spawn에는 exact catalog profile이 필요합니다.'
         );
+    }
+    if (hasRouteClosure && !routeClosureProfile) {
+        throw new RangeError(
+            'enemy-route-closure spawn에는 exact catalog profile이 필요합니다.'
+        );
+    }
+    const routeSetId = options.routeSetId === undefined
+            || options.routeSetId === null
+        ? null
+        : requireNonEmptyString(options.routeSetId, 'routeSetId');
+    const routeAvailabilityVersion = requireUint32(
+        options.routeAvailabilityVersion ?? 1,
+        'routeAvailabilityVersion',
+        false
+    );
+    if (routeAvailabilityVersion === 0
+        || routeAvailabilityVersion === 0xffffffff) {
+        throw new RangeError('routeAvailabilityVersion은 reserved sentinel일 수 없습니다.');
+    }
+    const routeGraphContentKey = options.routeGraphContentKey === undefined
+            || options.routeGraphContentKey === null
+        ? null
+        : requireNonEmptyString(options.routeGraphContentKey, 'routeGraphContentKey');
+    if ((routeSetId === null) !== (routeGraphContentKey === null)) {
+        throw new TypeError('routeSetId/routeGraphContentKey는 함께 있거나 함께 null이어야 합니다.');
+    }
+    if (hasRouteClosure && routeSetId === null) {
+        throw new TypeError('Cork route-closure spawn에는 dynamic routeSet snapshot이 필요합니다.');
     }
     if (hasEffectEmitter
         && (!effectEmitterProfile
@@ -1137,6 +1219,13 @@ export function createGpuEnemySpawnIntent(options) {
         waveId,
         policyId,
         capabilityMask,
+        routeSetId,
+        routeAvailabilityVersion,
+        routeGraphContentKey,
+        ...(routeClosureProfile ? {
+            routeClosureProfileId: routeClosureProfile.id,
+            routeClosureProfileCode: routeClosureProfile.definitionCode
+        } : {}),
         ...(projectileCaptureProfile ? {
             projectileCaptureProfileId: projectileCaptureProfile.id,
             projectileCaptureProfileCode: projectileCaptureProfile.definitionCode
@@ -1170,6 +1259,7 @@ export function createGpuEnemySpawnIntent(options) {
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
@@ -1247,6 +1337,63 @@ export function createGpuEnemySpawnIntent(options) {
             radiusScale: requirePositiveFinite(render.radiusScale ?? 1, 'radiusScale'),
             visible: true,
             shapeCode
+        })
+    });
+}
+
+/**
+ * WorldRegistry exact handle 예약 뒤 natural Z의 GPU RouteRuntime state를
+ * 물질화합니다. Raw/public intent가 self identity, phase, lease를 선점하지 못하게
+ * 별도 privileged lifecycle seam으로 유지합니다.
+ */
+export function materializeNaturalCorkRouteClosureActivation(intent, handle) {
+    if (!intent || typeof intent !== 'object' || Array.isArray(intent)
+        || Object.prototype.hasOwnProperty.call(intent, 'routeRuntimeState')) {
+        throw new TypeError(
+            'raw natural Cork intent에는 privileged routeRuntimeState가 없어야 합니다.'
+        );
+    }
+    const normalized = normalizeGpuSpawnIntent(intent);
+    const exactHandle = normalizeExactHandle(handle, 'naturalCorkHandle');
+    const profile = ENEMY_ROUTE_CLOSURE_PROFILE_BY_ID[
+        normalized.routeClosureProfileId
+    ];
+    if (normalized.kindId !== GPU_ENEMY_WORLD_KIND_ID
+        || normalized.spawnPolicy !== ENEMY_SPAWN_POLICY.NATURAL
+        || normalized.definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || normalized.enemyDefinitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+        || normalized.capabilityMask !== BASIC_CORK_ENEMY_CAPABILITY_MASK
+        || normalized.routeClosureProfileCode
+            !== GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE.CORK_SINGLE_LOGICAL_CIRCLE
+        || profile?.id !== CORK_ROUTE_CLOSURE_PROFILE_ID
+        || normalized.routeSetId === null
+        || normalized.routeGraphContentKey === null
+        || normalized.routeAvailabilityVersion <= 0
+        || normalized.routeAvailabilityVersion === 0xffffffff) {
+        throw new RangeError(
+            'activation helper는 exact natural Cork route snapshot intent만 허용합니다.'
+        );
+    }
+    return Object.freeze({
+        ...normalized,
+        routeRuntimeState: Object.freeze({
+            role: GPU_ROUTE_RUNTIME_ROLE.CLOSER,
+            phase: GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE,
+            selfEntityId: exactHandle.entityId,
+            selfIncarnation: exactHandle.incarnation,
+            currentPathIndex: 0xffffffff,
+            routeSetId: normalized.routeSetId,
+            closureIndex: 0xffffffff,
+            observedAvailabilityVersion:
+                normalized.routeAvailabilityVersion,
+            phaseEnteredFixedTick: 0,
+            travelRadius: normalized.radius,
+            blockerRadius: profile.expandedRadiusTiles,
+            expansionDurationFixedTicks:
+                profile.expansionDurationFixedTicks,
+            pendingFieldIndex: 0xffffffff,
+            leaseGeneration: 0,
+            profileCode: profile.definitionCode
         })
     });
 }
@@ -1421,6 +1568,7 @@ function createPrivateJorangDestinationBase({
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
@@ -1942,6 +2090,7 @@ export function createGpuPrivateHexaTransformDestinationIntent(options = {}) {
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         collisionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN,
         interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE

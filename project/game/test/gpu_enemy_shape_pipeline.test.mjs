@@ -6,6 +6,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const {
     BASIC_ARROW_ENEMY_DATA,
     BASIC_CIRCLE_ENEMY_DATA,
+    BASIC_CORK_ENEMY_DATA,
     BASIC_GEN_ENEMY_DATA,
     BASIC_HEXA_ENEMY_DATA,
     BASIC_OCTA_ENEMY_DATA,
@@ -98,6 +99,11 @@ const EXPECTED_ARCHETYPES = Object.freeze([
         definition: BASIC_RING_ENEMY_DATA,
         shapeType: 'ring',
         shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.RING
+    }),
+    Object.freeze({
+        definition: BASIC_CORK_ENEMY_DATA,
+        shapeType: 'circle',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
     })
 ]);
 const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([

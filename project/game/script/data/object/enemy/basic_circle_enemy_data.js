@@ -38,6 +38,9 @@ import {
 import {
     BASIC_RING_ENEMY_DATA
 } from './basic_ring_enemy_data.js';
+import {
+    BASIC_CORK_ENEMY_DATA
+} from './basic_cork_enemy_data.js';
 
 export {
     MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
@@ -54,13 +57,19 @@ export {
     BASIC_RING_ENEMY_DEFINITION_ID
 } from './basic_ring_enemy_data.js';
 export {
+    BASIC_CORK_ENEMY_CAPABILITY_IDS,
+    BASIC_CORK_ENEMY_CAPABILITY_MASK,
+    BASIC_CORK_ENEMY_DATA,
+    BASIC_CORK_ENEMY_DEFINITION_ID
+} from './basic_cork_enemy_data.js';
+export {
     BASIC_JORANG_ENEMY_DATA,
     BASIC_JORANG_ENEMY_DEFINITION_ID,
     BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
     resolveBasicCirclePrimeTransformPrivateDefinition
 } from './basic_jorang_enemy_data.js';
 
-/** main GPU enemy catalog에서 사용하는 시각 archetype 9종의 불변 선언입니다. */
+/** main GPU enemy catalog에서 사용하는 시각 archetype 10종의 불변 선언입니다. */
 export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_square_01',
     'square'
@@ -120,7 +129,8 @@ export const INGAME_ENEMY_DEFINITIONS = Object.freeze([
     BASIC_JORANG_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_OCTA_ENEMY_DATA,
-    BASIC_RING_ENEMY_DATA
+    BASIC_RING_ENEMY_DATA,
+    BASIC_CORK_ENEMY_DATA
 ]);
 
 /** 적 definition ID를 선언 데이터로 해석하는 읽기 전용 catalog입니다. */

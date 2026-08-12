@@ -68,6 +68,9 @@ export const ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID = 'archer-core-route-01
 export const ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID = 'arrow-tower-charge-01';
 export const HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-seek-formation-01';
 export const HEXA_KEEP_FORMATION_BEHAVIOR_PROFILE_ID = 'hexa-keep-formation-01';
+export const CORK_ROUTE_CLOSURE_BEHAVIOR_PROFILE_ID = (
+    'cork-route-closure-behavior-01'
+);
 export const ARCHER_ATTACK_DEFINITION_ID = 'archer_basic_shot_01';
 
 export const OCTAGON_TOWER_ORBIT_RADIUS_TILES = Math.fround(
@@ -268,6 +271,19 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             attackDefinitionId: null,
             coreImpactPolicy: 'despawn-on-core-impact',
             formationPolicy: ENEMY_FORMATION_POLICY.KEEP_FORMATION
+        }),
+        Object.freeze({
+            id: CORK_ROUTE_CLOSURE_BEHAVIOR_PROFILE_ID,
+            navigationObjective: 'route-closure-then-core',
+            navigationMode: 'gpu-route-closure',
+            moveSpeedTilesPerSecond: 2.5,
+            towerEngagement: 'continuous-contact',
+            towerTargetSelection: 'none',
+            towerPhysicalResponse: 'weight-based-pushable',
+            fallback: 'route-stage-goal',
+            attackDefinitionId: null,
+            coreImpactPolicy: 'despawn-on-core-impact',
+            formationPolicy: ENEMY_FORMATION_POLICY.NONE
         }),
         BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE
     ])

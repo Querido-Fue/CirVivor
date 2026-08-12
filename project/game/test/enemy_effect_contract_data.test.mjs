@@ -80,6 +80,7 @@ function definitionSource(definition, overrides = {}) {
         behaviorProfileId: definition.behaviorProfileId,
         effectEmitterProfileId: definition.effectEmitterProfileId,
         formationDefinitionId: definition.formationDefinitionId,
+        routeClosureProfileId: definition.routeClosureProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

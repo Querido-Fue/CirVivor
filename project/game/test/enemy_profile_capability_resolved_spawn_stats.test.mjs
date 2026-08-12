@@ -125,6 +125,7 @@ function canonicalSource(definition, overrides = {}) {
         formationDefinitionId: definition.formationDefinitionId,
         atomicTransformProfileId: definition.atomicTransformProfileId,
         projectileCaptureProfileId: definition.projectileCaptureProfileId,
+        routeClosureProfileId: definition.routeClosureProfileId,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides
@@ -248,7 +249,7 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
 
 test('모든 production definition은 frozen profile/capability를 해석하고 shape와 behavior는 독립이다', () => {
     const definitions = Object.values(INGAME_ENEMY_DEFINITION_BY_ID);
-    assert.equal(definitions.length, 11);
+    assert.equal(definitions.length, 12);
     for (const definition of definitions) {
         const profiles = resolveEnemyDefinitionProfiles(definition, ENEMY_PROFILE_CATALOG);
         assert.equal(Object.isFrozen(definition), true);

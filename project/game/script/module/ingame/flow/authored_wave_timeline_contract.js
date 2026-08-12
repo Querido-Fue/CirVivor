@@ -98,7 +98,8 @@ const DURATION_GROUP_KEYS = new Set([
     ...BASE_GROUP_KEYS,
     'intervalTicks'
 ]);
-const ROUTE_BINDING_KEYS = new Set(['gateId', 'pathId']);
+const FIXED_ROUTE_BINDING_KEYS = new Set(['gateId', 'pathId']);
+const ROUTE_SET_BINDING_KEYS = new Set(['routeSetId']);
 const FORMATION_KEYS = new Set([
     'groupId',
     'memberCount',
@@ -285,7 +286,7 @@ function snapshotRoute(source, label) {
     });
 }
 
-function createRouteByGateId(tileMap) {
+function createRouteSources(tileMap) {
     if (!tileMap
         || typeof tileMap.getSpawnRoutes !== 'function'
         || typeof tileMap.worldToTile !== 'function'
@@ -299,22 +300,78 @@ function createRouteByGateId(tileMap) {
         throw new TypeError('authored wave compile에는 하나 이상의 spawn route가 필요합니다.');
     }
     const routeByGateId = new Map();
+    const routeByPathId = new Map();
     for (let index = 0; index < routes.length; index++) {
         const route = snapshotRoute(routes[index], `routes[${index}]`);
-        if (routeByGateId.has(route.gateId)) {
-            throw new RangeError(`중복 Gate route입니다: ${route.gateId}`);
+        if (routeByGateId.has(route.gateId)
+            || routeByPathId.has(route.pathId)) {
+            throw new RangeError(
+                `중복 Gate/path route입니다: ${route.gateId}/${route.pathId}`
+            );
         }
         routeByGateId.set(route.gateId, route);
+        routeByPathId.set(route.pathId, route);
     }
-    return routeByGateId;
+    const routeGraph = typeof tileMap.getRouteGraph === 'function'
+        ? tileMap.getRouteGraph()
+        : null;
+    const routeSetById = new Map();
+    if (routeGraph !== null) {
+        if (!routeGraph || !Array.isArray(routeGraph.routeSets)) {
+            throw new TypeError('authored wave routeGraph 계약이 유효하지 않습니다.');
+        }
+        for (const routeSet of routeGraph.routeSets) {
+            if (routeSetById.has(routeSet.id)) {
+                throw new RangeError(`중복 routeSet ID입니다: ${routeSet.id}`);
+            }
+            const candidateRoutes = routeSet.candidates.map((candidate) => {
+                const route = routeByPathId.get(candidate.pathId);
+                if (!route) {
+                    throw new RangeError(
+                        `routeSet candidate path가 현재 map에 없습니다: ${candidate.pathId}`
+                    );
+                }
+                return route;
+            });
+            routeSetById.set(routeSet.id, Object.freeze({
+                routeSet,
+                candidateRoutes: Object.freeze(candidateRoutes)
+            }));
+        }
+    }
+    return Object.freeze({
+        routeByGateId,
+        routeByPathId,
+        routeGraph,
+        routeSetById
+    });
 }
 
-function resolveRouteBinding(source, routeByGateId, label) {
+function resolveRouteBinding(source, routeSources, label) {
     const binding = requirePlainObject(source, label);
-    assertKnownKeys(binding, ROUTE_BINDING_KEYS, label);
+    const ownKeys = Object.keys(binding);
+    if (ownKeys.length === 1 && ownKeys[0] === 'routeSetId') {
+        assertKnownKeys(binding, ROUTE_SET_BINDING_KEYS, label);
+        const routeSetId = requireNonEmptyString(
+            binding.routeSetId,
+            `${label}.routeSetId`
+        );
+        const resolved = routeSources.routeSetById.get(routeSetId);
+        if (!resolved) {
+            throw new RangeError(
+                `${label}가 현재 map에 없는 routeSet을 가리킵니다: ${routeSetId}`
+            );
+        }
+        return Object.freeze({
+            route: null,
+            routeSetId,
+            candidateRoutes: resolved.candidateRoutes
+        });
+    }
+    assertKnownKeys(binding, FIXED_ROUTE_BINDING_KEYS, label);
     const gateId = requireNonEmptyString(binding.gateId, `${label}.gateId`);
     const pathId = requireNonEmptyString(binding.pathId, `${label}.pathId`);
-    const route = routeByGateId.get(gateId);
+    const route = routeSources.routeByGateId.get(gateId);
     if (!route) {
         throw new RangeError(`${label}가 현재 map에 없는 Gate를 가리킵니다: ${gateId}`);
     }
@@ -323,7 +380,22 @@ function resolveRouteBinding(source, routeByGateId, label) {
             `${label}의 gateId/pathId가 같은 route를 가리키지 않습니다: ${gateId}/${pathId}`
         );
     }
-    return route;
+    return Object.freeze({
+        route,
+        routeSetId: null,
+        candidateRoutes: Object.freeze([route])
+    });
+}
+
+function assertBindingWalkablePosition(tileMap, binding, offsetForRoute, label) {
+    for (const route of binding.candidateRoutes) {
+        assertWalkablePosition(
+            tileMap,
+            route,
+            offsetForRoute(route),
+            `${label}/${route.pathId}`
+        );
+    }
 }
 
 function assertWalkablePosition(tileMap, route, offset, label) {
@@ -391,7 +463,7 @@ function resolveDefinitionCycle(group, resolveEnemyDefinition, label) {
 
 function normalizeSpawnGroup(
     source,
-    routeByGateId,
+    routeSources,
     resolveEnemyDefinition,
     label,
     durationOwned
@@ -411,9 +483,9 @@ function normalizeSpawnGroup(
             resolveEnemyDefinition,
             label
         ),
-        route: resolveRouteBinding(
+        routeBinding: resolveRouteBinding(
             group.routeBinding,
-            routeByGateId,
+            routeSources,
             `${label}.routeBinding`
         ),
         policyId: requireNonEmptyString(group.policyId, `${label}.policyId`),
@@ -428,7 +500,7 @@ function normalizeSpawnGroup(
 
 function normalizeFormation(
     source,
-    routeByGateId,
+    routeSources,
     resolveEnemyDefinition,
     label
 ) {
@@ -662,9 +734,9 @@ function normalizeFormation(
         occupiedSlotMask,
         memberIndexByGridIndex: Object.freeze(memberIndexByGridIndex),
         memberSlotIndexByGridIndex: Object.freeze(memberSlotIndexByGridIndex),
-        route: resolveRouteBinding(
+        routeBinding: resolveRouteBinding(
             formation.routeBinding,
-            routeByGateId,
+            routeSources,
             `${label}.routeBinding`
         ),
         policyId: requireNonEmptyString(formation.policyId, `${label}.policyId`),
@@ -691,7 +763,12 @@ function resolveLaneWorldOffset(route, laneOffsetTiles) {
     });
 }
 
-function resolveFormationWorldOffset(formation, rowIndex, columnIndex) {
+function resolveFormationWorldOffset(
+    formation,
+    rowIndex,
+    columnIndex,
+    route = formation.routeBinding.route
+) {
     if (formation.coordinateSystem
         === AUTHORED_FORMATION_COORDINATE_SYSTEM.HEX_AXIAL) {
         const q = columnIndex - ((formation.columns - 1) * 0.5);
@@ -714,11 +791,14 @@ function resolveFormationWorldOffset(formation, rowIndex, columnIndex) {
     }
     if (formation.coordinateSystem
         === AUTHORED_FORMATION_COORDINATE_SYSTEM.PATH_RELATIVE) {
+        if (!route) {
+            throw new TypeError('PATH_RELATIVE formation에는 resolved route가 필요합니다.');
+        }
         return Object.freeze({
-            x: (formation.route.normal.x * localX)
-                + (formation.route.forward.x * localY),
-            y: (formation.route.normal.y * localX)
-                + (formation.route.forward.y * localY)
+            x: (route.normal.x * localX)
+                + (route.forward.x * localY),
+            y: (route.normal.y * localX)
+                + (route.forward.y * localY)
         });
     }
     throw createCompileError(
@@ -745,7 +825,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
         throw new TypeError('authored wave compile에는 resolveEnemyDefinition()이 필요합니다.');
     }
     const tileMap = options.tileMap;
-    const routeByGateId = createRouteByGateId(tileMap);
+    const routeSources = createRouteSources(tileMap);
     const schedule = [];
     const spawnCountByFixedTick = new Map();
     const timelineEntryIds = new Set();
@@ -759,11 +839,13 @@ export function compileAuthoredWaveTimeline(options = {}) {
         groupId,
         encodedGroupId,
         definition,
-        route,
+        routeBinding,
         policyId,
         laneOffsetTiles,
         initialWorldOffsetTiles,
+        initialWorldOffsetByPathId = null,
         formationProvenance = null,
+        preserveGroupRoute = false,
         commandTail
     }) => {
         const targetFixedTick = checkedTickSum(
@@ -798,14 +880,20 @@ export function compileAuthoredWaveTimeline(options = {}) {
             commandId,
             targetFixedTick,
             definition,
-            route,
+            route: routeBinding.route,
+            routeSetId: routeBinding.routeSetId,
+            routeCandidatePathIds: Object.freeze(
+                routeBinding.candidateRoutes.map((route) => route.pathId)
+            ),
             spawnSequence,
             laneOffsetTiles,
             initialWorldOffsetTiles,
+            initialWorldOffsetByPathId,
             waveId: waveIdentity.value,
             policyId,
             timelineEntryId: timelineIdentity.value,
             groupId,
+            preserveGroupRoute: preserveGroupRoute === true,
             formationProvenance
         }));
         spawnSequence++;
@@ -859,7 +947,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                 const groupLabel = `${label}.spawnGroups[${groupIndex}]`;
                 const group = normalizeSpawnGroup(
                     entry.spawnGroups[groupIndex],
-                    routeByGateId,
+                    routeSources,
                     options.resolveEnemyDefinition,
                     groupLabel,
                     true
@@ -874,14 +962,10 @@ export function compileAuthoredWaveTimeline(options = {}) {
                     const laneOffsetTiles = group.laneOffsetsTiles[
                         spawnIndex % group.laneOffsetsTiles.length
                     ];
-                    const laneWorldOffset = resolveLaneWorldOffset(
-                        group.route,
-                        laneOffsetTiles
-                    );
-                    assertWalkablePosition(
+                    assertBindingWalkablePosition(
                         tileMap,
-                        group.route,
-                        laneWorldOffset,
+                        group.routeBinding,
+                        (route) => resolveLaneWorldOffset(route, laneOffsetTiles),
                         `${groupLabel}[${spawnIndex}]`
                     );
                     appendSpawn({
@@ -896,7 +980,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                         definition: group.definitionCycle[
                             spawnIndex % group.definitionCycle.length
                         ],
-                        route: group.route,
+                        routeBinding: group.routeBinding,
                         policyId: group.policyId,
                         laneOffsetTiles,
                         initialWorldOffsetTiles: null,
@@ -918,7 +1002,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
             const groupLabel = `${label}.spawnGroup`;
             const group = normalizeSpawnGroup(
                 entry.spawnGroup,
-                routeByGateId,
+                routeSources,
                 options.resolveEnemyDefinition,
                 groupLabel,
                 false
@@ -928,11 +1012,10 @@ export function compileAuthoredWaveTimeline(options = {}) {
                 const laneOffsetTiles = group.laneOffsetsTiles[
                     spawnIndex % group.laneOffsetsTiles.length
                 ];
-                const laneWorldOffset = resolveLaneWorldOffset(group.route, laneOffsetTiles);
-                assertWalkablePosition(
+                assertBindingWalkablePosition(
                     tileMap,
-                    group.route,
-                    laneWorldOffset,
+                    group.routeBinding,
+                    (route) => resolveLaneWorldOffset(route, laneOffsetTiles),
                     `${groupLabel}[${spawnIndex}]`
                 );
                 appendSpawn({
@@ -943,7 +1026,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                     definition: group.definitionCycle[
                         spawnIndex % group.definitionCycle.length
                     ],
-                    route: group.route,
+                    routeBinding: group.routeBinding,
                     policyId: group.policyId,
                     laneOffsetTiles,
                     initialWorldOffsetTiles: null,
@@ -962,7 +1045,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
         assertKnownKeys(entry, FORMATION_ENTRY_KEYS, label);
         const formation = normalizeFormation(
             entry.formation,
-            routeByGateId,
+            routeSources,
             options.resolveEnemyDefinition,
             `${label}.formation`
         );
@@ -986,17 +1069,35 @@ export function compileAuthoredWaveTimeline(options = {}) {
                 if (symbol === '.') {
                     continue;
                 }
-                const initialWorldOffsetTiles = resolveFormationWorldOffset(
-                    formation,
-                    rowIndex,
-                    columnIndex
+                const initialWorldOffsets = formation.routeBinding.candidateRoutes.map(
+                    (route) => Object.freeze({
+                        pathId: route.pathId,
+                        offset: resolveFormationWorldOffset(
+                            formation,
+                            rowIndex,
+                            columnIndex,
+                            route
+                        )
+                    })
                 );
-                assertWalkablePosition(
-                    tileMap,
-                    formation.route,
-                    initialWorldOffsetTiles,
-                    `${label}.formation.layout[${rowIndex}][${columnIndex}]`
-                );
+                for (const entryOffset of initialWorldOffsets) {
+                    const route = routeSources.routeByPathId.get(entryOffset.pathId);
+                    assertWalkablePosition(
+                        tileMap,
+                        route,
+                        entryOffset.offset,
+                        `${label}.formation.layout[${rowIndex}][${columnIndex}]/${entryOffset.pathId}`
+                    );
+                }
+                const initialWorldOffsetTiles = formation.routeBinding.routeSetId === null
+                    ? initialWorldOffsets[0].offset
+                    : null;
+                const initialWorldOffsetByPathId
+                    = formation.routeBinding.routeSetId === null
+                    ? null
+                    : Object.freeze(Object.fromEntries(
+                        initialWorldOffsets.map(({ pathId, offset }) => [pathId, offset])
+                    ));
                 appendSpawn({
                     localFixedTick: checkedTickSum(
                         localCursorTick,
@@ -1007,10 +1108,11 @@ export function compileAuthoredWaveTimeline(options = {}) {
                     groupId: formation.groupId,
                     encodedGroupId: formation.encodedGroupId,
                     definition: formation.symbolDefinitions[symbol],
-                    route: formation.route,
+                    routeBinding: formation.routeBinding,
                     policyId: formation.policyId,
                     laneOffsetTiles: 0,
                     initialWorldOffsetTiles,
+                    initialWorldOffsetByPathId,
                     formationProvenance: formation.keepFormation
                         ? Object.freeze({
                             formationGroupId: formation.groupId,
@@ -1035,6 +1137,7 @@ export function compileAuthoredWaveTimeline(options = {}) {
                                 formation.occupiedSlotMask
                         })
                         : null,
+                    preserveGroupRoute: true,
                     commandTail: `member-${rowIndex}-${columnIndex}`
                 });
             }

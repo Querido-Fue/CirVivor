@@ -4,6 +4,7 @@ import { GpuEffectCommandOwner } from './gpu_effect_command_owner.js';
 import { GpuFormationCommandOwner } from './gpu_formation_command_owner.js';
 import { GpuAtomicTransformCommandOwner } from './gpu_atomic_transform_command_owner.js';
 import {
+    ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION,
     EnemyLifecycleCommandOwner
 } from './enemy_lifecycle_command_owner.js';
 import { EnemySimulationBackend } from './enemy_simulation_backend.js';
@@ -88,6 +89,20 @@ import {
 import {
     RING_PROJECTILE_CAPTURE_PROFILE_ID
 } from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
+    ROUTE_AVAILABILITY_ABI_VERSION,
+    ROUTE_AVAILABILITY_MAX_CORK_ROSTER
+} from '../../contract/route_availability_contract.js';
+import {
+    GPU_ROUTE_AVAILABILITY_STATE,
+    GPU_ROUTE_RUNTIME_ROLE
+} from '../../physics/gpu/gpu_route_runtime_abi.js';
+import {
+    BASIC_CORK_ENEMY_DEFINITION_ID
+} from 'data/object/enemy/basic_cork_enemy_data.js';
+import {
+    CORK_ROUTE_CLOSURE_PROFILE_ID
+} from 'data/object/enemy/enemy_route_closure_catalog_data.js';
 
 const DEFAULT_ENEMY_CAPACITY = 16384;
 const DEFAULT_EFFECT_COMMAND_CAPACITY = 256;
@@ -106,6 +121,17 @@ const PROJECTILE_CAPTURE_BACKEND_METHODS = Object.freeze([
     'getProjectileCaptureRuntimeStatus',
     'registerProjectileCaptureCoreImpactReceipt',
     'getProjectileCaptureBodyState'
+]);
+const ROUTE_AVAILABILITY_BACKEND_METHODS = Object.freeze([
+    'preflightRouteLifecycleBatch',
+    'commitRouteLifecycleBatch',
+    'cancelRouteLifecycleBatch',
+    'resolveExactRouteBodySlot',
+    'drainCompletedRouteAvailabilityBatches',
+    'getRouteAvailabilityRuntimeStatus',
+    'cancelPendingRouteAvailabilityProgramsForTerminal',
+    'getTerminalRouteAvailabilityProgramCancelStatus',
+    'getRouteLifecyclePortStatus'
 ]);
 let nextGpuSimulationSessionGeneration = 1;
 const CORE_IMPACT_CLEANUP_OPTIONS = Object.freeze({
@@ -144,6 +170,33 @@ function toPositiveSafeInteger(value, fallback = 0) {
     return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
+function fingerprintRouteAvailabilityBatch(sourceTick, availabilityVersion, records) {
+    const text = JSON.stringify([
+        sourceTick,
+        availabilityVersion,
+        ...records.map((record) => [
+            record.eventType,
+            record.entityId,
+            record.incarnation,
+            record.routeIndex,
+            record.leaseGeneration,
+            record.availabilityVersion
+        ])
+    ]);
+    let hash = 0x811c9dc5;
+    for (let index = 0; index < text.length; index++) {
+        hash = Math.imul(
+            (hash ^ (text.charCodeAt(index) & 0xff)) >>> 0,
+            0x01000193
+        ) >>> 0;
+        hash = Math.imul(
+            (hash ^ (text.charCodeAt(index) >>> 8)) >>> 0,
+            0x01000193
+        ) >>> 0;
+    }
+    return hash === 0 || hash === 0xffffffff ? 1 : hash;
+}
+
 function freezePosition(source) {
     const x = Number(source?.x);
     const y = Number(source?.y);
@@ -168,6 +221,7 @@ function compareProtocolGeneration(left, right) {
 function createEmptyCompletedEventSnapshot(completedThroughTick = 0, overrides = {}) {
     return Object.freeze({
         targetFixedTick: null,
+        sourceTick: 0,
         completedThroughTick,
         batchCount: 0,
         droppedEventCount: 0,
@@ -801,6 +855,20 @@ export class GpuEnemySimulationEndpoint {
             = PROJECTILE_CAPTURE_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
+        this.routeAvailabilityBackendSupported
+            = ROUTE_AVAILABILITY_BACKEND_METHODS.every(
+                (methodName) => typeof this.backend?.[methodName] === 'function'
+            );
+        const routeLifecyclePort = this.routeAvailabilityBackendSupported
+            ? Object.freeze({
+                preflightRouteLifecycleBatch: (request) => this.backend
+                    .preflightRouteLifecycleBatch(request),
+                commitRouteLifecycleBatch: (receipt, publication) => this.backend
+                    .commitRouteLifecycleBatch(receipt, publication),
+                cancelRouteLifecycleBatch: (receipt, reason) => this.backend
+                    .cancelRouteLifecycleBatch(receipt, reason)
+            })
+            : null;
         this.projectileCaptureTerminalOwnerStatus = null;
         this.projectileCaptureTerminalBackendStatus = null;
         this.projectileCaptureTerminalHostCleanup = Object.freeze({
@@ -968,7 +1036,8 @@ export class GpuEnemySimulationEndpoint {
                 activeMetadataMutationRegistryAuthority:
                     this.#activeMetadataMutationRegistryAuthority,
                 projectileCaptureReleaseTransactionPort:
-                    this.#projectileCaptureTransactionPort
+                    this.#projectileCaptureTransactionPort,
+                routeLifecyclePort
             }
         );
         this.#projectileCaptureCommandPort = Object.freeze({
@@ -1383,6 +1452,17 @@ export class GpuEnemySimulationEndpoint {
         this.trackedPoseDiagnostic = null;
         this.deferredCompletedEventBatches = [];
         this.lastCompletedSimulationEvents = createEmptyCompletedEventSnapshot();
+        this.routeAvailabilityBatchScratch = [];
+        this.lastCompletedRouteAvailabilityPrograms = null;
+        this.routeAvailabilityTerminalOwnerStatus = null;
+        this.routeAvailabilityTerminalBackendStatus = null;
+        this.routeAvailabilityTerminalCleanupCommandIds = new Map();
+        this.routeAvailabilityTerminalHostCleanup = Object.freeze({
+            requestedCount: 0,
+            completedCount: 0,
+            pendingCount: 0,
+            failure: null
+        });
         this.gameplayIngressOpen = true;
         this.gameplayIngressCloseReason = null;
         this.gameplayIngressCloseCleanup = null;
@@ -2118,6 +2198,111 @@ export class GpuEnemySimulationEndpoint {
         });
     }
 
+    getRouteAvailabilityRuntimeStatus() {
+        if (!this.routeAvailabilityBackendSupported) {
+            return Object.freeze({
+                abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                state: this.destroyed ? 'destroyed' : 'unsupported',
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                ingressOpen: false,
+                graphEnabled: false,
+                graphContentKey: 'route-graph-unavailable',
+                closureCount: 0,
+                availabilityVersion: 1,
+                closedPathIds: Object.freeze([]),
+                rosterCount: 0,
+                capacity: ROUTE_AVAILABILITY_MAX_CORK_ROSTER,
+                leaseCount: 0,
+                lifecycleReservationCount: 0,
+                stagedCount: 0,
+                commitRequested: false,
+                pendingReadbackCount: 0,
+                queuedBatchCount: 0,
+                completedThroughTick: 0,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null
+            });
+        }
+        return this.backend.getRouteAvailabilityRuntimeStatus();
+    }
+
+    getTerminalRouteAvailabilityProgramCancelStatus() {
+        const backend = this.routeAvailabilityBackendSupported
+            ? this.backend.getTerminalRouteAvailabilityProgramCancelStatus()
+            : this.routeAvailabilityTerminalBackendStatus;
+        const runtime = this.getRouteAvailabilityRuntimeStatus();
+        const cleanupPort = this.routeAvailabilityBackendSupported
+            ? this.backend.getRouteLifecyclePortStatus()
+            : null;
+        const hostCleanup = this.routeAvailabilityTerminalHostCleanup;
+        const initialOwner = this.routeAvailabilityTerminalOwnerStatus;
+        if (!initialOwner && !backend) return null;
+        const allOpen = backend?.allOpen === true
+            && backend?.leaseCount === 0
+            && Array.isArray(backend?.closedPathIds)
+            && backend.closedPathIds.length === 0;
+        const cleanupSettled = cleanupPort
+            && cleanupPort.reservationCount === 0
+            && cleanupPort.stagedCleanupCount === 0
+            && cleanupPort.pendingReadbackCount === 0
+            && cleanupPort.requiresRecovery === false
+            && hostCleanup.pendingCount === 0
+            && hostCleanup.failure === null;
+        const backendSettled = backend?.state === 'settled'
+            && backend.accepted === true
+            && backend.rosterCount === 0
+            && backend.stagedCount === 0
+            && backend.commitRequested === false
+            && backend.pendingReadbackCount === 0
+            && allOpen;
+        const state = backend?.state === 'failed'
+                || cleanupPort?.requiresRecovery === true
+                || hostCleanup.failure !== null
+            ? 'failed'
+            : backendSettled && cleanupSettled ? 'settled' : 'armed';
+        const finalFixedTick = initialOwner?.finalFixedTick
+            ?? backend?.finalFixedTick ?? 0;
+        const owner = Object.freeze({
+            ...(initialOwner ?? {}),
+            state,
+            accepted: state !== 'failed',
+            finalFixedTick,
+            completedThroughTick: backend?.completedThroughTick ?? 0,
+            rosterSealed: backendSettled && cleanupSettled,
+            rosterCount: runtime.rosterCount,
+            closedPathIds: runtime.closedPathIds,
+            failure: backend?.failure ?? cleanupPort?.failure
+                ?? hostCleanup.failure ?? null
+        });
+        const lifecycleCleanup = Object.freeze({
+            abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+            state,
+            accepted: state !== 'failed',
+            finalFixedTick,
+            completedThroughTick: backend?.completedThroughTick ?? 0,
+            reservationCount: cleanupPort?.reservationCount ?? 0,
+            stagedCount: cleanupPort?.stagedCleanupCount ?? 0,
+            pendingReadbackCount: cleanupPort?.pendingReadbackCount ?? 0,
+            requestedCount: hostCleanup.requestedCount,
+            completedCount: hostCleanup.completedCount,
+            pendingCount: hostCleanup.pendingCount,
+            failure: cleanupPort?.failure ?? hostCleanup.failure ?? null
+        });
+        return Object.freeze({
+            abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+            state,
+            accepted: state !== 'failed',
+            finalFixedTick,
+            failure: owner.failure,
+            owner,
+            backend,
+            lifecycleCleanup
+        });
+    }
+
     /** Session당 exact GPU body 하나의 lossy observed-pose tracking을 설정합니다. */
     configureTrackedBody(handle = null) {
         this.#assertUsable();
@@ -2186,6 +2371,10 @@ export class GpuEnemySimulationEndpoint {
             this.gameplayIngressCloseReason = typeof reason === 'string' && reason.length > 0
                 ? reason
                 : 'run-defeated';
+            const terminalFixedTick = finalFixedTick ?? 1;
+            const routeTerminalCleanup = this.#stageRouteTerminalCleanups(
+                terminalFixedTick
+            );
             const lifecycle = this.lifecycleCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason
             );
@@ -2256,6 +2445,56 @@ export class GpuEnemySimulationEndpoint {
                         .requestedHeldDespawnCount,
                 failure: projectileCaptureCommands?.failure ?? null
             });
+            const routeAvailabilityCommands
+                = !this.routeAvailabilityBackendSupported
+                    ? Object.freeze({
+                        abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                        accepted: true,
+                        state: 'settled',
+                        finalFixedTick: terminalFixedTick,
+                        sessionGeneration: this.sessionGeneration,
+                        deviceGeneration: 0,
+                        authoritativeEpoch: 0,
+                        availabilityVersion: 1,
+                        rosterCount: 0,
+                        closedPathIds: Object.freeze([]),
+                        stagedCount: 0,
+                        commitRequested: false,
+                        pendingReadbackCount: 0,
+                        completedThroughTick: finalFixedTick ?? 1,
+                        failure: null
+                    })
+                    : Object.freeze({
+                        abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                        accepted: routeTerminalCleanup.failure === null,
+                        state: routeTerminalCleanup.failure === null
+                            ? 'awaiting-lifecycle-cleanup'
+                            : 'failed',
+                        finalFixedTick: terminalFixedTick,
+                        rosterCount: routeTerminalCleanup.pendingCount,
+                        closedPathIds: Object.freeze([]),
+                        stagedCount: routeTerminalCleanup.pendingCount,
+                        commitRequested: false,
+                        pendingReadbackCount: 0,
+                        completedThroughTick: 0,
+                        failure: routeTerminalCleanup.failure
+                    });
+            this.routeAvailabilityTerminalBackendStatus
+                = routeAvailabilityCommands;
+            this.routeAvailabilityTerminalOwnerStatus = Object.freeze({
+                abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                accepted: routeAvailabilityCommands.accepted === true,
+                state: routeAvailabilityCommands.state === 'failed'
+                    ? 'failed'
+                    : 'armed',
+                finalFixedTick: terminalFixedTick,
+                completedThroughTick: 0,
+                rosterSealed: false,
+                rosterCount: routeAvailabilityCommands.rosterCount ?? 0,
+                closedPathIds: routeAvailabilityCommands.closedPathIds
+                    ?? Object.freeze([]),
+                failure: routeAvailabilityCommands.failure ?? null
+            });
             this.#authenticProjectileCapturePrepareEvidence = new WeakSet();
             this.#authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
             this.gameplayIngressCloseCleanup = Object.freeze({
@@ -2264,7 +2503,8 @@ export class GpuEnemySimulationEndpoint {
                 effectCommands,
                 formationCommands,
                 atomicTransformCommands,
-                projectileCaptureCommands
+                projectileCaptureCommands,
+                routeAvailabilityCommands
             });
         }
         return Object.freeze({
@@ -2317,7 +2557,8 @@ export class GpuEnemySimulationEndpoint {
                 effectCommands: null
                 ,formationCommands: null,
                 atomicTransformCommands: null,
-                projectileCaptureCommands: null
+                projectileCaptureCommands: null,
+                routeAvailabilityCommands: null
             });
         }
         let lifecycleCancelledCount = 0;
@@ -2326,6 +2567,7 @@ export class GpuEnemySimulationEndpoint {
         let formationCommands = null;
         let atomicTransformCommands = null;
         let projectileCaptureCommands = null;
+        let routeAvailabilityCommands = null;
         try {
             lifecycleCancelledCount
                 = this.lifecycleCommandOwner.finalizeClosedIngress();
@@ -2347,6 +2589,8 @@ export class GpuEnemySimulationEndpoint {
                 = this.#atomicTransformCommandOwner.getTerminalCancelStatus();
             projectileCaptureCommands
                 = this.getTerminalProjectileCaptureProgramCancelStatus();
+            routeAvailabilityCommands
+                = this.getTerminalRouteAvailabilityProgramCancelStatus();
         } finally {
             // SEALED/SEALED_FAILED 뒤 stale stored port가 새 authentic cleanup을
             // 만들지 못하도록 permit authority까지 terminal finalizer가 닫습니다.
@@ -2362,7 +2606,8 @@ export class GpuEnemySimulationEndpoint {
             effectCommands
             ,formationCommands,
             atomicTransformCommands,
-            projectileCaptureCommands
+            projectileCaptureCommands,
+            routeAvailabilityCommands
         });
     }
 
@@ -2408,6 +2653,28 @@ export class GpuEnemySimulationEndpoint {
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
         this.#observeProjectileCaptureTerminalCleanupCommit(lifecycle, tick);
+        this.#observeRouteTerminalCleanupCommit(lifecycle, tick);
+        if (!this.gameplayIngressOpen
+            && this.routeAvailabilityBackendSupported
+            && this.routeAvailabilityTerminalOwnerStatus?.finalFixedTick === tick
+            && this.routeAvailabilityTerminalHostCleanup.pendingCount === 0
+            && this.routeAvailabilityTerminalHostCleanup.failure === null
+            && this.backend.getTerminalRouteAvailabilityProgramCancelStatus()
+                === null) {
+            const armedRouteTerminal = this.backend
+                .cancelPendingRouteAvailabilityProgramsForTerminal({
+                    finalFixedTick: tick
+                });
+            this.routeAvailabilityTerminalBackendStatus = armedRouteTerminal;
+            this.routeAvailabilityTerminalOwnerStatus = Object.freeze({
+                ...this.routeAvailabilityTerminalOwnerStatus,
+                accepted: armedRouteTerminal?.accepted === true,
+                state: armedRouteTerminal?.state === 'failed'
+                    ? 'failed'
+                    : 'armed',
+                failure: armedRouteTerminal?.failure ?? null
+            });
+        }
         this.#formationCommandOwner.observeLifecycleCommit(lifecycle);
         const atomicTransformCommands
             = this.#atomicTransformCommandOwner.observeLifecycleCommit(
@@ -2473,6 +2740,408 @@ export class GpuEnemySimulationEndpoint {
         });
     }
 
+    commitCompletedRouteAvailabilityProgramsAtFixedBoundary(targetFixedTick) {
+        this.#assertUsable();
+        const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const runtimeStatus = this.getRouteAvailabilityRuntimeStatus();
+        if (!this.routeAvailabilityBackendSupported) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-backend-unavailable',
+                'RouteAvailability backend private surface가 없습니다.'
+            );
+        }
+        const terminal = this.routeAvailabilityTerminalOwnerStatus;
+        const terminalEventBoundary = !this.gameplayIngressOpen
+            && terminal?.finalFixedTick === tick;
+        const expectedSourceTick = terminalEventBoundary ? tick : tick - 1;
+        const genericSnapshot = this.commitCompletedEventsAtFixedBoundary(tick);
+        if (genericSnapshot.protocolFailure) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                genericSnapshot.protocolFailure.code
+                    ?? 'route-generic-event-protocol-failure',
+                genericSnapshot.protocolFailure.message
+                    ?? 'Route action과 generic event snapshot이 실패했습니다.'
+            );
+        }
+        const terminalBackendStatus = terminalEventBoundary
+            ? this.backend.getTerminalRouteAvailabilityProgramCancelStatus?.()
+                ?? this.routeAvailabilityTerminalBackendStatus
+            : null;
+        const replayProtocolStatus = terminalBackendStatus?.accepted === true
+                && terminalBackendStatus.finalFixedTick === tick
+                && (terminalBackendStatus.state === 'submitted'
+                    || terminalBackendStatus.state === 'settled')
+            ? terminalBackendStatus
+            : runtimeStatus;
+        if (this.lastCompletedRouteAvailabilityPrograms?.targetFixedTick === tick
+            && (this.lastCompletedRouteAvailabilityPrograms.sourceTick
+                    === expectedSourceTick
+                || (!terminalEventBoundary
+                    && this.lastCompletedRouteAvailabilityPrograms.sourceTick === 0
+                    && this.lastCompletedRouteAvailabilityPrograms
+                        .batchIdFingerprint === 0
+                    && this.lastCompletedRouteAvailabilityPrograms.pending === false))
+            && this.lastCompletedRouteAvailabilityPrograms.sessionGeneration
+                === replayProtocolStatus.sessionGeneration
+            && this.lastCompletedRouteAvailabilityPrograms.deviceGeneration
+                === replayProtocolStatus.deviceGeneration
+            && this.lastCompletedRouteAvailabilityPrograms.authoritativeEpoch
+                === replayProtocolStatus.authoritativeEpoch) {
+            return this.lastCompletedRouteAvailabilityPrograms;
+        }
+        const exactIdle = runtimeStatus.rosterCount === 0
+            && runtimeStatus.leaseCount === 0
+            && runtimeStatus.stagedCount === 0
+            && runtimeStatus.pendingReadbackCount === 0
+            && runtimeStatus.queuedBatchCount === 0
+            && runtimeStatus.commitRequested === false
+            && runtimeStatus.requiresRecovery === false
+            && runtimeStatus.failure === null
+            && runtimeStatus.closedPathIds.length === 0;
+        const genericExpectedSourceReady
+            = genericSnapshot.targetFixedTick === tick
+                && genericSnapshot.sourceTick === expectedSourceTick
+                && genericSnapshot.completedThroughTick === expectedSourceTick;
+        const allowIdleCompletion = exactIdle && !terminalEventBoundary;
+        if (!genericExpectedSourceReady && !allowIdleCompletion) {
+            return Object.freeze({
+                abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                sessionGeneration: runtimeStatus.sessionGeneration,
+                deviceGeneration: runtimeStatus.deviceGeneration,
+                authoritativeEpoch: runtimeStatus.authoritativeEpoch,
+                targetFixedTick: tick,
+                sourceTick: expectedSourceTick,
+                completedThroughTick: runtimeStatus.completedThroughTick,
+                graphContentKey: runtimeStatus.graphContentKey,
+                availabilityVersion: runtimeStatus.availabilityVersion,
+                batchIdFingerprint: 0,
+                pending: true,
+                status: 0,
+                errorFlags: 0,
+                closedPathIds: runtimeStatus.closedPathIds,
+                assignments: Object.freeze([]),
+                closures: Object.freeze([]),
+                reopens: Object.freeze([]),
+                cleanups: Object.freeze([]),
+                protocolFailure: null
+            });
+        }
+        const routeEvents = genericSnapshot.events.filter(
+            (event) => event.type === 'route'
+                && event.sourceTick === expectedSourceTick
+        );
+        const drained = this.routeAvailabilityBatchScratch;
+        drained.length = 0;
+        this.backend.drainCompletedRouteAvailabilityBatches(drained);
+        const matching = drained.filter(
+            (batch) => batch?.sourceTick === expectedSourceTick
+        );
+        if (drained.some((batch) => batch?.sourceTick > expectedSourceTick)
+            || matching.length > 1
+            || (matching.length === 0 && routeEvents.length > 0)) {
+            drained.length = 0;
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-readback-order',
+                'RouteAvailability readback source ordering이 generic event와 다릅니다.'
+            );
+        }
+        if (matching.length === 0) {
+            drained.length = 0;
+            if (allowIdleCompletion) {
+                this.lastCompletedRouteAvailabilityPrograms = Object.freeze({
+                    abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                    sessionGeneration: runtimeStatus.sessionGeneration,
+                    deviceGeneration: runtimeStatus.deviceGeneration,
+                    authoritativeEpoch: runtimeStatus.authoritativeEpoch,
+                    targetFixedTick: tick,
+                    sourceTick: 0,
+                    completedThroughTick: expectedSourceTick,
+                    graphContentKey: runtimeStatus.graphContentKey,
+                    availabilityVersion: runtimeStatus.availabilityVersion,
+                    batchIdFingerprint: 0,
+                    pending: false,
+                    status: 0,
+                    errorFlags: 0,
+                    closedPathIds: Object.freeze([]),
+                    assignments: Object.freeze([]),
+                    closures: Object.freeze([]),
+                    reopens: Object.freeze([]),
+                    cleanups: Object.freeze([]),
+                    protocolFailure: null
+                });
+                return this.lastCompletedRouteAvailabilityPrograms;
+            }
+            return Object.freeze({
+                abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+                sessionGeneration: runtimeStatus.sessionGeneration,
+                deviceGeneration: runtimeStatus.deviceGeneration,
+                authoritativeEpoch: runtimeStatus.authoritativeEpoch,
+                targetFixedTick: tick,
+                sourceTick: expectedSourceTick,
+                completedThroughTick: runtimeStatus.completedThroughTick,
+                graphContentKey: runtimeStatus.graphContentKey,
+                availabilityVersion: runtimeStatus.availabilityVersion,
+                batchIdFingerprint: 0,
+                pending: true,
+                status: 0,
+                errorFlags: 0,
+                closedPathIds: runtimeStatus.closedPathIds,
+                assignments: Object.freeze([]),
+                closures: Object.freeze([]),
+                reopens: Object.freeze([]),
+                cleanups: Object.freeze([]),
+                protocolFailure: null
+            });
+        }
+        const batch = matching[0];
+        drained.length = 0;
+        if (batch.failure
+            || batch.abiVersion !== ROUTE_AVAILABILITY_ABI_VERSION
+            || batch.sessionGeneration !== this.sessionGeneration
+            || batch.deviceGeneration !== runtimeStatus.deviceGeneration
+            || batch.authoritativeEpoch !== runtimeStatus.authoritativeEpoch
+            || batch.completedThroughTick !== expectedSourceTick
+            || batch.availabilityVersion <= 0
+            || batch.availabilityVersion >= 0xffffffff
+            || !Array.isArray(batch.closedPathIndices)
+            || !Array.isArray(batch.records)
+            || batch.lastEventCount !== routeEvents.length) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-readback-contract',
+                'RouteAvailability authenticated header/record가 올바르지 않습니다.'
+            );
+        }
+        const expectedSequences = new Set();
+        for (let sequence = batch.lastEventBase;
+            sequence < batch.lastEventBase + batch.lastEventCount;
+            sequence++) {
+            expectedSequences.add(sequence);
+        }
+        if (routeEvents.some((event) => !expectedSequences.delete(event.sequence))
+            || expectedSequences.size !== 0) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-event-window',
+                'Route action event window가 availability header와 다릅니다.'
+            );
+        }
+        const graph = this.backend.getFlowFieldAtlas?.()?.routeGraph ?? null;
+        if (!graph) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-graph-missing',
+                'Route action을 ID로 정규화할 compiled routeGraph가 없습니다.'
+            );
+        }
+        const routeSetIdByPathIndex = new Map();
+        for (const routeSet of graph.routeSets) {
+            for (let index = routeSet.candidateOffset;
+                index < routeSet.candidateOffset + routeSet.candidateCount;
+                index++) {
+                const candidate = graph.routeCandidates[index];
+                routeSetIdByPathIndex.set(candidate.pathIndex, routeSet.id);
+            }
+        }
+        const closureByPathIndex = new Map(
+            graph.closures.map((closure) => [closure.pathIndex, closure])
+        );
+        const recordByClosureIndex = new Map();
+        const closedPathIndexSet = new Set(batch.closedPathIndices);
+        if (batch.records.length !== graph.closures.length
+            || closedPathIndexSet.size !== batch.closedPathIndices.length
+            || [...closedPathIndexSet].some((pathIndex) => !Number.isSafeInteger(pathIndex)
+                || !graph.paths.some((path) => path.pathIndex === pathIndex))) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-record-cardinality',
+                'RouteAvailability final record/closed-path cardinality가 topology와 다릅니다.'
+            );
+        }
+        let closedRecordCount = 0;
+        for (const record of batch.records) {
+            const closure = graph.closures[record?.closureIndex];
+            const exactPath = closure?.pathIndex === record?.pathIndex;
+            const validState = record?.state === GPU_ROUTE_AVAILABILITY_STATE.OPEN
+                || record?.state === GPU_ROUTE_AVAILABILITY_STATE.LEASED
+                || record?.state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED;
+            const closed = record?.state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED;
+            if (!closure || !exactPath || !validState
+                || recordByClosureIndex.has(record.closureIndex)
+                || closedPathIndexSet.has(record.pathIndex) !== closed) {
+                return this.#failRouteAvailabilityProtocol(
+                    tick,
+                    'route-availability-final-record-contract',
+                    'RouteAvailability final record와 closed-path snapshot이 일치하지 않습니다.'
+                );
+            }
+            if (closed) {
+                closedRecordCount++;
+            }
+            recordByClosureIndex.set(record.closureIndex, record);
+        }
+        if (closedRecordCount !== closedPathIndexSet.size) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-closed-path-cardinality',
+                'RouteAvailability CLOSED record와 closed-path snapshot 수가 다릅니다.'
+            );
+        }
+        const orderedRouteEvents = [...routeEvents].sort(
+            (left, right) => left.sequence - right.sequence
+        );
+        const mutatingEventTypes = new Set([
+            'route-assigned',
+            'route-closed',
+            'route-reopened'
+        ]);
+        const mutationCount = orderedRouteEvents.filter(
+            (event) => mutatingEventTypes.has(event.eventType)
+        ).length;
+        let replayVersion = batch.availabilityVersion - mutationCount;
+        const lastActionByClosureIndex = new Map();
+        if (replayVersion <= 0 || replayVersion >= 0xffffffff) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-version-predecessor',
+                'RouteAvailability mutation predecessor version이 유효하지 않습니다.'
+            );
+        }
+        for (const event of orderedRouteEvents) {
+            const assigned = event.eventType === 'route-assigned';
+            const closure = assigned
+                ? closureByPathIndex.get(event.routeIndex)
+                : graph.closures[event.routeIndex];
+            const expectedVersion = mutatingEventTypes.has(event.eventType)
+                ? replayVersion + 1
+                : replayVersion;
+            if (!closure || event.availabilityVersion !== expectedVersion) {
+                return this.#failRouteAvailabilityProtocol(
+                    tick,
+                    'route-availability-action-version-replay',
+                    'Route action version 연쇄가 final availability version과 다릅니다.'
+                );
+            }
+            replayVersion = expectedVersion;
+            lastActionByClosureIndex.set(closure.closureIndex, event);
+        }
+        if (replayVersion !== batch.availabilityVersion) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-final-version-replay',
+                'Route action mutation 수가 final availability version과 다릅니다.'
+            );
+        }
+        for (const [closureIndex, event] of lastActionByClosureIndex) {
+            const record = recordByClosureIndex.get(closureIndex);
+            const cleaned = event.eventType === 'route-cleaned';
+            const expectedState = event.eventType === 'route-assigned'
+                ? GPU_ROUTE_AVAILABILITY_STATE.LEASED
+                : event.eventType === 'route-closed'
+                    ? GPU_ROUTE_AVAILABILITY_STATE.CLOSED
+                    : GPU_ROUTE_AVAILABILITY_STATE.OPEN;
+            const exactOwner = cleaned
+                ? record?.ownerHandle === null && record?.leaseGeneration === 0
+                : record?.ownerHandle?.entityId === event.entityId
+                    && record.ownerHandle.incarnation === event.incarnation
+                    && record.leaseGeneration === event.leaseGeneration;
+            if (record?.state !== expectedState || !exactOwner) {
+                return this.#failRouteAvailabilityProtocol(
+                    tick,
+                    'route-availability-action-final-record-mismatch',
+                    'Route action replay와 final availability owner/lease/state가 다릅니다.'
+                );
+            }
+        }
+        const normalizeAction = (event) => {
+            const assigned = event.eventType === 'route-assigned';
+            const closure = assigned
+                ? closureByPathIndex.get(event.routeIndex)
+                : graph.closures[event.routeIndex];
+            const path = closure ? graph.paths[closure.pathIndex] : null;
+            const routeSetId = path
+                ? routeSetIdByPathIndex.get(path.pathIndex)
+                : null;
+            if (!closure || !path || typeof routeSetId !== 'string'
+                || event.availabilityVersion > batch.availabilityVersion) {
+                throw new RangeError('Route action topology identity가 유효하지 않습니다.');
+            }
+            return Object.freeze({
+                ownerHandle: Object.freeze({
+                    entityId: event.entityId,
+                    incarnation: event.incarnation
+                }),
+                routeSetId,
+                pathId: path.pathId,
+                closureId: closure.id,
+                leaseGeneration: event.leaseGeneration,
+                sourceTick: expectedSourceTick,
+                availabilityVersion: event.availabilityVersion
+            });
+        };
+        let assignments;
+        let closures;
+        let reopens;
+        let cleanups;
+        try {
+            assignments = routeEvents.filter(
+                (event) => event.eventType === 'route-assigned'
+            ).map(normalizeAction);
+            closures = routeEvents.filter(
+                (event) => event.eventType === 'route-closed'
+            ).map(normalizeAction);
+            reopens = routeEvents.filter(
+                (event) => event.eventType === 'route-reopened'
+            ).map(normalizeAction);
+            cleanups = routeEvents.filter(
+                (event) => event.eventType === 'route-cleaned'
+            ).map(normalizeAction);
+        } catch (error) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-action-topology',
+                error.message
+            );
+        }
+        const closedPathIds = batch.closedPathIndices.map((pathIndex) => {
+            const pathId = graph.paths[pathIndex]?.pathId;
+            if (typeof pathId !== 'string' || pathId.length === 0) {
+                throw new RangeError('closedPath index가 topology 범위를 벗어났습니다.');
+            }
+            return pathId;
+        }).sort();
+        const batchIdFingerprint = fingerprintRouteAvailabilityBatch(
+            expectedSourceTick,
+            batch.availabilityVersion,
+            routeEvents
+        );
+        this.lastCompletedRouteAvailabilityPrograms = Object.freeze({
+            abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+            sessionGeneration: batch.sessionGeneration,
+            deviceGeneration: batch.deviceGeneration,
+            authoritativeEpoch: batch.authoritativeEpoch,
+            targetFixedTick: tick,
+            sourceTick: expectedSourceTick,
+            completedThroughTick: batch.completedThroughTick,
+            graphContentKey: runtimeStatus.graphContentKey,
+            availabilityVersion: batch.availabilityVersion,
+            batchIdFingerprint,
+            pending: false,
+            status: 0,
+            errorFlags: 0,
+            closedPathIds: Object.freeze(closedPathIds),
+            assignments: Object.freeze(assignments),
+            closures: Object.freeze(closures),
+            reopens: Object.freeze(reopens),
+            cleanups: Object.freeze(cleanups),
+            protocolFailure: null
+        });
+        return this.lastCompletedRouteAvailabilityPrograms;
+    }
+
     /**
      * 완료된 GPU event batch를 현재 fixed 경계에서 lifecycle 명령으로 변환합니다.
      * 이 메서드는 command를 예약만 하며 commit은 session owner가 뒤이어 한 번 수행합니다.
@@ -2482,21 +3151,33 @@ export class GpuEnemySimulationEndpoint {
     commitCompletedEventsAtFixedBoundary(targetFixedTick) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const terminalEventBoundary = !this.gameplayIngressOpen
+            && (this.routeAvailabilityTerminalOwnerStatus?.finalFixedTick === tick
+                || this.projectileCaptureTerminalOwnerStatus?.finalFixedTick
+                    === tick);
+        const requiredEventSourceTick = terminalEventBoundary ? tick : tick - 1;
+        if (this.lastCompletedSimulationEvents.targetFixedTick === tick
+            && this.lastCompletedSimulationEvents.sourceTick
+                === requiredEventSourceTick) {
+            return this.lastCompletedSimulationEvents;
+        }
         if (this.projectileCaptureBackendSupported) {
             const captureStatus = this.backend
                 .getProjectileCaptureRuntimeStatus();
             const acceptedCapture
                 = this.lastAcceptedProjectileCaptureProtocol;
             if ((acceptedCapture?.idle !== true
-                    && captureStatus.completedThroughTick < tick - 1)
+                    && captureStatus.completedThroughTick
+                        < requiredEventSourceTick)
                 || acceptedCapture?.sessionGeneration
                         !== this.sessionGeneration
                 || acceptedCapture?.deviceGeneration
                         !== captureStatus.deviceGeneration
                 || acceptedCapture?.authoritativeEpoch
                         !== captureStatus.authoritativeEpoch
-                || acceptedCapture?.sourceTick !== tick - 1
-                || acceptedCapture?.completedThroughTick !== tick - 1) {
+                || acceptedCapture?.sourceTick !== requiredEventSourceTick
+                || acceptedCapture?.completedThroughTick
+                    !== requiredEventSourceTick) {
                 return this.#failCompletedEventProtocol(
                     tick,
                     Object.freeze({
@@ -2559,7 +3240,10 @@ export class GpuEnemySimulationEndpoint {
         }
         batches.length = 0;
 
-        const prepared = this.#prepareCompletedEventCommit(tick);
+        const prepared = this.#prepareCompletedEventCommit(
+            tick,
+            terminalEventBoundary
+        );
         if (prepared.failure) {
             return this.#failCompletedEventProtocol(tick, prepared.failure);
         }
@@ -2669,6 +3353,7 @@ export class GpuEnemySimulationEndpoint {
         this.lastAcceptedEventProtocolKey = prepared.protocolKey;
         this.lastCompletedSimulationEvents = Object.freeze({
             targetFixedTick: tick,
+            sourceTick: prepared.lastSourceTick,
             completedThroughTick: this.completedThroughTick,
             batchCount: prepared.batchCount,
             droppedEventCount: 0,
@@ -2915,6 +3600,9 @@ export class GpuEnemySimulationEndpoint {
         this.#authenticProjectileCapturePrepareEvidence = new WeakSet();
         this.#authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
         this.projectileCaptureTerminalCleanupCommandIds.clear();
+        this.routeAvailabilityTerminalCleanupCommandIds.clear();
+        this.routeAvailabilityBatchScratch.length = 0;
+        this.lastCompletedRouteAvailabilityPrograms = null;
         this.#effectLifecycleCommitProofTick = 0;
         this.#effectLifecycleCommitProofs.length = 0;
         this.initialized = false;
@@ -3009,7 +3697,136 @@ export class GpuEnemySimulationEndpoint {
         return false;
     }
 
-    #prepareCompletedEventCommit(targetFixedTick) {
+    #stageRouteTerminalCleanups(finalFixedTick) {
+        const previous = this.routeAvailabilityTerminalHostCleanup;
+        if (!this.routeAvailabilityBackendSupported) return previous;
+        const handles = [];
+        this.registry.copyActiveHandlesInto(handles, { kindId: 'enemy' });
+        let requestedCount = previous.requestedCount;
+        let failure = previous.failure;
+        for (const handle of handles) {
+            const view = this.registry.copyEntityView(handle, {});
+            const exactRouteBody = this.backend.resolveExactRouteBodySlot(handle);
+            if (view?.definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
+                || view.metadata?.routeClosureProfileId
+                    !== CORK_ROUTE_CLOSURE_PROFILE_ID
+                || exactRouteBody?.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                continue;
+            }
+            const requestedCommandId = [
+                'cork-route-terminal',
+                handle.entityId,
+                handle.incarnation,
+                finalFixedTick
+            ].join(':');
+            const result = this.lifecycleCommandOwner.requestDespawn(
+                handle,
+                ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION,
+                finalFixedTick,
+                requestedCommandId,
+                Object.freeze({
+                    disposition: ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+                }),
+                this.#terminalCleanupAuthority.issuePermit()
+            );
+            const authenticDuplicate = result?.accepted === false
+                && result.reason === 'duplicate-despawn'
+                && result.authenticTerminalCleanup === true
+                && result.targetFixedTick === finalFixedTick;
+            if (result?.accepted !== true && !authenticDuplicate) {
+                failure = result?.reason ?? 'route-terminal-cleanup-rejected';
+                continue;
+            }
+            const commandId = result.commandId;
+            if (typeof commandId !== 'string' || commandId.length === 0) {
+                failure = 'route-terminal-cleanup-command-invalid';
+                continue;
+            }
+            const prior = this.routeAvailabilityTerminalCleanupCommandIds.get(
+                commandId
+            );
+            if (prior && (prior.targetFixedTick !== finalFixedTick
+                || prior.handle.entityId !== handle.entityId
+                || prior.handle.incarnation !== handle.incarnation)) {
+                failure = 'route-terminal-cleanup-command-conflict';
+                continue;
+            }
+            if (!prior) {
+                this.routeAvailabilityTerminalCleanupCommandIds.set(
+                    commandId,
+                    Object.freeze({
+                        targetFixedTick: finalFixedTick,
+                        handle: Object.freeze({
+                            entityId: handle.entityId,
+                            incarnation: handle.incarnation
+                        })
+                    })
+                );
+                requestedCount++;
+            }
+        }
+        this.routeAvailabilityTerminalHostCleanup = Object.freeze({
+            requestedCount,
+            completedCount: previous.completedCount,
+            pendingCount: this.routeAvailabilityTerminalCleanupCommandIds.size,
+            failure
+        });
+        return this.routeAvailabilityTerminalHostCleanup;
+    }
+
+    #observeRouteTerminalCleanupCommit(commit, fixedTick) {
+        if (this.routeAvailabilityTerminalCleanupCommandIds.size === 0) {
+            return;
+        }
+        let completedCount = 0;
+        let failure = this.routeAvailabilityTerminalHostCleanup.failure;
+        const routeProofByCommandId = new Map(
+            (commit?.routeLifecycle ?? [])
+                .filter((entry) => entry?.action === 'cleanup')
+                .map((entry) => [entry.commandId, entry])
+        );
+        for (const despawned of commit?.despawned ?? []) {
+            const expected = this.routeAvailabilityTerminalCleanupCommandIds.get(
+                despawned?.commandId
+            );
+            if (!expected) continue;
+            const routeProof = routeProofByCommandId.get(despawned.commandId);
+            if (expected.targetFixedTick !== fixedTick
+                || despawned.reason !== ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+                || despawned.disposition
+                    !== ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION
+                || despawned.handle?.entityId !== expected.handle.entityId
+                || despawned.handle?.incarnation
+                    !== expected.handle.incarnation
+                || routeProof?.handle?.entityId !== expected.handle.entityId
+                || routeProof?.handle?.incarnation
+                    !== expected.handle.incarnation
+                || routeProof.targetFixedTick !== fixedTick) {
+                failure = 'route-terminal-cleanup-proof-invalid';
+                continue;
+            }
+            this.routeAvailabilityTerminalCleanupCommandIds.delete(
+                despawned.commandId
+            );
+            completedCount++;
+        }
+        for (const rejected of commit?.rejected ?? []) {
+            if (this.routeAvailabilityTerminalCleanupCommandIds.has(
+                rejected?.commandId
+            )) {
+                failure = 'route-terminal-cleanup-rejected';
+            }
+        }
+        const previous = this.routeAvailabilityTerminalHostCleanup;
+        this.routeAvailabilityTerminalHostCleanup = Object.freeze({
+            requestedCount: previous.requestedCount,
+            completedCount: previous.completedCount + completedCount,
+            pendingCount: this.routeAvailabilityTerminalCleanupCommandIds.size,
+            failure
+        });
+    }
+
+    #prepareCompletedEventCommit(targetFixedTick, allowSameTick = false) {
         const queued = this.deferredCompletedEventBatches;
         if (queued.length > this.completedEventSnapshotCapacity) {
             return {
@@ -3070,7 +3887,8 @@ export class GpuEnemySimulationEndpoint {
                 future.push(batch);
                 continue;
             }
-            if (batch.sourceTick >= targetFixedTick) {
+            if (batch.sourceTick > targetFixedTick
+                || (!allowSameTick && batch.sourceTick === targetFixedTick)) {
                 encounteredFuture = true;
                 future.push(batch);
                 continue;
@@ -3406,6 +4224,41 @@ export class GpuEnemySimulationEndpoint {
         });
     }
 
+    #failRouteAvailabilityProtocol(targetFixedTick, code, message) {
+        const failure = Object.freeze({
+            stage: 'route-availability-protocol',
+            code,
+            name: 'RouteAvailabilityProtocolViolation',
+            message
+        });
+        this.completedEventRecoveryRequired = true;
+        this.completedEventProtocolFailure = failure;
+        const runtime = this.backend.getRouteAvailabilityRuntimeStatus?.() ?? {};
+        this.lastCompletedRouteAvailabilityPrograms = Object.freeze({
+            abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
+            sessionGeneration: runtime.sessionGeneration
+                ?? this.sessionGeneration,
+            deviceGeneration: runtime.deviceGeneration ?? 0,
+            authoritativeEpoch: runtime.authoritativeEpoch ?? 0,
+            targetFixedTick,
+            sourceTick: 0,
+            completedThroughTick: runtime.completedThroughTick ?? 0,
+            graphContentKey: runtime.graphContentKey ?? 'route-graph-unavailable',
+            availabilityVersion: runtime.availabilityVersion ?? 1,
+            batchIdFingerprint: 0,
+            pending: false,
+            status: 1,
+            errorFlags: 1,
+            closedPathIds: Object.freeze([]),
+            assignments: Object.freeze([]),
+            closures: Object.freeze([]),
+            reopens: Object.freeze([]),
+            cleanups: Object.freeze([]),
+            protocolFailure: failure
+        });
+        return this.lastCompletedRouteAvailabilityPrograms;
+    }
+
     #failCompletedEventProtocol(targetFixedTick, failure) {
         this.completedEventRecoveryRequired = true;
         this.completedEventProtocolFailure = failure;
@@ -3422,7 +4275,6 @@ export class GpuEnemySimulationEndpoint {
 
     #normalizeCompletedEvent(source, context) {
         const event = source && typeof source === 'object' ? source : {};
-        const type = event.type === 'death' ? 'death' : 'contact';
         const sequence = Number(event.sequence);
         if (!Number.isSafeInteger(sequence) || sequence < 0) {
             throw new RangeError('event.sequence는 0 이상의 안전한 정수여야 합니다.');
@@ -3432,6 +4284,84 @@ export class GpuEnemySimulationEndpoint {
         const authoritativeEpoch = context.authoritativeEpoch;
         const entityId = toPositiveSafeInteger(event.entityId);
         const incarnation = toPositiveSafeInteger(event.incarnation);
+        if (event.type === 'route') {
+            const routeEventTypes = new Set([
+                'route-assigned',
+                'route-closed',
+                'route-reopened',
+                'route-cleaned'
+            ]);
+            const routeIndex = toNonNegativeSafeInteger(event.routeIndex, -1);
+            const leaseGeneration = toPositiveSafeInteger(
+                event.leaseGeneration
+            );
+            const availabilityVersion = toPositiveSafeInteger(
+                event.availabilityVersion
+            );
+            const position = freezePosition(event.position);
+            if (!routeEventTypes.has(event.eventType)
+                || entityId <= 0 || incarnation <= 0
+                || routeIndex < 0 || routeIndex >= 0xffffffff
+                || leaseGeneration <= 0 || leaseGeneration >= 0xffffffff
+                || availabilityVersion <= 0
+                || availabilityVersion >= 0xffffffff
+                || event.flags !== 0 || position === null) {
+                throw new RangeError('route applied event contract가 올바르지 않습니다.');
+            }
+            const key = [
+                this.sessionGeneration,
+                deviceGeneration,
+                authoritativeEpoch,
+                entityId,
+                incarnation,
+                sourceTick,
+                sequence,
+                event.eventType
+            ].join(':');
+            const normalized = {
+                key,
+                type: 'route',
+                eventType: event.eventType,
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration,
+                authoritativeEpoch,
+                sourceTick,
+                sequence,
+                entityId,
+                incarnation,
+                ownerHandle: Object.freeze({ entityId, incarnation }),
+                otherEntityId: 0,
+                otherIncarnation: 0,
+                other: null,
+                bodyId: 0,
+                position,
+                routeIndex,
+                leaseGeneration,
+                availabilityVersion,
+                valueFixedPoint: availabilityVersion,
+                damageFixedPoint: 0,
+                damage: 0,
+                flags: 0,
+                maximumDamageWindow: false,
+                directionalDefense: false,
+                atomicTransformTriggerFirstHit: false,
+                reasonFlags: 0,
+                reason: event.eventType
+            };
+            const fingerprint = JSON.stringify([
+                normalized.type,
+                normalized.eventType,
+                entityId,
+                incarnation,
+                routeIndex,
+                leaseGeneration,
+                availabilityVersion,
+                position.x,
+                position.y
+            ]);
+            return Object.freeze({ ...normalized, fingerprint });
+        }
+        const type = event.type === 'death' ? 'death' : 'contact';
         const otherEntityId = toPositiveSafeInteger(
             event.otherEntityId ?? event.other?.entityId
         );

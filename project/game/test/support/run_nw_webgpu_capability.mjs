@@ -10,6 +10,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/archer_attack_data.js',
     'data/object/enemy/archer_enemy_data.js',
     'data/object/enemy/basic_circle_enemy_data.js',
+    'data/object/enemy/basic_cork_enemy_data.js',
     'data/object/enemy/basic_hexa_enemy_data.js',
     'data/object/enemy/basic_jorang_enemy_data.js',
     'data/object/enemy/basic_octa_enemy_data.js',
@@ -26,6 +27,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/enemy/enemy_jorang_split_runtime_data.js',
     'data/object/enemy/enemy_profile_catalog_data.js',
     'data/object/enemy/enemy_projectile_capture_catalog_data.js',
+    'data/object/enemy/enemy_route_closure_catalog_data.js',
     'data/object/enemy/enemy_shape_geometry_data.js',
     'data/object/enemy/hostile_attack_runtime_data.js',
     'data/object/enemy/main_gpu_enemy_definition_data.js',
@@ -36,6 +38,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/tower/the_tower_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
+    'data/scene/game/cork_dual_route_map_data.js',
+    'data/scene/game/cork_dual_route_wave_01_data.js',
     'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
@@ -51,6 +55,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/player_controllable_contract.js',
     'module/ingame/contract/projectile_target_policy_contract.js',
     'module/ingame/contract/projectile_capture_contract.js',
+    'module/ingame/contract/enemy_route_closure_contract.js',
+    'module/ingame/contract/route_availability_contract.js',
     'module/ingame/contract/run_outcome_contract.js',
     'module/ingame/game_world_session_mode.js',
     'module/ingame/flow/authored_wave_timeline_contract.js',
@@ -74,6 +80,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/enemy/pentagon_effect_director.js',
     'module/ingame/object/enemy/formation_runtime_director.js',
     'module/ingame/object/enemy/projectile_capture_director.js',
+    'module/ingame/object/enemy/cork_route_closure_director.js',
     'module/ingame/object/enemy/resolved_enemy_spawn_stats.js',
     'module/ingame/object/core/gpu_core_proxy_spawn_adapter.js',
     'module/ingame/object/gpu_fixed_command_owner.js',
@@ -98,6 +105,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_formation_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_projectile_capture_runtime_shaders.js',
+    'module/ingame/physics/gpu/gpu_route_runtime_abi.js',
+    'module/ingame/physics/gpu/gpu_route_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_signed_distance_field.js',
     'module/object/enemy/_hexa_hive_layout.js',
     'module/object/enemy/_hexa_hive_layout_accessors.js',
@@ -1862,6 +1871,54 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && result.requestedMaxStorageBuffersPerShaderStage === 9
             && result.adapterMaxStorageBuffersPerShaderStage >= 9
             && result.deviceMaxStorageBuffersPerShaderStage >= 9;
+    } else if (fixtureStage === 'enemy-cork-route-closure') {
+        fixture = result?.productionEnemyCorkRouteClosure;
+        const lifecycle = fixture?.lifecycle;
+        const route = fixture?.route;
+        const interaction = fixture?.interaction;
+        const capacity = fixture?.capacity;
+        const terminal = fixture?.terminal;
+        const replacement = fixture?.replacement;
+        const storageValues = Object.values(fixture?.storageProfile ?? {});
+        scenarioValid = fixture?.scenario
+                === 'cork-dynamic-route-closure'
+            && lifecycle?.helperBodyCount === 0
+            && lifecycle.assigned === true
+            && lifecycle.expanded === true
+            && lifecycle.closed === true
+            && lifecycle.reopened === true
+            && lifecycle.exactOwnerDeath === true
+            && route?.futureSpawnSelectedAlternative === true
+            && route.activeActorReroutedForward === true
+            && route.trappedActorWaitedAtClearance === true
+            && route.waitingActorResumedAfterReopen === true
+            && route.closedPathCount === 1
+            && route.finalClosedPathCount === 0
+            && interaction?.towerBlocked === true
+            && interaction.projectilePhysicallyPassed === true
+            && interaction.projectileDamagedCork === true
+            && interaction.projectilePenetrationRemaining === true
+            && capacity?.maximumCloserCount === 8
+            && capacity.ninthRejectedWholeBatch === true
+            && capacity.ninthRejectionRecoveryRequired === false
+            && capacity.abaOldIncarnationDidNotReopen === true
+            && terminal?.allOpen === true
+            && terminal.rosterCount === 0
+            && terminal.pendingReadbackCount === 0
+            && terminal.rosterSealed === true
+            && replacement?.sessionGenerationAdvanced === true
+            && replacement.allOpen === true
+            && replacement.rosterCount === 0
+            && replacement.staleAuthorityRejected === true
+            && fixture?.coexistence?.bodyAbiVersion === 8
+            && fixture.coexistence.previousDomainsPreserved === true
+            && storageValues.length > 0
+            && storageValues.every((count) => Number.isSafeInteger(count)
+                && count > 0 && count <= 9)
+            && Math.max(...storageValues) === 9
+            && result.requestedMaxStorageBuffersPerShaderStage === 9
+            && result.adapterMaxStorageBuffersPerShaderStage >= 9
+            && result.deviceMaxStorageBuffersPerShaderStage >= 9;
     }
 
     const fixtureExists = fixture !== null
@@ -1901,6 +1958,7 @@ function assertFixtureStageResult(result) {
         || fixtureStage === 'enemy-jorang-split-lineage'
         || fixtureStage === 'enemy-octagon-directional-defense'
         || fixtureStage === 'enemy-ring-projectile-capture'
+        || fixtureStage === 'enemy-cork-route-closure'
     ) {
         assertDedicatedFixtureResult(result, fixtureStage);
         return;
@@ -2016,6 +2074,8 @@ async function prepareHarnessApp(
                     ? 'enemy_octagon_directional_defense_runner.js'
                     : fixtureStage === 'enemy-ring-projectile-capture'
                         ? 'enemy_ring_projectile_capture_runner.js'
+                        : fixtureStage === 'enemy-cork-route-closure'
+                            ? 'enemy_cork_route_closure_runner.js'
                         : 'runner.js';
     await linkRuntimeFile(
         path.join(harnessDirectory, runnerFileName),
@@ -2089,6 +2149,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'enemy_ring_projectile_capture_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'enemy_cork_route_closure_runner.js'
             )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))

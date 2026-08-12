@@ -154,7 +154,8 @@ const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
 const BODY_FLAG_PROJECTILE_CAPTURED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED}u;
 // GPU fixed journal에서만 쓰는 한-tick marker입니다. Body ABI stride는 바꾸지 않습니다.
-const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = 65536u;
+const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.CONTROLLED_THIS_TICK}u;
+const BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
 const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 const BODY_LAYER_ENEMY: u32 = 1u;
@@ -983,7 +984,8 @@ fn clear_body_control_states(@builtin(global_invocation_id) global_id: vec3u) {
     );
     atomicAnd(
         &simulations.values[body_id].flags,
-        ~BODY_FLAG_CONTROLLED_THIS_TICK
+        ~(BODY_FLAG_CONTROLLED_THIS_TICK
+            | BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK)
     );
 }
 
@@ -2090,10 +2092,18 @@ fn enter_enemy_core_fallback(body_id: u32) {
     enemy_behavior_states.values[body_id].charge_direction = vec2f(0.0);
     atomicStore(&enemy_behavior_states.values[body_id].flags, 0u);
     atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
+    atomicAnd(
+        &simulations.values[body_id].flags,
+        ~BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+    );
 }
 
 fn disable_enemy_flow(body_id: u32) {
     atomicAnd(&simulations.values[body_id].flags, ~BODY_FLAG_USE_FLOW);
+    atomicOr(
+        &simulations.values[body_id].flags,
+        BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+    );
 }
 
 fn octagon_orbit_config_is_valid(body_id: u32) -> bool {
@@ -2195,6 +2205,10 @@ fn advance_octagon_orbit(@builtin(global_invocation_id) global_id: vec3u) {
             allowed_seek_flags
         );
         atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
+        atomicAnd(
+            &simulations.values[body_id].flags,
+            ~BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+        );
         if (facing_length_squared > orbit_radius * orbit_radius) {
             return;
         }

@@ -249,7 +249,9 @@ export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
     GOLDEN: 1 << 4,
     PROJECTILE_CAPTURED: 1 << 5,
     INTERACTION_ENTER_ONLY: 1 << 8,
-    INTERACTION_CONTINUOUS: 1 << 9
+    INTERACTION_CONTINUOUS: 1 << 9,
+    CONTROLLED_THIS_TICK: 1 << 16,
+    EXTERNAL_MOTION_OWNER_THIS_TICK: 1 << 17
 });
 
 export const GPU_CIRCLE_BODY_META = Object.freeze({
@@ -336,7 +338,9 @@ export const GPU_CIRCLE_BODY_LAYER = Object.freeze({
     // 이 bit는 physical bodyLayer/collisionMask에 사용하지 않습니다.
     CORE_PROXY: 1 << 8,
     // Team/kind/physical obstacle과 분리된 player actor damage-candidate capability입니다.
-    PLAYER_DAMAGEABLE: 1 << 9
+    PLAYER_DAMAGEABLE: 1 << 9,
+    // Z route closure가 완전히 확장된 뒤에만 활성화하는 물리 blocker capability입니다.
+    ROUTE_BLOCKER: 1 << 10
 });
 
 /** Gameplay interaction target-layer vocabulary의 명시적인 public 이름입니다. */
@@ -361,7 +365,11 @@ export const GPU_CIRCLE_APPLIED_EVENT_TYPE = Object.freeze({
     INTERACTION_CONTINUOUS: 3,
     ENEMY_CHARGE_WINDUP_STARTED: 4,
     ENEMY_CHARGE_CONTACT_RECOIL_STARTED: 5,
-    CORE_DAMAGE_REQUEST: 6
+    CORE_DAMAGE_REQUEST: 6,
+    ROUTE_ASSIGNED: 7,
+    ROUTE_CLOSED: 8,
+    ROUTE_REOPENED: 9,
+    ROUTE_CLEANED: 10
 });
 
 export const GPU_CIRCLE_APPLIED_EVENT_META = Object.freeze({

@@ -32,6 +32,11 @@ import {
 import {
     GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE
 } from '../../physics/gpu/gpu_projectile_capture_runtime_shaders.js';
+import {
+    GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+    GPU_ROUTE_RUNTIME_ABI_VERSION,
+    GPU_ROUTE_RUNTIME_MAX_CLOSERS
+} from '../../physics/gpu/gpu_route_runtime_abi.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -722,6 +727,154 @@ export class EnemySimulationBackend {
 
     getProjectileCaptureBodyState(handle) {
         return this.simulation?.getProjectileCaptureBodyState?.(handle) ?? null;
+    }
+
+    preflightRouteLifecycleBatch(request = {}) {
+        const result = this.simulation?.preflightRouteLifecycleBatch?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+                accepted: false,
+                reason: 'gpu-unavailable',
+                requiresRecovery: false,
+                targetFixedTick: readDiagnosticPositiveInteger(
+                    request?.targetFixedTick
+                ),
+                batchIdFingerprint: readDiagnosticPositiveInteger(
+                    request?.batchIdFingerprint
+                ),
+                spawnReservationCount: 0,
+                cleanupReservationCount: 0,
+                receipt: null
+            });
+        this.#syncState();
+        return result;
+    }
+
+    commitRouteLifecycleBatch(receipt, publication = {}) {
+        const result = this.simulation?.commitRouteLifecycleBatch?.(
+            receipt,
+            publication
+        ) ?? Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: false,
+            reason: 'gpu-unavailable',
+            requiresRecovery: true,
+            targetFixedTick: readDiagnosticPositiveInteger(
+                publication?.targetFixedTick
+            ),
+            batchIdFingerprint: readDiagnosticPositiveInteger(
+                publication?.batchIdFingerprint
+            ),
+            spawnedCount: 0,
+            cleanedCount: 0,
+            runtimeBinding: null
+        });
+        this.#syncState();
+        return result;
+    }
+
+    cancelRouteLifecycleBatch(receipt, reason) {
+        const result = this.simulation?.cancelRouteLifecycleBatch?.(
+            receipt,
+            reason
+        ) ?? Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            accepted: false,
+            reason: 'gpu-unavailable',
+            cancelledSpawnReservationCount: 0,
+            cancelledCleanupReservationCount: 0
+        });
+        this.#syncState();
+        return result;
+    }
+
+    resolveExactRouteBodySlot(handle) {
+        return this.simulation?.resolveExactRouteBodySlot?.(handle) ?? null;
+    }
+
+    stageRouteLifecycleCleanupBatch(request = {}) {
+        const result = this.simulation?.stageRouteLifecycleCleanupBatch?.(request)
+            ?? Object.freeze({
+                accepted: false,
+                reason: 'gpu-unavailable',
+                stagedCount: 0
+            });
+        this.#syncState();
+        return result;
+    }
+
+    drainCompletedRouteAvailabilityBatches(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('RouteAvailability 완료 출력은 배열이어야 합니다.');
+        }
+        return this.simulation?.drainCompletedRouteAvailabilityBatches?.(out)
+            ?? out;
+    }
+
+    getRouteAvailabilityRuntimeStatus() {
+        return this.simulation?.getRouteAvailabilityRuntimeStatus?.()
+            ?? Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                state: 'gpu-unavailable',
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: 0,
+                authoritativeEpoch: 0,
+                ingressOpen: false,
+                graphEnabled: false,
+                graphContentKey: this.flowFieldAtlas?.contentKey ?? null,
+                closureCount: 0,
+                availabilityVersion: 1,
+                closedPathIds: Object.freeze([]),
+                rosterCount: 0,
+                capacity: GPU_ROUTE_RUNTIME_MAX_CLOSERS,
+                leaseCount: 0,
+                lifecycleReservationCount: 0,
+                stagedCount: 0,
+                commitRequested: false,
+                pendingReadbackCount: 0,
+                queuedBatchCount: 0,
+                completedThroughTick: 0,
+                runtimeStatus: 0,
+                storageBuffersPerStage: 9,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null
+            });
+    }
+
+    cancelPendingRouteAvailabilityProgramsForTerminal(request = {}) {
+        const result = this.simulation
+            ?.cancelPendingRouteAvailabilityProgramsForTerminal?.(request)
+            ?? Object.freeze({
+                abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+                state: 'failed',
+                accepted: false,
+                finalFixedTick: readDiagnosticPositiveInteger(
+                    request?.finalFixedTick
+                ),
+                failure: 'gpu-unavailable'
+            });
+        this.#syncState();
+        return result;
+    }
+
+    getTerminalRouteAvailabilityProgramCancelStatus() {
+        return this.simulation
+            ?.getTerminalRouteAvailabilityProgramCancelStatus?.() ?? null;
+    }
+
+    getRouteLifecyclePortStatus() {
+        const runtime = this.getRouteAvailabilityRuntimeStatus();
+        return Object.freeze({
+            abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+            state: runtime.state,
+            reservationCount: runtime.lifecycleReservationCount ?? 0,
+            stagedCleanupCount: runtime.stagedCount,
+            pendingReadbackCount: runtime.pendingReadbackCount,
+            rosterCount: runtime.rosterCount,
+            requiresRecovery: runtime.requiresRecovery,
+            failure: runtime.failure
+        });
     }
 
     /** Terminal final submit 앞 unresolved fixed programs를 exact-set으로 취소합니다. */

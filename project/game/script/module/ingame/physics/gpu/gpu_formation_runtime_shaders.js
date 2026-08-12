@@ -1,7 +1,8 @@
 import {
     GPU_CIRCLE_BODY_RENDER_SHAPE,
     GPU_CIRCLE_BODY_ABI_VERSION,
-    GPU_CIRCLE_BODY_LAYER
+    GPU_CIRCLE_BODY_LAYER,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_INSTANCE_FLAG,
@@ -34,6 +35,7 @@ import {
     FORMATION_COORDINATE_SYSTEM_CODE,
     ENEMY_FORMATION_POLICY_CODE
 } from '../../contract/enemy_formation_contract.js';
+import { GPU_ROUTE_RUNTIME_ROLE } from './gpu_route_runtime_abi.js';
 
 const toWgslFloat = (value) => {
     const normalized = Math.fround(Number(value));
@@ -84,6 +86,7 @@ const INVALID: u32 = ${GPU_FORMATION_IDENTITY_INVALID}u;
 const INVALID_PROGRAM: u32 = ${GPU_FORMATION_PROGRAM_INDEX_INVALID}u;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
+const BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
 const BODY_FLAG_COUNT_AS_KILL: u32 = 4u;
 const DESTINATION_BODY_FLAGS: u32 = BODY_FLAG_ALIVE
     | BODY_FLAG_USE_FLOW | BODY_FLAG_COUNT_AS_KILL;
@@ -142,6 +145,9 @@ const CORRIDOR_CLEARANCE_SCALE: f32 = ${toWgslFloat(
     HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.corridorClearanceRadiusScale
 )};
 const EFFECT_INSTANCE_ACTIVE: u32 = ${GPU_EFFECT_INSTANCE_FLAG.ACTIVE}u;
+const ROUTE_ROLE_NONE: u32 = ${GPU_ROUTE_RUNTIME_ROLE.NONE}u;
+const ROUTE_ROLE_ACTOR: u32 = ${GPU_ROUTE_RUNTIME_ROLE.ACTOR}u;
+const ROUTE_ROLE_CLOSER: u32 = ${GPU_ROUTE_RUNTIME_ROLE.CLOSER}u;
 const INT32_MAX_VALUE: i32 = 2147483647;
 const FLOAT_UNREACHABLE: f32 = 10000000000000000000.0;
 const EPSILON: f32 = 0.000001;
@@ -574,6 +580,15 @@ struct TransformProgram {
     records: array<TransformRecord>,
 }
 
+struct RouteRuntimeState {
+    meta: u32, self_entity_id: u32, self_incarnation: u32,
+    current_path_index: u32, route_set_index: u32, closure_index: u32,
+    observed_availability_version: u32, phase_entered_fixed_tick: u32,
+    travel_radius: f32, blocker_radius: f32,
+    expansion_duration_fixed_ticks: u32, pending_field_index: u32,
+    lease_generation: u32, profile_code: u32, reserved_0: u32, reserved_1: u32,
+}
+
 struct PhysicsBuffer { values: array<BodyPhysics> }
 struct SimulationBuffer { values: array<BodySimulation> }
 struct TemporaryBuffer { values: array<BodyTemporary> }
@@ -587,6 +602,7 @@ struct EffectInstanceBuffer { values: array<EffectInstance> }
 struct BodyRenderStyleBuffer { values: array<BodyRenderStyle> }
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
 struct BodyControlStateBuffer { values: array<BodyControlState> }
+struct RouteRuntimeStateBuffer { values: array<RouteRuntimeState> }
 struct AtomicGridCounts { values: array<atomic<u32>> }
 struct GridBodyBuffer { values: array<GridBody> }
 struct GridOverflowBuffer { value: GridOverflow }
@@ -609,6 +625,7 @@ struct SdfBuffer { values: array<f32> }
 @group(0) @binding(14) var<storage, read_write> effect_pool_state: EffectPoolState;
 @group(0) @binding(15) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(16) var<storage, read_write> body_control_states: BodyControlStateBuffer;
+@group(0) @binding(17) var<storage, read_write> route_states: RouteRuntimeStateBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read_write> grid_overflow: GridOverflowBuffer;
@@ -1365,6 +1382,10 @@ fn advance_formation_motion(@builtin(global_invocation_id) id: vec3u) {
     }
     physics.values[slot].velocity = steered_velocity;
     atomicOr(
+        &simulations.values[slot].flags,
+        BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+    );
+    atomicOr(
         &candidate_states.values[slot].reserved_0,
         MOTION_DIAGNOSTIC_STEERING_APPLIED
     );
@@ -1572,6 +1593,39 @@ fn fail_transform(status: u32, record_index: u32) {
     atomicMin(&transform_program.header.failure_record_index, record_index);
 }
 
+fn formation_route_role(state: RouteRuntimeState) -> u32 {
+    return state.meta & 255u;
+}
+
+fn formation_route_source_is_transformable(
+    state: RouteRuntimeState,
+    entity_id: u32,
+    incarnation: u32
+) -> bool {
+    let role = formation_route_role(state);
+    return role != ROUTE_ROLE_CLOSER
+        && ((role == ROUTE_ROLE_NONE
+                && state.meta == 0u
+                && state.self_entity_id == 0u
+                && state.self_incarnation == 0u
+                && state.current_path_index == 0u
+                && state.route_set_index == 0u
+                && state.closure_index == 0u
+                && state.observed_availability_version == 0u
+                && state.phase_entered_fixed_tick == 0u
+                && state.travel_radius == 0.0
+                && state.blocker_radius == 0.0
+                && state.expansion_duration_fixed_ticks == 0u
+                && state.pending_field_index == 0u
+                && state.lease_generation == 0u
+                && state.profile_code == 0u
+                && state.reserved_0 == 0u
+                && state.reserved_1 == 0u)
+            || (role == ROUTE_ROLE_ACTOR
+                && state.self_entity_id == entity_id
+                && state.self_incarnation == incarnation));
+}
+
 @compute @workgroup_size(1)
 fn reset_formation_transform(@builtin(global_invocation_id) id: vec3u) {
     if (id.x != 0u) { return; }
@@ -1766,6 +1820,26 @@ fn preflight_formation_transforms(@builtin(global_invocation_id) id: vec3u) {
     }
 }
 
+@compute @workgroup_size(256)
+fn preflight_formation_route_rekeys(@builtin(global_invocation_id) id: vec3u) {
+    let index = id.x;
+    if (index >= transform_program.header.count) { return; }
+    let record = transform_program.records[index];
+    let source_a_route_state = route_states.values[record.source_a_slot];
+    let source_b_route_state = route_states.values[record.source_b_slot];
+    if (!formation_route_source_is_transformable(
+            source_a_route_state,
+            record.source_a_entity_id,
+            record.source_a_incarnation
+        ) || !formation_route_source_is_transformable(
+            source_b_route_state,
+            record.source_b_entity_id,
+            record.source_b_incarnation
+        )) {
+        fail_transform(STATUS_SOURCE_CONFLICT, index);
+    }
+}
+
 fn effect_target_transform_index(instance: EffectInstance) -> u32 {
     if (instance.target_slot >= arrayLength(&candidate_states.values)) {
         return INVALID_PROGRAM;
@@ -1955,6 +2029,39 @@ fn commit_formation_transform_bodies(@builtin(global_invocation_id) id: vec3u) {
     tombstone_body(other_slot);
 }
 
+fn clear_formation_route_state(slot: u32) {
+    route_states.values[slot] = RouteRuntimeState(
+        0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
+        0.0, 0.0, 0u, 0u, 0u, 0u, 0u, 0u
+    );
+}
+
+@compute @workgroup_size(256)
+fn commit_formation_route_state(@builtin(global_invocation_id) id: vec3u) {
+    let index = id.x;
+    if (atomicLoad(&transform_program.header.batch_accepted) == 0u
+        || index >= transform_program.header.count) { return; }
+    let record = transform_program.records[index];
+    let motion_root_slot = select(
+        record.source_a_slot,
+        record.source_b_slot,
+        record.motion_source_index == 1u
+    );
+    // Snapshot live GPU route authority before sourceB is cleared or sourceA is rekeyed.
+    let source_route_state = route_states.values[motion_root_slot];
+    let source_route_role = formation_route_role(source_route_state);
+    clear_formation_route_state(record.source_b_slot);
+    if (source_route_role == ROUTE_ROLE_ACTOR) {
+        route_states.values[record.source_a_slot] = source_route_state;
+        route_states.values[record.source_a_slot].self_entity_id
+            = record.destination_entity_id;
+        route_states.values[record.source_a_slot].self_incarnation
+            = record.destination_incarnation;
+    } else {
+        clear_formation_route_state(record.source_a_slot);
+    }
+}
+
 fn clear_effect_summary(slot: u32) {
     effect_summaries.values[slot].entity_id = INVALID;
     effect_summaries.values[slot].incarnation = INVALID;
@@ -2111,10 +2218,12 @@ export const GPU_FORMATION_RUNTIME_ENTRY_POINT = Object.freeze({
     SEAL_PREPARE: 'seal_formation_prepare',
     RESET_TRANSFORM: 'reset_formation_transform',
     PREFLIGHT_TRANSFORMS: 'preflight_formation_transforms',
+    PREFLIGHT_ROUTE_REKEYS: 'preflight_formation_route_rekeys',
     PREFLIGHT_EFFECT_REKEYS: 'preflight_formation_effect_rekeys',
     SEAL_TRANSFORM: 'seal_formation_transform_preflight',
     REKEY_EFFECTS: 'rekey_formation_effect_instances',
     COMMIT_BODIES: 'commit_formation_transform_bodies',
+    COMMIT_ROUTE_STATE: 'commit_formation_route_state',
     COMMIT_AUXILIARY: 'commit_formation_transform_auxiliary'
 });
 
@@ -2135,10 +2244,12 @@ export const GPU_FORMATION_RUNTIME_STORAGE_PROFILE = Object.freeze({
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEAL_PREPARE]: 1,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.RESET_TRANSFORM]: 1,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS]: 6,
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS]: 2,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: 4,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEAL_TRANSFORM]: 2,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.REKEY_EFFECTS]: 4,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_BODIES]: 6,
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE]: 2,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: 8
     }),
     maximum: 9,

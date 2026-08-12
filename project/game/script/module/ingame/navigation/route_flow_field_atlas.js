@@ -2,6 +2,9 @@ import {
     buildEnemyAIFlowFieldForGridGoal
 } from 'object/enemy/ai/_enemy_ai_navigation.js';
 import { GPU_CIRCLE_BODY_FLOW } from '../physics/gpu/gpu_circle_body_abi.js';
+import {
+    ROUTE_GRAPH_NODE_KIND_CODE
+} from '../contract/route_availability_contract.js';
 
 export const ROUTE_FLOW_FIELD_MAX_LAYERS = GPU_CIRCLE_BODY_FLOW.MAX_FIELD_COUNT;
 export const ROUTE_FLOW_FIELD_NO_NEXT_LAYER = -1;
@@ -34,6 +37,9 @@ function readTileMapSnapshot(tileMap) {
     const grid = tileMap.getNavigationGrid();
     const routes = tileMap.getSpawnRoutes();
     const worldBounds = tileMap.getWorldBounds();
+    const routeGraph = typeof tileMap.getRouteGraph === 'function'
+        ? tileMap.getRouteGraph()
+        : null;
     if (!Number.isInteger(grid?.cols)
         || !Number.isInteger(grid?.rows)
         || grid.cols <= 0
@@ -46,7 +52,11 @@ function readTileMapSnapshot(tileMap) {
     if (!Array.isArray(routes) || routes.length === 0) {
         throw new TypeError('route flow atlas에는 하나 이상의 spawn route가 필요합니다.');
     }
-    return { grid, routes, worldBounds };
+    if (routeGraph !== null
+        && (!routeGraph || typeof routeGraph !== 'object')) {
+        throw new TypeError('route flow atlas routeGraph는 object 또는 null이어야 합니다.');
+    }
+    return { grid, routes, worldBounds, routeGraph };
 }
 
 /**
@@ -65,7 +75,7 @@ function hashByte(hash, byte) {
  * @param {object[]} routes - 컴파일된 route입니다.
  * @returns {string} deterministic content key입니다.
  */
-function createContentKey(grid, routes) {
+function createContentKey(grid, routes, compiledRouteGraph) {
     let hash = 0x811c9dc5;
     const floatBits = new DataView(new ArrayBuffer(Float32Array.BYTES_PER_ELEMENT));
     for (let index = 0; index < grid.blocked.length; index++) {
@@ -93,7 +103,251 @@ function createContentKey(grid, routes) {
             }
         }
     }
+    const graphIdentity = compiledRouteGraph === null
+        ? '\u0000legacy-all-open'
+        : JSON.stringify(compiledRouteGraph);
+    for (let index = 0; index < graphIdentity.length; index++) {
+        const code = graphIdentity.charCodeAt(index);
+        hash = hashByte(hash, code);
+        hash = hashByte(hash, code >>> 8);
+    }
     return `${grid.cols}x${grid.rows}-${hash.toString(16).padStart(8, '0')}`;
+}
+
+function compareStrings(left, right) {
+    return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function requireCompiledFieldIndex(route, waypointIndex, label) {
+    if (!Number.isInteger(waypointIndex)
+        || waypointIndex < 0
+        || waypointIndex > route.fieldCount) {
+        throw new RangeError(`${label} waypoint가 compiled flow 범위를 벗어났습니다.`);
+    }
+    return waypointIndex === 0
+        ? ROUTE_FLOW_FIELD_NO_NEXT_LAYER
+        : route.firstFieldIndex + waypointIndex - 1;
+}
+
+/** optional authored graph를 GPU/endpoint가 공유할 compact numeric topology로 바꿉니다. */
+function compileRouteGraph(routeGraph, compiledRoutes) {
+    if (routeGraph === null) {
+        return null;
+    }
+    const pathIndexById = new Map();
+    const paths = compiledRoutes.map((route, pathIndex) => {
+        if (pathIndexById.has(route.pathId)) {
+            throw new RangeError(`compiled route pathId가 중복되었습니다: ${route.pathId}`);
+        }
+        pathIndexById.set(route.pathId, pathIndex);
+        return Object.freeze({
+            pathIndex,
+            pathId: route.pathId,
+            routeIndex: pathIndex,
+            firstFieldIndex: route.firstFieldIndex,
+            fieldCount: route.fieldCount
+        });
+    });
+
+    const routeCandidates = [];
+    const routeSets = [];
+    const routeSetIndexByPathIndex = new Map();
+    for (let routeSetIndex = 0;
+        routeSetIndex < routeGraph.routeSets.length;
+        routeSetIndex++) {
+        const routeSet = routeGraph.routeSets[routeSetIndex];
+        const orderedCandidates = [...routeSet.candidates].sort((left, right) => (
+            left.priority - right.priority
+            || compareStrings(left.pathId, right.pathId)
+        ));
+        const candidateOffset = routeCandidates.length;
+        for (const candidate of orderedCandidates) {
+            const pathIndex = pathIndexById.get(candidate.pathId);
+            if (pathIndex === undefined) {
+                throw new RangeError(
+                    `routeGraph candidate path가 compiled route에 없습니다: ${candidate.pathId}`
+                );
+            }
+            if (routeSetIndexByPathIndex.has(pathIndex)) {
+                throw new RangeError(
+                    `각 path는 정확히 하나의 routeSet candidate여야 합니다: ${candidate.pathId}`
+                );
+            }
+            routeSetIndexByPathIndex.set(pathIndex, routeSetIndex);
+            routeCandidates.push(Object.freeze({
+                pathIndex,
+                priority: candidate.priority
+            }));
+        }
+        routeSets.push(Object.freeze({
+            routeSetIndex,
+            id: routeSet.id,
+            candidateOffset,
+            candidateCount: orderedCandidates.length
+        }));
+    }
+    if (routeSetIndexByPathIndex.size !== paths.length) {
+        const missing = paths.find((path) => (
+            !routeSetIndexByPathIndex.has(path.pathIndex)
+        ));
+        throw new RangeError(
+            `각 compiled path는 정확히 하나의 routeSet에 속해야 합니다: ${missing?.pathId}`
+        );
+    }
+
+    const memberships = [];
+    const nodes = [];
+    const nodeIndexById = new Map();
+    for (let nodeIndex = 0; nodeIndex < routeGraph.nodes.length; nodeIndex++) {
+        const node = routeGraph.nodes[nodeIndex];
+        const kindCode = ROUTE_GRAPH_NODE_KIND_CODE[node.kind];
+        if (!Number.isInteger(kindCode)) {
+            throw new RangeError(`routeGraph node kind code가 없습니다: ${node.kind}`);
+        }
+        const membershipOffset = memberships.length;
+        const orderedMemberships = [...node.memberships].sort((left, right) => (
+            pathIndexById.get(left.pathId) - pathIndexById.get(right.pathId)
+        ));
+        for (const membership of orderedMemberships) {
+            const pathIndex = pathIndexById.get(membership.pathId);
+            if (pathIndex === undefined) {
+                throw new RangeError(
+                    `routeGraph membership path가 compiled route에 없습니다: ${membership.pathId}`
+                );
+            }
+            const route = compiledRoutes[pathIndex];
+            memberships.push(Object.freeze({
+                pathIndex,
+                waypointIndex: membership.waypointIndex,
+                progressOrdinal: membership.progressOrdinal,
+                fieldIndex: requireCompiledFieldIndex(
+                    route,
+                    membership.waypointIndex,
+                    `routeGraph node ${node.id}`
+                )
+            }));
+        }
+        if (nodeIndexById.has(node.id)) {
+            throw new RangeError(`routeGraph node ID가 중복되었습니다: ${node.id}`);
+        }
+        nodeIndexById.set(node.id, nodeIndex);
+        nodes.push(Object.freeze({
+            nodeIndex,
+            id: node.id,
+            kindCode,
+            membershipOffset,
+            membershipCount: orderedMemberships.length
+        }));
+    }
+
+    const transitions = [];
+    const switches = [];
+    for (let switchIndex = 0;
+        switchIndex < routeGraph.switches.length;
+        switchIndex++) {
+        const routeSwitch = routeGraph.switches[switchIndex];
+        const nodeIndex = nodeIndexById.get(routeSwitch.nodeId);
+        if (nodeIndex === undefined) {
+            throw new RangeError(`routeGraph switch node가 없습니다: ${routeSwitch.nodeId}`);
+        }
+        const transitionOffset = transitions.length;
+        const orderedTransitions = [...routeSwitch.transitions].sort((left, right) => (
+            pathIndexById.get(left.fromPathId) - pathIndexById.get(right.fromPathId)
+            || left.priority - right.priority
+            || compareStrings(left.toPathId, right.toPathId)
+        ));
+        for (const transition of orderedTransitions) {
+            const fromPathIndex = pathIndexById.get(transition.fromPathId);
+            const toPathIndex = pathIndexById.get(transition.toPathId);
+            if (fromPathIndex === undefined || toPathIndex === undefined) {
+                throw new RangeError('routeGraph transition path가 compiled route에 없습니다.');
+            }
+            if (routeSetIndexByPathIndex.get(fromPathIndex)
+                !== routeSetIndexByPathIndex.get(toPathIndex)) {
+                throw new RangeError(
+                    'routeGraph switch transition은 같은 routeSet 안에서만 이동해야 합니다.'
+                );
+            }
+            transitions.push(Object.freeze({
+                fromPathIndex,
+                toPathIndex,
+                targetWaypointIndex: transition.targetWaypointIndex,
+                targetFieldIndex: requireCompiledFieldIndex(
+                    compiledRoutes[toPathIndex],
+                    transition.targetWaypointIndex,
+                    `routeGraph switch ${routeSwitch.id}`
+                ),
+                priority: transition.priority
+            }));
+        }
+        switches.push(Object.freeze({
+            switchIndex,
+            id: routeSwitch.id,
+            nodeIndex,
+            transitionOffset,
+            transitionCount: orderedTransitions.length
+        }));
+    }
+
+    const closures = routeGraph.closures.map((closure, closureIndex) => {
+        const pathIndex = pathIndexById.get(closure.pathId);
+        const entranceNodeIndex = nodeIndexById.get(closure.entranceNodeId);
+        const clearanceNodeIndex = nodeIndexById.get(closure.clearanceNodeId);
+        const upstreamSwitchNodeIndex = nodeIndexById.get(
+            closure.upstreamSwitchNodeId
+        );
+        const downstreamMergeNodeIndex = nodeIndexById.get(
+            closure.downstreamMergeNodeId
+        );
+        if (pathIndex === undefined
+            || !routeSetIndexByPathIndex.has(pathIndex)
+            || entranceNodeIndex === undefined
+            || clearanceNodeIndex === undefined
+            || upstreamSwitchNodeIndex === undefined
+            || downstreamMergeNodeIndex === undefined) {
+            throw new RangeError(`routeGraph closure topology가 불완전합니다: ${closure.id}`);
+        }
+        const membershipFor = (nodeIndex) => {
+            const node = routeGraph.nodes[nodeIndex];
+            return node.memberships.find(
+                (membership) => membership.pathId === closure.pathId
+            );
+        };
+        const entrance = membershipFor(entranceNodeIndex);
+        const clearance = membershipFor(clearanceNodeIndex);
+        return Object.freeze({
+            closureIndex,
+            id: closure.id,
+            pathIndex,
+            entranceNodeIndex,
+            clearanceNodeIndex,
+            upstreamSwitchNodeIndex,
+            downstreamMergeNodeIndex,
+            entranceFieldIndex: requireCompiledFieldIndex(
+                compiledRoutes[pathIndex],
+                entrance.waypointIndex,
+                `routeGraph closure ${closure.id}.entrance`
+            ),
+            clearanceFieldIndex: requireCompiledFieldIndex(
+                compiledRoutes[pathIndex],
+                clearance.waypointIndex,
+                `routeGraph closure ${closure.id}.clearance`
+            ),
+            priority: closure.priority
+        });
+    });
+
+    return Object.freeze({
+        version: routeGraph.version,
+        paths: Object.freeze(paths),
+        routeSets: Object.freeze(routeSets),
+        routeCandidates: Object.freeze(routeCandidates),
+        nodes: Object.freeze(nodes),
+        memberships: Object.freeze(memberships),
+        switches: Object.freeze(switches),
+        transitions: Object.freeze(transitions),
+        closures: Object.freeze(closures)
+    });
 }
 
 /**
@@ -105,7 +359,7 @@ function createContentKey(grid, routes) {
  * @returns {object} immutable metadata와 caller-owned Float32 direction plane입니다.
  */
 export function createRouteFlowFieldAtlas(tileMap) {
-    const { grid, routes, worldBounds } = readTileMapSnapshot(tileMap);
+    const { grid, routes, worldBounds, routeGraph } = readTileMapSnapshot(tileMap);
     const cellSize = requirePositiveFinite(grid.cellSize, 'navigationGrid.cellSize');
     const pendingFields = [];
     const compiledRoutes = [];
@@ -209,9 +463,10 @@ export function createRouteFlowFieldAtlas(tileMap) {
             nextFieldIndex: pending.nextFieldIndex
         });
     });
+    const compiledRouteGraph = compileRouteGraph(routeGraph, compiledRoutes);
 
     return Object.freeze({
-        contentKey: createContentKey(grid, routes),
+        contentKey: createContentKey(grid, routes, compiledRouteGraph),
         cols: grid.cols,
         rows: grid.rows,
         size: grid.size,
@@ -224,6 +479,7 @@ export function createRouteFlowFieldAtlas(tileMap) {
         directions,
         integrationCosts,
         stages: Object.freeze(stages),
-        routes: Object.freeze(compiledRoutes)
+        routes: Object.freeze(compiledRoutes),
+        routeGraph: compiledRouteGraph
     });
 }

@@ -20,8 +20,13 @@ import {
     resolveEnemySpawnStats
 } from '../object/enemy/resolved_enemy_spawn_stats.js';
 import {
+    AUTHORED_WAVE_COMPILE_LIMIT,
     compileAuthoredWaveTimeline
 } from './authored_wave_timeline_contract.js';
+import {
+    normalizeRouteAvailabilitySelectionSnapshot,
+    selectOpenRoutePathId
+} from '../contract/route_availability_contract.js';
 
 function requireNonEmptyString(value, label) {
     if (typeof value !== 'string' || value.length === 0) {
@@ -57,6 +62,7 @@ function snapshotEnemyDefinition(source, label) {
         physicsProfileId: source.physicsProfileId,
         combatProfileId: source.combatProfileId,
         behaviorProfileId: source.behaviorProfileId,
+        routeClosureProfileId: source.routeClosureProfileId,
         effectEmitterProfileId: source.effectEmitterProfileId,
         formationDefinitionId: source.formationDefinitionId,
         capabilityIds: source.capabilityIds,
@@ -86,6 +92,13 @@ export class WaveDirector {
         );
         this.schedule = Object.freeze([]);
         this.nextScheduleIndex = 0;
+        this.queuedSpawnCount = 0;
+        this.blockedEntries = [];
+        this.routePathByGroupId = new Map();
+        this.routeByPathId = new Map();
+        this.routeGraph = null;
+        this.lastRouteAvailabilityVersion = null;
+        this.lastRouteAvailabilitySnapshot = null;
         this.knownEnemyDefinitionIds = Object.freeze(
             Object.keys(this.enemyDefinitions)
         );
@@ -142,12 +155,36 @@ export class WaveDirector {
                 return snapshotEnemyDefinition(source, label);
             }
         });
-        this.schedule = Object.freeze(schedule.map((entry) => Object.freeze({
-            ...entry,
-            mapEnemyModifiers,
-            waveEnemyModifiers
-        })));
+        this.schedule = Object.freeze(schedule.map((entry) => {
+            if (entry.definition.routeClosureProfileId !== null
+                && entry.routeSetId === null) {
+                throw new RangeError(
+                    'route-closure Enemy spawn은 exact routeSet binding이 필요합니다.'
+                );
+            }
+            return Object.freeze({
+                ...entry,
+                mapEnemyModifiers,
+                waveEnemyModifiers
+            });
+        }));
+        const spawnRoutes = tileMap.getSpawnRoutes();
+        this.routeByPathId = new Map();
+        for (const route of spawnRoutes) {
+            if (this.routeByPathId.has(route.pathId)) {
+                throw new RangeError(`WaveDirector pathId가 중복되었습니다: ${route.pathId}`);
+            }
+            this.routeByPathId.set(route.pathId, route);
+        }
+        this.routeGraph = typeof tileMap.getRouteGraph === 'function'
+            ? tileMap.getRouteGraph()
+            : null;
         this.nextScheduleIndex = 0;
+        this.queuedSpawnCount = 0;
+        this.blockedEntries = [];
+        this.routePathByGroupId.clear();
+        this.lastRouteAvailabilityVersion = null;
+        this.lastRouteAvailabilitySnapshot = null;
         this.initializedWaveId = waveId;
         this.initialized = true;
         return true;
@@ -157,7 +194,11 @@ export class WaveDirector {
      * 해당 proposed fixed tick의 spawn만 command owner에 보냅니다.
      * @returns {number} 새로 queue한 command 수입니다.
      */
-    queueSpawnsForFixedTick(fixedTick, commandOwner) {
+    queueSpawnsForFixedTick(
+        fixedTick,
+        commandOwner,
+        routeAvailabilitySnapshot = null
+    ) {
         if (!this.initialized || this.destroyed) {
             return 0;
         }
@@ -167,24 +208,124 @@ export class WaveDirector {
                 'WaveDirector에는 atomic enemy requestSpawnBatch() sink가 필요합니다.'
             );
         }
-        const next = this.schedule[this.nextScheduleIndex];
-        if (next && next.targetFixedTick < tick) {
-            throw new RangeError(`WaveDirector fixed tick이 schedule을 건너뛰었습니다: ${tick}`);
-        }
-        const entries = [];
-        let scheduleIndex = this.nextScheduleIndex;
-        while (scheduleIndex < this.schedule.length) {
-            const entry = this.schedule[scheduleIndex];
-            if (entry.targetFixedTick !== tick) {
+        const entries = [...this.blockedEntries];
+        let nextScheduleIndex = this.nextScheduleIndex;
+        while (nextScheduleIndex < this.schedule.length) {
+            const entry = this.schedule[nextScheduleIndex];
+            if (entry.targetFixedTick > tick) {
                 break;
             }
             entries.push(entry);
-            scheduleIndex++;
+            nextScheduleIndex++;
         }
         if (entries.length === 0) {
             return 0;
         }
-        const requests = Object.freeze(entries.map((entry) => {
+        entries.sort((left, right) => (
+            left.targetFixedTick - right.targetFixedTick
+            || left.spawnSequence - right.spawnSequence
+        ));
+
+        const requiresRouteAvailability = entries.some(
+            (entry) => entry.routeSetId !== null
+        );
+        const normalizedAvailability = requiresRouteAvailability
+            ? normalizeRouteAvailabilitySelectionSnapshot(
+                routeAvailabilitySnapshot,
+                this.routeGraph,
+                'WaveDirector.routeAvailabilitySnapshot'
+            )
+            : null;
+        if (normalizedAvailability && this.lastRouteAvailabilitySnapshot) {
+            const previous = this.lastRouteAvailabilitySnapshot;
+            if (normalizedAvailability.graphContentKey
+                    !== previous.graphContentKey) {
+                throw new RangeError(
+                    'WaveDirector route availability graph content key가 바뀌었습니다.'
+                );
+            }
+            if (normalizedAvailability.availabilityVersion
+                    < previous.availabilityVersion) {
+                throw new RangeError(
+                    'WaveDirector route availability version이 회귀했습니다.'
+                );
+            }
+            if (normalizedAvailability.availabilityVersion
+                    === previous.availabilityVersion
+                && (normalizedAvailability.closedPathIds.length
+                        !== previous.closedPathIds.length
+                    || normalizedAvailability.closedPathIds.some(
+                        (pathId, index) => pathId
+                            !== previous.closedPathIds[index]
+                    ))) {
+                throw new RangeError(
+                    'WaveDirector same-version route availability snapshot이 충돌합니다.'
+                );
+            }
+        }
+        const closedPathIds = new Set(
+            normalizedAvailability?.closedPathIds ?? []
+        );
+        const readyEntries = [];
+        const blockedEntries = [];
+        const selectedPathByCurrentGroup = new Map();
+        const nextRoutePathByGroupId = new Map(this.routePathByGroupId);
+        for (const entry of entries) {
+            let route = entry.route;
+            if (entry.routeSetId !== null) {
+                let selectedPathId = entry.preserveGroupRoute
+                    ? nextRoutePathByGroupId.get(entry.groupId) ?? null
+                    : selectedPathByCurrentGroup.get(entry.groupId) ?? null;
+                if (selectedPathId === null) {
+                    selectedPathId = selectOpenRoutePathId(
+                        this.routeGraph,
+                        entry.routeSetId,
+                        normalizedAvailability
+                    );
+                    if (selectedPathId !== null) {
+                        selectedPathByCurrentGroup.set(
+                            entry.groupId,
+                            selectedPathId
+                        );
+                        if (entry.preserveGroupRoute) {
+                            nextRoutePathByGroupId.set(
+                                entry.groupId,
+                                selectedPathId
+                            );
+                        }
+                    }
+                }
+                if (selectedPathId === null || closedPathIds.has(selectedPathId)) {
+                    blockedEntries.push(entry);
+                    continue;
+                }
+                route = this.routeByPathId.get(selectedPathId) ?? null;
+                if (!route || !entry.routeCandidatePathIds.includes(selectedPathId)) {
+                    throw new RangeError(
+                        `WaveDirector selected route가 schedule binding과 다릅니다: ${selectedPathId}`
+                    );
+                }
+            }
+            readyEntries.push(Object.freeze({ entry, route }));
+        }
+        if (blockedEntries.length
+            > AUTHORED_WAVE_COMPILE_LIMIT.MAXIMUM_TOTAL_SPAWN_COUNT) {
+            throw new RangeError('WaveDirector blocked spawn backlog capacity를 초과했습니다.');
+        }
+        const nextRouteAvailabilityVersion
+            = normalizedAvailability?.availabilityVersion
+                ?? this.lastRouteAvailabilityVersion;
+        if (readyEntries.length === 0) {
+            this.nextScheduleIndex = nextScheduleIndex;
+            this.blockedEntries = blockedEntries;
+            this.routePathByGroupId = nextRoutePathByGroupId;
+            this.lastRouteAvailabilityVersion = nextRouteAvailabilityVersion;
+            this.lastRouteAvailabilitySnapshot = normalizedAvailability
+                ?? this.lastRouteAvailabilitySnapshot;
+            return 0;
+        }
+
+        const requests = Object.freeze(readyEntries.map(({ entry, route }) => {
             // Profile base와 immutable map/wave input을 이 queue boundary에서 정확히 한 번
             // resolve한 뒤 intent를 만듭니다. init은 resolved numeric stat을 저장하지 않습니다.
             const resolvedStats = resolveEnemySpawnStats({
@@ -195,10 +336,17 @@ export class WaveDirector {
             });
             const intent = createGpuEnemySpawnIntent({
                 definition: entry.definition,
-                route: entry.route,
+                route,
+                routeSetId: entry.routeSetId,
+                routeAvailabilityVersion:
+                    normalizedAvailability?.availabilityVersion ?? 1,
+                routeGraphContentKey:
+                    normalizedAvailability?.graphContentKey ?? null,
                 spawnSequence: entry.spawnSequence,
                 laneOffsetTiles: entry.laneOffsetTiles,
-                initialWorldOffsetTiles: entry.initialWorldOffsetTiles,
+                initialWorldOffsetTiles: entry.initialWorldOffsetByPathId === null
+                    ? entry.initialWorldOffsetTiles
+                    : entry.initialWorldOffsetByPathId[route.pathId],
                 waveId: entry.waveId,
                 policyId: entry.policyId,
                 formationProvenance: entry.formationProvenance,
@@ -218,8 +366,49 @@ export class WaveDirector {
                 `WaveDirector atomic spawn batch queue 실패: tick=${tick}, count=${requests.length}`
             );
         }
-        this.nextScheduleIndex += entries.length;
-        return entries.length;
+        this.nextScheduleIndex = nextScheduleIndex;
+        this.blockedEntries = blockedEntries;
+        this.routePathByGroupId = nextRoutePathByGroupId;
+        this.lastRouteAvailabilityVersion = nextRouteAvailabilityVersion;
+        this.lastRouteAvailabilitySnapshot = normalizedAvailability
+            ?? this.lastRouteAvailabilitySnapshot;
+        this.queuedSpawnCount += readyEntries.length;
+        return readyEntries.length;
+    }
+
+    /**
+     * exact-idle GPU route epoch 교체 뒤 구 epoch의 selection cache만 폐기합니다.
+     * blocked authored schedule/spawnSequence backlog는 새 all-open epoch에서 그대로
+     * 재평가되어야 하므로 nextScheduleIndex/blockedEntries는 건드리지 않습니다.
+     */
+    canResetRouteAvailabilityBinding(snapshot) {
+        if (!this.initialized || this.destroyed || this.routeGraph === null) {
+            return false;
+        }
+        try {
+            const normalized = normalizeRouteAvailabilitySelectionSnapshot(
+                snapshot,
+                this.routeGraph,
+                'WaveDirector.resetRouteAvailabilityBinding'
+            );
+            return normalized.availabilityVersion === 1
+                && normalized.closedPathIds.length === 0
+                && (this.lastRouteAvailabilitySnapshot === null
+                    || normalized.graphContentKey
+                        === this.lastRouteAvailabilitySnapshot.graphContentKey);
+        } catch {
+            return false;
+        }
+    }
+
+    resetRouteAvailabilityBinding(snapshot) {
+        if (!this.canResetRouteAvailabilityBinding(snapshot)) {
+            return false;
+        }
+        this.routePathByGroupId.clear();
+        this.lastRouteAvailabilityVersion = null;
+        this.lastRouteAvailabilitySnapshot = null;
+        return true;
     }
 
     getStatus() {
@@ -227,11 +416,15 @@ export class WaveDirector {
             waveId: this.initializedWaveId,
             initialized: this.initialized,
             totalSpawnCount: this.schedule.length,
-            queuedSpawnCount: this.nextScheduleIndex,
-            remainingSpawnCount: this.schedule.length - this.nextScheduleIndex,
-            allSpawnsQueued: this.initialized && this.nextScheduleIndex >= this.schedule.length,
+            queuedSpawnCount: this.queuedSpawnCount,
+            blockedSpawnCount: this.blockedEntries.length,
+            remainingSpawnCount: this.schedule.length - this.queuedSpawnCount,
+            allSpawnsQueued: this.initialized
+                && this.nextScheduleIndex >= this.schedule.length
+                && this.blockedEntries.length === 0,
             completionOwned: false,
-            fixedTickOffset: this.fixedTickOffset
+            fixedTickOffset: this.fixedTickOffset,
+            routeAvailabilityVersion: this.lastRouteAvailabilityVersion
         });
     }
 
@@ -242,6 +435,13 @@ export class WaveDirector {
         this.destroyed = true;
         this.schedule = Object.freeze([]);
         this.nextScheduleIndex = 0;
+        this.queuedSpawnCount = 0;
+        this.blockedEntries = [];
+        this.routePathByGroupId.clear();
+        this.routeByPathId.clear();
+        this.routeGraph = null;
+        this.lastRouteAvailabilityVersion = null;
+        this.lastRouteAvailabilitySnapshot = null;
         this.initialized = false;
     }
 }

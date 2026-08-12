@@ -1,7 +1,8 @@
 import {
     GPU_CIRCLE_BODY_ABI_VERSION,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
-    GPU_CIRCLE_BODY_LAYER
+    GPU_CIRCLE_BODY_LAYER,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
 import {
     GPU_EFFECT_EMITTER_FLAG,
@@ -79,6 +80,7 @@ const EFFECT_RUNTIME_ABI_VERSION: u32 = ${GPU_EFFECT_RUNTIME_ABI_VERSION}u;
 const EFFECT_PULSE_PROGRAM_ABI_VERSION: u32 = ${GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION}u;
 const INVALID_IDENTITY_COMPONENT: u32 = 0xffffffffu;
 const BODY_FLAG_ALIVE: u32 = 1u;
+const BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
 const BODY_LAYER_ENEMY: u32 = ${GPU_CIRCLE_BODY_LAYER.ENEMY}u;
 const GAMEPLAY_TEAM_HOSTILE: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
 const GAMEPLAY_META_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
@@ -1437,6 +1439,10 @@ fn advance_penta_cluster_navigation(@builtin(global_invocation_id) global_id: ve
         velocity = direction * min(max(prepared_speed, maximum_speed), maximum_speed);
     }
     physics.values[body_id].velocity = velocity;
+    atomicOr(
+        &simulations.values[body_id].flags,
+        BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+    );
     temporaries.values[body_id].predicted_position = position + velocity * params.dt;
 }
 `;
