@@ -200,7 +200,7 @@ render golden                PASS; 10 surfaces, 3 cases;
                              SHA 3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf
 title GPU                    UI webgpu-kawase + cpu smoke PASS;
                              production webgpu-gaussian + gpu smoke PASS;
-                             T0-T5 worst p99 0.786432 ms
+                             smoke receipts set budgetRequired=false; raw p99 is diagnostic only
 diff hygiene                 accepted-base→HEAD / index / worktree / untracked PASS
 authority link closure       65 Markdown documents / 110 unique targets / missing 0
 ```
@@ -213,7 +213,7 @@ an empty proof.
 Raw aggregate stderr 포함 사항:
 
 ```text
-Chromium command_buffer_proxy_impl teardown line  7건
+Chromium command_buffer_proxy_impl teardown line  실행/process별 가변; 고정 acceptance 수치 아님
 분류                                             독립 NW process의
                                                  device.destroy → lost destroyed → result → App.quit
                                                  종료 경계 IPC noise

@@ -124,7 +124,8 @@ P/H/O/J                         vendor 또는 전체 10/9/9 tuple을 receipt가 
 ```
 
 Aggregate stderr에는 독립 NW 프로세스 종료 경계에서 Chromium
-`command_buffer_proxy_impl: GPU state invalid after WaitForGetOffsetInRange`가 7줄 있다. 각 경계의
+`command_buffer_proxy_impl: GPU state invalid after WaitForGetOffsetInRange`가 나타날 수 있다. 그 줄 수는
+process/run마다 달라지므로 고정 acceptance 수치가 아니다. 각 경계의
 순서는 `device.destroy → lost: destroyed → result publication → App.quit`이고 wrapper는 process close를
 기다렸다. 대응 fixture는 모두 PASS, `uncapturedErrorCount=0`, `deviceLostReason=destroyed`이며 cumulative
 runner도 exit 0이다. 따라서 teardown IPC noise로 분류하며 acceptance blocker가 아니다. Aggregate stderr가
@@ -173,8 +174,9 @@ cases    3
 SHA-256  3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf
 ```
 
-두 title smoke 모두 T0–T5를 통과했다. 명시적 production
-`webgpu-gaussian + gpu` run의 최악 p99는 `0.786432 ms`로 1 ms 기준 안이다.
+두 title smoke 모두 T0–T5를 통과했다. 명시적 UI alternate는 `webgpu-kawase + cpu`, production
+default는 `webgpu-gaussian + gpu`다. 이 smoke receipt는 `budgetRequired:false`이므로 raw p99는 실행 진단일
+뿐 1 ms acceptance 또는 최종 performance claim으로 사용하지 않는다.
 
 ## Manual evidence
 

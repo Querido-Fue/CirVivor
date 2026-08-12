@@ -491,17 +491,17 @@ default capability command. The final 2026-08-12 cumulative execution exited `0`
   peak active 8, final churn/reserved/pending 0, route all-open, recovery false, storage maximum 9;
 - render golden: 10 surfaces, 3 cases, SHA
   `3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf`, PASS with no baseline update;
-- title UI GPU smoke and explicit production `webgpu-gaussian + gpu` smoke: PASS; production T0–T5 worst p99
-  `0.786432 ms`;
+- title UI `webgpu-kawase + cpu` smoke and explicit production `webgpu-gaussian + gpu` smoke: PASS; both
+  receipts set `budgetRequired:false`, so raw p99 remains diagnostic rather than a 1 ms acceptance claim;
 - `git diff --check`: PASS.
 
-The aggregate stderr also contains seven Chromium
+The aggregate stderr may also contain Chromium
 `command_buffer_proxy_impl: GPU state invalid after WaitForGetOffsetInRange` lines at independent NW process
 teardown boundaries (`device.destroy → lost: destroyed → result publication → App.quit`). The fixture wrapper
 waited for each process close, every corresponding result remained PASS with exact
 `uncapturedErrorCount=0`/`deviceLostReason=destroyed`, and the cumulative runner exited `0`. This is classified as
-Chromium teardown IPC noise, not a WebGPU uncaptured-error or acceptance blocker. Do not claim aggregate stderr
-was empty or clean.
+Chromium teardown IPC noise, not a WebGPU uncaptured-error or acceptance blocker. Its line count is run/process
+dependent and is not an acceptance metric. Do not claim aggregate stderr was empty or clean.
 
 Manual showcase evidence is `automatedResult:false`. Exact reason: the cumulative runner was non-interactive,
 and no human showcase play/visual verification or pause/resume session was executed. Automated hardware PASS is

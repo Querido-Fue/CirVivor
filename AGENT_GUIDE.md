@@ -23,9 +23,10 @@ golden, the 22-file focused Node gate (`192/192`), two title GPU smokes, accepte
 hygiene, and the single-device/session three-cycle O/J/R/Z/H/P/projectile
 churn also passed. Manual showcase evidence remains explicitly `automatedResult:false`: the final run was
 non-interactive and no human visual/pause-resume showcase session was executed.
-The aggregate stderr contains seven Chromium `command_buffer_proxy_impl` teardown lines at independent NW
-`device.destroy → lost: destroyed → result → App.quit` process-exit boundaries. They are not WebGPU uncaptured
-errors and do not override the fixture-level PASS evidence; do not describe aggregate stderr as clean.
+Aggregate stderr may contain Chromium `command_buffer_proxy_impl` lines at independent NW
+`device.destroy → lost: destroyed → result → App.quit` process-exit boundaries. Their count is process/run
+dependent and is not an acceptance metric. They are not WebGPU uncaptured errors and do not override the
+fixture-level PASS evidence; do not describe aggregate stderr as clean.
 Ring no-Tower release keeps stored forward with a null target handle; target-policy vocabulary must never infer
 Core. Its preserved logical origin provenance is future Subject/Sentence preparation, not end-to-end execution.
 
