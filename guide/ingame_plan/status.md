@@ -5,7 +5,7 @@ committed Pre-R2 stabilization checkpoint `649806d25dfc541e58551515a0faf70733def
 decisions documented in `guide/gameplay/`. Verify code when later changes land.
 
 **R1 is complete as of 2026-08-09. R2 Enemy Ecosystem Turns 1–9 and final cumulative acceptance are complete as
-of 2026-08-12.** The final runner exited `0`: changed-production syntax `38/38`, Node `1401/1401`, default
+of 2026-08-12.** The final runner exited `0`: changed-production syntax `38/38`, Node `1402/1402`, default
 actual WebGPU plus exact nine selected stages, both WASM checks, flow stress, audited render golden, two title
 GPU smokes, diff hygiene, and 3/3 single-device/session O/J/R/Z/H/P/projectile churn all passed. All ten
 hardware receipts directly report NW.js `0.108.0`, effective storage maximum 9, `uncapturedErrorCount=0`, and
@@ -394,7 +394,7 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - `run_r2_final_acceptance.mjs` executes full Node, changed-production syntax, default WebGPU and exact nine
   routed stages, both WASM checks, flow stress, render golden, title GPU smoke, diff hygiene, and three O/J/R/Z/H/P
   mixed-churn cycles. Windows uses the platform Node executable for the NW wrapper.
-- Final execution: syntax `38/38`, Node `1401/1401`, hardware default plus nine selected stages, two WASM
+- Final execution: syntax `38/38`, Node `1402/1402`, hardware default plus nine selected stages, two WASM
   reproducibility checks, flow stress, render golden 10 surfaces/3 cases, both title smokes, and diff hygiene PASS.
 - Mixed churn v2 used one device/session for 3/3 cycles: exact entity IDs advanced incarnation `1→2→3`, peak
   active was 8, and final churn/reserved/pending counts were zero with all routes open, recovery false, storage 9.

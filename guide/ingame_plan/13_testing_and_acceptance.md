@@ -480,7 +480,7 @@ executable to launch the NW wrapper on Windows. The Ring stage must be selected 
 default capability command. The final 2026-08-12 cumulative execution exited `0` and recorded:
 
 - changed production JS/MJS syntax: `38/38` PASS;
-- full Node: `1401/1401` PASS, fail 0;
+- full Node: `1402/1402` PASS, fail 0;
 - actual WebGPU default plus all nine selected stages: PASS; every receipt directly reports NW.js `0.108.0`,
   effective storage maximum 9, `uncapturedErrorCount=0`, and teardown `deviceLostReason=destroyed`;
 - direct adapter detail: Full/Arrow/Maximum/Rhom identify NVIDIA Lovelace with adapter limit 10; Ring/Cork

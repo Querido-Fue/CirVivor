@@ -46,7 +46,7 @@
 > EffectDefinition-owned non-duplicating distribution. Ring capture requires inbound/closing motion and treats
 > completion/release capacity exhaustion as normal whole-batch zero mutation. O future policy and overflow are
 > data-owned, the showcase remains injection-only, and the final runner executes default plus nine hardware
-> stages. Final cumulative evidence is syntax `38/38`, Node `1401/1401`, and all ten WebGPU routes PASS with
+> stages. Final cumulative evidence is syntax `38/38`, Node `1402/1402`, and all ten WebGPU routes PASS with
 > NW.js `0.108.0`, effective storage maximum 9, exact `uncapturedErrorCount=0`, and destroyed teardown. Direct
 > adapter evidence is NVIDIA Lovelace/limit 10 for Full/Arrow/Maximum/Rhom and `10/9/9` adapter/requested/device
 > for Ring/Cork. Both WASM checks, flow stress, audited golden, two title GPU smokes, diff hygiene, and three stable single-device/session mixed-churn cycles passed. Manual showcase

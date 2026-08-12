@@ -71,7 +71,7 @@ must execute the default capability route plus exact nine stages: `enemy-arrow-c
 `enemy-cork-route-closure`; full/focused Node, changed-production syntax, both WASM checks, flow stress, render
 golden, title GPU smoke, diff hygiene, and three O/J/R/Z/H/P churn passes are also required. Manual results stay
 explicit `automatedResult:false` when unavailable.
-Turn 9 final cumulative execution passed changed-production syntax `38/38`, full Node `1401/1401`, default
+Turn 9 final cumulative execution passed changed-production syntax `38/38`, full Node `1402/1402`, default
 actual WebGPU plus every one of the nine selected stages, both WASM reproducibility checks, flow stress, audited
 render golden, both title GPU smokes, diff hygiene, and 3/3 single-device/session mixed churn cycles. All ten
 hardware receipts report NW.js `0.108.0`, effective storage maximum 9, exact `uncapturedErrorCount=0`, and

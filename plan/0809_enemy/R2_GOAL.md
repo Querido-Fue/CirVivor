@@ -43,8 +43,10 @@ explicit injection으로만 활성화한다. J의 미래 explosion/Effect/direct
 stored forward를 유지하며 Core를 추론하지 않는다. 보존된 logical origin provenance는 미래
 Subject/Sentence 연결 준비일 뿐 end-to-end Sentence 실행 증거가 아니다.
 
-최종 runner는 changed-production syntax `38/38`, full Node `1401/1401`, default actual WebGPU와 exact nine
-stages, 두 WASM 재현성 검사, flow stress, audited render golden, 두 title GPU smoke, diff hygiene, 그리고
+최종 runner는 accepted base `478fd5c`와 current HEAD commit/tree에 receipt를 결속하고, changed-production
+syntax `38/38`, explicit focused Node `192/192`와 full Node `1402/1402`, default actual WebGPU와 exact nine
+stages, 두 WASM 재현성 검사, flow stress, audited render golden, 두 explicit title GPU smoke,
+accepted-base/index/worktree/untracked diff hygiene, 그리고
 single-device/session O/J/R/Z/H/P/projectile churn 3/3 cycles를 모두 PASS했다. 열 개 hardware receipt는
 모두 NW.js `0.108.0`, effective storage maximum 9, `uncapturedErrorCount=0`,
 `deviceLostReason=destroyed`를 직접 보고했다. Full/Arrow/Maximum/Rhom receipt는 NVIDIA Lovelace와 adapter

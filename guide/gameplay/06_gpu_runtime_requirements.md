@@ -71,7 +71,7 @@ Turn 9 keeps those ABIs and completes the producer-neutral J hit seam, dedicated
 EffectDefinition-owned transfer distribution, inbound Ring capture/capacity rejection, exact O future-policy
 metadata, injection-only showcase content, Cork/Formation cross fixtures, and the final acceptance orchestrator.
 The 2026-08-12 cumulative runner exited `0`: changed-production syntax passed `38/38`, full Node passed
-`1401/1401`, default actual WebGPU plus all nine explicitly selected stages passed, both WASM checks and flow
+`1402/1402`, default actual WebGPU plus all nine explicitly selected stages passed, both WASM checks and flow
 stress passed, audited render golden and both title GPU smokes passed, diff hygiene passed, and the version-2
 single-device/session O/J/R/Z/H/P/projectile churn completed all three cycles. Every hardware receipt directly
 reported NW.js `0.108.0`, effective storage maximum 9, `uncapturedErrorCount=0`, and orderly `destroyed`

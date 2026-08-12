@@ -10,7 +10,8 @@ R2 Enemy Ecosystem은 2026-08-12 완료되었다. 권위 progress는 정확히 `
 - 작업 branch: `main`
 - 작업 루트: `C:\CirVivor`
 - 프로젝트 루트: `C:\CirVivor\project`
-- 예정 커밋 제목: `r2t9 complete`
+- 구현 커밋: `bc5e83650bee9b7eafdaa98c8078128fb0a6e234` (`r2t9 complete`)
+- 최종 acceptance hardening 커밋 제목: `r2t9 acceptance hardening`
 - 최종 runner: `node game/test/support/run_r2_final_acceptance.mjs`
 - 결과: exit `0`
 
@@ -65,14 +66,28 @@ state domain을 확장했다.
 | Gate | 결과 |
 | --- | --- |
 | changed production JS/MJS `node --check` | `38/38 PASS` |
-| full Node | `1401/1401 PASS`, fail 0 |
+| focused Node | 22-file inventory, `192/192 PASS` |
+| full Node | `1402/1402 PASS`, fail 0 |
 | actual WebGPU | default + exact nine selected stages, 모두 PASS |
 | WASM | flow-field reproducibility PASS; collision-contact reproducibility PASS |
 | flow stress | seed `0x71c0ffee`, 1,000 cases, 3,824,454 cells, 3 ABI canaries, PASS |
 | mixed churn v2 | one device/session, 3/3 cycles, PASS |
 | render golden | 10 surfaces, 3 cases, PASS; baseline update 없음 |
-| title GPU | UI smoke PASS; production `webgpu-gaussian + gpu` smoke PASS |
-| diff hygiene | PASS |
+| title GPU | UI `webgpu-kawase + cpu` smoke PASS; production `webgpu-gaussian + gpu` smoke PASS |
+| diff hygiene | accepted-base→HEAD, index, worktree, untracked PASS |
+| authority link closure | 65 Markdown documents, 110 unique targets, missing 0 |
+
+Final acceptance output binds the accepted base and current HEAD commit/tree, rejects revision drift during
+the run, and keeps committed syntax/diff evidence nonempty even on a clean checkout.
+
+최종 committed candidate에서는 프로젝트 루트 `C:\CirVivor\project`에서 아래 literal npm 진입점도 각각
+별도 실행해 exit `0`을 확인했다. stage 환경 변수는 각 명령 범위에만 설정하고 종료 후 제거했다.
+
+```powershell
+npm run test:webgpu:capability
+$env:CIRVIVOR_WEBGPU_FIXTURE_STAGE='enemy-ring-projectile-capture'; npm run test:webgpu:capability
+$env:CIRVIVOR_WEBGPU_FIXTURE_STAGE='enemy-cork-route-closure'; npm run test:webgpu:capability
+```
 
 명시적으로 실행된 actual WebGPU stage:
 

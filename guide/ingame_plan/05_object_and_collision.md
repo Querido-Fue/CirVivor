@@ -48,7 +48,7 @@
 >
 > J producer-neutral admission/`jorang`/EffectDefinition distribution, inbound Ring capture and normal capacity
 > rejection, O future/overflow contracts, injection-only showcase, Cork/Formation cross fixtures, and the final
-> default-plus-nine-stage runner are accepted. Final results are syntax `38/38`, Node `1401/1401`, and all ten
+> default-plus-nine-stage runner are accepted. Final results are syntax `38/38`, Node `1402/1402`, and all ten
 > actual WebGPU routes PASS with NW.js `0.108.0`, effective storage maximum 9, exact
 > `uncapturedErrorCount=0`, and destroyed teardown. Full/Arrow/Maximum/Rhom directly identify NVIDIA
 > Lovelace/adapter limit 10; Ring/Cork directly report adapter/requested/device `10/9/9`. Both WASM checks,

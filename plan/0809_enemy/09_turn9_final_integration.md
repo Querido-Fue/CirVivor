@@ -184,7 +184,8 @@ Its presence is an authored gate, not a PASS result.
 ```text
 final runner                 node game/test/support/run_r2_final_acceptance.mjs; exit 0
 changed production syntax    38/38 PASS
-full Node                    1401/1401 PASS; fail 0
+focused Node                 22-file inventory, 192/192 PASS
+full Node                    1402/1402 PASS; fail 0
 actual WebGPU                default + exact nine selected stages PASS
 all ten hardware receipts    NW.js 0.108.0; effective storage maximum 9;
                              uncapturedErrorCount=0; deviceLostReason=destroyed
@@ -197,10 +198,17 @@ mixed churn v2               one device/session, 3/3 cycles, stable tuple/incarn
                              recovery=false, storage maximum 9
 render golden                PASS; 10 surfaces, 3 cases;
                              SHA 3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf
-title GPU                    UI smoke PASS; production webgpu-gaussian + gpu smoke PASS;
+title GPU                    UI webgpu-kawase + cpu smoke PASS;
+                             production webgpu-gaussian + gpu smoke PASS;
                              T0-T5 worst p99 0.786432 ms
-diff hygiene                 PASS
+diff hygiene                 accepted-base→HEAD / index / worktree / untracked PASS
+authority link closure       65 Markdown documents / 110 unique targets / missing 0
 ```
+
+The runner records the accepted base plus current HEAD commit/tree before hardware work, rechecks the same
+revision after all gates, and scans production syntax from accepted base through committed HEAD as well as
+working/untracked files. A clean committed checkout therefore cannot turn either syntax or diff hygiene into
+an empty proof.
 
 Raw aggregate stderr 포함 사항:
 

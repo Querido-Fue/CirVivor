@@ -3,7 +3,9 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import {
+    R2_FINAL_ACCEPTED_BASE_COMMIT,
     R2_FINAL_AUTOMATED_GATE_COMMANDS,
+    R2_FINAL_FOCUSED_NODE_TEST_FILES,
     R2_FINAL_HARDWARE_FIXTURE_STAGES,
     R2_FINAL_MANUAL_EVIDENCE_REQUIREMENTS
 } from './support/run_r2_final_acceptance.mjs';
@@ -63,6 +65,7 @@ test('Node/churn/WASM/stress/render-golden/diff automated gates는 versioned com
     assert.deepEqual(
         R2_FINAL_AUTOMATED_GATE_COMMANDS.map(({ id }) => id),
         [
+            'focused-node',
             'node',
             'r2-gpu-churn-soak',
             'wasm-flow-field-reproducibility',
@@ -74,7 +77,18 @@ test('Node/churn/WASM/stress/render-golden/diff automated gates는 versioned com
             'diff-hygiene'
         ]
     );
-    const [nodeGate, ...remainingGates] = R2_FINAL_AUTOMATED_GATE_COMMANDS;
+    const [focusedNodeGate, nodeGate, ...remainingGates]
+        = R2_FINAL_AUTOMATED_GATE_COMMANDS;
+    assert.equal(focusedNodeGate.executable, process.execPath);
+    assert.deepEqual(focusedNodeGate.args.slice(0, 2), [
+        '--experimental-vm-modules',
+        '--test'
+    ]);
+    assert.deepEqual(
+        focusedNodeGate.args.slice(2),
+        R2_FINAL_FOCUSED_NODE_TEST_FILES
+    );
+    assert.equal(R2_FINAL_FOCUSED_NODE_TEST_FILES.length, 22);
     assert.equal(nodeGate.executable, process.execPath);
     assert.deepEqual(nodeGate.args.slice(0, 2), [
         '--experimental-vm-modules',
@@ -97,15 +111,54 @@ test('Node/churn/WASM/stress/render-golden/diff automated gates는 versioned com
             'game/test/support/build_collision_contact_wasm.mjs --check',
             '--experimental-vm-modules game/test/stress/enemy_ai_flow_field_stress.mjs',
             'game/test/support/run_nw_render_pipeline_golden.mjs --check',
-            'game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke',
+            'game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke --pipeline-mode webgpu-kawase --simulation-mode cpu',
             'game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke --pipeline-mode webgpu-gaussian --simulation-mode gpu',
-            'diff --check'
+            ''
         ]
     );
+    const diffGate = remainingGates.at(-1);
+    assert.equal(diffGate.kind, 'composite');
+    assert.equal(diffGate.acceptedBaseCommit, R2_FINAL_ACCEPTED_BASE_COMMIT);
+    assert.deepEqual(diffGate.scopes, [
+        'accepted-base-to-head',
+        'index',
+        'worktree',
+        'untracked'
+    ]);
+    assert.equal(diffGate.executable, null);
     assert.ok(R2_FINAL_AUTOMATED_GATE_COMMANDS.every(Object.isFrozen));
     assert.ok(R2_FINAL_AUTOMATED_GATE_COMMANDS.every(
         ({ args }) => Object.isFrozen(args)
     ));
+});
+
+test('clean HEAD에서도 accepted base부터 syntax/diff 증거를 revision-bound로 검사한다', async () => {
+    assert.equal(
+        R2_FINAL_ACCEPTED_BASE_COMMIT,
+        '478fd5c96ca15f92a3a1c84867b165b76184b2ab'
+    );
+    const source = await readFile(new URL(
+        './support/run_r2_final_acceptance.mjs',
+        import.meta.url
+    ), 'utf8');
+    assert.match(
+        source,
+        /'diff', '--relative', '--name-only', '--diff-filter=ACMR',[\s\S]*R2_FINAL_ACCEPTED_BASE_COMMIT, 'HEAD', '--', 'game\/script'/u
+    );
+    assert.match(
+        source,
+        /'diff', '--check', R2_FINAL_ACCEPTED_BASE_COMMIT, 'HEAD'/u
+    );
+    assert.match(source, /'diff', '--cached', '--check'/u);
+    assert.match(source, /'hash-object', '--', file/u);
+    assert.match(source, /'diff', '--no-index', '--check'/u);
+    assert.match(source, /acceptedBaseCommit: R2_FINAL_ACCEPTED_BASE_COMMIT/u);
+    assert.match(source, /headCommit: headCommit\.trim\(\)/u);
+    assert.match(source, /headTree: headTree\.trim\(\)/u);
+    assert.match(
+        source,
+        /R2 final acceptance 실행 중 HEAD revision\/tree가 변경됐습니다/u
+    );
 });
 
 test('R2 churn soak는 O/J/R/Z/H/P actual stage를 versioned bounded cycles로 반복한다', async () => {
@@ -199,6 +252,14 @@ test('final runner는 환경 stage별 실제 capability command를 직렬 실행
     assert.doesNotMatch(source, /npm\.cmd|NPM_EXECUTABLE/u);
     assert.doesNotMatch(source, /synthetic|fake[-_ ]success|mock[-_ ]success/iu);
     assert.match(source, /'diff', '--relative', '--name-only'/u);
+    assert.match(source, /R2_FINAL_ACCEPTED_BASE_COMMIT, 'HEAD'/u);
+    assert.match(source, /'diff', '--cached', '--check'/u);
+    assert.match(source, /'hash-object', '--', file/u);
+    assert.match(source, /'diff', '--no-index', '--check'/u);
+    assert.match(source, /headTree/u);
+    assert.match(source, /assertAcceptanceWorkspaceClean\('start'\)/u);
+    assert.match(source, /assertAcceptanceWorkspaceClean\('finish'\)/u);
+    assert.match(source, /--porcelain=v1', '-z', '--untracked-files=all/u);
     assert.match(source, /child\.once\('close'/u);
 });
 
@@ -207,6 +268,10 @@ test('manual showcase smoke는 자동 PASS가 아닌 환경 가용 시 별도 �
         'manual-showcase-smoke'
     ]);
     assert.equal(R2_FINAL_MANUAL_EVIDENCE_REQUIREMENTS[0].automatedResult, false);
+    assert.equal(
+        R2_FINAL_MANUAL_EVIDENCE_REQUIREMENTS[0].reason,
+        '최종 누적 실행은 비대화형 자동 runner였고, 사람의 interactive showcase 플레이/시각 검증 및 pause/resume 세션을 실행하지 않았다.'
+    );
     assert.equal(
         R2_FINAL_MANUAL_EVIDENCE_REQUIREMENTS[0].requiredWhenEnvironmentAvailable,
         true
