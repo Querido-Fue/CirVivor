@@ -5,6 +5,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
     ENEMY_EFFECT_APPLICATION_POLICY,
+    ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY,
     ENEMY_EFFECT_FAMILY,
     ENEMY_EFFECT_STACK_POLICY,
     ENEMY_EFFECT_TARGET_POLICY_CODE,
@@ -102,6 +103,9 @@ function futureEffectFixture({
         family,
         stackPolicy,
         applicationPolicy,
+        atomicTransformTransferPolicy:
+            ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY
+                .STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT,
         durationTicks: 60,
         healthDeltaFixedPerTick,
         healthDeltaMinimumStackCount: 1,
@@ -150,6 +154,8 @@ test('Boost/P production catalog의 stable ID, GPU code, authored 값을 고정�
         family: PENTA_BOOST_EFFECT_DEFINITION.family,
         stackPolicy: PENTA_BOOST_EFFECT_DEFINITION.stackPolicy,
         applicationPolicy: PENTA_BOOST_EFFECT_DEFINITION.applicationPolicy,
+        atomicTransformTransferPolicy:
+            PENTA_BOOST_EFFECT_DEFINITION.atomicTransformTransferPolicy,
         durationTicks: PENTA_BOOST_EFFECT_DEFINITION.durationTicks,
         healthDeltaFixedPerTick:
             PENTA_BOOST_EFFECT_DEFINITION.healthDeltaFixedPerTick,
@@ -173,6 +179,8 @@ test('Boost/P production catalog의 stable ID, GPU code, authored 값을 고정�
         family: 'boost',
         stackPolicy: 'active-instance-count',
         applicationPolicy: 'append-independent',
+        atomicTransformTransferPolicy:
+            'stable-instance-id-modulo-destination-count',
         durationTicks: 180,
         healthDeltaFixedPerTick: 1,
         healthDeltaMinimumStackCount: 1,
@@ -209,6 +217,10 @@ test('Effect contract는 strict schema, exact catalog reference와 positive cade
         ...PENTA_BOOST_EFFECT_DEFINITION,
         unknownField: true
     }), /알 수 없는 필드/);
+    assert.throws(() => normalizeEnemyEffectDefinition({
+        ...PENTA_BOOST_EFFECT_DEFINITION,
+        atomicTransformTransferPolicy: 'child-zero-only'
+    }), /transfer policy/);
     assert.throws(() => normalizeEnemyEffectEmitterProfile({
         ...PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE,
         initialPulseDelayTicks: 0

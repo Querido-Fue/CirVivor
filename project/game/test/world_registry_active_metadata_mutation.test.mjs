@@ -118,7 +118,7 @@ test('active metadata token is cancelled or invalidated by any intervening regis
 test('active metadata preflight rejects stale identity/revision, duplicates, empty, and accessor data', () => {
     const authority = Object.freeze({});
     const registry = new WorldRegistry({
-        capacity: 1,
+        capacity: 2,
         activeMetadataMutationAuthority: authority
     });
     const handle = activate(registry, { teamId: 'PLAYER' });

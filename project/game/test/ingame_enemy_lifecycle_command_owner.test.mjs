@@ -42,6 +42,12 @@ const {
 const { ENEMY_SPAWN_POLICY } = await loadGameModule(
     'ingame/contract/enemy_profile_contract.js'
 );
+const {
+    GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
+    GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR
+} = await loadGameModule(
+    'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -139,6 +145,22 @@ function createProjectileIntent(overrides = {}) {
         spawnSequence: 7,
         sourceEntityId: 31,
         sourceIncarnation: 4,
+        projectileCapturePolicyId: 'not-capturable',
+        schemaVersion: 1,
+        archetypeId: 'benchmark_round_01',
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: 'benchmark-projectile-producer',
+        originSourceAbilityId: 'benchmark-projectile-ability',
+        originOwnerEntityId: null,
+        originOwnerIncarnation: null,
+        originSourceEntityId: 31,
+        originSourceIncarnation: 4,
+        originTargetEntityId: null,
+        originTargetIncarnation: null,
+        projectileCaptureState: Object.freeze({ role: 2 }),
         position: { x: 1, y: 2 },
         velocity: { x: 30, y: -2 },
         radius: 0.25,
@@ -160,6 +182,80 @@ function createProjectileIntent(overrides = {}) {
         alive: true,
         ...overrides
     };
+}
+
+function createCoreImpactReleaseFixture(eventType) {
+    const backend = createFakeBackend();
+    const metadataAuthority = Object.freeze({});
+    const registry = new WorldRegistry({
+        capacity: 2,
+        activeMetadataMutationAuthority: metadataAuthority
+    });
+    const releasePermit = Object.freeze({});
+    let permitAvailable = true;
+    const owner = new EnemyLifecycleCommandOwner(backend, registry, {
+        projectileCaptureReleaseAuthority: Object.freeze({
+            consumePermit(candidate) {
+                if (!permitAvailable || candidate !== releasePermit) {
+                    return false;
+                }
+                permitAvailable = false;
+                return true;
+            }
+        }),
+        activeMetadataMutationRegistryAuthority: metadataAuthority,
+        projectileCaptureReleaseTransactionPort: Object.freeze({
+            armPreparedProjectileCaptureReleaseBatch() {},
+            commitArmedProjectileCaptureReleaseBatch() {},
+            cancelArmedProjectileCaptureReleaseBatch() {}
+        })
+    });
+    const captorHandle = Object.freeze({ entityId: 7, incarnation: 3 });
+    const projectileHandle = Object.freeze({ entityId: 8, incarnation: 1 });
+    const intent = normalizeGpuSpawnIntent(createProjectileIntent({
+        projectileCapturePolicyId: 'capturable',
+        projectileCaptureState: Object.freeze({ role: 2, policyCode: 1 })
+    }));
+    const expectedMetadata = Object.freeze({
+        ...createGpuRegistryMetadata(intent)
+    });
+    const releaseReason
+        = GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_CORE_IMPACT;
+    return Object.freeze({
+        owner,
+        releasePermit,
+        request: Object.freeze({
+            prepareSourceTick: 10,
+            batchIdFingerprint: 57,
+            records: Object.freeze([Object.freeze({
+                projectileHandle,
+                captorHandle,
+                captureSequence: 6,
+                releaseReason,
+                expectedMetadata,
+                expectedMetadataRevision: 1,
+                towerTargetHandle: null,
+                prepareEvidence: Object.freeze({
+                    prepareFingerprint: 77,
+                    targetSelector:
+                        GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD,
+                    targetHandle: null,
+                    baseReason: releaseReason
+                }),
+                coreImpactReceipt: Object.freeze({
+                    type: 'contact',
+                    eventType,
+                    disposition: 'applied',
+                    sessionGeneration: 1,
+                    deviceGeneration: 2,
+                    authoritativeEpoch: 3,
+                    sourceTick: 10,
+                    ...captorHandle,
+                    other: Object.freeze({ entityId: 99, incarnation: 1 })
+                })
+            })])
+        })
+    });
 }
 
 function createFakeBackend(options = {}) {
@@ -825,6 +921,26 @@ test('generic projectile intent는 route 없이 canonical definition/layer와 ne
     );
 });
 
+test('capture Core receipt는 continuous contact를 허용하고 다른 event type을 거절한다', () => {
+    const continuous = createCoreImpactReleaseFixture(
+        'interaction-continuous'
+    );
+    assert.equal(continuous.owner.requestProjectileCaptureReleaseBatch(
+        continuous.request,
+        11,
+        'ring-projectile-capture-release:1:10:57',
+        continuous.releasePermit
+    ).accepted, true);
+
+    const unsupported = createCoreImpactReleaseFixture('damage-applied');
+    assert.throws(() => unsupported.owner.requestProjectileCaptureReleaseBatch(
+        unsupported.request,
+        11,
+        'ring-projectile-capture-release:1:10:58',
+        unsupported.releasePermit
+    ), /authenticated core-impact receipt/u);
+});
+
 test('generic spawn ingress는 selected-target 전용 metadata/program/handler를 mutation 전에 각각 거부한다', () => {
     const selectedOnlyCases = [
         {
@@ -1029,7 +1145,7 @@ test('일시 unavailable spawn은 예약을 정리하되 command를 보존해 �
     assert.equal(commit.spawned.length, 0);
     assert.equal(commit.rejected.length, 1);
     assert.equal(commit.rejected[0].code, 'unavailable');
-    assert.equal(commit.recoveryRequired, true);
+    assert.equal(commit.recoveryRequired, false);
     assert.equal(owner.getPendingCount(), 1);
     assert.equal(registry.getReservedCount(), 0);
     assert.equal(registry.getActiveCount(), 0);

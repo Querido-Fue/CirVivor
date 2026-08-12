@@ -148,7 +148,8 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
     gen: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN,
     rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM,
     octa: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA,
-    ring: GPU_CIRCLE_BODY_RENDER_SHAPE.RING
+    ring: GPU_CIRCLE_BODY_RENDER_SHAPE.RING,
+    jorang: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -1717,7 +1718,7 @@ export function createGpuPrivateCirclePrimeReturnDestinationIntent(options) {
                 'J return commandGeneration'
             )
         }),
-        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
     });
 }
 

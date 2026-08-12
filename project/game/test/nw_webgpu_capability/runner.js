@@ -12,6 +12,7 @@ import {
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     packGpuCircleGameplayMeta,
     unpackGpuCircleInteractionMeta,
     unpackGpuCircleGameplayMeta
@@ -25,6 +26,10 @@ import {
 import {
     PROJECTILE_TARGET_POLICY_ID
 } from './production/script/module/ingame/contract/projectile_target_policy_contract.js';
+import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} from './production/script/module/ingame/contract/projectile_capture_contract.js';
 import {
     PLAYER_ACTION_TYPES
 } from './production/script/module/ingame/contract/player_controllable_contract.js';
@@ -65,6 +70,9 @@ import {
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
+import {
+    ENEMY_NORMALIZED_RENDER_GEOMETRY
+} from './production/script/data/object/enemy/enemy_shape_geometry_data.js';
 import {
     ARCHER_ENEMY_DATA
 } from './production/script/data/object/enemy/archer_enemy_data.js';
@@ -137,8 +145,8 @@ import {
     TowerCoreCameraFollowTarget
 } from './production/script/module/ingame/object/tower_core_camera_follow_target.js';
 import {
-    createGpuSimulationEndpoint,
-    createGpuEnemySimulationEndpoint,
+    createGpuSimulationEndpoint as createProductionGpuSimulationEndpoint,
+    createGpuEnemySimulationEndpoint as createProductionGpuEnemySimulationEndpoint,
     createGpuProjectileSpawnIntent,
     GPU_PROJECTILE_SPAWN_MODE,
     GpuProjectileSpawnAdapter
@@ -161,6 +169,43 @@ function assert(condition, message) {
     if (!condition) {
         throw new Error(message);
     }
+}
+
+function installProductionCompletionPublicationOrder(endpoint) {
+    const commitGenericEvents = endpoint
+        .commitCompletedEventsAtFixedBoundary.bind(endpoint);
+    endpoint.commitCompletedEventsAtFixedBoundary = (targetFixedTick) => {
+        const capture = endpoint
+            .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+                targetFixedTick
+            );
+        assert(
+            capture.pending !== true && capture.protocolFailure == null,
+            `T${targetFixedTick} capture completion publication 실패: ${JSON.stringify(capture)}`
+        );
+        const release = endpoint
+            .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+                targetFixedTick
+            );
+        assert(
+            release.pending !== true && release.protocolFailure == null,
+            `T${targetFixedTick} capture release publication 실패: ${JSON.stringify(release)}`
+        );
+        return commitGenericEvents(targetFixedTick);
+    };
+    return endpoint;
+}
+
+function createGpuSimulationEndpoint(...args) {
+    return installProductionCompletionPublicationOrder(
+        createProductionGpuSimulationEndpoint(...args)
+    );
+}
+
+function createGpuEnemySimulationEndpoint(...args) {
+    return installProductionCompletionPublicationOrder(
+        createProductionGpuEnemySimulationEndpoint(...args)
+    );
 }
 
 function assertNear(actual, expected, tolerance, message) {
@@ -1843,32 +1888,36 @@ async function runProductionEnemyShapePixelSmoke(device) {
                 `arrow velocity 방향 silhouette가 반대입니다: forward=${arrowForwardAlpha}, backward=${arrowBackwardAlpha}`
             );
 
-            const generatorCenter = centers[5];
-            const generatorRingOffset = Object.freeze({ x: 5, y: 0 });
-            const generatorTerminalOffset = Object.freeze({ x: -7, y: -7 });
-            const generatorTerminalGapOffset = Object.freeze({ x: -7, y: -5 });
-            const generatorCenterAlpha = readAlpha(
-                Math.floor(generatorCenter.x),
-                Math.floor(generatorCenter.y)
+            const jorangCenter = centers[5];
+            const toJorangPixelOffset = ({ x, y }) => Object.freeze({
+                x: Math.round(x * radiusPixels),
+                y: Math.round(y * radiusPixels)
+            });
+            const jorangBoxes = ENEMY_NORMALIZED_RENDER_GEOMETRY.jorang.boxes;
+            const jorangStrokeOffsets = Object.freeze(
+                jorangBoxes.map(({ center }) => toJorangPixelOffset(center))
             );
-            const generatorRingAlpha = readAlpha(
-                Math.floor(generatorCenter.x) + generatorRingOffset.x,
-                Math.floor(generatorCenter.y) + generatorRingOffset.y
+            const jorangGapOffsets = Object.freeze([
+                Object.freeze({ x: 0, y: 0 }),
+                toJorangPixelOffset({
+                    x: jorangBoxes[3].center.x,
+                    y: 0
+                })
+            ]);
+            const readJorangAlpha = ({ x, y }) => readAlpha(
+                Math.floor(jorangCenter.x) + x,
+                Math.floor(jorangCenter.y) + y
             );
-            const generatorTerminalAlpha = readAlpha(
-                Math.floor(generatorCenter.x) + generatorTerminalOffset.x,
-                Math.floor(generatorCenter.y) + generatorTerminalOffset.y
+            const jorangStrokeAlphas = Object.freeze(
+                jorangStrokeOffsets.map(readJorangAlpha)
             );
-            const generatorTerminalGapAlpha = readAlpha(
-                Math.floor(generatorCenter.x) + generatorTerminalGapOffset.x,
-                Math.floor(generatorCenter.y) + generatorTerminalGapOffset.y
+            const jorangGapAlphas = Object.freeze(
+                jorangGapOffsets.map(readJorangAlpha)
             );
             assert(
-                generatorCenterAlpha < 16
-                    && generatorRingAlpha >= 128
-                    && generatorTerminalAlpha >= 128
-                    && generatorTerminalGapAlpha < 16,
-                `generator square hole/ring/terminal topology가 잘못됐습니다: center=${generatorCenterAlpha}, ring=${generatorRingAlpha}, terminal=${generatorTerminalAlpha}, terminalGap=${generatorTerminalGapAlpha}`
+                jorangStrokeAlphas.every((alpha) => alpha >= 192)
+                    && jorangGapAlphas.every((alpha) => alpha < 16),
+                `jorang four-stroke/gap topology가 잘못됐습니다: strokes=${jorangStrokeAlphas.join(',')}, gaps=${jorangGapAlphas.join(',')}`
             );
             assert(drawMarks === 1, `production enemy shape draw mark 불일치: ${drawMarks}`);
 
@@ -1882,14 +1931,11 @@ async function runProductionEnemyShapePixelSmoke(device) {
                     forwardAlpha: arrowForwardAlpha,
                     backwardAlpha: arrowBackwardAlpha
                 },
-                generator: {
-                    ringOffset: generatorRingOffset,
-                    terminalOffset: generatorTerminalOffset,
-                    terminalGapOffset: generatorTerminalGapOffset,
-                    centerAlpha: generatorCenterAlpha,
-                    ringAlpha: generatorRingAlpha,
-                    terminalAlpha: generatorTerminalAlpha,
-                    terminalGapAlpha: generatorTerminalGapAlpha
+                jorang: {
+                    strokeOffsets: jorangStrokeOffsets,
+                    gapOffsets: jorangGapOffsets,
+                    strokeAlphas: jorangStrokeAlphas,
+                    gapAlphas: jorangGapAlphas
                 }
             };
         } finally {
@@ -2514,6 +2560,48 @@ async function runProductionEndpointDeathLifecycleSmoke(device) {
             `endpoint GPU gameplay watermark 불일치: ${JSON.stringify(completedGpuStatus.events)}`
         );
 
+        const captureRuntimeStatus = endpoint
+            .getProjectileCaptureRuntimeStatus();
+        const completedCapturePrograms = endpoint
+            .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+                deathCommitFixedTick
+            );
+        assert(
+            completedCapturePrograms.pending === false
+                && completedCapturePrograms.protocolFailure === null
+                && completedCapturePrograms.sessionGeneration
+                    === endpoint.getStatus().sessionGeneration
+                && completedCapturePrograms.deviceGeneration
+                    === captureRuntimeStatus.deviceGeneration
+                && completedCapturePrograms.authoritativeEpoch
+                    === captureRuntimeStatus.authoritativeEpoch
+                && completedCapturePrograms.sourceTick === sourceTick
+                && completedCapturePrograms.completedThroughTick === sourceTick
+                && completedCapturePrograms.captures.length === 0
+                && completedCapturePrograms.releasePreparations.length === 0
+                && completedCapturePrograms.cleanups.length === 0,
+            `endpoint capture completion tuple 불일치: ${JSON.stringify(completedCapturePrograms)}`
+        );
+        const completedCaptureReleasePrograms = endpoint
+            .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+                deathCommitFixedTick
+            );
+        assert(
+            completedCaptureReleasePrograms.pending === false
+                && completedCaptureReleasePrograms.protocolFailure === null
+                && completedCaptureReleasePrograms.sessionGeneration
+                    === completedCapturePrograms.sessionGeneration
+                && completedCaptureReleasePrograms.deviceGeneration
+                    === completedCapturePrograms.deviceGeneration
+                && completedCaptureReleasePrograms.authoritativeEpoch
+                    === completedCapturePrograms.authoritativeEpoch
+                && completedCaptureReleasePrograms.sourceTick
+                    === completedCaptureReleasePrograms.completedThroughTick
+                && completedCaptureReleasePrograms.publicationFixedTick
+                    === completedCaptureReleasePrograms.sourceTick
+                && completedCaptureReleasePrograms.releaseCompletions.length === 0,
+            `endpoint capture release completion tuple 불일치: ${JSON.stringify(completedCaptureReleasePrograms)}`
+        );
         const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(
             deathCommitFixedTick
         );
@@ -2585,6 +2673,8 @@ async function runProductionEndpointDeathLifecycleSmoke(device) {
                 projectilePredictedX
             },
             aliveBodyCountAfterTick: aliveBodies.length,
+            completedCapturePrograms,
+            completedCaptureReleasePrograms,
             completedEvents,
             scheduled: {
                 activeCount: scheduledStatus.activeCount,
@@ -3769,9 +3859,31 @@ function createPhase3Body(overrides = {}) {
 }
 
 function createPhase3SpawnIntent(definitionId, overrides = {}) {
+    const kindId = overrides.kindId ?? 'projectile';
     return Object.freeze({
-        kindId: 'projectile',
+        kindId,
         definitionId,
+        ...(kindId === 'projectile' ? {
+            projectileCapturePolicyId:
+                PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+            schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+            archetypeId: definitionId,
+            wordTagMask: 0,
+            modifierSetId: null,
+            sourceExecutionId: null,
+            projectileGeneration: 1,
+            originProducerId: null,
+            originSourceAbilityId: null,
+            originOwnerEntityId: null,
+            originOwnerIncarnation: null,
+            originSourceEntityId: null,
+            originSourceIncarnation: null,
+            originTargetEntityId: null,
+            originTargetIncarnation: null,
+            projectileCaptureState: Object.freeze({
+                role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+            })
+        } : null),
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         ...createPhase3Body(overrides)
     });
@@ -3847,6 +3959,37 @@ async function waitForPhase3ObservedPose(endpoint, sourceTick, label) {
         `${label} observed tick/identity 불일치: ${JSON.stringify(observed)}`
     );
     return observed;
+}
+
+function commitPhase3CompletionBoundary(endpoint, targetFixedTick, label) {
+    const sourceTick = targetFixedTick - 1;
+    const capture = endpoint
+        .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(
+        capture.pending === false
+            && capture.protocolFailure === null
+            && capture.sourceTick === sourceTick
+            && capture.completedThroughTick === sourceTick,
+        `${label} capture completion 실패: ${JSON.stringify(capture)}`
+    );
+    const release = endpoint
+        .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(
+        release.pending === false && release.protocolFailure === null,
+        `${label} capture release completion 실패: ${JSON.stringify(release)}`
+    );
+    const completed = endpoint.commitCompletedEventsAtFixedBoundary(
+        targetFixedTick
+    );
+    assert(
+        completed.protocolFailure === null,
+        `${label} generic completion 실패: ${JSON.stringify(completed)}`
+    );
+    return Object.freeze({ capture, release, completed });
 }
 
 async function deviceQueueDone(simulation) {
@@ -3942,6 +4085,7 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
             1,
             'Phase 3 initial'
         );
+        commitPhase3CompletionBoundary(endpoint, 2, 'Phase 3 initial');
         let primaryOracle = Object.freeze({
             position: Object.freeze({ ...initialPose.position }),
             velocity: Object.freeze({ ...initialPose.velocity })
@@ -3993,6 +4137,11 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
                 position: Object.freeze({ ...observed.position }),
                 velocity: Object.freeze({ ...observed.velocity })
             }));
+            commitPhase3CompletionBoundary(
+                endpoint,
+                fixture.tick + 1,
+                `Phase 3 ${fixture.label}`
+            );
         }
 
         assert(endpoint.configureTrackedBody(sleepHandle).accepted, 'sleep tracking 구성 실패');
@@ -4008,6 +4157,7 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
         const sleepPose = await waitForPhase3ObservedPose(endpoint, 7, 'Phase 3 sleep');
         assertNear(sleepPose.velocity.x, 0, 0.000001, 'sleep threshold velocity.x');
         assertNear(sleepPose.velocity.y, 0, 0.000001, 'sleep threshold velocity.y');
+        commitPhase3CompletionBoundary(endpoint, 8, 'Phase 3 sleep');
 
         assert(endpoint.configureTrackedBody(maxClampHandle).accepted, 'max clamp tracking 구성 실패');
         const maxReceipt = endpoint.requestBodyControl({
@@ -4034,6 +4184,7 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
             0.0005,
             'uncommanded ballistic ticks + controlled clamp position'
         );
+        commitPhase3CompletionBoundary(endpoint, 9, 'Phase 3 max clamp');
 
         primaryOracle = Object.freeze({
             position: Object.freeze({
@@ -4067,6 +4218,11 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
             sourceTickStartPose,
             primaryOracle,
             'source tick-start oracle'
+        );
+        commitPhase3CompletionBoundary(
+            endpoint,
+            10,
+            'Phase 3 source preflight'
         );
 
         const positionOffset = Object.freeze({ x: 0.75, y: -0.5 });
@@ -4110,9 +4266,11 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
                 && status.fixedPrimitives.spawnProgram.queuedBatches >= 1,
             'Phase 3 SpawnProgram completion'
         );
-        const completed = endpoint.commitCompletedEventsAtFixedBoundary(11);
-        assert(completed.protocolFailure === null,
-            `source-relative completion protocol 실패: ${JSON.stringify(completed)}`);
+        const { completed } = commitPhase3CompletionBoundary(
+            endpoint,
+            11,
+            'Phase 3 source-relative'
+        );
         assert(endpoint.getRegistry().has(destinationHandle),
             'resolved destination이 registry에서 활성화되지 않았습니다.');
         const bodiesPromise = simulation.readbackBodies();
@@ -4156,8 +4314,13 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
 
         assert(endpoint.configureTrackedBody(primaryHandle).accepted,
             'pose ring saturation tracking 구성 실패');
+        const poseRingBurstPolicy =
+            'intentional-no-settle-or-publication-backpressure-window';
         const droppedBefore = simulation.getStatus()
             .fixedPrimitives.trackedPose.droppedSamples;
+        // 이 구간은 production owner cadence가 아니라 bounded tracked-pose ring의
+        // backpressure를 만드는 명시적 failure-domain입니다. 각 submit 사이에
+        // settle/publication을 넣으면 saturation acceptance 자체가 사라집니다.
         for (let tick = 11; tick <= 16; tick++) {
             const receipt = endpoint.requestBodyControl({
                 handle: primaryHandle,
@@ -4249,6 +4412,7 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
                 destinationVelocity: { ...destination.velocity }
             },
             trackedPose: {
+                burstPolicy: poseRingBurstPolicy,
                 ringSlotCount: trackedTelemetry.ringSlotCount,
                 recordByteSize: trackedTelemetry.recordByteSize,
                 maximumBytesPerTick: trackedTelemetry.maximumBytesPerTick,
@@ -6620,7 +6784,7 @@ async function runProductionTargetEntityAimHardwareSmoke(device) {
     });
 }
 
-async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) {
+async function runProductionTargetEntityDeathBeforeRequestHardwareSmoke(device) {
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPhase3PlatformPort(device)
@@ -6631,13 +6795,13 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
         spawnProgramCapacity: 1
     });
     const adapter = new GpuProjectileSpawnAdapter(endpoint, {
-        commandNamespace: 'nw-target-entity-death-before-resolve'
+        commandNamespace: 'nw-target-entity-death-before-request'
     });
     const fixedDelta = 1 / 60;
     const sourcePosition = Object.freeze({ x: 2, y: 2 });
     const targetPosition = Object.freeze({ x: 6, y: 2 });
     const projectileDefinition = createTargetEntityHardwareProjectileDefinition(
-        'nw_target_entity_death_before_resolve',
+        'nw_target_entity_death_before_request',
         { penetration: 2, damage: 1, damageSelf: 1 }
     );
 
@@ -6699,6 +6863,44 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
             `Target-invalid fixture는 GPU dead/host exact-live race가 아닙니다: ${JSON.stringify({ bodiesAfterDeath, targetHandle })}`
         );
 
+        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        const targetDeathEvents = completedEvents.deathEvents.filter((event) => (
+            event.entityId === targetHandle.entityId
+                && event.incarnation === targetHandle.incarnation
+        ));
+        assert(
+            completedEvents.protocolFailure === null
+                && completedEvents.batchCount === 1
+                && targetDeathEvents.length === 1
+                && targetDeathEvents[0].sourceTick === 1
+                && targetDeathEvents[0].disposition === 'despawn-requested',
+            `Target death coherent publication 불일치: ${JSON.stringify(completedEvents)}`
+        );
+        const cleanupCommit = endpoint.commitAtFixedBoundary(2);
+        assert(
+            cleanupCommit.despawned.length === 1
+                && cleanupCommit.despawned[0].handle.entityId
+                    === targetHandle.entityId
+                && cleanupCommit.despawned[0].handle.incarnation
+                    === targetHandle.incarnation
+                && cleanupCommit.fixedCommands.rejected.length === 0
+                && !cleanupCommit.recoveryRequired,
+            `Target death coherent cleanup 불일치: ${JSON.stringify(cleanupCommit)}`
+        );
+        assert(
+            endpoint.fixedUpdate(fixedDelta, 2),
+            'Target death coherent cleanup fixed submit 실패'
+        );
+        await settlePhase5Endpoint(
+            endpoint,
+            'Target death coherent cleanup completion'
+        );
+        const postCleanupEvents = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        assert(
+            postCleanupEvents.protocolFailure === null,
+            `Target death post-cleanup publication 불일치: ${JSON.stringify(postCleanupEvents)}`
+        );
+
         const shotRequest = adapter.requestProjectile({
             mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
             definition: projectileDefinition,
@@ -6712,7 +6914,7 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
                 PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
             producerId: 'nw-target-invalid-producer',
             sourceAbilityId: 'target-invalid-shot',
-            targetFixedTick: 2,
+            targetFixedTick: 3,
             spawnSequence: 0,
             commandId: 'target-invalid:shot'
         });
@@ -6720,30 +6922,28 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
             handle: sourceHandle,
             moveIntentX: 1,
             moveIntentY: 0
-        }, 2, 'target-invalid:source-control');
+        }, 3, 'target-invalid:source-control');
         assert(
-            shotRequest.accepted && controlRequest.accepted,
-            `Target-invalid shot/control request 실패: ${JSON.stringify({ shotRequest, controlRequest })}`
+            !shotRequest.accepted
+                && shotRequest.reason === 'stale-target'
+                && controlRequest.accepted,
+            `Target death stale-target/control request 불일치: ${JSON.stringify({ shotRequest, controlRequest })}`
         );
-        const targetCommit = endpoint.commitAtFixedBoundary(2);
-        const destinationHandle = targetCommit.fixedCommands
-            .sourceRelativeSpawns[0]?.handle;
+        const targetCommit = endpoint.commitAtFixedBoundary(3);
         assert(
             targetCommit.fixedCommands.controls.length === 1
-                && targetCommit.fixedCommands.sourceRelativeSpawns.length === 1
+                && targetCommit.fixedCommands.sourceRelativeSpawns.length === 0
                 && targetCommit.fixedCommands.rejected.length === 0
-                && destinationHandle
-                && endpoint.getStatus().reservedCount === 1,
-            `Target-invalid pending reservation/commit 불일치: ${JSON.stringify(targetCommit)}`
+                && endpoint.getStatus().reservedCount === 0,
+            `Target death rejected destination/control commit 불일치: ${JSON.stringify(targetCommit)}`
         );
         assert(
-            endpoint.fixedUpdate(fixedDelta, 2),
-            'Target-invalid resolve/control fixed submit 실패'
+            endpoint.fixedUpdate(fixedDelta, 3),
+            'Target death survivor control fixed submit 실패'
         );
         await settlePhase5Endpoint(
             endpoint,
-            'Target-invalid SpawnProgram completion',
-            { spawnProgram: true }
+            'Target death survivor control completion'
         );
         const bodiesAfterResolve = await readPhase5Bodies(endpoint);
         const sourceAfterControl = findPhase5Body(
@@ -6755,74 +6955,31 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
             sourceAfterControl.position.x > sourceBeforeControl.position.x,
             `Target-invalid와 같은 submit의 Tower control이 진행되지 않았습니다: ${JSON.stringify({ sourceBeforeControl, sourceAfterControl })}`
         );
-        assert(
-            !bodiesAfterResolve.some((body) => (
-                body.handle?.entityId === destinationHandle.entityId
-                    && body.handle?.incarnation === destinationHandle.incarnation
-            )),
-            `TARGET_INVALID destination이 GPU ALIVE로 활성화됐습니다: ${JSON.stringify(bodiesAfterResolve)}`
-        );
-
-        const completedEvents = endpoint.commitCompletedEventsAtFixedBoundary(3);
+        endpoint.commitCompletedEventsAtFixedBoundary(4);
         const completionStatus = endpoint.getStatus();
-        const completion = completionStatus.fixedCommands.lastCompletionResult;
-        assert(
-            completion.protocolFailure === null
-                && completion.completed.length === 1
-                && completion.completed[0].commandId === 'target-invalid:shot'
-                && completion.completed[0].handle.entityId
-                    === destinationHandle.entityId
-                && completion.completed[0].handle.incarnation
-                    === destinationHandle.incarnation
-                && completion.completed[0].outcome === 'target-invalid'
-                && completionStatus.fixedCommands.telemetry.completedTargetInvalid >= 1
-                && !endpoint.getRegistry().has(destinationHandle)
-                && endpoint.getRegistry().copyEntityView(destinationHandle, {}) === null
-                && !endpoint.hasBody(destinationHandle)
-                && completionStatus.reservedCount === 0
-                && completionStatus.pendingSourceRelativeDestinationCount === 0
-                && !completionStatus.recoveryRequired,
-            `Target-invalid exact completion/cleanup 불일치: ${JSON.stringify({ completion, completionStatus })}`
-        );
-        const targetDeathEvents = completedEvents.deathEvents.filter((event) => (
-            event.entityId === targetHandle.entityId
-                && event.incarnation === targetHandle.incarnation
-        ));
-        assert(
-            completedEvents.protocolFailure === null
-                && targetDeathEvents.length === 1
-                && targetDeathEvents[0].sourceTick === 1
-                && targetDeathEvents[0].disposition === 'despawn-requested',
-            `Target-invalid target death event 불일치: ${JSON.stringify(completedEvents)}`
-        );
-        const cleanupCommit = endpoint.commitAtFixedBoundary(3);
-        const cleanupStatus = endpoint.getStatus();
+        const cleanupStatus = completionStatus;
         const gpuCleanupStatus = endpoint.getBackend().simulation.getStatus();
         assert(
-            cleanupCommit.despawned.length === 1
-                && cleanupCommit.despawned[0].handle.entityId
-                    === targetHandle.entityId
-                && cleanupCommit.despawned[0].handle.incarnation
-                    === targetHandle.incarnation
-                && cleanupCommit.fixedCommands.completed.length === 1
-                && cleanupCommit.fixedCommands.completed[0].outcome
-                    === 'target-invalid'
+            !endpoint.getRegistry().has(targetHandle)
+                && !endpoint.hasBody(targetHandle)
                 && cleanupStatus.activeCount === 1
                 && cleanupStatus.reservedCount === 0
                 && cleanupStatus.pendingCommandCount === 0
+                && cleanupStatus.pendingSourceRelativeDestinationCount === 0
                 && gpuCleanupStatus.pendingBodyCount === 0
                 && !cleanupStatus.recoveryRequired,
-            `Target-invalid next-boundary cleanup 불일치: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus })}`
+            `Target death coherent terminal cleanup 불일치: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus })}`
         );
         return Object.freeze({
+            scenario: 'target-death-published-before-target-entity-request',
+            publicationPolicy: 'capture-release-generic-per-boundary',
             sourceHandle,
             targetHandle,
-            destinationHandle,
             targetDeathSourceTick: targetDeathEvents[0].sourceTick,
-            completion: Object.freeze({
-                commandId: completion.completed[0].commandId,
-                handle: completion.completed[0].handle,
-                outcome: completion.completed[0].outcome
+            requestRejection: Object.freeze({
+                accepted: shotRequest.accepted,
+                reason: shotRequest.reason,
+                destinationReserved: false
             }),
             towerControl: Object.freeze({
                 acceptedCount: targetCommit.fixedCommands.controls.length,
@@ -6839,8 +6996,6 @@ async function runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device) 
                 pendingBodyCount: gpuCleanupStatus.pendingBodyCount,
                 recoveryRequired: cleanupStatus.recoveryRequired
             }),
-            completedTargetInvalid:
-                completionStatus.fixedCommands.telemetry.completedTargetInvalid,
             fixedSubmitContinued: true
         });
     } finally {
@@ -7011,19 +7166,20 @@ async function runProductionTargetEntitySlotAbaHardwareSmoke(device) {
 }
 
 async function runProductionTargetEntityInvalidHardwareSmoke(device) {
-    const deathBeforeResolve =
-        await runProductionTargetEntityDeathBeforeResolveHardwareSmoke(device);
+    const coherentDeathRejection =
+        await runProductionTargetEntityDeathBeforeRequestHardwareSmoke(device);
     const slotAba = await runProductionTargetEntitySlotAbaHardwareSmoke(device);
     assert(
-        deathBeforeResolve.completion.outcome === 'target-invalid'
-            && deathBeforeResolve.cleanup.recoveryRequired === false
+        coherentDeathRejection.requestRejection.reason === 'stale-target'
+            && coherentDeathRejection.requestRejection.destinationReserved === false
+            && coherentDeathRejection.cleanup.recoveryRequired === false
             && slotAba.outcome.reason === 'target-invalid'
             && slotAba.destinationActivated === false
             && slotAba.replacementAlive
             && slotAba.recoveryRequired === false,
-        `Target-invalid/ABA actual gate 실패: ${JSON.stringify({ deathBeforeResolve, slotAba })}`
+        `Target-invalid/ABA actual gate 실패: ${JSON.stringify({ coherentDeathRejection, slotAba })}`
     );
-    return Object.freeze({ deathBeforeResolve, slotAba });
+    return Object.freeze({ coherentDeathRejection, slotAba });
 }
 
 async function runProductionPhase5TeamDamageMatrixHardwareSmoke(device) {
@@ -10091,6 +10247,17 @@ async function runRhomPrioritySelectionHardwareSmoke(device) {
         );
         assert(endpoint.fixedUpdate(fixedDelta, 4), 'Rhom stale Tower cleanup submit 실패');
         await settlePhase5Endpoint(endpoint, 'Rhom stale Tower cleanup');
+        const towerCleanupDrain = endpoint.commitCompletedEventsAtFixedBoundary(5);
+        assert(
+            towerCleanupDrain.protocolFailure === null,
+            `Rhom stale Tower cleanup event protocol 실패: ${JSON.stringify(towerCleanupDrain)}`
+        );
+        const towerCleanupEventObservation = invalidCoreDirector
+            .observeCompletedEvents(towerCleanupDrain);
+        assert(
+            !towerCleanupEventObservation.recoveryRequired,
+            `Rhom stale Tower cleanup event 관찰 실패: ${JSON.stringify(towerCleanupEventObservation)}`
+        );
         const staleRejected = endpoint.requestPriorityTargetControl(
             createControl(handlesByScenario.get('tower'), towerHandle, 4),
             5,
@@ -10149,6 +10316,17 @@ async function runRhomPrioritySelectionHardwareSmoke(device) {
         );
         assert(endpoint.fixedUpdate(fixedDelta, 6), 'Rhom replacement Tower submit 실패');
         await settlePhase5Endpoint(endpoint, 'Rhom replacement Tower materialization');
+        const replacementDrain = endpoint.commitCompletedEventsAtFixedBoundary(7);
+        assert(
+            replacementDrain.protocolFailure === null,
+            `Rhom replacement Tower event protocol 실패: ${JSON.stringify(replacementDrain)}`
+        );
+        const replacementEventObservation = invalidCoreDirector
+            .observeCompletedEvents(replacementDrain);
+        assert(
+            !replacementEventObservation.recoveryRequired,
+            `Rhom replacement Tower event 관찰 실패: ${JSON.stringify(replacementEventObservation)}`
+        );
         stageScenario('tower', 7, replacementTowerHandle, 5);
         const reacquireCommit = endpoint.commitAtFixedBoundary(7);
         const reacquireDirectorObservation = invalidCoreDirector
@@ -10451,10 +10629,14 @@ async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
             `Rhom initial cooldown tick이 유효하지 않습니다: ${JSON.stringify(initialSource)}`
         );
 
-        const beforeFirst = await advanceBoundary(
-            firstEligibleTick - 1,
-            'Rhom first cooldown 직전'
-        );
+        let beforeFirst = null;
+        for (let tick = 2; tick < firstEligibleTick; tick++) {
+            beforeFirst = await advanceBoundary(
+                tick,
+                `Rhom first cooldown cadence tick ${tick}`
+            );
+        }
+        assert(beforeFirst, 'Rhom first cooldown cadence evidence가 없습니다.');
         assert(
             beforeFirst.staged.acceptedCount === 0
                 && beforeFirst.staged.controlAcceptedCount === 1,
@@ -10521,10 +10703,22 @@ async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
                 === firstEligibleTick + BASIC_RHOM_ATTACK_DATA.intervalTicks,
             `Rhom repeat cooldown authority 불일치: ${JSON.stringify({ firstEligibleTick, secondEligibleTick, sourceAfterFirst })}`
         );
-        const beforeSecond = await advanceBoundary(
-            secondEligibleTick - 1,
-            'Rhom repeat cooldown 직전'
-        );
+        let beforeSecond = null;
+        for (
+            let tick = firstImpact.tick + 1;
+            tick < secondEligibleTick;
+            tick++
+        ) {
+            beforeSecond = await advanceBoundary(
+                tick,
+                `Rhom repeat cooldown cadence tick ${tick}`
+            );
+            assert(
+                beforeSecond.staged.acceptedCount === 0,
+                `Rhom repeat cooldown cadence에서 shot이 발생했습니다: ${JSON.stringify(beforeSecond.staged)}`
+            );
+        }
+        assert(beforeSecond, 'Rhom repeat cooldown cadence evidence가 없습니다.');
         assert(
             beforeSecond.staged.acceptedCount === 0,
             `Rhom repeat cooldown 직전 shot이 발생했습니다: ${JSON.stringify(beforeSecond.staged)}`
@@ -10569,6 +10763,19 @@ async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
                 && !endpoint.getRegistry().has(secondProjectileHandle)
                 && !endpoint.hasBody(secondProjectileHandle),
             `Rhom terminal final cleanup commit/submit 불일치: ${JSON.stringify({ finalLifecycleCommitCount, finalCleanupSubmitCount, secondProjectileHandle })}`
+        );
+        const terminalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            secondImpact.tick
+        );
+        assert(
+            terminalCompleted.protocolFailure === null,
+            `Rhom terminal completion publication 불일치: ${JSON.stringify(terminalCompleted)}`
+        );
+        const terminalObserved = observeCompleted(terminalCompleted);
+        assert(
+            !terminalObserved.hostile.recoveryRequired
+                && !terminalObserved.impact.recoveryRequired,
+            `Rhom terminal completion observation 실패: ${JSON.stringify(terminalObserved)}`
         );
         const rejectedAfterTerminal = endpoint.requestSpawn(
             createRhomIntent(),
@@ -10911,6 +11118,12 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             initialTower.combatState?.peakFinalDamageFixedPoint === 0
                 && initialTower.combatState?.expiresAtFixedTick === 0,
             `Maximum Damage Window 초기 상태가 0이 아닙니다: ${JSON.stringify(initialTower.combatState)}`
+        );
+        const initialCompleted = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        completedBatches.push(initialCompleted);
+        assert(
+            initialCompleted.protocolFailure === null,
+            `Maximum Damage Window 초기 event protocol 실패: ${JSON.stringify(initialCompleted)}`
         );
 
         const tickTwoRequests = [
@@ -11595,6 +11808,11 @@ async function runProductionCoreImpactDefeatHardwareSmoke(device) {
             `Core impact defeat/ingress/cleanup contract 불일치: ${JSON.stringify({ runFailure, ingressClosed, rejectedSpawn, cleanupStage, cleanupCommit, cleanupObservation })}`
         );
         await runFixed(2, 'Core impact terminal cleanup 완료');
+        const terminalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(2);
+        assert(
+            terminalCompleted.protocolFailure === null,
+            `Core impact terminal completion publication 실패: ${JSON.stringify(terminalCompleted)}`
+        );
         const bodiesAfterCleanup = await readPhase5Bodies(endpoint);
         const coreAfterCleanup = findPhase5Body(
             bodiesAfterCleanup,
@@ -13500,24 +13718,32 @@ async function runProductionTargetEntityFailureDomainHardwareSmoke(
         await runProductionTargetEntityRegistryPressureHardwareSmoke(device);
     const staleTarget =
         await runProductionTargetEntityStaleTargetHardwareSmoke(device);
-    const gpuTargetInvalid = targetInvalidEvidence.deathBeforeResolve;
+    const coherentDeathRejection = targetInvalidEvidence.coherentDeathRejection;
+    const gpuTargetInvalid = targetInvalidEvidence.slotAba;
     const cases = [
         spawnProgramCapacity,
         bodyCapacity,
         resultRing,
         registryCapacity,
         staleTarget,
-        gpuTargetInvalid.cleanup
+        coherentDeathRejection.cleanup,
+        gpuTargetInvalid
     ];
     assert(
-        gpuTargetInvalid.towerControl.acceptedCount === 1
-            && gpuTargetInvalid.fixedSubmitContinued
-            && gpuTargetInvalid.cleanup.reservedCount === 0
-            && gpuTargetInvalid.cleanup.pendingDestinationCount === 0
-            && gpuTargetInvalid.cleanup.pendingBodyCount === 0
-            && gpuTargetInvalid.cleanup.recoveryRequired === false
+        coherentDeathRejection.requestRejection.reason === 'stale-target'
+            && coherentDeathRejection.towerControl.acceptedCount === 1
+            && coherentDeathRejection.fixedSubmitContinued
+            && coherentDeathRejection.cleanup.reservedCount === 0
+            && coherentDeathRejection.cleanup.pendingDestinationCount === 0
+            && coherentDeathRejection.cleanup.pendingBodyCount === 0
+            && coherentDeathRejection.cleanup.recoveryRequired === false
+            && gpuTargetInvalid.outcome.reason === 'target-invalid'
+            && gpuTargetInvalid.destinationActivated === false
+            && gpuTargetInvalid.replacementAlive === true
+            && gpuTargetInvalid.pendingBodyCount === 0
+            && gpuTargetInvalid.recoveryRequired === false
             && cases.every(({ recoveryRequired }) => recoveryRequired === false),
-        `Target-entity failure domain recovery/control 불일치: ${JSON.stringify({ cases, gpuTargetInvalid })}`
+        `Target-entity failure domain recovery/control 불일치: ${JSON.stringify({ cases, coherentDeathRejection, gpuTargetInvalid })}`
     );
     return Object.freeze({
         spawnProgramCapacity,
@@ -13525,15 +13751,25 @@ async function runProductionTargetEntityFailureDomainHardwareSmoke(
         resultRing,
         registryCapacity,
         staleTarget,
-        gpuTargetInvalid: Object.freeze({
-            outcome: gpuTargetInvalid.completion.outcome,
-            controlAcceptedCount: gpuTargetInvalid.towerControl.acceptedCount,
-            fixedSubmitContinued: gpuTargetInvalid.fixedSubmitContinued,
-            reservedCount: gpuTargetInvalid.cleanup.reservedCount,
+        coherentDeathRejection: Object.freeze({
+            requestRejectionReason:
+                coherentDeathRejection.requestRejection.reason,
+            controlAcceptedCount:
+                coherentDeathRejection.towerControl.acceptedCount,
+            fixedSubmitContinued:
+                coherentDeathRejection.fixedSubmitContinued,
+            reservedCount: coherentDeathRejection.cleanup.reservedCount,
             pendingDestinationCount:
-                gpuTargetInvalid.cleanup.pendingDestinationCount,
-            pendingBodyCount: gpuTargetInvalid.cleanup.pendingBodyCount,
-            recoveryRequired: gpuTargetInvalid.cleanup.recoveryRequired
+                coherentDeathRejection.cleanup.pendingDestinationCount,
+            pendingBodyCount: coherentDeathRejection.cleanup.pendingBodyCount,
+            recoveryRequired: coherentDeathRejection.cleanup.recoveryRequired
+        }),
+        gpuTargetInvalid: Object.freeze({
+            outcome: gpuTargetInvalid.outcome.reason,
+            destinationActivated: gpuTargetInvalid.destinationActivated,
+            replacementAlive: gpuTargetInvalid.replacementAlive,
+            pendingBodyCount: gpuTargetInvalid.pendingBodyCount,
+            recoveryRequired: gpuTargetInvalid.recoveryRequired
         }),
         allTowerControlsAccepted: true,
         allFixedSubmitsContinued: true,
@@ -13550,9 +13786,10 @@ async function runProductionTargetEntityFailureDomainHardwareSmoke(
             && staleTarget.reservedCount === 0
             && staleTarget.pendingCommandCount === 0
             && staleTarget.pendingBodyCount === 0
-            && gpuTargetInvalid.cleanup.reservedCount === 0
-            && gpuTargetInvalid.cleanup.pendingDestinationCount === 0
-            && gpuTargetInvalid.cleanup.pendingBodyCount === 0
+            && coherentDeathRejection.cleanup.reservedCount === 0
+            && coherentDeathRejection.cleanup.pendingDestinationCount === 0
+            && coherentDeathRejection.cleanup.pendingBodyCount === 0
+            && gpuTargetInvalid.pendingBodyCount === 0
     });
 }
 
@@ -13891,7 +14128,6 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
     const targetPosition = Object.freeze({ x: 8, y: 8 });
     let archerHandle = null;
     let targetHandle = null;
-    let destinationHandle = null;
     let fixedSubmitCount = 0;
 
     try {
@@ -14044,6 +14280,22 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
             `Hostile attack TARGET_INVALID fixture가 GPU-dead/host-live가 아닙니다: ${JSON.stringify({ targetHandle, gpuDeadBodies })}`
         );
 
+        const targetDeathCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            firstEligibleFixedTick
+        );
+        const targetDeathObservation = director.observeCompletedEvents(
+            targetDeathCompleted
+        );
+        const targetDeath = targetDeathCompleted.deathEvents.find((event) => (
+            hostileAttackLifecycleHandleMatches(event, targetHandle)
+        ));
+        assert(
+            targetDeathCompleted.protocolFailure === null
+                && targetDeath
+                && !targetDeathObservation.recoveryRequired,
+            `Hostile attack target death publication 실패: ${JSON.stringify({ targetDeathCompleted, targetDeathObservation })}`
+        );
+
         const targetInvalidStage = director.stageForFixedTick({
             targetFixedTick: firstEligibleFixedTick,
             targetHandle
@@ -14057,21 +14309,28 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
         const targetInvalidCommit = endpoint.commitAtFixedBoundary(
             firstEligibleFixedTick
         );
-        destinationHandle = targetInvalidCommit.fixedCommands
-            .sourceRelativeSpawns.find(({ commandId }) => (
+        const staleTargetRejection = targetInvalidCommit.fixedCommands.rejected.find(
+            ({ commandId, domain, code }) => (
                 commandId === targetInvalidCommandId
-            ))?.handle;
+                && domain === 'spawn'
+                && code === 'stale-target'
+            )
+        );
         const targetInvalidAcceptance = director.observeFixedCommit(
             targetInvalidCommit,
             firstEligibleFixedTick
         );
         assert(
-            destinationHandle
-                && targetInvalidCommit.fixedCommands.sourceRelativeSpawns.length === 1
-                && targetInvalidCommit.fixedCommands.rejected.length === 0
-                && targetInvalidAcceptance.fixedAcceptedCount === 1
+            targetInvalidCommit.despawned.some((entry) => (
+                hostileAttackLifecycleHandleMatches(entry, targetHandle)
+            ))
+                && targetInvalidCommit.fixedCommands.sourceRelativeSpawns.length === 0
+                && targetInvalidCommit.fixedCommands.rejected.length === 1
+                && staleTargetRejection
+                && targetInvalidAcceptance.fixedAcceptedCount === 0
+                && targetInvalidAcceptance.fixedRejectedCount === 1
                 && !targetInvalidAcceptance.recoveryRequired,
-            `Hostile attack TARGET_INVALID fixed acceptance 실패: ${JSON.stringify(targetInvalidCommit)}`
+            `Hostile attack published-death stale-target rejection 실패: ${JSON.stringify({ targetInvalidCommit, targetInvalidAcceptance })}`
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, firstEligibleFixedTick),
@@ -14080,15 +14339,7 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
         fixedSubmitCount++;
         await settlePhase5Endpoint(
             endpoint,
-            'Hostile attack TARGET_INVALID SpawnProgram completion',
-            { spawnProgram: true }
-        );
-        const bodiesAfterResolve = await readPhase5Bodies(endpoint);
-        assert(
-            !bodiesAfterResolve.some((body) => (
-                hostileAttackLifecycleHandleMatches(body, destinationHandle)
-            )),
-            `Hostile attack TARGET_INVALID destination이 GPU ALIVE가 됐습니다: ${JSON.stringify(bodiesAfterResolve)}`
+            'Hostile attack stale-target post-rejection completion'
         );
 
         const completionBoundaryTick = firstEligibleFixedTick + 1;
@@ -14098,7 +14349,7 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
         const completedObservation = director.observeCompletedEvents(completed);
         const pendingStage = director.stageForFixedTick({
             targetFixedTick: completionBoundaryTick,
-            targetHandle
+            targetHandle: null
         });
         const completionCommit = endpoint.commitAtFixedBoundary(
             completionBoundaryTick
@@ -14107,35 +14358,22 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
             completionCommit,
             completionBoundaryTick
         );
-        const completion = completionCommit.fixedCommands.completed.find(
-            ({ commandId }) => commandId === targetInvalidCommandId
-        );
-        const targetDeath = completed.deathEvents.find((event) => (
-            hostileAttackLifecycleHandleMatches(event, targetHandle)
-        ));
         const statusAfterTargetInvalid = director.getStatus();
         const archerAfterTargetInvalid = statusAfterTargetInvalid.archers[0];
         assert(
             completed.protocolFailure === null
-                && targetDeath
                 && !completedObservation.recoveryRequired
                 && pendingStage.attemptedCount === 0
-                && completionCommit.despawned.some((entry) => (
-                    hostileAttackLifecycleHandleMatches(entry, targetHandle)
-                ))
-                && completion?.outcome === 'target-invalid'
-                && hostileAttackLifecycleHandleMatches(
-                    completion.handle,
-                    destinationHandle
-                )
-                && completionObservation.completedCount === 1
+                && completionCommit.fixedCommands.completed.length === 0
+                && completionObservation.completedCount === 0
                 && !completionObservation.recoveryRequired
                 && statusAfterTargetInvalid.pendingShotCount === 0
                 && archerAfterTargetInvalid.shotSequence === 0
                 && archerAfterTargetInvalid.nextEligibleFixedTick
                     === firstEligibleFixedTick
-                && statusAfterTargetInvalid.telemetry.completedTargetInvalid === 1,
-            `Hostile attack TARGET_INVALID completion/cooldown 실패: ${JSON.stringify({ completed, completionCommit, completionObservation, statusAfterTargetInvalid })}`
+                && statusAfterTargetInvalid.telemetry.fixedRejected === 1
+                && statusAfterTargetInvalid.telemetry.completedTargetInvalid === 0,
+            `Hostile attack stale-target rejection/cooldown 실패: ${JSON.stringify({ completed, completionCommit, completionObservation, statusAfterTargetInvalid })}`
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, completionBoundaryTick),
@@ -14199,10 +14437,13 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
             `Hostile attack TARGET_INVALID cleanup/leak 실패: ${JSON.stringify({ cleanupCommit, cleanupStatus, gpuCleanupStatus, cleanupDirectorStatus })}`
         );
         return Object.freeze({
+            scenario: 'target-death-published-before-hostile-shot-commit',
+            publicationPolicy: 'capture-release-generic-per-boundary',
             firstEligibleFixedTick,
             requestFixedTick: firstEligibleFixedTick,
             completionBoundaryTick,
-            outcome: completion.outcome,
+            outcome: staleTargetRejection.code,
+            rejectionPhase: 'fixed-commit-after-death-publication',
             cooldownConsumed: false,
             shotSequence: archerAfterTargetInvalid.shotSequence,
             nextEligibleFixedTick:
@@ -17517,7 +17758,7 @@ async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
             && main.cleanup.pendingCommandCount === 0
             && main.cleanup.pendingDestinationCount === 0
             && main.cleanup.pendingBodyCount === 0
-            && targetInvalid.outcome === 'target-invalid'
+            && targetInvalid.outcome === 'stale-target'
             && targetInvalid.cooldownConsumed === false
             && targetInvalid.cleanup.activeCount === 0
             && targetInvalid.cleanup.reservedCount === 0
@@ -17843,47 +18084,86 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
             'Dead-control race lethal fixed submit 실패'
         );
 
-        // 의도적으로 await/queue settle을 두지 않습니다. CPU는 아직 Tower를
-        // exact-active로 보지만 GPU는 앞 submit에서 ALIVE를 끌 수 있습니다.
+        await settlePhase5Endpoint(
+            endpoint,
+            'Dead-control coherent lethal completion'
+        );
         const beforeDeadControlCompleted = endpoint
             .commitCompletedEventsAtFixedBoundary(deadControlSourceTick);
+        const towerDeath = beforeDeadControlCompleted.deathEvents.find((event) => (
+            event.entityId === towerHandle.entityId
+            && event.incarnation === towerHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        const lethalDeath = beforeDeadControlCompleted.deathEvents.find((event) => (
+            event.entityId === lethalHandle.entityId
+            && event.incarnation === lethalHandle.incarnation
+            && event.disposition === 'despawn-requested'
+        ));
+        const lethalContact = beforeDeadControlCompleted.contactEvents.find((event) => (
+            hostileAttackLifecyclePairMatches(event, lethalHandle, towerHandle)
+            && event.eventType === 'damage-applied'
+        ));
         assert(
             beforeDeadControlCompleted.protocolFailure === null
-                && beforeDeadControlCompleted.batchCount === 0
+                && beforeDeadControlCompleted.batchCount === 1
+                && towerDeath
+                && lethalDeath
+                && lethalContact?.reason === 'target-died'
+                && lethalContact.damageFixedPoint
+                    === THE_TOWER_COMBAT_DATA.MAX_HEALTH * 100
                 && endpoint.getRegistry().has(towerHandle)
                 && endpoint.hasBody(towerHandle),
-            `Dead-control race no-settle 경계가 깨졌습니다: ${JSON.stringify(beforeDeadControlCompleted)}`
+            `Dead-control coherent death publication 불일치: ${JSON.stringify(beforeDeadControlCompleted)}`
+        );
+        const towerFacts = towerRoster.commitCompletedEvents(
+            beforeDeadControlCompleted,
+            endpoint.getRegistry()
+        );
+        assert(
+            towerFacts.some(({ type }) => type === TOWER_COMBAT_FACT_TYPE.DIED)
+                && towerFacts.some(
+                    ({ type }) => type === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+                )
+                && towerRoster.getPrimaryTowerCurrentHp() === 0
+                && towerRoster.getLivingTowerCount() === 0,
+            `Dead-control coherent Tower roster death 실패: ${JSON.stringify(towerFacts)}`
         );
         const deadControls = requestControlPair(
             deadControlSourceTick,
-            'gpu-dead-in-flight',
+            'published-death-boundary',
             towerHandle,
             liveControlHandle
         );
         const deadControlCommit = endpoint.commitAtFixedBoundary(
             deadControlSourceTick
         );
+        const deadControlRejection = deadControlCommit.fixedCommands.rejected.find(
+            ({ commandId, domain, code }) => (
+                commandId === deadControls.deadCandidate.commandId
+                    && domain === 'control'
+                    && code === 'stale-handle'
+            )
+        );
         assert(
-            deadControlCommit.state === 'committed'
-                && deadControlCommit.fixedCommands.controls.length === 2
-                && deadControlCommit.fixedCommands.controls.some(({ commandId }) => (
-                    commandId === deadControls.deadCandidate.commandId
-                ))
+            deadControlCommit.state === 'committed-with-rejections'
+                && deadControlCommit.despawned.length === 2
+                && deadControlCommit.fixedCommands.controls.length === 1
                 && deadControlCommit.fixedCommands.controls.some(({ commandId }) => (
                     commandId === deadControls.live.commandId
                 ))
-                && deadControlCommit.fixedCommands.rejected.length === 0
+                && deadControlRejection
                 && !deadControlCommit.recoveryRequired,
-            `Dead-control race in-flight control commit 실패: ${JSON.stringify(deadControlCommit)}`
+            `Dead-control coherent stale-control commit 실패: ${JSON.stringify(deadControlCommit)}`
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, deadControlSourceTick),
-            'Dead-control race second fixed submit 실패'
+            'Dead-control coherent survivor fixed submit 실패'
         );
 
         const settledGpuStatus = await settlePhase5Endpoint(
             endpoint,
-            'Dead-control race two-submit completion'
+            'Dead-control coherent survivor completion'
         );
         const raceStatus = endpoint.getStatus();
         assert(
@@ -17910,8 +18190,8 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
         assert(
             !raceBodies.some((body) => exactHandleMatches(body, towerHandle))
                 && !raceBodies.some((body) => exactHandleMatches(body, lethalHandle))
-                && endpoint.getRegistry().has(towerHandle)
-                && endpoint.hasBody(towerHandle)
+                && !endpoint.getRegistry().has(towerHandle)
+                && !endpoint.hasBody(towerHandle)
                 && liveControlAfterRace.position.x > initialLiveControl.position.x
                 && liveControlAfterRace.velocity.x > 0
                 && enemyAfterRace.flowFieldIndex >= 0
@@ -17951,65 +18231,34 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
             `Dead-control race Enemy render가 사라졌습니다: ${JSON.stringify({ drawMarks, enemyAlphaAfterRace })}`
         );
 
-        const completed = endpoint.commitCompletedEventsAtFixedBoundary(
+        const continued = endpoint.commitCompletedEventsAtFixedBoundary(
             cleanupFixedTick
         );
-        const towerDeath = completed.deathEvents.find((event) => (
-            event.entityId === towerHandle.entityId
-            && event.incarnation === towerHandle.incarnation
-            && event.disposition === 'despawn-requested'
-        ));
-        const lethalDeath = completed.deathEvents.find((event) => (
-            event.entityId === lethalHandle.entityId
-            && event.incarnation === lethalHandle.incarnation
-            && event.disposition === 'despawn-requested'
-        ));
-        const lethalContact = completed.contactEvents.find((event) => (
-            hostileAttackLifecyclePairMatches(event, lethalHandle, towerHandle)
-            && event.eventType === 'damage-applied'
-        ));
         assert(
-            completed.protocolFailure === null
-                && completed.batchCount === 2
-                && towerDeath
-                && lethalDeath
-                && lethalContact?.reason === 'target-died'
-                && lethalContact.damageFixedPoint
-                    === THE_TOWER_COMBAT_DATA.MAX_HEALTH * 100,
-            `Dead-control race death event 불일치: ${JSON.stringify(completed)}`
-        );
-        const towerFacts = towerRoster.commitCompletedEvents(
-            completed,
-            endpoint.getRegistry()
-        );
-        assert(
-            towerFacts.some(({ type }) => type === TOWER_COMBAT_FACT_TYPE.DIED)
-                && towerFacts.some(
-                    ({ type }) => type === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
-                )
-                && towerRoster.getPrimaryTowerCurrentHp() === 0
-                && towerRoster.getLivingTowerCount() === 0,
-            `Dead-control race Tower roster death 실패: ${JSON.stringify(towerFacts)}`
+            continued.protocolFailure === null
+                && continued.deathEvents.length === 0,
+            `Dead-control coherent continuation publication 불일치: ${JSON.stringify(continued)}`
         );
         const cleanupCommit = endpoint.commitAtFixedBoundary(cleanupFixedTick);
         assert(
             cleanupCommit.state === 'committed'
-                && cleanupCommit.despawned.length === 2
-                && cleanupCommit.despawned.some((entry) => (
-                    exactHandleMatches(entry, towerHandle)
-                ))
-                && cleanupCommit.despawned.some((entry) => (
-                    exactHandleMatches(entry, lethalHandle)
-                ))
+                && cleanupCommit.despawned.length === 0
                 && cleanupCommit.rejected.length === 0
                 && !cleanupCommit.recoveryRequired,
-            `Dead-control race cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
+            `Dead-control coherent continuation commit 실패: ${JSON.stringify(cleanupCommit)}`
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, cleanupFixedTick),
             'Dead-control race cleanup fixed submit 실패'
         );
         await settlePhase5Endpoint(endpoint, 'Dead-control race cleanup completion');
+        const terminalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(
+            cleanupFixedTick + 1
+        );
+        assert(
+            terminalCompleted.protocolFailure === null,
+            `Dead-control coherent terminal publication 불일치: ${JSON.stringify(terminalCompleted)}`
+        );
         const finalBodies = await readPhase5Bodies(endpoint);
         const finalEnemy = findPhase5Body(
             finalBodies,
@@ -18065,9 +18314,11 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
         );
 
         return Object.freeze({
-            scenario: 'tower-lethal-then-exact-dead-control-two-submit',
-            settledBetweenSubmits: false,
-            deadControlSubmitted: true,
+            scenario: 'tower-lethal-published-then-stale-control-rejected',
+            publicationPolicy: 'capture-release-generic-per-boundary',
+            settledBeforeDeathPublication: true,
+            deadControlRequestAccepted: true,
+            deadControlGpuSubmitted: false,
             handles: Object.freeze({
                 tower: Object.freeze({ ...towerHandle }),
                 liveControl: Object.freeze({ ...liveControlHandle }),
@@ -18091,7 +18342,8 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
                     liveControlCommandId: deadControls.live.commandId,
                     fixedCommandCount:
                         deadControlCommit.fixedCommands.controls.length,
-                    completedBatchCountBeforeSubmit:
+                    rejectionCode: deadControlRejection.code,
+                    publishedBatchCountBeforeCommit:
                         beforeDeadControlCompleted.batchCount
                 })
             }),
@@ -18101,7 +18353,7 @@ async function runProductionDeadControlRaceHardwareSmoke(device) {
                 towerEvent: towerDeath,
                 projectileEvent: lethalDeath,
                 rosterFacts: towerFacts,
-                cleanup: cleanupCommit,
+                cleanup: deadControlCommit,
                 towerRegistryPresentAfterCleanup:
                     endpoint.getRegistry().has(towerHandle),
                 towerBackendPresentAfterCleanup: endpoint.hasBody(towerHandle)

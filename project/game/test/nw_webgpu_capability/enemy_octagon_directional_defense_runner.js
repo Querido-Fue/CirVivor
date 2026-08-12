@@ -27,6 +27,10 @@ import {
     GAMEPLAY_TEAM_ID
 } from './production/script/module/ingame/contract/gameplay_team_contract.js';
 import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} from './production/script/module/ingame/contract/projectile_capture_contract.js';
+import {
     GpuEnemySimulationEndpoint
 } from './production/script/module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js';
 import {
@@ -54,7 +58,8 @@ import {
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
-    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI
+    GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI,
+    GPU_PROJECTILE_CAPTURE_ROLE
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
     createGpuSignedDistanceFieldSnapshot,
@@ -68,8 +73,10 @@ const FIXED_DELTA = 1 / 60;
 const ORBIT_PHASE_SCALE = 0x100000000;
 const ORBIT_RADIUS = 6;
 const ORBIT_CAPTURE_SEED_RADIUS = 5.999;
+const ORBIT_GPU_TRIG_POSITION_TOLERANCE = 0.005;
 const DAMAGE_SCALE = 100;
 const DAMAGE_PROBE_RADIUS = 0.4;
+const DAMAGE_PROBE_HEALTH = 2;
 const SHIELD_SOURCE_TO_OCTA_DISTANCE = 0.1;
 const SHIELD_OCTA_TO_REAR_DISTANCE = 0.65;
 const OPEN_ORBIT_MAP_DATA = Object.freeze({
@@ -327,10 +334,25 @@ async function submitEndpointTick(endpoint, tick, label, commit = true) {
     assert(endpoint.fixedUpdate(FIXED_DELTA, tick), `${label}: fixed submit failed`);
     await waitForSimulation(endpoint, label);
     const bodies = await readBodies(endpoint);
-    const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick + 1);
+    const targetFixedTick = tick + 1;
+    const capture = endpoint
+        .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(capture.pending !== true && capture.protocolFailure === null,
+        `${label}: capture protocol ${JSON.stringify(capture)}`);
+    const releases = endpoint
+        .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(releases.pending !== true && releases.protocolFailure === null,
+        `${label}: release protocol ${JSON.stringify(releases)}`);
+    const completed = endpoint.commitCompletedEventsAtFixedBoundary(
+        targetFixedTick
+    );
     assert(completed.protocolFailure === null,
         `${label}: completed event failure ${JSON.stringify(completed)}`);
-    return Object.freeze({ lifecycle, bodies, completed });
+    return Object.freeze({ lifecycle, bodies, capture, releases, completed });
 }
 
 async function readTexturePixels(device, texture, width, height) {
@@ -420,7 +442,7 @@ async function runLifecycleOrbitTowerLoss(device, format) {
     const signedDistanceField = createGpuSignedDistanceFieldSnapshot(
         tileMap.getNavigationGrid()
     );
-    const width = 256;
+    const width = 384;
     const height = 256;
     const texture = device.createTexture({
         label: 'cirvivor-nw-octagon-render-target',
@@ -591,7 +613,7 @@ async function runLifecycleOrbitTowerLoss(device, format) {
             fixedAlpha: 1,
             renderFrameId: 1
         });
-        const scale = 12;
+        const scale = 24;
         const renderCamera = Object.freeze({
             worldToViewport(x, y, out) {
                 out.x = (width * 0.5) + ((x - towerPosition.x) * scale);
@@ -719,7 +741,12 @@ async function runLifecycleOrbitTowerLoss(device, format) {
             );
         });
         fillDesiredPositionErrorSamples.forEach((error, index) => (
-            assertNear(error, 0, 0.001, `fill slot ${fillSlots[index]} desired pose`)
+            assertNear(
+                error,
+                0,
+                ORBIT_GPU_TRIG_POSITION_TOLERANCE,
+                `fill slot ${fillSlots[index]} desired pose`
+            )
         ));
         const angularStepSamples = firstBodies.map((body, index) => {
             const before = Math.atan2(
@@ -910,6 +937,8 @@ async function runLifecycleOrbitTowerLoss(device, format) {
                 mapId: tileMap.mapId,
                 phaseBaseQ32: 0x80000000,
                 captureSeedRadius: ORBIT_CAPTURE_SEED_RADIUS,
+                gpuTrigPositionTolerance:
+                    ORBIT_GPU_TRIG_POSITION_TOLERANCE,
                 towerPosition: Object.freeze({
                     x: towerPosition.x,
                     y: towerPosition.y
@@ -1411,6 +1440,25 @@ function createDamageProbe(position, entityId, {
     return Object.freeze({
         kindId: 'projectile',
         definitionId: 'nw-octagon-directional-probe',
+        projectileCapturePolicyId:
+            PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: 'nw-octagon-directional-probe',
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: null,
+        originSourceAbilityId: null,
+        originOwnerEntityId: null,
+        originOwnerIncarnation: null,
+        originSourceEntityId: null,
+        originSourceIncarnation: null,
+        originTargetEntityId: null,
+        originTargetIncarnation: null,
+        projectileCaptureState: Object.freeze({
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+        }),
         entityId,
         incarnation,
         position: Object.freeze({ ...position }),
@@ -1424,7 +1472,7 @@ function createDamageProbe(position, entityId, {
         teamId,
         damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
-        health: 1,
+        health: DAMAGE_PROBE_HEALTH,
         lifetime: -1,
         alive: true,
         countAsKill: false,
@@ -1475,10 +1523,15 @@ async function runStaleAbaBudgetFixture(device, format) {
             2,
             'octagon:stale:old-despawn'
         ).accepted, 'old ABA probe despawn rejected');
-        const retired = await submitEndpointTick(endpoint, 2, 'retire ABA probe');
-        assert(retired.lifecycle.despawned.length === 1
+        const retiredLifecycle = endpoint.commitAtFixedBoundary(2);
+        assert(retiredLifecycle.recoveryRequired === false
+            && retiredLifecycle.despawned.length === 1
+            && endpoint.fixedUpdate(FIXED_DELTA, 2) === false
             && !endpoint.hasBody(oldHandle),
-        `old ABA probe not retired ${JSON.stringify(retired.lifecycle)}`);
+        `old ABA probe not retired ${JSON.stringify({
+            lifecycle: retiredLifecycle,
+            status: endpoint.getStatus()
+        })}`);
 
         assert(endpoint.requestSpawn(
             createDamageProbeIntent(probePosition),
@@ -1680,6 +1733,8 @@ async function runDamageScenario(device, format, label, angleOffset, {
             1,
             {
                 position: octaPosition,
+                health: 2,
+                maxHealth: 2,
                 ...(coincident ? {
                     flowSpeed: 0,
                     velocity: Object.freeze({ x: 0, y: 0 })
@@ -1938,8 +1993,9 @@ async function runDirectionalDamageFixture(device, format) {
         zeroDirection
     })}`);
     assert(absorbed.appliedDamageCenti === 0
-        && absorbed.budgetBefore === 100
-        && absorbed.budgetAfter === 0
+        && absorbed.budgetBefore === DAMAGE_PROBE_HEALTH * DAMAGE_SCALE
+        && absorbed.budgetAfter
+            === (DAMAGE_PROBE_HEALTH - 1) * DAMAGE_SCALE
         && absorbed.damageEventCount === 1
         && absorbed.eventValueFixedPoint === 0
         && (absorbed.eventFlags
@@ -1996,8 +2052,8 @@ async function runDirectionalDamageFixture(device, format) {
         returningOriginDamageCenti: returning.appliedDamageCenti,
         fullyAbsorbedInputCenti: 50,
         fullyAbsorbedAppliedCenti: absorbed.appliedDamageCenti,
-        fullyAbsorbedBudgetBefore: absorbed.budgetBefore / 100,
-        fullyAbsorbedBudgetAfter: absorbed.budgetAfter / 100,
+        fullyAbsorbedBudgetBefore: absorbed.budgetBefore / DAMAGE_SCALE,
+        fullyAbsorbedBudgetAfter: absorbed.budgetAfter / DAMAGE_SCALE,
         friendlyBudgetBefore: friendly.budgetBefore,
         friendlyBudgetAfter: friendly.budgetAfter,
         friendlyDamageEventCount: friendly.damageEventCount,

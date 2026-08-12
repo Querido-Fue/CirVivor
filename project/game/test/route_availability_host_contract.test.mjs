@@ -14,6 +14,14 @@ const {
 const {
     CORK_DUAL_ROUTE_WAVE_01_DATA
 } = await loadGameModule('data/scene/game/cork_dual_route_wave_01_data.js');
+const {
+    BASIC_SQUARE_ENEMY_DATA
+} = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const {
+    AUTHORED_FORMATION_COORDINATE_SYSTEM,
+    AUTHORED_FORMATION_SPAWN_MODE,
+    AUTHORED_WAVE_TIMELINE_COMMAND_TYPE
+} = await loadGameModule('ingame/flow/authored_wave_timeline_contract.js');
 const { TileMap, createTileMap } = await loadGameModule('ingame/map/tile_map.js');
 const {
     createRouteFlowFieldAtlas
@@ -254,7 +262,7 @@ test('WaveDirector는 all-closed backlog만 보류하고 sink false/throw에서 
     assert.equal(director.getStatus().blockedSpawnCount, 0);
     assert.equal(director.getStatus().queuedSpawnCount, 1);
     const beforeRegression = director.getStatus();
-    assert.throws(() => director.queueSpawnsForFixedTick(901, {
+    assert.throws(() => director.queueSpawnsForFixedTick(902, {
         requestSpawnBatch() {
             throw new Error('regressed snapshot은 sink에 도달하면 안 됩니다.');
         }
@@ -264,7 +272,7 @@ test('WaveDirector는 all-closed backlog만 보류하고 sink false/throw에서 
         closedPathIds: Object.freeze([])
     })), /version이 회귀/);
     assert.deepEqual(director.getStatus(), beforeRegression);
-    assert.throws(() => director.queueSpawnsForFixedTick(901, {
+    assert.throws(() => director.queueSpawnsForFixedTick(902, {
         requestSpawnBatch() {
             throw new Error('same-version conflict는 sink에 도달하면 안 됩니다.');
         }
@@ -274,6 +282,103 @@ test('WaveDirector는 all-closed backlog만 보류하고 sink false/throw에서 
         closedPathIds: Object.freeze([])
     })), /same-version/);
     assert.deepEqual(director.getStatus(), beforeRegression);
+});
+
+test('sequential formation은 mid-spawn 폐쇄에서 원래 route를 고정하고 남은 row 전체를 backlog한다', () => {
+    const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
+    const atlas = createRouteFlowFieldAtlas(tileMap);
+    const director = new WaveDirector({
+        waveDefinition: Object.freeze({
+            waveId: 'cork-formation-mid-spawn-contract',
+            mapId: CORK_DUAL_ROUTE_MAP_DATA.id,
+            timeline: Object.freeze([Object.freeze({
+                timelineEntryId: 'two-sequential-rows',
+                type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_FORMATION,
+                formation: Object.freeze({
+                    groupId: 'pinned-upper-formation',
+                    memberCount: 4,
+                    coordinateSystem:
+                        AUTHORED_FORMATION_COORDINATE_SYSTEM.PATH_RELATIVE,
+                    spawnMode:
+                        AUTHORED_FORMATION_SPAWN_MODE.SEQUENTIAL_ROWS,
+                    rowDelayTicks: 1,
+                    keepFormation: false,
+                    layout: Object.freeze(['SS', 'SS']),
+                    symbolMap: Object.freeze({
+                        S: BASIC_SQUARE_ENEMY_DATA.id
+                    }),
+                    routeBinding: Object.freeze({
+                        routeSetId: CORK_DUAL_ROUTE_ROUTE_SET_ID
+                    }),
+                    policyId: 'corebound',
+                    rowSpacingTiles: 1,
+                    columnSpacingTiles: 1
+                })
+            })])
+        })
+    });
+    assert.equal(director.init(tileMap), true);
+    const batches = [];
+    const sink = {
+        requestSpawnBatch(batch) {
+            batches.push(batch);
+            return Object.freeze({
+                accepted: true,
+                requestedCount: batch.length,
+                queuedCount: batch.length
+            });
+        }
+    };
+    const snapshot = (availabilityVersion, closedPathIds) => Object.freeze({
+        graphContentKey: atlas.contentKey,
+        availabilityVersion,
+        closedPathIds: Object.freeze(closedPathIds)
+    });
+
+    assert.equal(director.queueSpawnsForFixedTick(
+        1,
+        sink,
+        snapshot(1, [])
+    ), 2);
+    assert.equal(batches.length, 1);
+    assert.deepEqual(
+        batches[0].map(({ commandId }) => (
+            commandId.slice(commandId.lastIndexOf(':') + 1)
+        )),
+        ['member-0-0', 'member-0-1']
+    );
+    assert.ok(batches[0].every(
+        ({ intent }) => intent.pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+    ));
+
+    assert.equal(director.queueSpawnsForFixedTick(
+        2,
+        sink,
+        snapshot(2, [CORK_DUAL_ROUTE_UPPER_PATH_ID])
+    ), 0);
+    assert.equal(batches.length, 1, '폐쇄 tick은 spawn sink를 호출하면 안 됩니다.');
+    assert.equal(director.getStatus().blockedSpawnCount, 2);
+    assert.equal(director.getStatus().remainingSpawnCount, 2);
+
+    assert.equal(director.queueSpawnsForFixedTick(
+        3,
+        sink,
+        snapshot(3, [])
+    ), 2);
+    assert.equal(batches.length, 2);
+    assert.equal(batches[1].length, 2);
+    assert.deepEqual(
+        batches[1].map(({ commandId }) => (
+            commandId.slice(commandId.lastIndexOf(':') + 1)
+        )),
+        ['member-1-0', 'member-1-1']
+    );
+    assert.ok(batches[1].every(
+        ({ intent }) => intent.pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+    ));
+    assert.equal(director.getStatus().blockedSpawnCount, 0);
+    assert.equal(director.getStatus().remainingSpawnCount, 0);
+    director.destroy();
 });
 
 test('WaveDirector idle epoch reset은 구 route cache만 지우고 authored backlog를 보존한다', () => {

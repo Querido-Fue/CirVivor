@@ -19,7 +19,8 @@ export const ENEMY_SHAPE_TYPES = Object.freeze([
     'penta',
     'rhom',
     'octa',
-    'gen'
+    'gen',
+    'jorang'
 ]);
 
 /**
@@ -38,7 +39,8 @@ export const ENEMY_DEFAULT_WEIGHT = Object.freeze({
     hexa: 1.5,
     penta: 1.2,
     octa: 2.5,
-    gen: 4
+    gen: 4,
+    jorang: 4
 });
 
 /**
@@ -94,6 +96,11 @@ export const ENEMY_COLLISION_RADIUS_DATA = Object.freeze({
         gen: Object.freeze({
             vectors: Object.freeze([
                 Object.freeze({ x: 0.44, y: 0.44 })
+            ])
+        }),
+        jorang: Object.freeze({
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.40, y: 0.46 })
             ])
         })
     })

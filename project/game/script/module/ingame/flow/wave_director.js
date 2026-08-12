@@ -65,6 +65,8 @@ function snapshotEnemyDefinition(source, label) {
         routeClosureProfileId: source.routeClosureProfileId,
         effectEmitterProfileId: source.effectEmitterProfileId,
         formationDefinitionId: source.formationDefinitionId,
+        atomicTransformProfileId: source.atomicTransformProfileId,
+        projectileCaptureProfileId: source.projectileCaptureProfileId,
         capabilityIds: source.capabilityIds,
         render: source.render
     }, ENEMY_PROFILE_CATALOG, label);

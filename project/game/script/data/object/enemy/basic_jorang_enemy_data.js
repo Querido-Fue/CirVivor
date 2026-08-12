@@ -40,7 +40,7 @@ export const BASIC_JORANG_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask(
 
 export const BASIC_JORANG_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_JORANG_ENEMY_DEFINITION_ID,
-    'gen',
+    'jorang',
     {
         spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
         combatProfileId: JORANG_NATURAL_ENEMY_COMBAT_PROFILE_ID,

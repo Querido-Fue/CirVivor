@@ -29,6 +29,9 @@ const {
 } = await loadGameModule(
     'data/object/enemy/enemy_route_closure_catalog_data.js'
 );
+const {
+    GPU_EFFECT_RUNTIME_COMPUTE_WGSL
+} = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_shaders.js');
 
 const RUNNER_SOURCE = await readFile(new URL(
     './nw_webgpu_capability/enemy_cork_route_closure_runner.js',
@@ -78,13 +81,101 @@ test('Z expansion/closure는 immutable graph 위의 exact one-owner action이다
     assert.equal(CORK_EXPANDED_RADIUS_TILES, 3);
     assert.equal(CORK_EXPANSION_DURATION_FIXED_TICKS, 60);
     assert.match(GPU_ROUTE_RUNTIME_WGSL,
-        /virtual_state\[selected_closure\] == AVAILABILITY_OPEN/);
-    assert.match(GPU_ROUTE_RUNTIME_WGSL,
-        /virtual_owner_entity\[selected_closure\] == INVALID/);
+        /let closure_index = path_closure\(path_index\);[\s\S]{0,500}virtual_state\[closure_index\] == AVAILABILITY_OPEN[\s\S]{0,500}virtual_owner_slot\[closure_index\] == INVALID[\s\S]{0,500}virtual_owner_entity\[closure_index\] == INVALID/);
     assert.match(GPU_ROUTE_RUNTIME_WGSL,
         /set_phase\(&route_states\.values\[action\.body_slot\], PHASE_BLOCKING\)/);
     assert.match(GPU_ROUTE_RUNTIME_WGSL,
         /ACTION_REOPENED[\s\S]*ACTION_CLEANED/);
+});
+
+test('EXPAND는 nonblocking이고 finalize 한 submit이 BLOCKING과 route close를 함께 확정한다', () => {
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /phase == PHASE_EXPAND \|\| phase == PHASE_READY_TO_CLOSE[\s\S]*make_nonblocking_enemy\(body_slot\)/);
+    const finalizeStart = GPU_ROUTE_RUNTIME_WGSL.indexOf(
+        'fn finalize_route_runtime('
+    );
+    assert.notEqual(finalizeStart, -1);
+    const finalizeSource = GPU_ROUTE_RUNTIME_WGSL.slice(finalizeStart);
+    const blockingIndex = finalizeSource.indexOf(
+        'set_phase(&route_states.values[action.body_slot], PHASE_BLOCKING)'
+    );
+    const blockerIndex = finalizeSource.indexOf(
+        'make_route_blocker(action.body_slot)'
+    );
+    const availabilityIndex = finalizeSource.indexOf(
+        'availability.records[closure_index].state = virtual_state[closure_index]'
+    );
+    assert.ok(blockingIndex >= 0
+        && blockerIndex > blockingIndex
+        && availabilityIndex > blockerIndex,
+    'BLOCKING/ROUTE_BLOCKER/availability close는 같은 finalize 함수에 있어야 합니다.');
+    assert.match(RUNNER_SOURCE, /precloseExpandNonblockingOpen/);
+    assert.match(RUNNER_SOURCE, /atomicCloseBlockingAndClosed/);
+    assert.match(RUNNER_SOURCE, /closeCompletion\.sourceTick/);
+    assert.match(RUNNER_SOURCE, /closeCompletedVersionMatch/);
+    assert.match(RUNNER_SOURCE, /readRouteAvailabilityGpuEvidence/);
+    assert.match(RUNNER_SOURCE, /simulation\.buffers\.routeAvailability/);
+    assert.match(RUNNER_SOURCE, /closeSubmitGpuSourceTick/);
+    assert.match(RUNNER_SOURCE, /closeSubmitGpuClosedState/);
+    assert.match(RUNNER_SOURCE,
+        /futureQueueTick = 2 \+ Math\.round\([\s\S]*CORK_DUAL_ROUTE_FOLLOWUP_WAIT_SECONDS \/ FIXED_DELTA/);
+});
+
+test('Effect Enemy noun은 hostile Team + interaction layer이며 physical ENEMY layer를 읽지 않는다', () => {
+    assert.match(GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
+        /body_interaction_layer\([\s\S]*INTERACTION_LAYER_ENEMY/);
+    assert.match(GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
+        /gameplay_team_id\([\s\S]*GAMEPLAY_TEAM_HOSTILE/);
+    assert.doesNotMatch(GPU_EFFECT_RUNTIME_COMPUTE_WGSL, /BODY_LAYER_ENEMY/);
+    assert.doesNotMatch(
+        GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
+        /body_layer\s*==\s*[^\n]*ENEMY/
+    );
+    assert.match(RUNNER_SOURCE, /createBlockingCorkBoostPulse/);
+    assert.match(RUNNER_SOURCE, /GPU_EFFECT_EVENT_TYPE\.INSTANCE_APPLIED/);
+    assert.match(RUNNER_SOURCE, /blockingCorkBoostApplied/);
+    assert.match(RUNNER_SOURCE, /boostStackCount/);
+});
+
+test('formation mid-spawn 계약은 폐쇄 backlog와 원래 route의 whole-row 재개를 hard-gate한다', () => {
+    for (const marker of [
+        'runFormationRouteClosurePolicy',
+        'closeSinkCallCount',
+        'backlogRetained',
+        'reopenedOnOriginalPath',
+        'partialRowCount',
+        'arbitraryRowSplit'
+    ]) {
+        assert.ok(RUNNER_SOURCE.includes(marker), `formation marker 누락: ${marker}`);
+    }
+    assert.match(RUNNER_SOURCE, /member-1-0,member-1-1/);
+});
+
+test('Cork actual runner는 A/M/O WAIT와 R/J/H 독립 side-plane 보존을 GPU readback으로 증명한다', () => {
+    for (const marker of [
+        'WAITING_BEHAVIOR_ACTORS',
+        'REROUTE_OR_WAIT_ACTORS',
+        'routeEntryFor(tick63Evidence',
+        'body.enemyBehaviorState?.programId',
+        'readProjectileCaptureState',
+        'simulation.buffers.projectileCaptureStates',
+        'ringCaptureState.role',
+        'jorangBody.atomicTransformState.phase',
+        'readGpuFormationBodyState',
+        'ringCaptureStatePreserved',
+        'jorangAtomicStatePreserved',
+        'hexaFormationStateActive',
+        'recoveryRequired: false'
+    ]) {
+        assert.ok(RUNNER_SOURCE.includes(marker), `cross-system marker 누락: ${marker}`);
+    }
+    assert.match(RUNNER_SOURCE,
+        /after\?\.routeState\.phase === GPU_ROUTE_RUNTIME_PHASE\.WAITING/);
+    assert.match(RUNNER_SOURCE,
+        /after\?\.routeState\.currentPathIndex === lowerPathIndex/);
+    assert.match(RUNNER_SOURCE, /const MAIN_HARNESS_CAPACITY = 20/);
+    assert.match(RUNNER_SOURCE, /const MAIN_EXPECTED_PEAK_ACTIVE_COUNT = 13/);
+    assert.match(RUNNER_SOURCE, /peakActiveCount === MAIN_EXPECTED_PEAK_ACTIVE_COUNT/);
 });
 
 test('route blocker는 Enemy/Tower만 물리 차단하고 projectile interaction은 유지한다', () => {

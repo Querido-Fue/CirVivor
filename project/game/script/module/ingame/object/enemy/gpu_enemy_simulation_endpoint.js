@@ -17,6 +17,7 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_PROJECTILE_CAPTURE_PHASE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -79,8 +80,10 @@ import {
     GPU_ATOMIC_TRANSFORM_TERMINAL_CANCEL_ABI_VERSION
 } from '../../physics/gpu/gpu_atomic_transform_runtime_abi.js';
 import {
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG,
     GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG,
     GPU_PROJECTILE_CAPTURE_TICK_STATUS
 } from '../../physics/gpu/gpu_projectile_capture_runtime_abi.js';
 import {
@@ -109,6 +112,9 @@ const DEFAULT_EFFECT_COMMAND_CAPACITY = 256;
 const DEFAULT_FORMATION_COMMAND_CAPACITY = 256;
 const DEFAULT_COMPLETED_EVENT_SNAPSHOT_CAPACITY = 2048;
 const DEFAULT_COMPLETED_EVENT_KEY_HISTORY_CAPACITY = 65536;
+const PROJECTILE_CAPTURE_CAPACITY_REJECTION_KNOWN_FLAGS = Object.values(
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG
+).reduce((mask, flag) => mask | flag, 0) >>> 0;
 const PROJECTILE_CAPTURE_BACKEND_METHODS = Object.freeze([
     'armPreparedProjectileCaptureReleaseBatch',
     'commitArmedProjectileCaptureReleaseBatch',
@@ -170,6 +176,10 @@ function toPositiveSafeInteger(value, fallback = 0) {
     return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
+function projectileCaptureHandleKey(handle) {
+    return `${handle.entityId}:${handle.incarnation}`;
+}
+
 function fingerprintRouteAvailabilityBatch(sourceTick, availabilityVersion, records) {
     const text = JSON.stringify([
         sourceTick,
@@ -225,6 +235,13 @@ function createEmptyCompletedEventSnapshot(completedThroughTick = 0, overrides =
         completedThroughTick,
         batchCount: 0,
         droppedEventCount: 0,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 0,
         events: Object.freeze([]),
         contactEvents: Object.freeze([]),
         deathEvents: Object.freeze([]),
@@ -802,10 +819,20 @@ export class GpuEnemySimulationEndpoint {
             controlCommandCapacity: options.controlCommandCapacity,
             spawnProgramCapacity: options.spawnProgramCapacity,
             effectCommandCapacity: configuredEffectCommandCapacity,
+            eventCapacity: options.eventCapacity,
             formationCommandCapacity: configuredFormationCommandCapacity,
             atomicTransformPrepareCapacity: compositionBodyCapacity,
             atomicTransformCapacity:
-                JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK,
+                Math.min(
+                    compositionBodyCapacity,
+                    JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
+                ),
+            projectileCaptureCompletionCapacity:
+                options.projectileCaptureCompletionCapacity,
+            projectileCaptureReleasePreparationCapacity:
+                options.projectileCaptureReleasePreparationCapacity,
+            projectileCaptureCleanupCapacity:
+                options.projectileCaptureCleanupCapacity,
             sessionGeneration: this.sessionGeneration
         };
         const injectedBackend = typeof backendFactory
@@ -883,6 +910,7 @@ export class GpuEnemySimulationEndpoint {
         this.lastAcceptedProjectileCaptureProtocol = null;
         this.lastAcceptedProjectileCaptureSnapshot = null;
         this.lastAcceptedProjectileCaptureReleaseSnapshot = null;
+        this.projectileCaptureDeferredDeathReceipts = new Map();
         this.#projectileCaptureTransactionPort = Object.freeze({
             armPreparedProjectileCaptureReleaseBatch: (request) => {
                 if (this.destroyed || !this.projectileCaptureBackendSupported
@@ -1416,7 +1444,10 @@ export class GpuEnemySimulationEndpoint {
             sessionGeneration: this.sessionGeneration,
             capacity: this.capacity,
             transformStartCapacity:
-                JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
+                Math.min(
+                    this.capacity,
+                    JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
+                )
         });
         this.completedEventSnapshotCapacity = requirePositiveSafeInteger(
             options.completedEventSnapshotCapacity
@@ -1829,6 +1860,19 @@ export class GpuEnemySimulationEndpoint {
                     errorFlags: 0,
                     batchIdFingerprint: 0,
                     pending: false,
+                    capacityRejected: false,
+                    retryable: false,
+                    rejectionReason: null,
+                    capacityRejectionFlags: 0,
+                    retryBatch: false,
+                    retryBacklogRemaining: false,
+                    retryOriginTick: 0,
+                    captureDemandCount: 0,
+                    releasePreparationDemandCount: 0,
+                    cleanupDemandCount: 0,
+                    captureCapacity: 0,
+                    releasePreparationCapacity: 0,
+                    cleanupCapacity: 0,
                     protocolFailure: null,
                     captures: Object.freeze([]),
                     releasePreparations: Object.freeze([]),
@@ -1880,11 +1924,100 @@ export class GpuEnemySimulationEndpoint {
         }
         if (batches.length === 1) {
             const batch = batches[0];
+            const capacityRejectionFlags = Number(
+                batch.capacityRejectionFlags
+            ) >>> 0;
+            const captureDemandCount = Number(batch.captureDemandCount);
+            const releasePreparationDemandCount = Number(
+                batch.releasePreparationDemandCount
+            );
+            const cleanupDemandCount = Number(batch.cleanupDemandCount);
+            const captureCapacity = Number(batch.captureCapacity);
+            const releasePreparationCapacity = Number(
+                batch.releasePreparationCapacity
+            );
+            const cleanupCapacity = Number(batch.cleanupCapacity);
+            const exactCapacityRejected = batch.capacityRejected === true
+                && batch.retryable === true
+                && batch.retryBatch !== true
+                && batch.retryBacklogRemaining !== true
+                && (batch.retryOriginTick ?? 0) === 0
+                && batch.rejectionReason
+                    === 'projectile-capture-completion-capacity'
+                && batch.status === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
+                && batch.errorFlags
+                    === GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
+                        .COMPLETION_CAPACITY
+                && batch.batchIdFingerprint === 0
+                && capacityRejectionFlags !== 0
+                && (capacityRejectionFlags
+                    & ~PROJECTILE_CAPTURE_CAPACITY_REJECTION_KNOWN_FLAGS) === 0
+                && Number.isSafeInteger(captureDemandCount)
+                && Number.isSafeInteger(releasePreparationDemandCount)
+                && Number.isSafeInteger(cleanupDemandCount)
+                && Number.isSafeInteger(captureCapacity)
+                && Number.isSafeInteger(releasePreparationCapacity)
+                && Number.isSafeInteger(cleanupCapacity)
+                && captureDemandCount >= 0 && captureCapacity > 0
+                && releasePreparationDemandCount >= 0
+                && releasePreparationCapacity > 0
+                && cleanupDemandCount >= 0 && cleanupCapacity > 0
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CAPTURE)
+                    === (captureDemandCount > captureCapacity)
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG
+                        .RELEASE_PREPARATION)
+                    === (releasePreparationDemandCount
+                        > releasePreparationCapacity)
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CLEANUP)
+                    === (cleanupDemandCount > cleanupCapacity)
+                && batch.captures?.length === 0
+                && batch.releasePreparations?.length === 0
+                && batch.cleanups?.length === 0
+                && protocolStatus.runtimeStatus
+                    === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
+                && protocolStatus.errorFlags
+                    === GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
+                        .COMPLETION_CAPACITY
+                && protocolStatus.retryableCapacityRejected === true
+                && protocolStatus.capacityRejectionFlags
+                    === capacityRejectionFlags
+                && protocolStatus.requiresRecovery === false;
+            const exactRetryBatch = batch.capacityRejected !== true
+                && batch.retryable !== true
+                && (batch.rejectionReason ?? null) === null
+                && batch.retryBatch === true
+                && typeof batch.retryBacklogRemaining === 'boolean'
+                && Number.isSafeInteger(batch.retryOriginTick)
+                && batch.retryOriginTick > 0
+                && batch.retryOriginTick < batch.sourceTick
+                && capacityRejectionFlags !== 0
+                && (capacityRejectionFlags
+                    & ~PROJECTILE_CAPTURE_CAPACITY_REJECTION_KNOWN_FLAGS) === 0
+                && batch.status === GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+                && batch.errorFlags === 0
+                && protocolStatus.retryMode === batch.retryBacklogRemaining
+                && (batch.retryBacklogRemaining !== true
+                    || (protocolStatus.retryOriginTick === batch.retryOriginTick
+                        && protocolStatus.capacityRejectionFlags
+                            === capacityRejectionFlags));
+            const completedNormally = batch.capacityRejected !== true
+                && batch.retryable !== true
+                && (batch.rejectionReason ?? null) === null
+                && batch.retryBatch !== true
+                && batch.retryBacklogRemaining !== true
+                && (batch.retryOriginTick ?? 0) === 0
+                && (batch.capacityRejectionFlags ?? 0) === 0
+                && batch.status === GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+                && batch.errorFlags === 0;
             if (batch.failure
                 || batch.abiVersion
                     !== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
-                || batch.status !== GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
-                || batch.errorFlags !== 0
+                || (!completedNormally
+                    && !exactRetryBatch
+                    && !exactCapacityRejected)
                 || !Array.isArray(batch.captures)
                 || !Array.isArray(batch.releasePreparations)
                 || !Array.isArray(batch.cleanups)
@@ -1912,6 +2045,20 @@ export class GpuEnemySimulationEndpoint {
                             code: 'projectile-capture-prepare-evidence-invalid',
                             message: 'release prepare evidence가 frozen authentic object가 아닙니다.'
                         })
+                    });
+                }
+            }
+            if (!exactCapacityRejected) {
+                const deferredDeathFailure
+                    = this.#stageDeferredProjectileCaptureDeaths(
+                        batch,
+                        tick
+                    );
+                if (deferredDeathFailure) {
+                    return Object.freeze({
+                        ...batch,
+                        pending: false,
+                        protocolFailure: deferredDeathFailure
                     });
                 }
             }
@@ -1977,6 +2124,20 @@ export class GpuEnemySimulationEndpoint {
             errorFlags: status.errorFlags,
             batchIdFingerprint: 0,
             pending,
+            capacityRejected: false,
+            retryable: false,
+            rejectionReason: null,
+            capacityRejectionFlags: 0,
+            retryBatch: false,
+            retryBacklogRemaining: false,
+            retryOriginTick: 0,
+            captureDemandCount: 0,
+            releasePreparationDemandCount: 0,
+            cleanupDemandCount: 0,
+            captureCapacity: status.captureCapacity ?? 0,
+            releasePreparationCapacity:
+                status.releasePreparationCapacity ?? 0,
+            cleanupCapacity: status.cleanupCapacity ?? 0,
             captures: Object.freeze([]),
             releasePreparations: Object.freeze([]),
             cleanups: Object.freeze([]),
@@ -2100,6 +2261,18 @@ export class GpuEnemySimulationEndpoint {
         const pending = status.pendingReleaseReadbackCount > 0
             || status.pendingReleaseBatchCount > 0
             || status.commitRequested === true;
+        const terminalEmptyReleaseSettled = terminalBoundary
+            && status.terminal?.state === 'settled'
+            && status.terminal.accepted === true
+            && status.terminal.finalFixedTick === requiredSourceTick
+            && status.terminal.submittedTick === requiredSourceTick
+            && status.terminal.completedThroughTick === requiredSourceTick
+            && status.terminal.pendingReleaseReadbackCount === 0
+            && status.terminal.pendingCompletionBatchCount === 0
+            && status.terminal.failure === null;
+        const completedReleaseSourceTick = terminalEmptyReleaseSettled
+            ? requiredSourceTick
+            : status.lastReleaseCommittedTick;
         const priorCanonical = this
             .lastAcceptedProjectileCaptureReleaseSnapshot?.snapshot;
         if (!pending
@@ -2113,11 +2286,11 @@ export class GpuEnemySimulationEndpoint {
             && priorCanonical.deviceGeneration === status.deviceGeneration
             && priorCanonical.authoritativeEpoch
                 === status.authoritativeEpoch
-            && priorCanonical.sourceTick === status.lastReleaseCommittedTick
+            && priorCanonical.sourceTick === completedReleaseSourceTick
             && priorCanonical.completedThroughTick
-                === status.lastReleaseCommittedTick
+                === completedReleaseSourceTick
             && priorCanonical.publicationFixedTick
-                === status.lastReleaseCommittedTick) {
+                === completedReleaseSourceTick) {
             return priorCanonical;
         }
         const snapshot = Object.freeze({
@@ -2125,9 +2298,9 @@ export class GpuEnemySimulationEndpoint {
             sessionGeneration: status.sessionGeneration,
             deviceGeneration: status.deviceGeneration,
             authoritativeEpoch: status.authoritativeEpoch,
-            sourceTick: status.lastReleaseCommittedTick,
-            completedThroughTick: status.lastReleaseCommittedTick,
-            publicationFixedTick: status.lastReleaseCommittedTick,
+            sourceTick: completedReleaseSourceTick,
+            completedThroughTick: completedReleaseSourceTick,
+            publicationFixedTick: completedReleaseSourceTick,
             status: GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE,
             errorFlags: 0,
             batchIdFingerprint: 0,
@@ -2146,12 +2319,20 @@ export class GpuEnemySimulationEndpoint {
         if (!this.projectileCaptureBackendSupported) {
             const hasCaptureDomain = !this.destroyed
                 && this.#hasProjectileCaptureRegistryDomain();
+            const terminal = this.projectileCaptureTerminalBackendStatus;
+            const terminalSettled = terminal?.state === 'settled'
+                && terminal.accepted === true
+                && terminal.failure === null;
+            const completedThroughTick = terminalSettled
+                ? terminal.completedThroughTick
+                : 0;
             return Object.freeze({
                 abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
                 state: this.destroyed ? 'destroyed' : 'unsupported',
-                sessionGeneration: this.sessionGeneration,
-                deviceGeneration: 0,
-                authoritativeEpoch: 0,
+                sessionGeneration: terminal?.sessionGeneration
+                    ?? this.sessionGeneration,
+                deviceGeneration: terminal?.deviceGeneration ?? 0,
+                authoritativeEpoch: terminal?.authoritativeEpoch ?? 0,
                 activeDomainBodyCount: 0,
                 stagedReleaseCount: 0,
                 pendingCaptureReadbackCount: 0,
@@ -2159,10 +2340,23 @@ export class GpuEnemySimulationEndpoint {
                 pendingCaptureBatchCount: 0,
                 pendingReleaseBatchCount: 0,
                 preparedBatchCount: 0,
+                sourceTick: completedThroughTick,
+                completedThroughTick,
+                lastReleaseCommittedTick:
+                    terminal?.lastReleaseCommittedTick ?? 0,
+                runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET,
+                errorFlags: 0,
+                capacityRejected: false,
+                retryableCapacityRejected: false,
+                capacityRejectionFlags: 0,
+                retryMode: false,
+                retryOriginTick: 0,
+                retryBacklogRemaining: false,
                 requiresRecovery: hasCaptureDomain,
                 failure: hasCaptureDomain
                     ? 'projectile-capture-backend-unavailable'
-                    : null
+                    : null,
+                terminal
             });
         }
         return this.backend.getProjectileCaptureRuntimeStatus();
@@ -2174,13 +2368,77 @@ export class GpuEnemySimulationEndpoint {
             : this.projectileCaptureTerminalBackendStatus;
         const initialOwner = this.projectileCaptureTerminalOwnerStatus;
         const hostCleanup = this.projectileCaptureTerminalHostCleanup;
+        const finalFixedTick = initialOwner?.finalFixedTick ?? 0;
+        const backendBindingMatchesOwner = initialOwner !== null
+            && backend?.abiVersion === initialOwner.abiVersion
+            && backend.sessionGeneration === initialOwner.sessionGeneration
+            && backend.deviceGeneration === initialOwner.deviceGeneration
+            && backend.authoritativeEpoch === initialOwner.authoritativeEpoch;
+        const captureEnvelope = this.lastAcceptedProjectileCaptureSnapshot;
+        const captureCompletionObserved = initialOwner !== null
+            && captureEnvelope?.targetFixedTick === finalFixedTick
+            && captureEnvelope.snapshot?.abiVersion === initialOwner.abiVersion
+            && captureEnvelope.snapshot.sessionGeneration
+                === initialOwner.sessionGeneration
+            && captureEnvelope.snapshot.deviceGeneration
+                === initialOwner.deviceGeneration
+            && captureEnvelope.snapshot.authoritativeEpoch
+                === initialOwner.authoritativeEpoch
+            && captureEnvelope.snapshot.sourceTick === finalFixedTick
+            && captureEnvelope.snapshot.completedThroughTick === finalFixedTick
+            && captureEnvelope.snapshot.status
+                === GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+            && captureEnvelope.snapshot.errorFlags === 0
+            && captureEnvelope.snapshot.pending === false
+            && captureEnvelope.snapshot.protocolFailure === null;
+        const releaseEnvelope
+            = this.lastAcceptedProjectileCaptureReleaseSnapshot;
+        const releaseCompletionObserved = initialOwner !== null
+            && releaseEnvelope?.targetFixedTick === finalFixedTick
+            && releaseEnvelope.snapshot?.abiVersion === initialOwner.abiVersion
+            && releaseEnvelope.snapshot.sessionGeneration
+                === initialOwner.sessionGeneration
+            && releaseEnvelope.snapshot.deviceGeneration
+                === initialOwner.deviceGeneration
+            && releaseEnvelope.snapshot.authoritativeEpoch
+                === initialOwner.authoritativeEpoch
+            && releaseEnvelope.snapshot.sourceTick === finalFixedTick
+            && releaseEnvelope.snapshot.completedThroughTick === finalFixedTick
+            && releaseEnvelope.snapshot.publicationFixedTick === finalFixedTick
+            && releaseEnvelope.snapshot.status
+                === GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+            && releaseEnvelope.snapshot.errorFlags === 0
+            && releaseEnvelope.snapshot.pending === false
+            && releaseEnvelope.snapshot.protocolFailure === null;
+        const ownerCompletionObserved
+            = captureCompletionObserved && releaseCompletionObserved;
+        const bindingFailure = initialOwner !== null
+                && backend !== null
+                && !backendBindingMatchesOwner
+            ? 'projectile-capture-terminal-binding-drift'
+            : null;
+        const ownerFailure = initialOwner?.failure
+            ?? bindingFailure
+            ?? backend?.failure
+            ?? hostCleanup.failure
+            ?? null;
         const owner = initialOwner
             ? Object.freeze({
                 ...initialOwner,
-                state: backend?.state === 'failed'
+                accepted: initialOwner.accepted === true
+                    && ownerFailure === null,
+                submittedTick: ownerCompletionObserved
+                    ? finalFixedTick
+                    : initialOwner.submittedTick,
+                completedThroughTick: ownerCompletionObserved
+                    ? finalFixedTick
+                    : initialOwner.completedThroughTick,
+                state: ownerFailure !== null
                     ? 'failed'
-                    : backend?.state === 'settled'
+                    : backendBindingMatchesOwner
+                        && backend?.state === 'settled'
                         && hostCleanup.pendingHeldDespawnCount === 0
+                        && ownerCompletionObserved
                         ? 'settled'
                         : 'armed',
                 pendingPreparedBatchCount:
@@ -2188,7 +2446,7 @@ export class GpuEnemySimulationEndpoint {
                 armedBatchCount: backend?.stagedReleaseCount ?? 0,
                 terminalHeldDespawnRequestCount:
                     hostCleanup.requestedHeldDespawnCount,
-                failure: backend?.failure ?? hostCleanup.failure ?? null
+                failure: ownerFailure
             })
             : null;
         return Object.freeze({
@@ -2394,6 +2652,36 @@ export class GpuEnemySimulationEndpoint {
                 = this.#atomicTransformCommandOwner.closeForTerminal(
                     finalFixedTick ?? 1
                 );
+            const projectileCaptureRuntimeBinding
+                = this.projectileCaptureBackendSupported
+                    ? this.backend.getProjectileCaptureRuntimeStatus()
+                    : Object.freeze({
+                        abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                        sessionGeneration: this.sessionGeneration,
+                        deviceGeneration: 0,
+                        authoritativeEpoch: 0
+                    });
+            const projectileCaptureRuntimeBindingValid
+                = projectileCaptureRuntimeBinding?.abiVersion
+                    === GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+                && Number.isSafeInteger(
+                    projectileCaptureRuntimeBinding.sessionGeneration
+                )
+                && projectileCaptureRuntimeBinding.sessionGeneration > 0
+                && projectileCaptureRuntimeBinding.sessionGeneration
+                    <= 0xffffffff
+                && Number.isSafeInteger(
+                    projectileCaptureRuntimeBinding.deviceGeneration
+                )
+                && projectileCaptureRuntimeBinding.deviceGeneration >= 0
+                && projectileCaptureRuntimeBinding.deviceGeneration
+                    < 0xffffffff
+                && Number.isSafeInteger(
+                    projectileCaptureRuntimeBinding.authoritativeEpoch
+                )
+                && projectileCaptureRuntimeBinding.authoritativeEpoch >= 0
+                && projectileCaptureRuntimeBinding.authoritativeEpoch
+                    < 0xffffffff;
             const projectileCaptureCommands
                 = this.projectileCaptureBackendSupported
                     ? this.backend
@@ -2416,6 +2704,7 @@ export class GpuEnemySimulationEndpoint {
                             pendingCaptureReadbackCount: 0,
                             pendingReleaseReadbackCount: 0,
                             pendingCompletionBatchCount: 0,
+                            submittedTick: finalFixedTick ?? 1,
                             completedThroughTick: finalFixedTick ?? 1,
                             failure: null
                         })
@@ -2425,14 +2714,47 @@ export class GpuEnemySimulationEndpoint {
                         finalFixedTick: finalFixedTick ?? 1,
                         failure: 'projectile-capture-backend-unavailable'
                     });
+            const projectileCaptureCommandBindingValid
+                = projectileCaptureRuntimeBindingValid
+                && projectileCaptureCommands?.abiVersion
+                    === projectileCaptureRuntimeBinding.abiVersion
+                && projectileCaptureCommands.sessionGeneration
+                    === projectileCaptureRuntimeBinding.sessionGeneration
+                && projectileCaptureCommands.deviceGeneration
+                    === projectileCaptureRuntimeBinding.deviceGeneration
+                && projectileCaptureCommands.authoritativeEpoch
+                    === projectileCaptureRuntimeBinding.authoritativeEpoch;
+            const projectileCaptureOwnerFailure
+                = !projectileCaptureRuntimeBindingValid
+                    || !projectileCaptureCommandBindingValid
+                ? 'projectile-capture-terminal-binding-drift'
+                : projectileCaptureCommands?.accepted !== true
+                        || projectileCaptureCommands?.state === 'failed'
+                    ? projectileCaptureCommands?.failure
+                        ?? 'projectile-capture-terminal-cancel-rejected'
+                    : projectileCaptureCommands?.failure ?? null;
             this.projectileCaptureTerminalBackendStatus
                 = projectileCaptureCommands;
+            this.projectileCaptureDeferredDeathReceipts.clear();
             this.projectileCaptureTerminalOwnerStatus = Object.freeze({
-                accepted: projectileCaptureCommands?.accepted === true,
+                abiVersion: projectileCaptureRuntimeBinding?.abiVersion
+                    ?? GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                accepted: projectileCaptureCommands?.accepted === true
+                    && projectileCaptureOwnerFailure === null,
                 state: projectileCaptureCommands?.state === 'failed'
+                        || projectileCaptureOwnerFailure !== null
                     ? 'failed'
                     : 'armed',
                 finalFixedTick: finalFixedTick ?? 1,
+                sessionGeneration:
+                    projectileCaptureRuntimeBinding?.sessionGeneration
+                        ?? this.sessionGeneration,
+                deviceGeneration:
+                    projectileCaptureRuntimeBinding?.deviceGeneration ?? 0,
+                authoritativeEpoch:
+                    projectileCaptureRuntimeBinding?.authoritativeEpoch ?? 0,
+                submittedTick: 0,
+                completedThroughTick: 0,
                 pendingPreparedBatchCount:
                     projectileCaptureCommands
                         ?.unpublishedPreparedProofCount ?? 0,
@@ -2443,7 +2765,7 @@ export class GpuEnemySimulationEndpoint {
                 terminalHeldDespawnRequestCount:
                     this.projectileCaptureTerminalHostCleanup
                         .requestedHeldDespawnCount,
-                failure: projectileCaptureCommands?.failure ?? null
+                failure: projectileCaptureOwnerFailure
             });
             const routeAvailabilityCommands
                 = !this.routeAvailabilityBackendSupported
@@ -3247,6 +3569,21 @@ export class GpuEnemySimulationEndpoint {
         if (prepared.failure) {
             return this.#failCompletedEventProtocol(tick, prepared.failure);
         }
+        const firstHitCapacityBatches = prepared.acceptedBatches.filter(
+            (batch) => batch.atomicTransformFirstHitCapacityRejected === true
+        );
+        if (firstHitCapacityBatches.length > 0
+            && (firstHitCapacityBatches.length !== 1
+                || prepared.acceptedBatches.length !== 1
+                || prepared.batchCount !== 1)) {
+            return this.#failCompletedEventProtocol(
+                tick,
+                this.#createEventProtocolFailure(
+                    'atomic-transform-first-hit-capacity-aggregate',
+                    'first-hit event capacity rejection은 단일 exact lower batch여야 합니다.'
+                )
+            );
+        }
         if (this.projectileCaptureBackendSupported) {
             const captureProof = this.lastAcceptedProjectileCaptureProtocol;
             const incoherentBatch = prepared.acceptedBatches.some((batch) => (
@@ -3282,6 +3619,7 @@ export class GpuEnemySimulationEndpoint {
         const deathEvents = [];
         this.completedEventTotals.stale += prepared.staleEventCount;
         for (const normalized of prepared.events) {
+            let projectileCaptureDeferredDeath = null;
             const knownFingerprint = this.knownCompletedEventKeys.get(normalized.key);
             let disposition = knownFingerprint === normalized.fingerprint
                 ? 'duplicate'
@@ -3302,19 +3640,54 @@ export class GpuEnemySimulationEndpoint {
                         entityId: normalized.entityId,
                         incarnation: normalized.incarnation
                     };
-                    const requested = this.lifecycleCommandOwner.requestDespawn(
-                        handle,
-                        'gpu-death',
-                        tick,
-                        `gpu-death:${normalized.key}`,
-                        null,
-                        this.#terminalCleanupAuthority.issuePermit()
-                    );
-                    if (requested.accepted) {
-                        disposition = 'despawn-requested';
+                    const capacityBackoff = this
+                        .lastAcceptedProjectileCaptureSnapshot?.snapshot;
+                    const captureBody = capacityBackoff?.capacityRejected === true
+                        && capacityBackoff.sourceTick === normalized.sourceTick
+                        ? this.backend.getProjectileCaptureBodyState(handle)
+                        : null;
+                    const heldCaptureIdentity = captureBody?.state?.phase
+                        === GPU_PROJECTILE_CAPTURE_PHASE.HELD
+                        || captureBody?.state?.phase
+                            === GPU_PROJECTILE_CAPTURE_PHASE.RELEASE_PREPARED;
+                    if (heldCaptureIdentity) {
+                        // Capacity-only completion retained this exact bilateral
+                        // state, so its death event remains observable but its
+                        // lifecycle removal waits for next tick's cleanup retry.
+                        const deferredReceipt
+                            = this.#rememberProjectileCaptureDeferredDeath(
+                                normalized,
+                                captureBody,
+                                capacityBackoff
+                            );
+                        if (!deferredReceipt) {
+                            return this.#failCompletedEventProtocol(
+                                tick,
+                                Object.freeze({
+                                    stage: 'completed-event-protocol',
+                                    code: 'projectile-capture-capacity-death-proof',
+                                    name: 'ProjectileCaptureCapacityDeathViolation',
+                                    message: 'capacity backoff death가 exact bilateral HELD identity와 다릅니다.'
+                                })
+                            );
+                        }
+                        disposition = 'projectile-capture-capacity-deferred';
+                        projectileCaptureDeferredDeath = deferredReceipt;
                     } else {
-                        disposition = 'duplicate';
-                        this.completedEventTotals.deduped++;
+                        const requested = this.lifecycleCommandOwner.requestDespawn(
+                            handle,
+                            'gpu-death',
+                            tick,
+                            `gpu-death:${normalized.key}`,
+                            null,
+                            this.#terminalCleanupAuthority.issuePermit()
+                        );
+                        if (requested.accepted) {
+                            disposition = 'despawn-requested';
+                        } else {
+                            disposition = 'duplicate';
+                            this.completedEventTotals.deduped++;
+                        }
                     }
                 } else {
                     this.completedEventTotals.applied++;
@@ -3322,7 +3695,13 @@ export class GpuEnemySimulationEndpoint {
                 }
             }
             const { fingerprint: _fingerprint, ...publicEvent } = normalized;
-            const event = Object.freeze({ ...publicEvent, disposition });
+            const event = Object.freeze({
+                ...publicEvent,
+                disposition,
+                ...(projectileCaptureDeferredDeath
+                    ? { projectileCaptureDeferredDeath }
+                    : null)
+            });
             if (this.#isAuthenticProjectileCaptureCoreImpactEvent(event)) {
                 if (this.backend.registerProjectileCaptureCoreImpactReceipt(
                     event
@@ -3351,12 +3730,30 @@ export class GpuEnemySimulationEndpoint {
         this.lastAcceptedEventStreamSourceTick = prepared.lastStreamSourceTick;
         this.lastAcceptedEventSubmittedTick = prepared.lastSubmittedTick;
         this.lastAcceptedEventProtocolKey = prepared.protocolKey;
+        const firstHitEvidence = prepared.acceptedBatches.length === 1
+            ? prepared.acceptedBatches[0]
+            : null;
         this.lastCompletedSimulationEvents = Object.freeze({
             targetFixedTick: tick,
             sourceTick: prepared.lastSourceTick,
             completedThroughTick: this.completedThroughTick,
             batchCount: prepared.batchCount,
             droppedEventCount: 0,
+            atomicTransformFirstHitCapacityRejected:
+                firstHitEvidence?.atomicTransformFirstHitCapacityRejected === true,
+            retryableAtomicTransformFirstHitCapacityRejected:
+                firstHitEvidence
+                    ?.retryableAtomicTransformFirstHitCapacityRejected === true,
+            atomicTransformFirstHitRejectionReason:
+                firstHitEvidence?.atomicTransformFirstHitRejectionReason ?? null,
+            atomicTransformFirstHitCandidateCount:
+                firstHitEvidence?.atomicTransformFirstHitCandidateCount ?? 0,
+            atomicTransformFirstHitCommittedCount:
+                firstHitEvidence?.atomicTransformFirstHitCommittedCount ?? 0,
+            atomicTransformFirstHitEventBase:
+                firstHitEvidence?.atomicTransformFirstHitEventBase ?? 0,
+            atomicTransformFirstHitEventCapacity:
+                firstHitEvidence?.atomicTransformFirstHitEventCapacity ?? 0,
             events: Object.freeze(events),
             contactEvents: Object.freeze(contactEvents),
             deathEvents: Object.freeze(deathEvents),
@@ -3368,6 +3765,166 @@ export class GpuEnemySimulationEndpoint {
     /** 최신 fixed-boundary의 bounded 완료 event snapshot입니다. */
     getLastCompletedSimulationEvents() {
         return this.lastCompletedSimulationEvents;
+    }
+
+    #rememberProjectileCaptureDeferredDeath(
+        event,
+        body,
+        capacitySnapshot
+    ) {
+        const state = body?.state;
+        const deadRole = state?.role;
+        if ((deadRole !== GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+                && deadRole !== GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE)
+            || state.selfEntityId !== event.entityId
+            || state.selfIncarnation !== event.incarnation
+            || !Number.isSafeInteger(state.peerEntityId)
+            || state.peerEntityId <= 0
+            || state.peerEntityId >= 0xffffffff
+            || !Number.isSafeInteger(state.peerIncarnation)
+            || state.peerIncarnation <= 0
+            || state.peerIncarnation >= 0xffffffff
+            || !Number.isSafeInteger(state.captureSequence)
+            || state.captureSequence <= 0
+            || state.captureSequence >= 0xffffffff
+            || capacitySnapshot?.sessionGeneration !== event.sessionGeneration
+            || capacitySnapshot?.deviceGeneration !== event.deviceGeneration
+            || capacitySnapshot?.authoritativeEpoch
+                !== event.authoritativeEpoch
+            || capacitySnapshot?.sourceTick !== event.sourceTick) {
+            return null;
+        }
+        const peerHandle = Object.freeze({
+            entityId: state.peerEntityId,
+            incarnation: state.peerIncarnation
+        });
+        const peer = this.backend.getProjectileCaptureBodyState(peerHandle);
+        const peerRole = deadRole === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            ? GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+            : GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR;
+        if (!peer
+            || peer.bodySlot !== state.peerBodySlot
+            || peer.state?.role !== peerRole
+            || peer.state.phase !== state.phase
+            || peer.state.selfEntityId !== peerHandle.entityId
+            || peer.state.selfIncarnation !== peerHandle.incarnation
+            || peer.state.peerBodySlot !== body.bodySlot
+            || peer.state.peerEntityId !== event.entityId
+            || peer.state.peerIncarnation !== event.incarnation
+            || peer.state.captureSequence !== state.captureSequence
+            || (deadRole === GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+                ? body.capturedMirror !== true
+                : peer.capturedMirror !== true)) {
+            return null;
+        }
+        const deadHandle = Object.freeze({
+            entityId: event.entityId,
+            incarnation: event.incarnation
+        });
+        const receipt = Object.freeze({
+            sessionGeneration: event.sessionGeneration,
+            deviceGeneration: event.deviceGeneration,
+            authoritativeEpoch: event.authoritativeEpoch,
+            eventSourceTick: event.sourceTick,
+            eventSequence: event.sequence,
+            eventKey: event.key,
+            deadRole,
+            deadHandle,
+            peerHandle,
+            captureSequence: state.captureSequence,
+            capacityRejectionFlags:
+                capacitySnapshot.capacityRejectionFlags
+        });
+        const key = projectileCaptureHandleKey(deadHandle);
+        const prior = this.projectileCaptureDeferredDeathReceipts.get(key);
+        if (prior && (prior.eventKey !== receipt.eventKey
+            || prior.captureSequence !== receipt.captureSequence
+            || prior.deadRole !== receipt.deadRole
+            || prior.peerHandle.entityId !== receipt.peerHandle.entityId
+            || prior.peerHandle.incarnation !== receipt.peerHandle.incarnation)) {
+            return null;
+        }
+        this.projectileCaptureDeferredDeathReceipts.set(key, prior ?? receipt);
+        return prior ?? receipt;
+    }
+
+    #stageDeferredProjectileCaptureDeaths(batch, targetFixedTick) {
+        const matches = [];
+        const matchedKeys = new Set();
+        const match = (deadHandle, peerHandle, captureSequence, deadRole) => {
+            const key = projectileCaptureHandleKey(deadHandle);
+            const receipt = this.projectileCaptureDeferredDeathReceipts.get(key);
+            if (!receipt) return true;
+            const exact = !matchedKeys.has(key)
+                && receipt.sessionGeneration === batch.sessionGeneration
+                && receipt.deviceGeneration === batch.deviceGeneration
+                && receipt.authoritativeEpoch === batch.authoritativeEpoch
+                && receipt.eventSourceTick < batch.sourceTick
+                && receipt.deadRole === deadRole
+                && receipt.deadHandle.entityId === deadHandle.entityId
+                && receipt.deadHandle.incarnation === deadHandle.incarnation
+                && receipt.peerHandle.entityId === peerHandle.entityId
+                && receipt.peerHandle.incarnation === peerHandle.incarnation
+                && receipt.captureSequence === captureSequence
+                && this.registry.has(receipt.deadHandle)
+                && this.backend.hasBody(receipt.deadHandle);
+            if (!exact) return false;
+            matchedKeys.add(key);
+            matches.push({ key, receipt });
+            return true;
+        };
+        for (const cleanup of batch.cleanups) {
+            if (!match(
+                cleanup.projectileHandle,
+                cleanup.captorHandle,
+                cleanup.captureSequence,
+                GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+            )) {
+                return this.#createEventProtocolFailure(
+                    'projectile-capture-capacity-cleanup-aba',
+                    'capacity-deferred projectile death receipt가 cleanup identity와 다릅니다.'
+                );
+            }
+        }
+        for (const preparation of batch.releasePreparations) {
+            if (preparation.releaseReason
+                    !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_DEATH) {
+                continue;
+            }
+            if (!match(
+                preparation.captorHandle,
+                preparation.projectileHandle,
+                preparation.captureSequence,
+                GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            )) {
+                return this.#createEventProtocolFailure(
+                    'projectile-capture-capacity-release-aba',
+                    'capacity-deferred captor death receipt가 release prepare identity와 다릅니다.'
+                );
+            }
+        }
+        for (const { key, receipt } of matches) {
+            const result = this.lifecycleCommandOwner.requestDespawn(
+                receipt.deadHandle,
+                'gpu-death',
+                targetFixedTick,
+                `gpu-death:projectile-capture-capacity:${receipt.eventKey}`,
+                null,
+                this.#terminalCleanupAuthority.issuePermit()
+            );
+            const authenticDuplicate = result?.accepted === false
+                && result.reason === 'duplicate-despawn'
+                && result.authenticTerminalCleanup === true
+                && result.targetFixedTick === targetFixedTick;
+            if (result?.accepted !== true && !authenticDuplicate) {
+                return this.#createEventProtocolFailure(
+                    'projectile-capture-capacity-death-stage',
+                    `capacity-deferred gpu-death lifecycle 요청이 거절됐습니다: ${String(result?.reason)}`
+                );
+            }
+            this.projectileCaptureDeferredDeathReceipts.delete(key);
+        }
+        return null;
     }
 
     /** 권위 GPU 물리를 한 fixed step 제출합니다. */
@@ -3598,6 +4155,7 @@ export class GpuEnemySimulationEndpoint {
         this.completedEventKeyHead = 0;
         this.#authenticEffectLifecycleCommits = new WeakSet();
         this.#authenticProjectileCapturePrepareEvidence = new WeakSet();
+        this.projectileCaptureDeferredDeathReceipts.clear();
         this.#authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
         this.projectileCaptureTerminalCleanupCommandIds.clear();
         this.routeAvailabilityTerminalCleanupCommandIds.clear();
@@ -3661,7 +4219,8 @@ export class GpuEnemySimulationEndpoint {
         if (!this.projectileCaptureBackendSupported
             || !Object.isFrozen(event)
             || event.type !== 'contact'
-            || event.eventType !== 'interaction-enter'
+            || (event.eventType !== 'interaction-enter'
+                && event.eventType !== 'interaction-continuous')
             || event.disposition !== 'applied'
             || !event.other) {
             return false;
@@ -4018,6 +4577,13 @@ export class GpuEnemySimulationEndpoint {
                 batch.previousSourceTick,
                 batch.previousSubmittedTick,
                 batch.completedThroughTick,
+                batch.atomicTransformFirstHitCapacityRejected,
+                batch.retryableAtomicTransformFirstHitCapacityRejected,
+                batch.atomicTransformFirstHitRejectionReason,
+                batch.atomicTransformFirstHitCandidateCount,
+                batch.atomicTransformFirstHitCommittedCount,
+                batch.atomicTransformFirstHitEventBase,
+                batch.atomicTransformFirstHitEventCapacity,
                 ...batchEvents.map(({ fingerprint }) => fingerprint)
             ]);
             const knownBatchFingerprint = this.knownCompletedBatchKeys.get(batchKey)
@@ -4078,7 +4644,21 @@ export class GpuEnemySimulationEndpoint {
                     sessionGeneration: batch.sessionGeneration,
                     deviceGeneration: batch.deviceGeneration,
                     authoritativeEpoch: batch.authoritativeEpoch,
-                    sourceTick: batch.sourceTick
+                    sourceTick: batch.sourceTick,
+                    atomicTransformFirstHitCapacityRejected:
+                        batch.atomicTransformFirstHitCapacityRejected,
+                    retryableAtomicTransformFirstHitCapacityRejected:
+                        batch.retryableAtomicTransformFirstHitCapacityRejected,
+                    atomicTransformFirstHitRejectionReason:
+                        batch.atomicTransformFirstHitRejectionReason,
+                    atomicTransformFirstHitCandidateCount:
+                        batch.atomicTransformFirstHitCandidateCount,
+                    atomicTransformFirstHitCommittedCount:
+                        batch.atomicTransformFirstHitCommittedCount,
+                    atomicTransformFirstHitEventBase:
+                        batch.atomicTransformFirstHitEventBase,
+                    atomicTransformFirstHitEventCapacity:
+                        batch.atomicTransformFirstHitEventCapacity
                 });
                 preparedBatchFingerprints.set(batchKey, batchFingerprint);
             }
@@ -4141,6 +4721,46 @@ export class GpuEnemySimulationEndpoint {
             if (!sourceEvents) {
                 throw new TypeError(`batch[${index}].events 배열이 필요합니다.`);
             }
+            const capacityRejected
+                = source.atomicTransformFirstHitCapacityRejected === true;
+            const retryableCapacityRejected
+                = source.retryableAtomicTransformFirstHitCapacityRejected === true;
+            const rejectionReason
+                = source.atomicTransformFirstHitRejectionReason ?? null;
+            const candidateCount = requiredInteger(
+                source.atomicTransformFirstHitCandidateCount,
+                `batch[${index}].atomicTransformFirstHitCandidateCount`
+            );
+            const committedCount = requiredInteger(
+                source.atomicTransformFirstHitCommittedCount,
+                `batch[${index}].atomicTransformFirstHitCommittedCount`
+            );
+            const eventBase = requiredInteger(
+                source.atomicTransformFirstHitEventBase,
+                `batch[${index}].atomicTransformFirstHitEventBase`
+            );
+            const eventCapacity = requiredInteger(
+                source.atomicTransformFirstHitEventCapacity,
+                `batch[${index}].atomicTransformFirstHitEventCapacity`,
+                false
+            );
+            if (capacityRejected
+                ? (!retryableCapacityRejected
+                    || rejectionReason
+                        !== 'atomic-transform-first-hit-event-capacity'
+                    || candidateCount === 0
+                    || committedCount !== 0
+                    || eventBase > eventCapacity
+                    || candidateCount <= eventCapacity - eventBase)
+                : (retryableCapacityRejected
+                    || rejectionReason !== null
+                    || committedCount !== candidateCount
+                    || eventBase > eventCapacity
+                    || candidateCount > eventCapacity - eventBase)) {
+                throw new RangeError(
+                    `batch[${index}] AtomicTransform first-hit capacity evidence가 유효하지 않습니다.`
+                );
+            }
             return {
                 failure: null,
                 batch: {
@@ -4180,6 +4800,14 @@ export class GpuEnemySimulationEndpoint {
                         source.completedThroughTick,
                         `batch[${index}].completedThroughTick`
                     ),
+                    atomicTransformFirstHitCapacityRejected: capacityRejected,
+                    retryableAtomicTransformFirstHitCapacityRejected:
+                        retryableCapacityRejected,
+                    atomicTransformFirstHitRejectionReason: rejectionReason,
+                    atomicTransformFirstHitCandidateCount: candidateCount,
+                    atomicTransformFirstHitCommittedCount: committedCount,
+                    atomicTransformFirstHitEventBase: eventBase,
+                    atomicTransformFirstHitEventCapacity: eventCapacity,
                     sourceEvents
                 }
             };

@@ -157,7 +157,7 @@ struct BodyTemporary {
 }
 
 struct RouteRuntimeState {
-    meta: u32,
+    packed_meta: u32,
     self_entity_id: u32,
     self_incarnation: u32,
     current_path_index: u32,
@@ -299,17 +299,25 @@ struct AppliedEventBuffer { values: array<AppliedEvent> }
 @group(0) @binding(9) var<uniform> params: RouteParams;
 @group(0) @binding(10) var<storage, read_write> temporaries: TemporaryBuffer;
 
-fn role_of(meta: u32) -> u32 { return meta & 255u; }
-fn phase_of(meta: u32) -> u32 { return (meta >> 8u) & 255u; }
-fn flags_of(meta: u32) -> u32 { return meta >> 16u; }
+fn role_of(packed_meta: u32) -> u32 { return packed_meta & 255u; }
+fn phase_of(packed_meta: u32) -> u32 { return (packed_meta >> 8u) & 255u; }
+fn flags_of(packed_meta: u32) -> u32 { return packed_meta >> 16u; }
 fn pack_meta(role: u32, phase: u32, flags: u32) -> u32 {
     return role | (phase << 8u) | (flags << 16u);
 }
 fn set_phase(state: ptr<storage, RouteRuntimeState, read_write>, phase: u32) {
-    (*state).meta = pack_meta(role_of((*state).meta), phase, flags_of((*state).meta));
+    (*state).packed_meta = pack_meta(
+        role_of((*state).packed_meta),
+        phase,
+        flags_of((*state).packed_meta)
+    );
 }
 fn set_route_flags(state: ptr<storage, RouteRuntimeState, read_write>, flags: u32) {
-    (*state).meta = pack_meta(role_of((*state).meta), phase_of((*state).meta), flags);
+    (*state).packed_meta = pack_meta(
+        role_of((*state).packed_meta),
+        phase_of((*state).packed_meta),
+        flags
+    );
 }
 fn is_alive(body_slot: u32) -> bool {
     return body_slot < counts.body_count
@@ -407,8 +415,8 @@ fn set_actor_path(body_slot: u32, path_index: u32, target_field_index: u32) {
     route_states.values[body_slot].reserved_1 = 0u;
     route_states.values[body_slot].observed_availability_version
         = availability.availability_version;
-    let old_flags = flags_of(route_states.values[body_slot].meta);
-    route_states.values[body_slot].meta = pack_meta(
+    let old_flags = flags_of(route_states.values[body_slot].packed_meta);
+    route_states.values[body_slot].packed_meta = pack_meta(
         ROLE_ACTOR,
         PHASE_TRAVEL,
         (old_flags | FLAG_GRAPH_ENABLED)
@@ -423,13 +431,15 @@ fn set_actor_path(body_slot: u32, path_index: u32, target_field_index: u32) {
         atomicOr(&simulations.values[body_slot].flags, BODY_FLAG_USE_FLOW);
         set_route_flags(
             &route_states.values[body_slot],
-            flags_of(route_states.values[body_slot].meta) & ~FLAG_DEFERRED_FLOW_RESUME
+            flags_of(route_states.values[body_slot].packed_meta)
+                & ~FLAG_DEFERRED_FLOW_RESUME
         );
     } else {
         atomicAnd(&simulations.values[body_slot].flags, ~BODY_FLAG_USE_FLOW);
         set_route_flags(
             &route_states.values[body_slot],
-            flags_of(route_states.values[body_slot].meta) | FLAG_DEFERRED_FLOW_RESUME
+            flags_of(route_states.values[body_slot].packed_meta)
+                | FLAG_DEFERRED_FLOW_RESUME
         );
     }
 }
@@ -445,7 +455,10 @@ fn enter_route_owned_wait(
     (*state).reserved_0 = bitcast<u32>(select(0.0, base_velocity.x, finite_base_velocity));
     (*state).reserved_1 = bitcast<u32>(select(0.0, base_velocity.y, finite_base_velocity));
     (*state).pending_field_index = pending_field_index;
-    set_route_flags(state, flags_of((*state).meta) & ~FLAG_DEFERRED_FLOW_RESUME);
+    set_route_flags(
+        state,
+        flags_of((*state).packed_meta) & ~FLAG_DEFERRED_FLOW_RESUME
+    );
     atomicAnd(&simulations.values[body_slot].flags, ~BODY_FLAG_USE_FLOW);
     set_phase(state, PHASE_WAITING);
 }
@@ -510,8 +523,8 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let state = &route_states.values[body_slot];
-    let role = role_of((*state).meta);
-    var phase = phase_of((*state).meta);
+    let role = role_of((*state).packed_meta);
+    var phase = phase_of((*state).packed_meta);
     if (role == ROLE_NONE
         || (*state).self_entity_id != simulations.values[body_slot].entity_id
         || (*state).self_incarnation != simulations.values[body_slot].incarnation) {
@@ -560,12 +573,13 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             return;
         }
         if (phase == PHASE_TRAVEL
-            && (flags_of((*state).meta) & FLAG_DEFERRED_FLOW_RESUME) != 0u
+            && (flags_of((*state).packed_meta)
+                & FLAG_DEFERRED_FLOW_RESUME) != 0u
             && !external_control_owns_motion) {
             atomicOr(&simulations.values[body_slot].flags, BODY_FLAG_USE_FLOW);
             set_route_flags(
                 state,
-                flags_of((*state).meta) & ~FLAG_DEFERRED_FLOW_RESUME
+                flags_of((*state).packed_meta) & ~FLAG_DEFERRED_FLOW_RESUME
             );
         }
         if (phase != PHASE_TRAVEL || closure_index == INVALID
@@ -583,7 +597,10 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
         let clearance_progress = topology.values[closure + 8u];
         let entrance_progress = topology.values[closure + 7u];
         if (progress <= upstream_progress) {
-            set_route_flags(state, flags_of((*state).meta) | FLAG_REROUTE_PENDING);
+            set_route_flags(
+                state,
+                flags_of((*state).packed_meta) | FLAG_REROUTE_PENDING
+            );
             if (switch_index != INVALID && at_field_goal(body_slot, field_index)) {
                 let selected = choose_open_transition(path_index, switch_index);
                 if (selected.x != INVALID) {
@@ -598,7 +615,7 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             simulations.values[body_slot].flow_field_index = clearance_field;
             set_route_flags(
                 state,
-                flags_of((*state).meta) | FLAG_WAITING_CLEARANCE
+                flags_of((*state).packed_meta) | FLAG_WAITING_CLEARANCE
             );
             if (progress >= clearance_progress && at_field_goal(body_slot, clearance_field)) {
                 enter_route_owned_wait(body_slot, state, clearance_field);
@@ -608,7 +625,7 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             // never reverse; route-owned wait keeps the current entrance field.
             set_route_flags(
                 state,
-                flags_of((*state).meta) | FLAG_WAITING_CLEARANCE
+                flags_of((*state).packed_meta) | FLAG_WAITING_CLEARANCE
             );
             enter_route_owned_wait(body_slot, state, field_index);
         }
@@ -673,8 +690,8 @@ fn enforce_route_owned_wait_after_external_motion(
         || params.abi_version != ROUTE_ABI_VERSION
         || !is_alive(body_slot)) { return; }
     let state = route_states.values[body_slot];
-    let exact_route_actor = role_of(state.meta) == ROLE_ACTOR
-        && phase_of(state.meta) == PHASE_WAITING
+    let exact_route_actor = role_of(state.packed_meta) == ROLE_ACTOR
+        && phase_of(state.packed_meta) == PHASE_WAITING
         && state.self_entity_id == simulations.values[body_slot].entity_id
         && state.self_incarnation == simulations.values[body_slot].incarnation;
     if (!exact_route_actor) { return; }
@@ -834,7 +851,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
     var closer_slots: array<u32, 8>;
     for (var body_slot = 0u; body_slot < counts.body_count; body_slot++) {
         let state = route_states.values[body_slot];
-        if (role_of(state.meta) == ROLE_CLOSER
+        if (role_of(state.packed_meta) == ROLE_CLOSER
             && state.self_entity_id == simulations.values[body_slot].entity_id
             && state.self_incarnation == simulations.values[body_slot].incarnation
             && is_alive(body_slot)) {
@@ -908,7 +925,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             closer_index++) {
             let body_slot = closer_slots[closer_index];
             let state = route_states.values[body_slot];
-            if (phase_of(state.meta) != PHASE_READY_TO_CLOSE) { continue; }
+            if (phase_of(state.packed_meta) != PHASE_READY_TO_CLOSE) { continue; }
             let closure_index = state.closure_index;
             if (closure_index >= closure_count
                 || virtual_state[closure_index] != AVAILABILITY_LEASED
@@ -943,7 +960,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             closer_index++) {
             let body_slot = closer_slots[closer_index];
             let state = route_states.values[body_slot];
-            if (phase_of(state.meta) != PHASE_SELECT_ROUTE) { continue; }
+            if (phase_of(state.packed_meta) != PHASE_SELECT_ROUTE) { continue; }
             if (state.route_set_index >= topology.values[TOPOLOGY_ROUTE_SET_COUNT]) {
                 failure |= STATUS_RECORD_INVALID;
                 break;
@@ -1072,7 +1089,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                     = action.availability_version;
                 set_route_flags(
                     &route_states.values[action.body_slot],
-                    flags_of(route_states.values[action.body_slot].meta)
+                    flags_of(route_states.values[action.body_slot].packed_meta)
                         | FLAG_BLOCKER_ACTIVE
                 );
                 set_phase(&route_states.values[action.body_slot], PHASE_BLOCKING);
@@ -1085,7 +1102,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                     = action.availability_version;
                 set_route_flags(
                     &route_states.values[action.body_slot],
-                    flags_of(route_states.values[action.body_slot].meta)
+                    flags_of(route_states.values[action.body_slot].packed_meta)
                         & ~FLAG_BLOCKER_ACTIVE
                 );
                 set_phase(&route_states.values[action.body_slot], PHASE_DEAD);

@@ -677,6 +677,7 @@ test('invalid modifier/profile numbers는 fail-fast하고 intent는 continuous c
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
     );
     assert.equal(
         intent.interactionMask,

@@ -22,13 +22,21 @@ import {
     RING_PROJECTILE_CAPTURE_PROFILE_ID
 } from 'data/object/enemy/enemy_projectile_capture_catalog_data.js';
 import {
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG,
     GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG,
     GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR,
     GPU_PROJECTILE_CAPTURE_TICK_STATUS
 } from '../../physics/gpu/gpu_projectile_capture_runtime_abi.js';
+import {
+    GPU_PROJECTILE_CAPTURE_ROLE
+} from '../../physics/gpu/gpu_circle_body_abi.js';
 
 const INVALID_U32 = 0xffffffff;
+const CAPACITY_REJECTION_KNOWN_FLAGS = Object.values(
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG
+).reduce((mask, flag) => mask | flag, 0) >>> 0;
 const CAPTURE_STATE = Object.freeze({
     HELD: 'held',
     RELEASE_PENDING: 'release-pending',
@@ -221,6 +229,7 @@ export class RingProjectileCaptureDirector {
         this.lastObservedFixedTick = 0;
         this.lastStageTick = 0;
         this.lastStageResult = null;
+        this.lastCapacityRejection = null;
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -287,14 +296,184 @@ export class RingProjectileCaptureDirector {
         if (completedThroughTick < this.lastCompletedCaptureTick) {
             return this.#fail('projectile-capture-completion-tick-regression');
         }
-        if (sourceTick > completedThroughTick
-            || snapshot.status !== GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+        if (sourceTick > completedThroughTick) {
+            return this.#fail('projectile-capture-completion-watermark-status');
+        }
+        const capacityRejected = snapshot.capacityRejected === true;
+        let completionFingerprint = batchIdFingerprint;
+        if (capacityRejected) {
+            let capacityRejectionFlags;
+            let captureDemandCount;
+            let releasePreparationDemandCount;
+            let cleanupDemandCount;
+            let captureCapacity;
+            let releasePreparationCapacity;
+            let cleanupCapacity;
+            try {
+                capacityRejectionFlags = requireNonNegativeUint32(
+                    snapshot.capacityRejectionFlags,
+                    'captureCompletion.capacityRejectionFlags'
+                );
+                captureDemandCount = requireNonNegativeUint32(
+                    snapshot.captureDemandCount,
+                    'captureCompletion.captureDemandCount'
+                );
+                releasePreparationDemandCount = requireNonNegativeUint32(
+                    snapshot.releasePreparationDemandCount,
+                    'captureCompletion.releasePreparationDemandCount'
+                );
+                cleanupDemandCount = requireNonNegativeUint32(
+                    snapshot.cleanupDemandCount,
+                    'captureCompletion.cleanupDemandCount'
+                );
+                captureCapacity = requirePositiveUint32(
+                    snapshot.captureCapacity,
+                    'captureCompletion.captureCapacity'
+                );
+                releasePreparationCapacity = requirePositiveUint32(
+                    snapshot.releasePreparationCapacity,
+                    'captureCompletion.releasePreparationCapacity'
+                );
+                cleanupCapacity = requirePositiveUint32(
+                    snapshot.cleanupCapacity,
+                    'captureCompletion.cleanupCapacity'
+                );
+            } catch (error) {
+                return this.#fail(
+                    'projectile-capture-capacity-rejection-contract',
+                    error.message
+                );
+            }
+            const exactCapacityRejection = snapshot.retryable === true
+                && snapshot.retryBatch !== true
+                && snapshot.retryBacklogRemaining !== true
+                && (snapshot.retryOriginTick ?? 0) === 0
+                && snapshot.rejectionReason
+                    === 'projectile-capture-completion-capacity'
+                && snapshot.status === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
+                && snapshot.errorFlags
+                    === GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
+                        .COMPLETION_CAPACITY
+                && sourceTick === completedThroughTick
+                && sourceTick > 0
+                && batchIdFingerprint === 0
+                && capacityRejectionFlags !== 0
+                && (capacityRejectionFlags & ~CAPACITY_REJECTION_KNOWN_FLAGS)
+                    === 0
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CAPTURE)
+                    === (captureDemandCount > captureCapacity)
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG
+                        .RELEASE_PREPARATION)
+                    === (releasePreparationDemandCount
+                        > releasePreparationCapacity)
+                && Boolean(capacityRejectionFlags
+                    & GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CLEANUP)
+                    === (cleanupDemandCount > cleanupCapacity)
+                && snapshot.captures.length === 0
+                && snapshot.releasePreparations.length === 0
+                && snapshot.cleanups.length === 0;
+            if (!exactCapacityRejection) {
+                return this.#fail(
+                    'projectile-capture-capacity-rejection-contract'
+                );
+            }
+            completionFingerprint = [
+                'capacity',
+                capacityRejectionFlags,
+                captureDemandCount,
+                releasePreparationDemandCount,
+                cleanupDemandCount,
+                captureCapacity,
+                releasePreparationCapacity,
+                cleanupCapacity
+            ].join(':');
+            const knownCapacityFingerprint
+                = this.completedCaptureFingerprintByTick.get(sourceTick);
+            if (knownCapacityFingerprint !== undefined) {
+                if (knownCapacityFingerprint === completionFingerprint) {
+                    return Object.freeze({
+                        accepted: true,
+                        replayed: true,
+                        pending: false,
+                        capacityRejected: true,
+                        retryable: true,
+                        retryAfterFixedTick: sourceTick + 1,
+                        captureCount: 0,
+                        releasePreparationCount: 0,
+                        cleanupCount: 0
+                    });
+                }
+                return this.#fail(
+                    'projectile-capture-completion-replay-conflict'
+                );
+            }
+            this.lastCompletedCaptureTick = completedThroughTick;
+            this.completedCaptureFingerprintByTick.set(
+                sourceTick,
+                completionFingerprint
+            );
+            while (this.completedCaptureFingerprintByTick.size > this.capacity) {
+                const oldest = this.completedCaptureFingerprintByTick
+                    .keys().next().value;
+                this.completedCaptureFingerprintByTick.delete(oldest);
+            }
+            this.lastCapacityRejection = Object.freeze({
+                sourceTick,
+                retryAfterFixedTick: sourceTick + 1,
+                capacityRejectionFlags,
+                captureDemandCount,
+                releasePreparationDemandCount,
+                cleanupDemandCount,
+                captureCapacity,
+                releasePreparationCapacity,
+                cleanupCapacity
+            });
+            return Object.freeze({
+                accepted: true,
+                pending: false,
+                capacityRejected: true,
+                retryable: true,
+                retryAfterFixedTick: sourceTick + 1,
+                captureCount: 0,
+                releasePreparationCount: 0,
+                cleanupCount: 0,
+                capturedProjectileCount: this.capturedByProjectileKey.size
+            });
+        }
+        const retryBatch = snapshot.retryBatch === true;
+        const retryBacklogRemaining = snapshot.retryBacklogRemaining === true;
+        const retryOriginTick = Number(snapshot.retryOriginTick ?? 0);
+        if (retryBatch) {
+            const rejection = this.lastCapacityRejection;
+            if (snapshot.retryable === true
+                || snapshot.rejectionReason !== null
+                || !Number.isSafeInteger(retryOriginTick)
+                || retryOriginTick <= 0
+                || retryOriginTick >= sourceTick
+                || rejection?.sourceTick !== retryOriginTick
+                || rejection.capacityRejectionFlags
+                    !== snapshot.capacityRejectionFlags) {
+                return this.#fail('projectile-capture-retry-contract');
+            }
+            completionFingerprint = [
+                batchIdFingerprint,
+                'retry',
+                retryOriginTick,
+                Number(retryBacklogRemaining),
+                snapshot.capacityRejectionFlags
+            ].join(':');
+        } else if (retryBacklogRemaining || retryOriginTick !== 0) {
+            return this.#fail('projectile-capture-retry-contract');
+        }
+        if (snapshot.status !== GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
             || snapshot.errorFlags !== 0) {
             return this.#fail('projectile-capture-completion-watermark-status');
         }
         const knownFingerprint = this.completedCaptureFingerprintByTick.get(sourceTick);
         if (knownFingerprint !== undefined) {
-            if (knownFingerprint === batchIdFingerprint) {
+            if (knownFingerprint === completionFingerprint) {
                 return Object.freeze({
                     accepted: true,
                     replayed: true,
@@ -400,6 +579,8 @@ export class RingProjectileCaptureDirector {
                     prepareEvidence: null,
                     coreImpactReceipt: null,
                     deathEventAuthenticated: false,
+                    deferredCaptorDeathReceipt: null,
+                    deferredProjectileDeathReceipt: null,
                     committedTargetFixedTick: 0,
                     committedTargetHandle: null,
                     committedMetadataRevision: 0,
@@ -557,7 +738,17 @@ export class RingProjectileCaptureDirector {
                     releaseReason,
                     prepareEvidence: evidence,
                     coreImpactReceipt: null,
-                    deathEventAuthenticated: false,
+                    deathEventAuthenticated:
+                        releaseReason
+                            === GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_DEATH
+                        && this.#isExactDeferredDeathReceipt(
+                            entry.deferredCaptorDeathReceipt,
+                            entry.captorHandle,
+                            entry.projectileHandle,
+                            entry.captureSequence,
+                            GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR,
+                            prepareSourceTick
+                        ),
                     commandId: null
                 }));
             }
@@ -650,10 +841,16 @@ export class RingProjectileCaptureDirector {
             );
         }
         this.lastCompletedCaptureTick = completedThroughTick;
-        this.completedCaptureFingerprintByTick.set(sourceTick, batchIdFingerprint);
+        this.completedCaptureFingerprintByTick.set(
+            sourceTick,
+            completionFingerprint
+        );
         while (this.completedCaptureFingerprintByTick.size > this.capacity) {
             const oldest = this.completedCaptureFingerprintByTick.keys().next().value;
             this.completedCaptureFingerprintByTick.delete(oldest);
+        }
+        if (retryBatch && !retryBacklogRemaining) {
+            this.lastCapacityRejection = null;
         }
         return Object.freeze({
             accepted: true,
@@ -930,11 +1127,54 @@ export class RingProjectileCaptureDirector {
                 }));
             }
             for (const event of snapshot.events) {
-                if (event?.type !== 'death' || isReplayDisposition(event)) {
+                if (event?.type !== 'death') {
                     continue;
                 }
                 const deadHandle = normalizeHandle(event, 'projectileCaptureDeath');
                 const deadKey = handleKey(deadHandle);
+                if (event.disposition
+                        === 'projectile-capture-capacity-deferred') {
+                    const receipt = event.projectileCaptureDeferredDeath;
+                    const deadProjectile = nextEntries.get(deadKey);
+                    const projectileKey = deadProjectile
+                        ? deadKey
+                        : nextCaptorSlots.get(deadKey);
+                    const held = projectileKey
+                        ? nextEntries.get(projectileKey)
+                        : null;
+                    const expectedRole = deadProjectile
+                        ? GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+                        : GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR;
+                    const expectedPeer = deadProjectile
+                        ? held?.captorHandle
+                        : held?.projectileHandle;
+                    if (!held || !expectedPeer
+                        || !this.#isExactDeferredDeathReceipt(
+                            receipt,
+                            deadHandle,
+                            expectedPeer,
+                            held.captureSequence,
+                            expectedRole,
+                            event.sourceTick + 1
+                        )
+                        || receipt.eventSourceTick !== event.sourceTick
+                        || receipt.eventSequence !== event.sequence
+                        || receipt.eventKey !== event.key) {
+                        throw new RangeError(
+                            'capacity-deferred death receipt가 current roster/event와 다릅니다.'
+                        );
+                    }
+                    nextEntries.set(projectileKey, Object.freeze({
+                        ...held,
+                        ...(deadProjectile
+                            ? { deferredProjectileDeathReceipt: receipt }
+                            : { deferredCaptorDeathReceipt: receipt })
+                    }));
+                    continue;
+                }
+                if (isReplayDisposition(event)) {
+                    continue;
+                }
                 const deadProjectile = nextEntries.get(deadKey);
                 if (deadProjectile) {
                     if (deadProjectile.batchIdFingerprint > 0) {
@@ -1664,6 +1904,7 @@ export class RingProjectileCaptureDirector {
         this.lastObservedFixedTick = 0;
         this.lastStageTick = 0;
         this.lastStageResult = null;
+        this.lastCapacityRejection = null;
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -1704,6 +1945,7 @@ export class RingProjectileCaptureDirector {
             lastCompletedReleaseTick: this.lastCompletedReleaseTick,
             lastFixedCommitTick: this.lastFixedCommitTick,
             lastObservedFixedTick: this.lastObservedFixedTick,
+            lastCapacityRejection: this.lastCapacityRejection,
             sessionGeneration: this.sessionGeneration,
             deviceGeneration: this.deviceGeneration,
             authoritativeEpoch: this.authoritativeEpoch,
@@ -1727,6 +1969,7 @@ export class RingProjectileCaptureDirector {
         this.completedSequenceKeys.length = 0;
         this.completedCaptureFingerprintByTick.clear();
         this.completedReleaseFingerprintByTick.clear();
+        this.lastCapacityRejection = null;
         this.registry = null;
         this.commandPort = null;
         this.terminal = null;
@@ -1783,6 +2026,39 @@ export class RingProjectileCaptureDirector {
         );
     }
 
+    #isExactDeferredDeathReceipt(
+        receipt,
+        deadHandle,
+        peerHandle,
+        captureSequence,
+        deadRole,
+        retrySourceTick
+    ) {
+        return receipt !== null
+            && typeof receipt === 'object'
+            && Object.isFrozen(receipt)
+            && Object.isFrozen(receipt.deadHandle)
+            && Object.isFrozen(receipt.peerHandle)
+            && receipt.sessionGeneration === this.sessionGeneration
+            && receipt.deviceGeneration === this.deviceGeneration
+            && receipt.authoritativeEpoch === this.authoritativeEpoch
+            && Number.isSafeInteger(receipt.eventSourceTick)
+            && receipt.eventSourceTick > 0
+            && receipt.eventSourceTick < retrySourceTick
+            && Number.isSafeInteger(receipt.eventSequence)
+            && receipt.eventSequence >= 0
+            && typeof receipt.eventKey === 'string'
+            && receipt.eventKey.length > 0
+            && receipt.deadRole === deadRole
+            && sameHandle(receipt.deadHandle, deadHandle)
+            && sameHandle(receipt.peerHandle, peerHandle)
+            && receipt.captureSequence === captureSequence
+            && Number.isSafeInteger(receipt.capacityRejectionFlags)
+            && receipt.capacityRejectionFlags > 0
+            && (receipt.capacityRejectionFlags
+                & ~CAPACITY_REJECTION_KNOWN_FLAGS) === 0;
+    }
+
     #resolveReleaseTowerTarget(entry, currentTowerHandle) {
         if (entry.releaseReason
             !== GPU_PROJECTILE_CAPTURE_RELEASE_REASON.NORMAL_DUE) {
@@ -1814,7 +2090,8 @@ export class RingProjectileCaptureDirector {
         for (const event of events) {
             if (!Object.isFrozen(event)
                 || event?.type !== 'contact'
-                || event?.eventType !== 'interaction-enter'
+                || (event?.eventType !== 'interaction-enter'
+                    && event?.eventType !== 'interaction-continuous')
                 || event?.disposition !== 'applied') {
                 continue;
             }

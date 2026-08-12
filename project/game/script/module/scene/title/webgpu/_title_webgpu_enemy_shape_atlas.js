@@ -8,7 +8,7 @@ const TEXTURE_USAGE_TEXTURE_BINDING = 0x04;
 const TEXTURE_USAGE_RENDER_ATTACHMENT = 0x10;
 const ATLAS_FORMAT = 'rgba8unorm';
 
-/** packet shape code와 같은 순서로 배치되는 7개 적 마스크 키입니다. */
+/** packet shape code와 같은 순서로 배치되는 8개 적 마스크 키입니다. */
 export const TITLE_WEBGPU_ENEMY_SHAPE_KEYS = Object.freeze(
     TITLE_CPU_ENEMY_STYLE_TYPES.map((type) => getEnemyShapeKey(type))
 );
@@ -27,7 +27,7 @@ export const TITLE_WEBGPU_ENEMY_SHAPE_ATLAS_CONSTANTS = Object.freeze({
 });
 
 /**
- * 레거시 ShapeDrawer 권위로 7개 적 모양을 한 줄 atlas에 rasterize하고,
+ * 레거시 ShapeDrawer 권위로 8개 적 모양을 한 줄 atlas에 rasterize하고,
  * device generation마다 정확히 한 번 WebGPU texture로 업로드합니다.
  */
 export class TitleWebGpuEnemyShapeAtlas {

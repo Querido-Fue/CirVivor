@@ -286,7 +286,7 @@ function collectAuthoredRequests() {
         }
     };
     wave.queueSpawnsForFixedTick(1, sink, availability);
-    wave.queueSpawnsForFixedTick(901, sink, availability);
+    wave.queueSpawnsForFixedTick(902, sink, availability);
     return Object.freeze({ tileMap, atlas, requests: Object.freeze(requests) });
 }
 

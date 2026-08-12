@@ -8,8 +8,10 @@ import {
     GPU_PROJECTILE_CAPTURE_STATE_META
 } from './gpu_circle_body_abi.js';
 import {
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG,
     GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE,
     GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
+    GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG,
     GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR,
@@ -76,6 +78,17 @@ const ERROR_TICK_OVERFLOW: u32 = ${w(
 const ERROR_SEQUENCE_EXHAUSTED: u32 = ${w(
     GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG.CAPTURE_SEQUENCE_EXHAUSTED
 )};
+const CAPACITY_REJECT_CAPTURE: u32 = ${w(
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CAPTURE
+)};
+const CAPACITY_REJECT_RELEASE_PREPARATION: u32 = ${w(
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.RELEASE_PREPARATION
+)};
+const CAPACITY_REJECT_CLEANUP: u32 = ${w(
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CLEANUP
+)};
+const CAPACITY_REJECT_KNOWN: u32 = CAPACITY_REJECT_CAPTURE
+    | CAPACITY_REJECT_RELEASE_PREPARATION | CAPACITY_REJECT_CLEANUP;
 const TYPE_CAPTURED: u32 = ${w(GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.CAPTURED)};
 const TYPE_RELEASE_NORMAL: u32 = ${w(
     GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE.RELEASE_PREPARED_NORMAL
@@ -95,6 +108,20 @@ const RELEASE_CORE: u32 = ${w(
     GPU_PROJECTILE_CAPTURE_RELEASE_REASON.CAPTOR_CORE_IMPACT
 )};
 const CANDIDATE_CORE_IMPACT: u32 = 0x100u;
+const CANDIDATE_RETRY_CAPTURE_PROJECTILE: u32 = 1u;
+const CANDIDATE_RETRY_CAPTURE_CAPTOR: u32 = 1u << 1u;
+const CANDIDATE_RETRY_HELD: u32 = 1u << 2u;
+const CANDIDATE_RETRY_SELECTED_CAPTURE: u32 = 1u << 3u;
+const CANDIDATE_RETRY_SELECTED_RELEASE: u32 = 1u << 4u;
+const CANDIDATE_RETRY_SELECTED_CLEANUP: u32 = 1u << 5u;
+const RETRY_STATE_ACTIVE: u32 = ${w(
+    GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG.ACTIVE
+)};
+const RETRY_STATE_BACKLOG_REMAINS: u32 = ${w(
+    GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG.BACKLOG_REMAINS
+)};
+// gpu_collision_shaders.js와 동일한 quiet-NaN contact marker namespace입니다.
+const PROJECTILE_CAPTURE_PREPARED_SHIELD: u32 = 0x7fc00052u;
 const TARGET_FORWARD: u32 = ${w(
     GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR.INVALID_FORWARD
 )};
@@ -176,7 +203,7 @@ struct Contact {
     normal: vec2f,
 }
 struct CaptureState {
-    meta: atomic<u32>,
+    packed_meta: atomic<u32>,
     self_entity_id: u32,
     self_incarnation: u32,
     peer_body_slot: u32,
@@ -214,6 +241,10 @@ struct CaptureParams {
     authoritative_epoch: u32,
     funnel_cos_half_angle: f32,
     exit_clearance_tiles: f32,
+    retry_state_flags: u32,
+    retry_capacity_rejection_flags: u32,
+    retry_origin_tick: u32,
+    retry_reserved: u32,
 }
 struct CaptureTargetConfig {
     body_slot: u32,
@@ -227,19 +258,19 @@ struct CaptureTargetConfig {
 @group(0) @binding(2) var<storage, read_write> simulations: SimulationBuffer;
 @group(0) @binding(3) var<storage, read_write> temporaries: TemporaryBuffer;
 @group(0) @binding(4) var<storage, read_write> contact_state: ContactState;
-@group(0) @binding(5) var<storage, read> contacts: ContactBuffer;
+@group(0) @binding(5) var<storage, read_write> contacts: ContactBuffer;
 @group(0) @binding(6) var<storage, read_write> capture_states: CaptureStateBuffer;
 @group(0) @binding(7) var<storage, read_write> candidates: CaptureCandidateBuffer;
 @group(0) @binding(8) var<storage, read_write> runtime: AtomicWords;
 @group(1) @binding(0) var<uniform> params: CaptureParams;
 @group(1) @binding(1) var<uniform> target_config: CaptureTargetConfig;
 
-fn role(meta: u32) -> u32 { return (meta & ROLE_MASK) >> ROLE_SHIFT; }
-fn phase(meta: u32) -> u32 { return (meta & PHASE_MASK) >> PHASE_SHIFT; }
-fn profile(meta: u32) -> u32 { return (meta & PROFILE_MASK) >> PROFILE_SHIFT; }
-fn policy(meta: u32) -> u32 { return (meta & POLICY_MASK) >> POLICY_SHIFT; }
-fn with_phase(meta: u32, next: u32) -> u32 {
-    return (meta & ~PHASE_MASK) | ((next << PHASE_SHIFT) & PHASE_MASK);
+fn role(packed_meta: u32) -> u32 { return (packed_meta & ROLE_MASK) >> ROLE_SHIFT; }
+fn phase(packed_meta: u32) -> u32 { return (packed_meta & PHASE_MASK) >> PHASE_SHIFT; }
+fn profile(packed_meta: u32) -> u32 { return (packed_meta & PROFILE_MASK) >> PROFILE_SHIFT; }
+fn policy(packed_meta: u32) -> u32 { return (packed_meta & POLICY_MASK) >> POLICY_SHIFT; }
+fn with_phase(packed_meta: u32, next: u32) -> u32 {
+    return (packed_meta & ~PHASE_MASK) | ((next << PHASE_SHIFT) & PHASE_MASK);
 }
 fn alive(slot: u32) -> bool {
     return slot < counts.body_count
@@ -255,8 +286,11 @@ fn identity_matches(slot: u32, entity: u32, incarnation: u32) -> bool {
         && capture_states.values[slot].self_entity_id == entity
         && capture_states.values[slot].self_incarnation == incarnation;
 }
+fn finite_scalar(value: f32) -> bool {
+    return value == value && value - value == 0.0;
+}
 fn finite_vec2(value: vec2f) -> bool {
-    return all(isFinite(value));
+    return all(value == value) && all(value - value == vec2f(0.0));
 }
 fn candidate_is_exact(contact: Contact) -> bool {
     if (contact.other_body_id < 0) { return false; }
@@ -279,8 +313,8 @@ fn candidate_is_exact(contact: Contact) -> bool {
         || simulations.values[projectile_slot].lifetime == 0.0) {
         return false;
     }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     if (role(captor_meta) != ROLE_CAPTOR || phase(captor_meta) != PHASE_IDLE
         || profile(captor_meta) != params.profile_code
         || role(projectile_meta) != ROLE_PROJECTILE
@@ -297,21 +331,35 @@ fn candidate_is_exact(contact: Contact) -> bool {
         return false;
     }
     let projectile_velocity = physics.values[projectile_slot].velocity;
+    let relative_projectile_velocity = projectile_velocity
+        - physics.values[captor_slot].velocity;
     let projectile_speed_squared = dot(projectile_velocity, projectile_velocity);
     let predicted_delta = temporaries.values[projectile_slot].predicted_position
         - temporaries.values[captor_slot].predicted_position;
     let predicted_distance_squared = dot(predicted_delta, predicted_delta);
-    let facing = capture_states.values[captor_slot].facing;
+    let stored_facing = capture_states.values[captor_slot].facing;
+    let captor_velocity = physics.values[captor_slot].velocity;
+    let captor_speed_squared = dot(captor_velocity, captor_velocity);
+    var facing = stored_facing;
+    if (finite_vec2(captor_velocity)
+        && finite_scalar(captor_speed_squared)
+        && captor_speed_squared > 0.000001) {
+        facing = captor_velocity * inverseSqrt(captor_speed_squared);
+    }
     let facing_length_squared = dot(facing, facing);
+    let radial_closing_dot = dot(relative_projectile_velocity, predicted_delta);
     return finite_vec2(projectile_velocity)
-        && isFinite(projectile_speed_squared)
+        && finite_vec2(relative_projectile_velocity)
+        && finite_scalar(projectile_speed_squared)
         && projectile_speed_squared > 0.0
         && finite_vec2(predicted_delta)
-        && isFinite(predicted_distance_squared)
+        && finite_scalar(predicted_distance_squared)
         && predicted_distance_squared > 0.000001
         && finite_vec2(facing)
-        && isFinite(facing_length_squared)
+        && finite_scalar(facing_length_squared)
         && facing_length_squared > 0.000001
+        && finite_scalar(radial_closing_dot)
+        && radial_closing_dot < 0.0
         && dot(
             predicted_delta * inverseSqrt(predicted_distance_squared),
             facing * inverseSqrt(facing_length_squared)
@@ -331,7 +379,7 @@ fn contact_distance_squared_bits(contact: Contact) -> u32 {
     let delta = temporaries.values[u32(contact.other_body_id)].predicted_position
         - temporaries.values[contact.self_body_id].predicted_position;
     let distance_squared = dot(delta, delta);
-    if (!finite_vec2(delta) || !isFinite(distance_squared)
+    if (!finite_vec2(delta) || !finite_scalar(distance_squared)
         || distance_squared < 0.0) {
         return 0x7f800000u;
     }
@@ -344,10 +392,10 @@ fn mix_fingerprint(a: u32, b: u32, c: u32) -> u32 {
     value ^= value >> 15u;
     return select(value, 1u, value == 0u || value == INVALID);
 }
-fn completion_base(partition: u32, index: u32) -> u32 {
+fn completion_base(partition_code: u32, index: u32) -> u32 {
     var base = HEADER_WORDS;
-    if (partition >= 1u) { base += params.capture_capacity * COMPLETION_WORDS; }
-    if (partition >= 2u) { base += params.release_capacity * COMPLETION_WORDS; }
+    if (partition_code >= 1u) { base += params.capture_capacity * COMPLETION_WORDS; }
+    if (partition_code >= 2u) { base += params.release_capacity * COMPLETION_WORDS; }
     return base + index * COMPLETION_WORDS;
 }
 fn store_word(base: u32, word: u32, value: u32) {
@@ -398,7 +446,7 @@ fn write_completion(
     store_word(base, 23u, 0u);
 }
 fn bilateral_held(captor_slot: u32) -> bool {
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
     if (role(captor_meta) != ROLE_CAPTOR
         || (phase(captor_meta) != PHASE_HELD && phase(captor_meta) != PHASE_PREPARED)) {
         return false;
@@ -411,7 +459,7 @@ fn bilateral_held(captor_slot: u32) -> bool {
         )) {
         return false;
     }
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     return role(projectile_meta) == ROLE_PROJECTILE
         && phase(projectile_meta) == phase(captor_meta)
         && capture_states.values[projectile_slot].peer_body_slot == captor_slot
@@ -424,7 +472,7 @@ fn bilateral_held(captor_slot: u32) -> bool {
         && captured(projectile_slot);
 }
 fn bilateral_projectile(projectile_slot: u32) -> bool {
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     if (role(projectile_meta) != ROLE_PROJECTILE
         || (phase(projectile_meta) != PHASE_HELD
             && phase(projectile_meta) != PHASE_PREPARED)) {
@@ -438,7 +486,7 @@ fn bilateral_projectile(projectile_slot: u32) -> bool {
         )) {
         return false;
     }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
     return role(captor_meta) == ROLE_CAPTOR
         && phase(captor_meta) == phase(projectile_meta)
         && capture_states.values[captor_slot].peer_body_slot == projectile_slot
@@ -468,10 +516,180 @@ fn release_kind(captor_slot: u32) -> u32 {
     return 0u;
 }
 
+fn retry_active() -> bool {
+    return (params.retry_state_flags & RETRY_STATE_ACTIVE) != 0u;
+}
+
+fn find_exact_body_slot(entity_id: u32, incarnation: u32) -> u32 {
+    for (var slot = 0u; slot < counts.body_count; slot += 1u) {
+        if (simulations.values[slot].entity_id == entity_id
+            && simulations.values[slot].incarnation == incarnation
+            && capture_states.values[slot].self_entity_id == entity_id
+            && capture_states.values[slot].self_incarnation == incarnation) {
+            return slot;
+        }
+    }
+    return INVALID;
+}
+
+fn retry_capture_projectile_slot(captor_slot: u32) -> u32 {
+    if (captor_slot >= counts.body_count
+        || (atomicLoad(&candidates.values[captor_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_CAPTOR) == 0u) {
+        return INVALID;
+    }
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
+    if (role(captor_meta) != ROLE_CAPTOR || phase(captor_meta) != PHASE_IDLE
+        || !identity_matches(
+            captor_slot,
+            simulations.values[captor_slot].entity_id,
+            simulations.values[captor_slot].incarnation
+        ) || !alive(captor_slot)) {
+        return INVALID;
+    }
+    let projectile_slot = find_exact_body_slot(
+        atomicLoad(&candidates.values[captor_slot].peer_entity_id),
+        candidates.values[captor_slot].peer_incarnation
+    );
+    if (projectile_slot == INVALID || projectile_slot == captor_slot
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u
+        || atomicLoad(&candidates.values[projectile_slot].peer_entity_id)
+            != simulations.values[captor_slot].entity_id
+        || candidates.values[projectile_slot].peer_incarnation
+            != simulations.values[captor_slot].incarnation
+        || !alive(projectile_slot) || captured(projectile_slot)
+        || atomicLoad(&simulations.values[projectile_slot].health) <= 0
+        || simulations.values[projectile_slot].lifetime == 0.0) {
+        return INVALID;
+    }
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
+    if (role(projectile_meta) != ROLE_PROJECTILE
+        || phase(projectile_meta) != PHASE_IDLE
+        || policy(projectile_meta) != POLICY_CAPTURABLE
+        || (physics.values[captor_slot].interaction_meta & 0xffffu)
+            != BODY_LAYER_ENEMY
+        || (simulations.values[captor_slot].gameplay_meta & 0xffu)
+            != TEAM_HOSTILE
+        || (physics.values[projectile_slot].interaction_meta & 0xffffu)
+            != BODY_LAYER_PROJECTILE
+        || (simulations.values[projectile_slot].gameplay_meta & 0xffu)
+            != TEAM_PLAYER) {
+        return INVALID;
+    }
+    return projectile_slot;
+}
+
+fn retry_tuple_less(
+    left_captor: u32,
+    left_projectile: u32,
+    right_captor: u32,
+    right_projectile: u32
+) -> bool {
+    let left_captor_entity = simulations.values[left_captor].entity_id;
+    let right_captor_entity = simulations.values[right_captor].entity_id;
+    if (left_captor_entity != right_captor_entity) {
+        return left_captor_entity < right_captor_entity;
+    }
+    let left_captor_incarnation = simulations.values[left_captor].incarnation;
+    let right_captor_incarnation = simulations.values[right_captor].incarnation;
+    if (left_captor_incarnation != right_captor_incarnation) {
+        return left_captor_incarnation < right_captor_incarnation;
+    }
+    let left_projectile_entity = simulations.values[left_projectile].entity_id;
+    let right_projectile_entity = simulations.values[right_projectile].entity_id;
+    if (left_projectile_entity != right_projectile_entity) {
+        return left_projectile_entity < right_projectile_entity;
+    }
+    let left_projectile_incarnation
+        = simulations.values[left_projectile].incarnation;
+    let right_projectile_incarnation
+        = simulations.values[right_projectile].incarnation;
+    if (left_projectile_incarnation != right_projectile_incarnation) {
+        return left_projectile_incarnation < right_projectile_incarnation;
+    }
+    let left_sequence = max(
+        capture_states.values[left_captor].capture_sequence,
+        capture_states.values[left_projectile].capture_sequence
+    );
+    let right_sequence = max(
+        capture_states.values[right_captor].capture_sequence,
+        capture_states.values[right_projectile].capture_sequence
+    );
+    return left_sequence < right_sequence;
+}
+
+fn retry_capture_rank(captor_slot: u32, projectile_slot: u32) -> u32 {
+    var rank = 0u;
+    for (var other_captor = 0u;
+        other_captor < counts.body_count;
+        other_captor += 1u) {
+        let other_projectile = retry_capture_projectile_slot(other_captor);
+        if (other_projectile != INVALID
+            && retry_tuple_less(
+                other_captor,
+                other_projectile,
+                captor_slot,
+                projectile_slot
+            )) {
+            rank += 1u;
+        }
+    }
+    return rank;
+}
+
+fn retry_held_exact(captor_slot: u32) -> bool {
+    if (captor_slot >= counts.body_count
+        || (atomicLoad(&candidates.values[captor_slot].status)
+            & CANDIDATE_RETRY_HELD) == 0u
+        || !bilateral_held(captor_slot)) {
+        return false;
+    }
+    let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
+    return atomicLoad(&candidates.values[captor_slot].peer_entity_id)
+            == simulations.values[projectile_slot].entity_id
+        && candidates.values[captor_slot].peer_incarnation
+            == simulations.values[projectile_slot].incarnation;
+}
+
+fn retry_held_rank(captor_slot: u32, cleanup_partition: bool) -> u32 {
+    let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
+    var rank = 0u;
+    for (var other_captor = 0u;
+        other_captor < counts.body_count;
+        other_captor += 1u) {
+        let other_kind = release_kind(other_captor);
+        if (!retry_held_exact(other_captor)
+            || (cleanup_partition && other_kind != 3u)
+            || (!cleanup_partition
+                && other_kind != 1u && other_kind != 2u && other_kind != 4u)) {
+            continue;
+        }
+        let other_projectile
+            = capture_states.values[other_captor].peer_body_slot;
+        if (retry_tuple_less(
+            other_captor,
+            other_projectile,
+            captor_slot,
+            projectile_slot
+        )) {
+            rank += 1u;
+        }
+    }
+    return rank;
+}
+
+fn clear_retry_candidate(slot: u32) {
+    atomicStore(&candidates.values[slot].distance_squared_bits, 0x7f800000u);
+    atomicStore(&candidates.values[slot].peer_entity_id, INVALID);
+    candidates.values[slot].peer_incarnation = INVALID;
+    atomicStore(&candidates.values[slot].status, 0u);
+}
+
 @compute @workgroup_size(256)
 fn clear_projectile_capture_tick(@builtin(global_invocation_id) id: vec3u) {
     let slot = id.x;
-    if (slot < counts.body_count) {
+    if (slot < counts.body_count && !retry_active()) {
         atomicStore(&candidates.values[slot].distance_squared_bits, 0x7f800000u);
         atomicStore(&candidates.values[slot].peer_entity_id, INVALID);
         candidates.values[slot].peer_incarnation = INVALID;
@@ -499,14 +717,34 @@ fn clear_projectile_capture_tick(@builtin(global_invocation_id) id: vec3u) {
         atomicStore(&runtime.values[H_CAPTURES], 0u);
         atomicStore(&runtime.values[H_RELEASES], 0u);
         atomicStore(&runtime.values[H_CLEANUPS], 0u);
-        atomicStore(&runtime.values[H_OVERFLOW], 0u);
+        atomicStore(
+            &runtime.values[H_OVERFLOW],
+            select(
+                0u,
+                params.retry_capacity_rejection_flags,
+                retry_active()
+            )
+        );
         atomicStore(&runtime.values[H_FINGERPRINT], 0u);
-        atomicStore(&runtime.values[H_RESERVED], 0u);
+        atomicStore(
+            &runtime.values[H_RESERVED],
+            select(0u, RETRY_STATE_ACTIVE, retry_active())
+        );
+        if (retry_active()
+            && (params.retry_capacity_rejection_flags == 0u
+                || (params.retry_capacity_rejection_flags
+                    & ~CAPACITY_REJECT_KNOWN) != 0u
+                || params.retry_origin_tick == 0u
+                || params.retry_origin_tick >= params.fixed_tick
+                || params.retry_reserved != 0u)) {
+            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+        }
     }
 }
 
 @compute @workgroup_size(256)
 fn update_projectile_capture_facing(@builtin(global_invocation_id) id: vec3u) {
+    if (atomicLoad(&runtime.values[H_STATUS]) != STATUS_SEALED) { return; }
     let captor_slot = id.x;
     if (captor_slot >= counts.body_count || !alive(captor_slot)
         || !identity_matches(
@@ -516,7 +754,7 @@ fn update_projectile_capture_facing(@builtin(global_invocation_id) id: vec3u) {
         )) {
         return;
     }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
     if (role(captor_meta) != ROLE_CAPTOR
         || (phase(captor_meta) != PHASE_IDLE
             && phase(captor_meta) != PHASE_HELD
@@ -525,7 +763,7 @@ fn update_projectile_capture_facing(@builtin(global_invocation_id) id: vec3u) {
     }
     let velocity = physics.values[captor_slot].velocity;
     let speed_squared = dot(velocity, velocity);
-    if (!finite_vec2(velocity) || !isFinite(speed_squared)
+    if (!finite_vec2(velocity) || !finite_scalar(speed_squared)
         || speed_squared <= 0.0) {
         return;
     }
@@ -541,9 +779,9 @@ fn update_projectile_capture_facing(@builtin(global_invocation_id) id: vec3u) {
 fn validate_projectile_capture_holds(@builtin(global_invocation_id) id: vec3u) {
     let slot = id.x;
     if (slot >= counts.body_count || !alive(slot)) { return; }
-    let meta = atomicLoad(&capture_states.values[slot].meta);
-    let state_phase = phase(meta);
-    let state_role = role(meta);
+    let packed_meta = atomicLoad(&capture_states.values[slot].packed_meta);
+    let state_phase = phase(packed_meta);
+    let state_role = role(packed_meta);
     let mirror = captured(slot);
     let self_exact = capture_states.values[slot].self_entity_id
             == simulations.values[slot].entity_id
@@ -568,6 +806,7 @@ fn validate_projectile_capture_holds(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn select_projectile_capture_distances(@builtin(global_invocation_id) id: vec3u) {
+    if (retry_active()) { return; }
     if (atomicLoad(&contact_state.contact_overflow) != 0u) {
         if (id.x == 0u) { atomicOr(&runtime.values[H_ERRORS], ERROR_CONTACT_OVERFLOW); }
         return;
@@ -586,6 +825,7 @@ fn select_projectile_capture_distances(@builtin(global_invocation_id) id: vec3u)
 
 @compute @workgroup_size(256)
 fn select_projectile_capture_captors(@builtin(global_invocation_id) id: vec3u) {
+    if (retry_active()) { return; }
     let index = id.x;
     let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
     if (index >= count) { return; }
@@ -605,6 +845,7 @@ fn select_projectile_capture_captors(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn select_ring_capture_distances(@builtin(global_invocation_id) id: vec3u) {
+    if (retry_active()) { return; }
     let index = id.x;
     let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
     if (index >= count) { return; }
@@ -621,6 +862,7 @@ fn select_ring_capture_distances(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn select_ring_capture_projectiles(@builtin(global_invocation_id) id: vec3u) {
+    if (retry_active()) { return; }
     let index = id.x;
     let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
     if (index >= count) { return; }
@@ -641,6 +883,7 @@ fn select_ring_capture_projectiles(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(256)
 fn preflight_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) {
+    if (retry_active()) { return; }
     let index = id.x;
     let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
     if (index < count && mutually_selected(contacts.values[index])) {
@@ -657,17 +900,201 @@ fn preflight_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) 
             atomicOr(&runtime.values[H_ERRORS], ERROR_SEQUENCE_EXHAUSTED);
             return;
         }
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_CAPTURE_CAPTOR
+        );
+        candidates.values[captor_slot].peer_incarnation
+            = simulations.values[projectile_slot].incarnation;
+        candidates.values[projectile_slot].peer_incarnation
+            = simulations.values[captor_slot].incarnation;
+        atomicAdd(&runtime.values[H_CAPTURES], 1u);
+        // Reciprocal contact는 전용 shield pass가 같은 marker로 봉인합니다.
+        var prepared_shield_bits: u32 = PROJECTILE_CAPTURE_PREPARED_SHIELD;
+        contacts.values[index].normal.y
+            = bitcast<f32>(prepared_shield_bits);
+    }
+}
+
+@compute @workgroup_size(256)
+fn shield_projectile_capture_contacts(@builtin(global_invocation_id) id: vec3u) {
+    let index = id.x;
+    let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
+    if (index >= count) { return; }
+    let contact = contacts.values[index];
+    if (contact.other_body_id < 0) { return; }
+    let self_slot = contact.self_body_id;
+    let other_slot = u32(contact.other_body_id);
+    if (self_slot >= counts.body_count || other_slot >= counts.body_count) {
+        return;
+    }
+    let self_role = role(atomicLoad(&capture_states.values[self_slot].packed_meta));
+    let other_role = role(atomicLoad(&capture_states.values[other_slot].packed_meta));
+    var captor_slot = INVALID;
+    var projectile_slot = INVALID;
+    if (self_role == ROLE_CAPTOR && other_role == ROLE_PROJECTILE) {
+        captor_slot = self_slot;
+        projectile_slot = other_slot;
+    } else if (self_role == ROLE_PROJECTILE && other_role == ROLE_CAPTOR) {
+        captor_slot = other_slot;
+        projectile_slot = self_slot;
+    }
+    if (captor_slot == INVALID
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u
+        || atomicLoad(&candidates.values[projectile_slot].peer_entity_id)
+            != simulations.values[captor_slot].entity_id
+        || atomicLoad(&candidates.values[captor_slot].peer_entity_id)
+            != simulations.values[projectile_slot].entity_id
+        || candidates.values[projectile_slot].peer_incarnation
+            != simulations.values[captor_slot].incarnation
+        || candidates.values[captor_slot].peer_incarnation
+            != simulations.values[projectile_slot].incarnation) {
+        return;
+    }
+    var prepared_shield_bits: u32 = PROJECTILE_CAPTURE_PREPARED_SHIELD;
+    contacts.values[index].normal.y = bitcast<f32>(prepared_shield_bits);
+}
+
+@compute @workgroup_size(256)
+fn preflight_projectile_capture_retry_batch(
+    @builtin(global_invocation_id) id: vec3u
+) {
+    if (!retry_active()) { return; }
+    let slot = id.x;
+    if (slot >= counts.body_count) { return; }
+    let status = atomicLoad(&candidates.values[slot].status);
+    if ((status & CANDIDATE_RETRY_CAPTURE_CAPTOR) != 0u) {
+        let projectile_slot = retry_capture_projectile_slot(slot);
+        if (projectile_slot == INVALID) {
+            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            return;
+        }
+        atomicAdd(&runtime.values[H_CANDIDATES], 1u);
+        atomicAdd(&runtime.values[H_CAPTURES], 1u);
+        return;
+    }
+    if ((status & CANDIDATE_RETRY_CAPTURE_PROJECTILE) != 0u) {
+        let captor_slot = find_exact_body_slot(
+            atomicLoad(&candidates.values[slot].peer_entity_id),
+            candidates.values[slot].peer_incarnation
+        );
+        if (captor_slot == INVALID
+            || retry_capture_projectile_slot(captor_slot) != slot) {
+            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+        }
+        return;
+    }
+    if ((status & CANDIDATE_RETRY_HELD) != 0u) {
+        if (!retry_held_exact(slot)) {
+            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            return;
+        }
+        let kind = release_kind(slot);
+        if (kind == 1u || kind == 2u || kind == 4u) {
+            atomicAdd(&runtime.values[H_RELEASES], 1u);
+            return;
+        }
+        if (kind == 3u) {
+            atomicAdd(&runtime.values[H_CLEANUPS], 1u);
+            return;
+        }
+        atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+    }
+}
+
+@compute @workgroup_size(256)
+fn select_projectile_capture_retry_prefix(
+    @builtin(global_invocation_id) id: vec3u
+) {
+    if (!retry_active()) { return; }
+    let captor_slot = id.x;
+    if (captor_slot >= counts.body_count) { return; }
+    let status = atomicLoad(&candidates.values[captor_slot].status);
+    if ((status & CANDIDATE_RETRY_CAPTURE_CAPTOR) != 0u) {
+        let projectile_slot = retry_capture_projectile_slot(captor_slot);
+        if (projectile_slot != INVALID
+            && retry_capture_rank(captor_slot, projectile_slot)
+                < params.capture_capacity) {
+            atomicOr(
+                &candidates.values[captor_slot].status,
+                CANDIDATE_RETRY_SELECTED_CAPTURE
+            );
+            atomicOr(
+                &candidates.values[projectile_slot].status,
+                CANDIDATE_RETRY_SELECTED_CAPTURE
+            );
+        }
+        return;
+    }
+    if ((status & CANDIDATE_RETRY_HELD) == 0u) { return; }
+    let kind = release_kind(captor_slot);
+    if ((kind == 1u || kind == 2u || kind == 4u)
+        && retry_held_rank(captor_slot, false) < params.release_capacity) {
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_SELECTED_RELEASE
+        );
+        atomicAdd(&runtime.values[H_SELECTED], 1u);
+    } else if (kind == 3u
+        && retry_held_rank(captor_slot, true) < params.cleanup_capacity) {
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_SELECTED_CLEANUP
+        );
         atomicAdd(&runtime.values[H_SELECTED], 1u);
     }
 }
 
 @compute @workgroup_size(1)
 fn seal_projectile_capture_batch() {
-    let selected = atomicLoad(&runtime.values[H_SELECTED]);
-    let errors = atomicLoad(&runtime.values[H_ERRORS]);
-    if (selected > params.capture_capacity) {
+    let capture_demand = atomicLoad(&runtime.values[H_CAPTURES]);
+    let release_demand = atomicLoad(&runtime.values[H_RELEASES]);
+    let cleanup_demand = atomicLoad(&runtime.values[H_CLEANUPS]);
+    var errors = atomicLoad(&runtime.values[H_ERRORS]);
+    if (retry_active()) {
+        var retry_flags = RETRY_STATE_ACTIVE;
+        if (capture_demand > params.capture_capacity
+            || release_demand > params.release_capacity
+            || cleanup_demand > params.cleanup_capacity) {
+            retry_flags |= RETRY_STATE_BACKLOG_REMAINS;
+        }
+        atomicStore(&runtime.values[H_RESERVED], retry_flags);
+        // Demand is authenticated above; these become bounded output cursors.
+        atomicStore(&runtime.values[H_CAPTURES], 0u);
+        atomicStore(&runtime.values[H_RELEASES], 0u);
+        atomicStore(&runtime.values[H_CLEANUPS], 0u);
+        atomicStore(
+            &runtime.values[H_STATUS],
+            select(STATUS_SEALED, STATUS_REJECTED, errors != 0u)
+        );
+        return;
+    }
+    if (capture_demand > params.capture_capacity) {
         errors |= ERROR_CAPACITY;
-        atomicStore(&runtime.values[H_ERRORS], errors);
+        atomicOr(&runtime.values[H_OVERFLOW], CAPACITY_REJECT_CAPTURE);
+    }
+    if (release_demand > params.release_capacity) {
+        errors |= ERROR_CAPACITY;
+        atomicOr(
+            &runtime.values[H_OVERFLOW],
+            CAPACITY_REJECT_RELEASE_PREPARATION
+        );
+    }
+    if (cleanup_demand > params.cleanup_capacity) {
+        errors |= ERROR_CAPACITY;
+        atomicOr(&runtime.values[H_OVERFLOW], CAPACITY_REJECT_CLEANUP);
+    }
+    atomicStore(&runtime.values[H_ERRORS], errors);
+    let capacity_rejection_flags = atomicLoad(&runtime.values[H_OVERFLOW]);
+    let exact_capacity_only = errors == ERROR_CAPACITY
+        && capacity_rejection_flags != 0u
+        && (capacity_rejection_flags & ~CAPACITY_REJECT_KNOWN) == 0u;
+    if (!exact_capacity_only) {
+        // Accepted demand counters become output counters only after one seal.
+        atomicStore(&runtime.values[H_CAPTURES], 0u);
+        atomicStore(&runtime.values[H_RELEASES], 0u);
+        atomicStore(&runtime.values[H_CLEANUPS], 0u);
     }
     atomicStore(
         &runtime.values[H_STATUS],
@@ -675,21 +1102,9 @@ fn seal_projectile_capture_batch() {
     );
 }
 
-@compute @workgroup_size(256)
-fn commit_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) {
-    if (atomicLoad(&runtime.values[H_STATUS]) != STATUS_SEALED) { return; }
-    let index = id.x;
-    let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
-    if (index >= count) { return; }
-    let contact = contacts.values[index];
-    if (!mutually_selected(contact)) { return; }
-    let captor_slot = contact.self_body_id;
-    let projectile_slot = u32(contact.other_body_id);
-    if (atomicExchange(&candidates.values[projectile_slot].status, 2u) != 1u) {
-        return;
-    }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+fn commit_capture_pair(captor_slot: u32, projectile_slot: u32) {
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     let sequence = max(
         capture_states.values[captor_slot].capture_sequence,
         capture_states.values[projectile_slot].capture_sequence
@@ -718,9 +1133,9 @@ fn commit_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) {
     capture_states.values[projectile_slot].capture_sequence = sequence;
     capture_states.values[projectile_slot].captured_speed = speed;
     capture_states.values[projectile_slot].facing = facing;
-    atomicStore(&capture_states.values[captor_slot].meta, with_phase(captor_meta, PHASE_HELD));
+    atomicStore(&capture_states.values[captor_slot].packed_meta, with_phase(captor_meta, PHASE_HELD));
     atomicStore(
-        &capture_states.values[projectile_slot].meta,
+        &capture_states.values[projectile_slot].packed_meta,
         with_phase(projectile_meta, PHASE_HELD)
     );
     physics.values[projectile_slot].position = anchor;
@@ -744,9 +1159,51 @@ fn commit_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) {
         sequence, fingerprint, anchor, facing, speed, TARGET_FORWARD, INVALID,
         INVALID, INVALID, 0u
     );
-    atomicXor(&runtime.values[H_FINGERPRINT], fingerprint);
+    // H_FINGERPRINT authenticates release-preparation records only.
     // Persistent bilateral state와 pose를 모두 쓴 뒤 exact mirror bit를 마지막에 세웁니다.
     atomicOr(&simulations.values[projectile_slot].flags, BODY_FLAG_CAPTURED);
+}
+
+@compute @workgroup_size(256)
+fn commit_projectile_capture_batch(@builtin(global_invocation_id) id: vec3u) {
+    if (atomicLoad(&runtime.values[H_STATUS]) != STATUS_SEALED
+        || retry_active()) { return; }
+    let index = id.x;
+    let count = min(atomicLoad(&contact_state.contact_count), params.max_contacts);
+    if (index >= count) { return; }
+    let contact = contacts.values[index];
+    if (!mutually_selected(contact)) { return; }
+    let captor_slot = contact.self_body_id;
+    let projectile_slot = u32(contact.other_body_id);
+    if (atomicExchange(&candidates.values[projectile_slot].status, 2u) != 1u) {
+        return;
+    }
+    commit_capture_pair(captor_slot, projectile_slot);
+}
+
+@compute @workgroup_size(256)
+fn commit_projectile_capture_retry_batch(
+    @builtin(global_invocation_id) id: vec3u
+) {
+    if (atomicLoad(&runtime.values[H_STATUS]) != STATUS_SEALED
+        || !retry_active()) { return; }
+    let captor_slot = id.x;
+    if (captor_slot >= counts.body_count) { return; }
+    let captor_status = atomicLoad(&candidates.values[captor_slot].status);
+    if ((captor_status & (CANDIDATE_RETRY_CAPTURE_CAPTOR
+            | CANDIDATE_RETRY_SELECTED_CAPTURE))
+        != (CANDIDATE_RETRY_CAPTURE_CAPTOR
+            | CANDIDATE_RETRY_SELECTED_CAPTURE)) { return; }
+    let projectile_slot = retry_capture_projectile_slot(captor_slot);
+    if (projectile_slot == INVALID
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_SELECTED_CAPTURE) == 0u) {
+        atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+        return;
+    }
+    commit_capture_pair(captor_slot, projectile_slot);
+    clear_retry_candidate(captor_slot);
+    clear_retry_candidate(projectile_slot);
 }
 
 @compute @workgroup_size(1)
@@ -793,6 +1250,13 @@ fn mark_projectile_capture_core_impacts(@builtin(global_invocation_id) id: vec3u
 
 @compute @workgroup_size(256)
 fn attach_projectile_capture_holds(@builtin(global_invocation_id) id: vec3u) {
+    let status = atomicLoad(&runtime.values[H_STATUS]);
+    let capacity_flags = atomicLoad(&runtime.values[H_OVERFLOW]);
+    let exact_capacity_only_rejected = status == STATUS_REJECTED
+        && atomicLoad(&runtime.values[H_ERRORS]) == ERROR_CAPACITY
+        && capacity_flags != 0u
+        && (capacity_flags & ~CAPACITY_REJECT_KNOWN) == 0u;
+    if (status != STATUS_SEALED && !exact_capacity_only_rejected) { return; }
     let captor_slot = id.x;
     if (captor_slot >= counts.body_count || !bilateral_held(captor_slot)) { return; }
     let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
@@ -813,9 +1277,6 @@ fn clear_projectile_capture_release_preparations() {
     // The public batch fingerprint authenticates this tick's release-prepare
     // partition only. Capture/cleanup records never enter a release command.
     atomicStore(&runtime.values[H_FINGERPRINT], 0u);
-    if (atomicLoad(&runtime.values[H_ERRORS]) == 0u) {
-        atomicStore(&runtime.values[H_STATUS], STATUS_RESET);
-    }
 }
 
 @compute @workgroup_size(256)
@@ -826,9 +1287,31 @@ fn preflight_projectile_capture_release_preparations(
     if (captor_slot >= counts.body_count) { return; }
     let kind = release_kind(captor_slot);
     if (kind == 1u || kind == 2u || kind == 4u) {
+        let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_HELD
+        );
+        atomicStore(
+            &candidates.values[captor_slot].peer_entity_id,
+            simulations.values[projectile_slot].entity_id
+        );
+        candidates.values[captor_slot].peer_incarnation
+            = simulations.values[projectile_slot].incarnation;
         atomicAdd(&runtime.values[H_RELEASES], 1u);
         atomicAdd(&runtime.values[H_SELECTED], 1u);
     } else if (kind == 3u) {
+        let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_HELD
+        );
+        atomicStore(
+            &candidates.values[captor_slot].peer_entity_id,
+            simulations.values[projectile_slot].entity_id
+        );
+        candidates.values[captor_slot].peer_incarnation
+            = simulations.values[projectile_slot].incarnation;
         atomicAdd(&runtime.values[H_CLEANUPS], 1u);
         atomicAdd(&runtime.values[H_SELECTED], 1u);
     }
@@ -836,18 +1319,7 @@ fn preflight_projectile_capture_release_preparations(
 
 @compute @workgroup_size(1)
 fn seal_projectile_capture_release_preparations() {
-    let release_count = atomicLoad(&runtime.values[H_RELEASES]);
-    let cleanup_count = atomicLoad(&runtime.values[H_CLEANUPS]);
-    var errors = atomicLoad(&runtime.values[H_ERRORS]);
-    if (release_count > params.release_capacity
-        || cleanup_count > params.cleanup_capacity) { errors |= ERROR_CAPACITY; }
-    atomicStore(&runtime.values[H_ERRORS], errors);
-    atomicStore(&runtime.values[H_RELEASES], 0u);
-    atomicStore(&runtime.values[H_CLEANUPS], 0u);
-    atomicStore(
-        &runtime.values[H_STATUS],
-        select(STATUS_SEALED, STATUS_REJECTED, errors != 0u)
-    );
+    // Compatibility entry point: the combined capture seal owns all partitions.
 }
 
 @compute @workgroup_size(256)
@@ -859,6 +1331,16 @@ fn commit_projectile_capture_release_preparations(
     if (captor_slot >= counts.body_count) { return; }
     let kind = release_kind(captor_slot);
     if (kind == 0u) { return; }
+    if (retry_active()) {
+        let status = atomicLoad(&candidates.values[captor_slot].status);
+        let expected_selected = select(
+            CANDIDATE_RETRY_SELECTED_RELEASE,
+            CANDIDATE_RETRY_SELECTED_CLEANUP,
+            kind == 3u
+        );
+        if ((status & (CANDIDATE_RETRY_HELD | expected_selected))
+            != (CANDIDATE_RETRY_HELD | expected_selected)) { return; }
+    }
     let projectile_slot = capture_states.values[captor_slot].peer_body_slot;
     let sequence = capture_states.values[captor_slot].capture_sequence;
     let fingerprint = mix_fingerprint(
@@ -876,20 +1358,24 @@ fn commit_projectile_capture_release_preparations(
             capture_states.values[captor_slot].captured_speed,
             TARGET_FORWARD, INVALID, INVALID, INVALID, 0u
         );
-        let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
-        let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+        let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
+        let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
         capture_states.values[captor_slot].peer_body_slot = INVALID;
         capture_states.values[captor_slot].peer_entity_id = INVALID;
         capture_states.values[captor_slot].peer_incarnation = INVALID;
-        atomicStore(&capture_states.values[captor_slot].meta, with_phase(captor_meta, PHASE_IDLE));
+        atomicStore(&capture_states.values[captor_slot].packed_meta, with_phase(captor_meta, PHASE_IDLE));
         capture_states.values[projectile_slot].peer_body_slot = INVALID;
         capture_states.values[projectile_slot].peer_entity_id = INVALID;
         capture_states.values[projectile_slot].peer_incarnation = INVALID;
         atomicStore(
-            &capture_states.values[projectile_slot].meta,
+            &capture_states.values[projectile_slot].packed_meta,
             with_phase(projectile_meta, PHASE_TOMBSTONED)
         );
         atomicAnd(&simulations.values[projectile_slot].flags, ~BODY_FLAG_CAPTURED);
+        if (retry_active()) {
+            clear_retry_candidate(captor_slot);
+            clear_retry_candidate(projectile_slot);
+        }
         return;
     }
     let stored_facing = normalize(capture_states.values[captor_slot].facing);
@@ -919,14 +1405,14 @@ fn commit_projectile_capture_release_preparations(
             target_incarnation = target_config.incarnation;
         }
     }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     atomicStore(
-        &capture_states.values[captor_slot].meta,
+        &capture_states.values[captor_slot].packed_meta,
         with_phase(captor_meta, PHASE_PREPARED)
     );
     atomicStore(
-        &capture_states.values[projectile_slot].meta,
+        &capture_states.values[projectile_slot].packed_meta,
         with_phase(projectile_meta, PHASE_PREPARED)
     );
     let output = atomicAdd(&runtime.values[H_RELEASES], 1u);
@@ -947,11 +1433,20 @@ fn commit_projectile_capture_release_preparations(
         )
     );
     atomicXor(&runtime.values[H_FINGERPRINT], fingerprint);
+    if (retry_active()) {
+        clear_retry_candidate(captor_slot);
+        clear_retry_candidate(projectile_slot);
+    }
 }
 
 @compute @workgroup_size(1)
 fn finalize_projectile_capture_release_preparations() {
-    if (atomicLoad(&runtime.values[H_STATUS]) == STATUS_SEALED) {
+    let status = atomicLoad(&runtime.values[H_STATUS]);
+    if (status == STATUS_SEALED) {
+        if (atomicLoad(&runtime.values[H_ERRORS]) != 0u) {
+            atomicStore(&runtime.values[H_STATUS], STATUS_REJECTED);
+            return;
+        }
         let fingerprint = atomicLoad(&runtime.values[H_FINGERPRINT]);
         if (atomicLoad(&runtime.values[H_RELEASES]) > 0u
             && (fingerprint == 0u || fingerprint == INVALID)) {
@@ -959,6 +1454,14 @@ fn finalize_projectile_capture_release_preparations() {
         }
         atomicStore(&runtime.values[H_COMPLETED_TICK], params.fixed_tick);
         atomicStore(&runtime.values[H_STATUS], STATUS_COMPLETE);
+    } else if (status == STATUS_REJECTED
+        && atomicLoad(&runtime.values[H_ERRORS]) == ERROR_CAPACITY) {
+        let capacity_rejection_flags = atomicLoad(&runtime.values[H_OVERFLOW]);
+        if (capacity_rejection_flags != 0u
+            && (capacity_rejection_flags & ~CAPACITY_REJECT_KNOWN) == 0u) {
+            // Capacity exhaustion is a completed, retryable zero-mutation batch.
+            atomicStore(&runtime.values[H_COMPLETED_TICK], params.fixed_tick);
+        }
     }
 }
 `;
@@ -1006,7 +1509,7 @@ struct BodyPhysics { position: vec2f, velocity: vec2f, radius: f32, inverse_mass
 struct BodySimulation { lifetime: f32, health: atomic<i32>, gameplay_meta: u32, flags: atomic<u32>, flow_field_index: u32, flow_speed: f32, entity_id: u32, incarnation: u32 }
 struct BodyTemporary { previous_position: vec2f, predicted_position: vec2f, position_delta: vec2f, grid_index: i32, previous_flow_field_index: u32 }
 struct CombatState { target_interaction_layer_mask: u32, duration: u32, peak_damage: atomic<i32>, expires: atomic<u32>, peak_entity: atomic<u32>, peak_incarnation: atomic<u32>, reserved_0: u32, reserved_1: u32, reserved_2: u32, reserved_3: u32 }
-struct CaptureState { meta: atomic<u32>, self_entity_id: u32, self_incarnation: u32, peer_body_slot: u32, peer_entity_id: u32, peer_incarnation: u32, captured_at_fixed_tick: u32, release_due_fixed_tick: u32, capture_sequence: u32, captured_speed: f32, facing: vec2f }
+struct CaptureState { packed_meta: atomic<u32>, self_entity_id: u32, self_incarnation: u32, peer_body_slot: u32, peer_entity_id: u32, peer_incarnation: u32, captured_at_fixed_tick: u32, release_due_fixed_tick: u32, capture_sequence: u32, captured_speed: f32, facing: vec2f }
 struct PhysicsBuffer { values: array<BodyPhysics> }
 struct SimulationBuffer { values: array<BodySimulation> }
 struct TemporaryBuffer { values: array<BodyTemporary> }
@@ -1021,10 +1524,10 @@ struct AtomicWords { values: array<atomic<u32>> }
 @group(0) @binding(5) var<storage, read_write> capture_states: CaptureStateBuffer;
 @group(0) @binding(6) var<storage, read_write> program: AtomicWords;
 
-fn role(meta: u32) -> u32 { return (meta & ROLE_MASK) >> ROLE_SHIFT; }
-fn phase(meta: u32) -> u32 { return (meta & PHASE_MASK) >> PHASE_SHIFT; }
-fn with_phase(meta: u32, next: u32) -> u32 {
-    return (meta & ~PHASE_MASK) | ((next << PHASE_SHIFT) & PHASE_MASK);
+fn role(packed_meta: u32) -> u32 { return (packed_meta & ROLE_MASK) >> ROLE_SHIFT; }
+fn phase(packed_meta: u32) -> u32 { return (packed_meta & PHASE_MASK) >> PHASE_SHIFT; }
+fn with_phase(packed_meta: u32, next: u32) -> u32 {
+    return (packed_meta & ~PHASE_MASK) | ((next << PHASE_SHIFT) & PHASE_MASK);
 }
 fn load_record(index: u32, word: u32) -> u32 {
     return atomicLoad(&program.values[HEADER_WORDS + index * RECORD_WORDS + word]);
@@ -1036,7 +1539,12 @@ fn exact(slot: u32, entity: u32, incarnation: u32) -> bool {
         && capture_states.values[slot].self_entity_id == entity
         && capture_states.values[slot].self_incarnation == incarnation;
 }
-fn finite_vec2(value: vec2f) -> bool { return all(isFinite(value)); }
+fn finite_scalar(value: f32) -> bool {
+    return value == value && value - value == 0.0;
+}
+fn finite_vec2(value: vec2f) -> bool {
+    return all(value == value) && all(value - value == vec2f(0.0));
+}
 fn mix_fingerprint(a: u32, b: u32, c: u32) -> u32 {
     var value = (a * 0x9e3779b1u) ^ (b * 0x85ebca6bu) ^ (c * 0xc2b2ae35u);
     value ^= value >> 16u;
@@ -1050,7 +1558,7 @@ fn retained_captor_matches(index: u32) -> bool {
     if (!exact(captor_slot, load_record(index, 3u), load_record(index, 4u))) {
         return false;
     }
-    let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
+    let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
     return role(captor_meta) == ROLE_CAPTOR
         && phase(captor_meta) == PHASE_PREPARED
         && capture_states.values[captor_slot].peer_body_slot == projectile_slot
@@ -1062,9 +1570,9 @@ fn record_valid(index: u32) -> bool {
     let captor_slot = load_record(index, 2u);
     let projectile_slot = load_record(index, 5u);
     if (projectile_slot >= counts.body_count) { return false; }
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     if (!exact(projectile_slot, load_record(index, 6u), load_record(index, 7u))
-        || role(atomicLoad(&capture_states.values[projectile_slot].meta)) != ROLE_PROJECTILE
+        || role(atomicLoad(&capture_states.values[projectile_slot].packed_meta)) != ROLE_PROJECTILE
         || phase(projectile_meta) != PHASE_PREPARED
         || capture_states.values[projectile_slot].peer_body_slot != captor_slot
         || capture_states.values[projectile_slot].peer_entity_id != load_record(index, 3u)
@@ -1102,8 +1610,8 @@ fn record_valid(index: u32) -> bool {
             load_record(index, 8u) ^ prepared_at
         )
         || !finite_vec2(position) || !finite_vec2(velocity)
-        || !isFinite(speed) || speed <= 0.0
-        || !isFinite(velocity_length_squared) || velocity_length_squared <= 0.0
+        || !finite_scalar(speed) || speed <= 0.0
+        || !finite_scalar(velocity_length_squared) || velocity_length_squared <= 0.0
         || abs(sqrt(velocity_length_squared) - speed) > max(0.0001, speed * 0.0001)) {
         return false;
     }
@@ -1116,7 +1624,7 @@ fn record_valid(index: u32) -> bool {
             let stored_facing = capture_states.values[projectile_slot].facing;
             let stored_facing_length_squared = dot(stored_facing, stored_facing);
             return finite_vec2(stored_facing)
-                && isFinite(stored_facing_length_squared)
+                && finite_scalar(stored_facing_length_squared)
                 && stored_facing_length_squared > 0.000001
                 && dot(normalize(velocity), normalize(stored_facing)) >= 0.9999
                 && load_record(index, 18u) == INVALID
@@ -1137,7 +1645,7 @@ fn record_valid(index: u32) -> bool {
     return (reason == RELEASE_DEATH || reason == RELEASE_CORE)
         && target_selector == TARGET_FORWARD
         && finite_vec2(stored_facing)
-        && isFinite(stored_facing_length_squared)
+        && finite_scalar(stored_facing_length_squared)
         && stored_facing_length_squared > 0.000001
         && dot(normalize(velocity), normalize(stored_facing)) >= 0.9999
         && load_record(index, 18u) == INVALID
@@ -1211,14 +1719,14 @@ fn commit_projectile_capture_releases(@builtin(global_invocation_id) id: vec3u) 
     temporaries.values[projectile_slot].position_delta = vec2f(0.0);
     temporaries.values[projectile_slot].grid_index = -1;
     combat.values[projectile_slot].target_interaction_layer_mask = load_record(index, 23u);
-    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].meta);
+    let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     if (retained_captor_matches(index)) {
-        let captor_meta = atomicLoad(&capture_states.values[captor_slot].meta);
+        let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
         capture_states.values[captor_slot].peer_body_slot = INVALID;
         capture_states.values[captor_slot].peer_entity_id = INVALID;
         capture_states.values[captor_slot].peer_incarnation = INVALID;
         atomicStore(
-            &capture_states.values[captor_slot].meta,
+            &capture_states.values[captor_slot].packed_meta,
             with_phase(captor_meta, PHASE_IDLE)
         );
     }
@@ -1226,7 +1734,7 @@ fn commit_projectile_capture_releases(@builtin(global_invocation_id) id: vec3u) 
     capture_states.values[projectile_slot].peer_entity_id = INVALID;
     capture_states.values[projectile_slot].peer_incarnation = INVALID;
     capture_states.values[projectile_slot].facing = vec2f(0.0);
-    atomicStore(&capture_states.values[projectile_slot].meta, with_phase(projectile_meta, PHASE_IDLE));
+    atomicStore(&capture_states.values[projectile_slot].packed_meta, with_phase(projectile_meta, PHASE_IDLE));
     // pose/team/mask/bilateral state를 전부 쓴 뒤 mirror bit를 마지막에 내립니다.
     atomicAnd(&simulations.values[projectile_slot].flags, ~BODY_FLAG_CAPTURED);
     atomicAdd(&program.values[9u], 1u);
@@ -1248,8 +1756,12 @@ export const GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE = Object.freeze({
     select_ring_capture_distances: 7,
     select_ring_capture_projectiles: 7,
     preflight_projectile_capture_batch: 7,
+    shield_projectile_capture_contacts: 7,
+    preflight_projectile_capture_retry_batch: 6,
+    select_projectile_capture_retry_prefix: 6,
     seal_projectile_capture_batch: 1,
     commit_projectile_capture_batch: 7,
+    commit_projectile_capture_retry_batch: 7,
     finalize_projectile_capture_batch: 1,
     mark_projectile_capture_core_impacts: 7,
     attach_projectile_capture_holds: 5,

@@ -186,6 +186,13 @@ function createCompletedBatch(protocol, overrides = {}) {
         submittedTick: overrides.submittedTick ?? overrides.sourceTick ?? 1,
         completedThroughTick:
             overrides.completedThroughTick ?? overrides.sourceTick ?? 1,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 1,
         events: overrides.events ?? [],
         ...overrides
     };

@@ -132,7 +132,8 @@ function createEndpoint(
     format,
     capacity,
     frameTarget = null,
-    corePortReceiver = null
+    corePortReceiver = null,
+    endpointOptions = null
 ) {
     const dependencies = {
         webGpuPlatformPort: createPlatformPort(device, format, frameTarget),
@@ -143,7 +144,23 @@ function createEndpoint(
     if (corePortReceiver) {
         dependencies.coreImpactCleanupPortReceiver = corePortReceiver;
     }
-    return new GpuEnemySimulationEndpoint(dependencies, { capacity });
+    return new GpuEnemySimulationEndpoint(dependencies, {
+        capacity,
+        ...(endpointOptions ?? null)
+    });
+}
+
+function initializeEndpoint(endpoint, tileMap, label) {
+    const ready = endpoint.init(tileMap);
+    const backend = endpoint.getBackend();
+    const runtimeState = backend.getRuntimeState();
+    assert(backend.simulation
+        && ((ready === true && runtimeState === 'gpu-ready')
+            || (ready === false && runtimeState === 'gpu-deferred')),
+    `${label}: endpoint init state mismatch ${JSON.stringify({
+        ready,
+        runtimeState
+    })}`);
 }
 
 function createDirector(endpoint) {
@@ -175,6 +192,42 @@ function createDirector(endpoint) {
         commandPortMethods: Object.freeze(commandPortMethods)
     }));
     return director;
+}
+
+function refreshIdleDirectorBinding(endpoint, director, label) {
+    const runtime = endpoint.getProjectileCaptureRuntimeStatus();
+    const status = director.getStatus();
+    if (runtime.sessionGeneration === status.sessionGeneration
+        && runtime.deviceGeneration === status.deviceGeneration
+        && runtime.authoritativeEpoch === status.authoritativeEpoch) {
+        return;
+    }
+    assert(status.capturedProjectileCount === 0
+        && status.releasePendingCount === 0
+        && status.pendingBatchCount === 0
+        && status.terminalCleanupPendingCount === 0
+        && status.pendingReadbackCount === 0
+        && status.recoveryRequired === false
+        && status.terminal === null,
+    `${label}: active capture tuple drift ${JSON.stringify({ runtime, status })}`);
+    const commandPort = endpoint.getProjectileCaptureCommandPort();
+    assert(director.resetGpuBinding(
+        endpoint.getRegistry(),
+        commandPort,
+        runtime.sessionGeneration,
+        runtime.deviceGeneration,
+        runtime.authoritativeEpoch
+    ), `${label}: idle capture rebind failed`);
+    DIRECTOR_BINDING.set(director, Object.freeze({
+        commandPort,
+        runtime: Object.freeze({
+            sessionGeneration: runtime.sessionGeneration,
+            deviceGeneration: runtime.deviceGeneration,
+            authoritativeEpoch: runtime.authoritativeEpoch
+        }),
+        capacity: endpoint.getCapacity(),
+        commandPortMethods: Object.freeze(Object.keys(commandPort).sort())
+    }));
 }
 
 function createRingIntent(route, spawnSequence, position) {
@@ -228,6 +281,25 @@ function createBulletIntent(position, velocity, options = {}) {
     });
 }
 
+function createLethalEnemyHitIntent(body, options = {}) {
+    return createBulletIntent(
+        {
+            x: body.position.x + 0.65,
+            y: body.position.y
+        },
+        {
+            x: body.velocity.x - 18,
+            y: body.velocity.y
+        },
+        {
+            definitionId: options.definitionId,
+            capturePolicyId: PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+            damage: 100,
+            spawnSequence: options.spawnSequence
+        }
+    );
+}
+
 function requireSpawnHandle(commit, commandId) {
     const handle = commit?.spawned?.find(
         (entry) => entry.commandId === commandId
@@ -276,13 +348,20 @@ async function readBodies(endpoint) {
 
 async function readGpuCapturePlanesAtSlot(endpoint, bodySlot, label) {
     const simulation = endpoint.getBackend().simulation;
+    const physicsLayout = GPU_CIRCLE_BODY_ABI.PHYSICS;
+    const simulationLayout = GPU_CIRCLE_BODY_ABI.SIMULATION;
     const stateLayout = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE;
     const candidateLayout = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE;
     const stateOffset = 0;
     const candidateOffset = stateLayout.STRIDE;
+    const physicsOffset = candidateOffset + candidateLayout.STRIDE;
+    const simulationOffset = physicsOffset + physicsLayout.STRIDE;
     const readback = simulation.device.createBuffer({
         label: `cirvivor-nw-ring-capture-plane-${label}`,
-        size: stateLayout.STRIDE + candidateLayout.STRIDE,
+        size: stateLayout.STRIDE
+            + candidateLayout.STRIDE
+            + physicsLayout.STRIDE
+            + simulationLayout.STRIDE,
         usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
     });
     try {
@@ -302,6 +381,20 @@ async function readGpuCapturePlanesAtSlot(endpoint, bodySlot, label) {
             readback,
             candidateOffset,
             candidateLayout.STRIDE
+        );
+        encoder.copyBufferToBuffer(
+            simulation.buffers.physics,
+            bodySlot * physicsLayout.STRIDE,
+            readback,
+            physicsOffset,
+            physicsLayout.STRIDE
+        );
+        encoder.copyBufferToBuffer(
+            simulation.buffers.simulation,
+            bodySlot * simulationLayout.STRIDE,
+            readback,
+            simulationOffset,
+            simulationLayout.STRIDE
         );
         simulation.device.queue.submit([encoder.finish()]);
         await readback.mapAsync(GPUMapMode.READ);
@@ -374,6 +467,42 @@ async function readGpuCapturePlanesAtSlot(endpoint, bodySlot, label) {
                 ),
                 status: view.getUint32(
                     candidateOffset + candidateLayout.STATUS,
+                    true
+                )
+            }),
+            physics: Object.freeze({
+                position: Object.freeze({
+                    x: view.getFloat32(
+                        physicsOffset + physicsLayout.POSITION_X,
+                        true
+                    ),
+                    y: view.getFloat32(
+                        physicsOffset + physicsLayout.POSITION_Y,
+                        true
+                    )
+                }),
+                velocity: Object.freeze({
+                    x: view.getFloat32(
+                        physicsOffset + physicsLayout.VELOCITY_X,
+                        true
+                    ),
+                    y: view.getFloat32(
+                        physicsOffset + physicsLayout.VELOCITY_Y,
+                        true
+                    )
+                })
+            }),
+            simulation: Object.freeze({
+                lifetime: view.getFloat32(
+                    simulationOffset + simulationLayout.LIFETIME,
+                    true
+                ),
+                healthFixedPoint: view.getInt32(
+                    simulationOffset + simulationLayout.HEALTH,
+                    true
+                ),
+                flags: view.getUint32(
+                    simulationOffset + simulationLayout.FLAGS,
                     true
                 )
             })
@@ -520,9 +649,10 @@ function drainCaptureBoundary(
         `T${targetFixedTick}: event protocol ${JSON.stringify(events)}`);
     const eventObservation = director.observeCompletedEvents(events);
     assert(eventObservation?.requiresRecovery !== true,
-        `T${targetFixedTick}: event observe ${JSON.stringify(
-            director.getStatus()
-        )}`);
+        `T${targetFixedTick}: event observe ${JSON.stringify({
+            status: director.getStatus(),
+            events
+        })}`);
     const coreObservation = coreDirector
         ? coreDirector.observeCompletedEvents(events, endpoint.getRegistry())
         : null;
@@ -565,11 +695,15 @@ async function advanceTick({
         towerTargetHandle
     });
     assert(stage?.accepted === true && stage.requiresRecovery !== true,
-        `${label}: capture stage ${JSON.stringify(stage)}`);
+        `${label}: capture stage ${JSON.stringify({
+            stage,
+            director: director.getStatus()
+        })}`);
     const lifecycle = assertBoundaryHealthy(
         endpoint.commitAtFixedBoundary(tick),
         `${label}: lifecycle`
     );
+    refreshIdleDirectorBinding(endpoint, director, label);
     director.observeFixedCommit(lifecycle, tick);
     director.observeLifecycle(lifecycle, tick);
     coreDirector?.observeFixedCommit(lifecycle, tick);
@@ -628,13 +762,19 @@ function alphaAt(frame, x, y) {
     return frame.bytes[(py * frame.bytesPerRow) + (px * 4) + 3];
 }
 
-async function runFunnelCase(device, format, label, angleRadians) {
+async function runFunnelCase(
+    device,
+    format,
+    label,
+    angleRadians,
+    approachDirection = 'inbound'
+) {
     const tileMap = new TileMap(OPEN_MAP_DATA);
     const route = tileMap.getSpawnRoutes()[0];
     const endpoint = createEndpoint(device, format, 3);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), `${label}: endpoint init failed`);
+        initializeEndpoint(endpoint, tileMap, label);
         director = createDirector(endpoint);
         const center = Object.freeze({ x: 4, y: 4 });
         const distance = 0.3;
@@ -642,32 +782,93 @@ async function runFunnelCase(device, format, label, angleRadians) {
             x: center.x + (Math.cos(angleRadians) * distance),
             y: center.y + (Math.sin(angleRadians) * distance)
         });
+        const ringIntent = createRingIntent(route, 1, center);
+        const radialUnit = Object.freeze({
+            x: Math.cos(angleRadians),
+            y: Math.sin(angleRadians)
+        });
+        // Projectile의 절대 속도에 authored R route 속도를 먼저 더해, contact
+        // prediction 뒤에도 relative radial path의 각도와 closing 부호를 보존합니다.
+        const relativeRadialSpeed
+            = approachDirection === 'outbound' ? 4 : -1;
         assert(endpoint.requestSpawnBatch([{
-            intent: createRingIntent(route, 1, center),
+            intent: ringIntent,
             targetFixedTick: 1,
             commandId: `${label}:ring`
         }, {
             intent: createBulletIntent(
                 projectilePosition,
                 {
-                    x: -Math.cos(angleRadians),
-                    y: -Math.sin(angleRadians)
+                    x: ringIntent.velocity.x
+                        + (relativeRadialSpeed * radialUnit.x),
+                    y: ringIntent.velocity.y
+                        + (relativeRadialSpeed * radialUnit.y)
                 },
                 { spawnSequence: 1 }
             ),
             targetFixedTick: 1,
             commandId: `${label}:projectile`
         }]).accepted, `${label}: spawn batch rejected`);
+        let relativeClosingDot = null;
+        let preSubmitCaptorVelocity = null;
+        let preSubmitProjectileVelocity = null;
         const tick1 = await advanceTick({
             endpoint,
             director,
             tick: 1,
-            label: `${label} T1`
+            label: `${label} T1`,
+            async afterCommit(lifecycle) {
+                const captorHandle = requireSpawnHandle(
+                    lifecycle,
+                    `${label}:ring`
+                );
+                const projectileHandle = requireSpawnHandle(
+                    lifecycle,
+                    `${label}:projectile`
+                );
+                const bodies = await readBodies(endpoint);
+                const captor = findBody(bodies, captorHandle, `${label} pre-submit R`);
+                const projectile = findBody(
+                    bodies,
+                    projectileHandle,
+                    `${label} pre-submit projectile`
+                );
+                const relativeVelocity = {
+                    x: projectile.velocity.x - captor.velocity.x,
+                    y: projectile.velocity.y - captor.velocity.y
+                };
+                const radialDelta = {
+                    x: projectile.position.x - captor.position.x,
+                    y: projectile.position.y - captor.position.y
+                };
+                relativeClosingDot = (relativeVelocity.x * radialDelta.x)
+                    + (relativeVelocity.y * radialDelta.y);
+                preSubmitCaptorVelocity = copyVector(captor.velocity);
+                preSubmitProjectileVelocity = copyVector(projectile.velocity);
+                assert(Number.isFinite(relativeClosingDot)
+                    && (approachDirection === 'outbound'
+                        ? relativeClosingDot > 0
+                        : relativeClosingDot < 0),
+                `${label}: actual relative closing dot mismatch ${relativeClosingDot}`);
+            }
         });
         const captorHandle = requireSpawnHandle(tick1.lifecycle, `${label}:ring`);
         const projectileHandle = requireSpawnHandle(
             tick1.lifecycle,
             `${label}:projectile`
+        );
+        // Uncaptured basic projectiles can consume their penetration and be
+        // authentically despawned at T2. Preserve the post-contact T1 body and
+        // capture-plane evidence before that lifecycle cleanup runs.
+        const projectileBody = copyBody(findBody(
+            tick1.bodies,
+            projectileHandle,
+            `${label} T1 projectile`
+        ));
+        const projectileAudit = copyCaptureBodyAudit(
+            endpoint,
+            projectileHandle,
+            `${label} T1 projectile audit`
         );
         const tick2 = await advanceTick({
             endpoint,
@@ -684,20 +885,16 @@ async function runFunnelCase(device, format, label, angleRadians) {
         }
         return Object.freeze({
             angleRadians,
+            approachDirection,
+            relativeClosingDot,
+            preSubmitCaptorVelocity,
+            preSubmitProjectileVelocity,
             captorHandle: copyHandle(captorHandle),
             projectileHandle: copyHandle(projectileHandle),
             captureRecords: Object.freeze(records.map(snapshotCaptureRecord)),
             directorStatus: director.getStatus(),
-            projectileBody: copyBody(findBody(
-                tick2.bodies,
-                projectileHandle,
-                `${label} projectile`
-            )),
-            projectileAudit: copyCaptureBodyAudit(
-                endpoint,
-                projectileHandle,
-                `${label} projectile audit`
-            ),
+            projectileBody,
+            projectileAudit,
             runtimeStatus: tick2.runtime
         });
     } finally {
@@ -712,14 +909,14 @@ async function runOneCaptorTwoProjectiles(device, format) {
     const endpoint = createEndpoint(device, format, 4);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'one-captor-two endpoint init failed');
+        initializeEndpoint(endpoint, tileMap, 'one-captor-two');
         director = createDirector(endpoint);
         const center = Object.freeze({ x: 4, y: 4 });
         const requests = [{
             intent: createRingIntent(route, 1, center),
             targetFixedTick: 1,
             commandId: 'one-captor-two:ring'
-        }, ...[-0.08, 0.08].map((offset, index) => ({
+        }, ...[0, 0.2].map((offset, index) => ({
             intent: createBulletIntent(
                 { x: 4.3, y: 4 + offset },
                 { x: -1, y: 0 },
@@ -774,9 +971,9 @@ async function runTwoCaptorsOneProjectile(device, format) {
     const endpoint = createEndpoint(device, format, 4);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'two-captors-one endpoint init failed');
+        initializeEndpoint(endpoint, tileMap, 'two-captors-one');
         director = createDirector(endpoint);
-        const requests = [-0.08, 0.08].map((offset, index) => ({
+        const requests = [0, 0.25].map((offset, index) => ({
             intent: createRingIntent(route, index + 1, {
                 x: 4,
                 y: 4 + offset
@@ -786,7 +983,7 @@ async function runTwoCaptorsOneProjectile(device, format) {
         }));
         requests.push({
             intent: createBulletIntent(
-                { x: 4.3, y: 4 },
+                { x: 4.3, y: 4.02 },
                 { x: -1, y: 0 },
                 { spawnSequence: 1 }
             ),
@@ -833,19 +1030,691 @@ async function runTwoCaptorsOneProjectile(device, format) {
     }
 }
 
+async function runCapacityWholeBatchRejection(device, format) {
+    const tileMap = new TileMap(OPEN_MAP_DATA);
+    const route = tileMap.getSpawnRoutes()[0];
+    const endpoint = createEndpoint(
+        device,
+        format,
+        5,
+        null,
+        null,
+        Object.freeze({
+            projectileCaptureCompletionCapacity: 1,
+            projectileCaptureReleasePreparationCapacity: 1,
+            projectileCaptureCleanupCapacity: 1
+        })
+    );
+    let director = null;
+    try {
+        initializeEndpoint(endpoint, tileMap, 'capture-capacity');
+        director = createDirector(endpoint);
+        assert(endpoint.requestSpawnBatch([0, 1].flatMap((index) => ([{
+            intent: createRingIntent(route, index + 1, {
+                x: 4,
+                y: 4 + (index * 2)
+            }),
+            targetFixedTick: 1,
+            commandId: `capture-capacity:ring:${index}`
+        }, {
+            intent: createBulletIntent(
+                { x: 4.3, y: 4 + (index * 2) },
+                { x: -1, y: 0 },
+                { spawnSequence: index + 1 }
+            ),
+            targetFixedTick: 1,
+            commandId: `capture-capacity:projectile:${index}`
+        }]))).accepted, 'capture-capacity spawn batch rejected');
+        let ringHandles = null;
+        let projectileHandles = null;
+        let beforePlanes = null;
+        let metadataBefore = null;
+        const tick1 = await advanceTick({
+            endpoint,
+            director,
+            tick: 1,
+            label: 'capture-capacity T1',
+            async afterCommit(lifecycle) {
+                ringHandles = [0, 1].map((index) => requireSpawnHandle(
+                    lifecycle,
+                    `capture-capacity:ring:${index}`
+                ));
+                projectileHandles = [0, 1].map((index) => requireSpawnHandle(
+                    lifecycle,
+                    `capture-capacity:projectile:${index}`
+                ));
+                beforePlanes = Object.freeze(await Promise.all([
+                    ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                        endpoint,
+                        handle,
+                        `capture-capacity-before-ring-${index}`
+                    )),
+                    ...projectileHandles.map(
+                        (handle, index) => readGpuCapturePlanes(
+                            endpoint,
+                            handle,
+                            `capture-capacity-before-projectile-${index}`
+                        )
+                    )
+                ]));
+                metadataBefore = Object.freeze(projectileHandles.map(
+                    (handle, index) => copyRegistryView(
+                        endpoint,
+                        handle,
+                        `capture-capacity metadata before ${index}`
+                    )
+                ));
+            }
+        });
+        assert(beforePlanes && metadataBefore,
+            'capture-capacity pre-submit evidence missing');
+        const afterPlanes = Object.freeze(await Promise.all([
+            ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `capture-capacity-after-ring-${index}`
+            )),
+            ...projectileHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `capture-capacity-after-projectile-${index}`
+            ))
+        ]));
+        const metadataAfter = Object.freeze(projectileHandles.map(
+            (handle, index) => copyRegistryView(
+                endpoint,
+                handle,
+                `capture-capacity metadata after ${index}`
+            )
+        ));
+        const boundary = drainCaptureBoundary(endpoint, director, 2);
+        assert(boundary.captures.capacityRejected === true
+            && boundary.captures.retryable === true
+            && boundary.captures.rejectionReason
+                === 'projectile-capture-completion-capacity'
+            && boundary.captures.captureDemandCount === 2
+            && boundary.captures.captureCapacity === 1
+            && boundary.captures.captures.length === 0
+            && boundary.captures.releasePreparations.length === 0
+            && boundary.captures.cleanups.length === 0
+            && boundary.captureObservation.capacityRejected === true
+            && boundary.captureObservation.retryable === true
+            && boundary.captureObservation.retryAfterFixedTick === 2,
+        `capture-capacity envelope mismatch ${JSON.stringify(boundary.captures)}`);
+        const stateBefore = beforePlanes.map((plane) => plane.gpu.state);
+        const stateAfter = afterPlanes.map((plane) => plane.gpu.state);
+        assert(JSON.stringify(stateAfter) === JSON.stringify(stateBefore),
+            'capture-capacity rejection mutated CaptureState');
+        assert(metadataAfter.every((view, index) => (
+            view.metadataRevision === metadataBefore[index].metadataRevision
+            && JSON.stringify(view.metadata)
+                === JSON.stringify(metadataBefore[index].metadata)
+        )), 'capture-capacity rejection mutated registry metadata');
+        const status = endpoint.getProjectileCaptureRuntimeStatus();
+        assert(status.capacityRejected === true
+            && status.retryableCapacityRejected === true
+            && status.retryMode === true
+            && status.retryOriginTick === 1
+            && status.requiresRecovery === false
+            && endpoint.requiresRecovery() === false
+            && director.requiresRecovery() === false,
+        `capture-capacity incorrectly required recovery ${JSON.stringify(status)}`);
+        const retrySubmitOne = await advanceTick({
+            endpoint,
+            director,
+            tick: 2,
+            label: 'capture-capacity retry 1 submit'
+        });
+        const retrySubmitTwo = await advanceTick({
+            endpoint,
+            director,
+            tick: 3,
+            label: 'capture-capacity retry 2 submit'
+        });
+        const retryComplete = await advanceTick({
+            endpoint,
+            director,
+            tick: 4,
+            label: 'capture-capacity retry complete'
+        });
+        const retryOne = retrySubmitTwo.boundary.captures;
+        const retryTwo = retryComplete.boundary.captures;
+        assert(retrySubmitOne.runtime.retryMode === true
+            && retryOne.retryBatch === true
+            && retryOne.retryBacklogRemaining === true
+            && retryOne.retryOriginTick === 1
+            && retryOne.captures.length === 1
+            && retryOne.releasePreparations.length === 0
+            && retryOne.cleanups.length === 0
+            && retryTwo.retryBatch === true
+            && retryTwo.retryBacklogRemaining === false
+            && retryTwo.retryOriginTick === 1
+            && retryTwo.captures.length === 1
+            && retryTwo.releasePreparations.length === 0
+            && retryTwo.cleanups.length === 0
+            && retryComplete.runtime.retryMode === false,
+        `capture-capacity bounded retry mismatch ${JSON.stringify({
+            retryOne,
+            retryTwo,
+            runtime: retryComplete.runtime
+        })}`);
+        const retryCaptureRecords = Object.freeze([
+            ...retryOne.captures,
+            ...retryTwo.captures
+        ]);
+        assert(retryCaptureRecords.length === 2
+            && retryCaptureRecords.every((record, index) => (
+                exactHandle(record.captorHandle, ringHandles[index])
+                && exactHandle(record.projectileHandle, projectileHandles[index])
+            ))
+            && director.getStatus().capturedProjectileCount === 2,
+        'capture-capacity retry ordering/roster mismatch');
+        return Object.freeze({
+            capacityRejected: boundary.captures.capacityRejected,
+            retryable: boundary.captures.retryable,
+            rejectionReason: boundary.captures.rejectionReason,
+            capacityRejectionFlags:
+                boundary.captures.capacityRejectionFlags,
+            captureDemandCount: boundary.captures.captureDemandCount,
+            captureCapacity: boundary.captures.captureCapacity,
+            retryAfterFixedTick:
+                boundary.captureObservation.retryAfterFixedTick,
+            recordCount: boundary.captures.captures.length
+                + boundary.captures.releasePreparations.length
+                + boundary.captures.cleanups.length,
+            stateUnchanged:
+                JSON.stringify(stateAfter) === JSON.stringify(stateBefore),
+            metadataUnchanged: metadataAfter.every((view, index) => (
+                view.metadataRevision === metadataBefore[index].metadataRevision
+                && JSON.stringify(view.metadata)
+                    === JSON.stringify(metadataBefore[index].metadata)
+            )),
+            retry: Object.freeze({
+                originSourceTick: retryOne.retryOriginTick,
+                firstBacklogRemaining: retryOne.retryBacklogRemaining,
+                secondBacklogRemaining: retryTwo.retryBacklogRemaining,
+                firstRecords: Object.freeze(
+                    retryOne.captures.map(snapshotCaptureRecord)
+                ),
+                secondRecords: Object.freeze(
+                    retryTwo.captures.map(snapshotCaptureRecord)
+                ),
+                finalCapturedProjectileCount:
+                    director.getStatus().capturedProjectileCount
+            }),
+            runtimeStatus: status,
+            finalRuntimeStatus: retryComplete.runtime,
+            directorStatus: director.getStatus()
+        });
+    } finally {
+        director?.destroy();
+        endpoint.destroy();
+    }
+}
+
+async function runReleasePreparationCapacityRetry(device, format) {
+    const tileMap = new TileMap(OPEN_MAP_DATA);
+    const route = tileMap.getSpawnRoutes()[0];
+    const endpoint = createEndpoint(device, format, 8, null, null, Object.freeze({
+        projectileCaptureCompletionCapacity: 2,
+        projectileCaptureReleasePreparationCapacity: 1,
+        projectileCaptureCleanupCapacity: 2
+    }));
+    let director = null;
+    try {
+        initializeEndpoint(endpoint, tileMap, 'release-capacity');
+        director = createDirector(endpoint);
+        assert(endpoint.requestSpawnBatch([0, 1].flatMap((index) => ([{
+            intent: createRingIntent(route, index + 1, {
+                x: 4,
+                y: 4 + (index * 2)
+            }),
+            targetFixedTick: 1,
+            commandId: `release-capacity:ring:${index}`
+        }, {
+            intent: createBulletIntent(
+                { x: 4.3, y: 4 + (index * 2) },
+                { x: -1, y: 0 },
+                { spawnSequence: index + 1 }
+            ),
+            targetFixedTick: 1,
+            commandId: `release-capacity:held:${index}`
+        }]))).accepted, 'release-capacity seed rejected');
+        const tick1 = await advanceTick({
+            endpoint,
+            director,
+            tick: 1,
+            label: 'release-capacity T1'
+        });
+        const ringHandles = [0, 1].map((index) => requireSpawnHandle(
+            tick1.lifecycle,
+            `release-capacity:ring:${index}`
+        ));
+        const projectileHandles = [0, 1].map((index) => requireSpawnHandle(
+            tick1.lifecycle,
+            `release-capacity:held:${index}`
+        ));
+        assert(endpoint.requestSpawnBatch(ringHandles.map((handle, index) => ({
+            intent: createLethalEnemyHitIntent(findBody(
+                tick1.bodies,
+                handle,
+                `release-capacity R ${index}`
+            ), {
+                definitionId: `nw-ring-release-capacity-lethal-${index}`,
+                spawnSequence: index + 3
+            }),
+            targetFixedTick: 2,
+            commandId: `release-capacity:lethal:${index}`
+        }))).accepted, 'release-capacity lethal batch rejected');
+        let beforePlanes = null;
+        let metadataBefore = null;
+        const tick2 = await advanceTick({
+            endpoint,
+            director,
+            tick: 2,
+            label: 'release-capacity T2 rejection submit',
+            async afterCommit() {
+                beforePlanes = Object.freeze(await Promise.all([
+                    ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                        endpoint,
+                        handle,
+                        `release-capacity-before-ring-${index}`
+                    )),
+                    ...projectileHandles.map(
+                        (handle, index) => readGpuCapturePlanes(
+                            endpoint,
+                            handle,
+                            `release-capacity-before-projectile-${index}`
+                        )
+                    )
+                ]));
+                metadataBefore = Object.freeze(projectileHandles.map(
+                    (handle, index) => copyRegistryView(
+                        endpoint,
+                        handle,
+                        `release-capacity metadata before ${index}`
+                    )
+                ));
+            }
+        });
+        assert(tick2.boundary.captures.captures.length === 2,
+            'release-capacity initial captures missing');
+        const afterPlanes = Object.freeze(await Promise.all([
+            ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `release-capacity-after-ring-${index}`
+            )),
+            ...projectileHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `release-capacity-after-projectile-${index}`
+            ))
+        ]));
+        const metadataAfter = Object.freeze(projectileHandles.map(
+            (handle, index) => copyRegistryView(
+                endpoint,
+                handle,
+                `release-capacity metadata after ${index}`
+            )
+        ));
+        const rejection = drainCaptureBoundary(endpoint, director, 3);
+        assert(rejection.captures.capacityRejected === true
+            && rejection.captures.retryable === true
+            && rejection.captures.captureDemandCount === 0
+            && rejection.captures.releasePreparationDemandCount === 2
+            && rejection.captures.releasePreparationCapacity === 1
+            && rejection.captures.cleanupDemandCount === 0
+            && rejection.captures.captures.length === 0
+            && rejection.captures.releasePreparations.length === 0
+            && rejection.captures.cleanups.length === 0,
+        `release-capacity rejection mismatch ${JSON.stringify({
+            captures: rejection.captures,
+            events: rejection.events
+        })}`);
+        assert(JSON.stringify(afterPlanes.map((plane) => plane.gpu.state))
+                === JSON.stringify(beforePlanes.map((plane) => plane.gpu.state)),
+        'release-capacity rejection mutated CaptureState');
+        assert(metadataAfter.every((view, index) => (
+            view.metadataRevision === metadataBefore[index].metadataRevision
+            && JSON.stringify(view.metadata)
+                === JSON.stringify(metadataBefore[index].metadata)
+        )), 'release-capacity rejection mutated registry metadata');
+        const rejectedBodies = projectileHandles.map((handle, index) => findBody(
+            tick2.bodies,
+            handle,
+            `release-capacity rejected held ${index}`
+        ));
+        assert(rejectedBodies.every((body, index) => {
+            const captorPosition = afterPlanes[index].gpu.physics.position;
+            return (body.simulationMeta
+                    & GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED) !== 0
+                && Math.hypot(
+                    body.position.x - captorPosition.x,
+                    body.position.y - captorPosition.y
+                ) <= 0.0001;
+        }), 'release-capacity rejection broke held pose/flag maintenance');
+        const retrySubmitOne = await advanceTick({
+            endpoint,
+            director,
+            tick: 3,
+            label: 'release-capacity retry 1 submit'
+        });
+        const retrySubmitTwo = await advanceTick({
+            endpoint,
+            director,
+            tick: 4,
+            label: 'release-capacity retry 2 submit'
+        });
+        const retryPublishTwo = await advanceTick({
+            endpoint,
+            director,
+            tick: 5,
+            label: 'release-capacity retry 2 publish'
+        });
+        const retryComplete = await advanceTick({
+            endpoint,
+            director,
+            tick: 6,
+            label: 'release-capacity releases complete'
+        });
+        const firstRetry = retrySubmitTwo.boundary.captures;
+        const secondRetry = retryPublishTwo.boundary.captures;
+        const releaseCompletions = [
+            ...retryPublishTwo.boundary.releases.releaseCompletions,
+            ...retryComplete.boundary.releases.releaseCompletions
+        ];
+        assert(retrySubmitOne.runtime.retryMode === true
+            && firstRetry.retryBatch === true
+            && firstRetry.retryBacklogRemaining === true
+            && firstRetry.releasePreparations.length === 1
+            && secondRetry.retryBatch === true
+            && secondRetry.retryBacklogRemaining === false
+            && secondRetry.releasePreparations.length === 1
+            && retryPublishTwo.runtime.retryMode === false
+            && releaseCompletions.length === 2
+            && director.getStatus().capturedProjectileCount === 0
+            && ringHandles.every((handle) => !endpoint.getRegistry().has(handle))
+            && endpoint.requiresRecovery() === false
+            && director.requiresRecovery() === false,
+        `release-capacity bounded retry mismatch ${JSON.stringify({
+            firstRetry,
+            secondRetry,
+            releaseCompletions,
+            director: director.getStatus()
+        })}`);
+        return Object.freeze({
+            capacityRejected: true,
+            releasePreparationDemandCount:
+                rejection.captures.releasePreparationDemandCount,
+            releasePreparationCapacity:
+                rejection.captures.releasePreparationCapacity,
+            stateUnchanged: true,
+            metadataUnchanged: true,
+            heldPoseMaintained: true,
+            firstRetry: Object.freeze({
+                backlogRemaining: firstRetry.retryBacklogRemaining,
+                records: Object.freeze(
+                    firstRetry.releasePreparations.map(snapshotCaptureRecord)
+                )
+            }),
+            secondRetry: Object.freeze({
+                backlogRemaining: secondRetry.retryBacklogRemaining,
+                records: Object.freeze(
+                    secondRetry.releasePreparations.map(snapshotCaptureRecord)
+                )
+            }),
+            releaseCompletions: Object.freeze(
+                releaseCompletions.map(snapshotCaptureRecord)
+            ),
+            finalCapturedProjectileCount:
+                director.getStatus().capturedProjectileCount,
+            captorRegistryCount:
+                ringHandles.filter((handle) => endpoint.getRegistry().has(handle))
+                    .length,
+            recoveryRequired: endpoint.requiresRecovery()
+                || director.requiresRecovery()
+        });
+    } finally {
+        director?.destroy();
+        endpoint.destroy();
+    }
+}
+
+async function runCleanupCapacityRetry(device, format) {
+    const tileMap = new TileMap(OPEN_MAP_DATA);
+    const route = tileMap.getSpawnRoutes()[0];
+    const endpoint = createEndpoint(device, format, 5, null, null, Object.freeze({
+        projectileCaptureCompletionCapacity: 2,
+        projectileCaptureReleasePreparationCapacity: 2,
+        projectileCaptureCleanupCapacity: 1
+    }));
+    let director = null;
+    try {
+        initializeEndpoint(endpoint, tileMap, 'cleanup-capacity');
+        director = createDirector(endpoint);
+        assert(endpoint.requestSpawnBatch([0, 1].flatMap((index) => ([{
+            intent: createRingIntent(route, index + 1, {
+                x: 4,
+                y: 4 + (index * 2)
+            }),
+            targetFixedTick: 1,
+            commandId: `cleanup-capacity:ring:${index}`
+        }, {
+            intent: createBulletIntent(
+                { x: 4.3, y: 4 + (index * 2) },
+                { x: -1, y: 0 },
+                {
+                    definitionId: `nw-ring-cleanup-capacity-held-${index}`,
+                    lifetimeSeconds: FIXED_DELTA * 1.5,
+                    spawnSequence: index + 1
+                }
+            ),
+            targetFixedTick: 1,
+            commandId: `cleanup-capacity:projectile:${index}`
+        }]))).accepted, 'cleanup-capacity seed rejected');
+        let ringHandles = null;
+        let projectileHandles = null;
+        const tick1 = await advanceTick({
+            endpoint,
+            director,
+            tick: 1,
+            label: 'cleanup-capacity T1',
+            afterCommit(lifecycle) {
+                ringHandles = [0, 1].map((index) => requireSpawnHandle(
+                    lifecycle,
+                    `cleanup-capacity:ring:${index}`
+                ));
+                projectileHandles = [0, 1].map((index) => requireSpawnHandle(
+                    lifecycle,
+                    `cleanup-capacity:projectile:${index}`
+                ));
+            }
+        });
+        let beforePlanes = null;
+        let metadataBefore = null;
+        const tick2 = await advanceTick({
+            endpoint,
+            director,
+            tick: 2,
+            label: 'cleanup-capacity T2 rejection submit',
+            async afterCommit() {
+                beforePlanes = Object.freeze(await Promise.all([
+                    ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                        endpoint,
+                        handle,
+                        `cleanup-capacity-before-ring-${index}`
+                    )),
+                    ...projectileHandles.map(
+                        (handle, index) => readGpuCapturePlanes(
+                            endpoint,
+                            handle,
+                            `cleanup-capacity-before-projectile-${index}`
+                        )
+                    )
+                ]));
+                metadataBefore = Object.freeze(projectileHandles.map(
+                    (handle, index) => copyRegistryView(
+                        endpoint,
+                        handle,
+                        `cleanup-capacity metadata before ${index}`
+                    )
+                ));
+            }
+        });
+        assert(tick2.boundary.captures.captures.length === 2,
+            'cleanup-capacity initial captures missing');
+        const afterPlanes = Object.freeze(await Promise.all([
+            ...ringHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `cleanup-capacity-after-ring-${index}`
+            )),
+            ...projectileHandles.map((handle, index) => readGpuCapturePlanes(
+                endpoint,
+                handle,
+                `cleanup-capacity-after-projectile-${index}`
+            ))
+        ]));
+        const metadataAfter = Object.freeze(projectileHandles.map(
+            (handle, index) => copyRegistryView(
+                endpoint,
+                handle,
+                `cleanup-capacity metadata after ${index}`
+            )
+        ));
+        const rejection = drainCaptureBoundary(endpoint, director, 3);
+        assert(rejection.captures.capacityRejected === true
+            && rejection.captures.retryable === true
+            && rejection.captures.captureDemandCount === 0
+            && rejection.captures.releasePreparationDemandCount === 0
+            && rejection.captures.cleanupDemandCount === 2
+            && rejection.captures.cleanupCapacity === 1
+            && rejection.captures.captures.length === 0
+            && rejection.captures.releasePreparations.length === 0
+            && rejection.captures.cleanups.length === 0,
+        `cleanup-capacity rejection mismatch ${JSON.stringify(
+            rejection.captures
+        )}`);
+        assert(JSON.stringify(afterPlanes.map((plane) => plane.gpu.state))
+                === JSON.stringify(beforePlanes.map((plane) => plane.gpu.state)),
+        'cleanup-capacity rejection mutated CaptureState');
+        assert(metadataAfter.every((view, index) => (
+            view.metadataRevision === metadataBefore[index].metadataRevision
+            && JSON.stringify(view.metadata)
+                === JSON.stringify(metadataBefore[index].metadata)
+        )), 'cleanup-capacity rejection mutated registry metadata');
+        assert(projectileHandles.every((_handle, index) => {
+            const captorPosition = afterPlanes[index].gpu.physics.position;
+            const projectilePlane = afterPlanes[2 + index].gpu;
+            return (projectilePlane.simulation.flags
+                    & GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED) !== 0
+                && projectilePlane.simulation.lifetime === 0
+                && Math.hypot(
+                    projectilePlane.physics.position.x - captorPosition.x,
+                    projectilePlane.physics.position.y - captorPosition.y
+                ) <= 0.0001;
+        }), 'cleanup-capacity rejection broke held expiry pose/flag/lifetime');
+        const retrySubmitOne = await advanceTick({
+            endpoint,
+            director,
+            tick: 3,
+            label: 'cleanup-capacity retry 1 submit'
+        });
+        const retrySubmitTwo = await advanceTick({
+            endpoint,
+            director,
+            tick: 4,
+            label: 'cleanup-capacity retry 2 submit'
+        });
+        const retryComplete = await advanceTick({
+            endpoint,
+            director,
+            tick: 5,
+            label: 'cleanup-capacity retry complete'
+        });
+        const firstRetry = retrySubmitTwo.boundary.captures;
+        const secondRetry = retryComplete.boundary.captures;
+        assert(retrySubmitOne.runtime.retryMode === true
+            && firstRetry.retryBatch === true
+            && firstRetry.retryBacklogRemaining === true
+            && firstRetry.cleanups.length === 1
+            && secondRetry.retryBatch === true
+            && secondRetry.retryBacklogRemaining === false
+            && secondRetry.cleanups.length === 1
+            && retryComplete.runtime.retryMode === false
+            && director.getStatus().capturedProjectileCount === 0
+            && projectileHandles.every(
+                (handle) => !endpoint.getRegistry().has(handle)
+            )
+            && endpoint.requiresRecovery() === false
+            && director.requiresRecovery() === false,
+        `cleanup-capacity bounded retry mismatch ${JSON.stringify({
+            firstRetry,
+            secondRetry,
+            director: director.getStatus()
+        })}`);
+        return Object.freeze({
+            capacityRejected: true,
+            cleanupDemandCount: rejection.captures.cleanupDemandCount,
+            cleanupCapacity: rejection.captures.cleanupCapacity,
+            stateUnchanged: true,
+            metadataUnchanged: true,
+            heldExpiryPoseMaintained: true,
+            firstRetry: Object.freeze({
+                backlogRemaining: firstRetry.retryBacklogRemaining,
+                records: Object.freeze(
+                    firstRetry.cleanups.map(snapshotCaptureRecord)
+                )
+            }),
+            secondRetry: Object.freeze({
+                backlogRemaining: secondRetry.retryBacklogRemaining,
+                records: Object.freeze(
+                    secondRetry.cleanups.map(snapshotCaptureRecord)
+                )
+            }),
+            finalCapturedProjectileCount:
+                director.getStatus().capturedProjectileCount,
+            projectileRegistryCount: projectileHandles.filter(
+                (handle) => endpoint.getRegistry().has(handle)
+            ).length,
+            recoveryRequired: endpoint.requiresRecovery()
+                || director.requiresRecovery()
+        });
+    } finally {
+        director?.destroy();
+        endpoint.destroy();
+    }
+}
+
 async function runFunnelAndMutualSelection(device, format) {
-    const inside = await runFunnelCase(device, format, 'funnel-inside', 0);
+    const inside = await runFunnelCase(
+        device,
+        format,
+        'funnel-inside-inbound',
+        0,
+        'inbound'
+    );
     const boundary = await runFunnelCase(
         device,
         format,
         'funnel-boundary',
-        Math.PI / 4
+        Math.PI / 4,
+        'inbound'
     );
     const outside = await runFunnelCase(
         device,
         format,
         'funnel-outside',
-        (Math.PI / 4) + 0.08
+        (Math.PI / 4) + 0.08,
+        'inbound'
+    );
+    const insideOutbound = await runFunnelCase(
+        device,
+        format,
+        'funnel-inside-outbound',
+        0,
+        'outbound'
     );
     assert(inside.captureRecords.length === 1,
         'inside funnel did not capture');
@@ -853,10 +1722,13 @@ async function runFunnelAndMutualSelection(device, format) {
         'inclusive boundary did not capture');
     assert(outside.captureRecords.length === 0,
         'outside funnel captured');
+    assert(insideOutbound.captureRecords.length === 0,
+        'inside outbound overlap captured');
     return Object.freeze({
         inside,
         boundary,
         outside,
+        insideOutbound,
         oneCaptorTwoProjectiles:
             await runOneCaptorTwoProjectiles(device, format),
         twoCaptorsOneProjectile:
@@ -930,13 +1802,26 @@ async function renderHeldRingCenter(
     assert(endpoint.draw(camera), 'held projectile render draw failed');
     await device.queue.onSubmittedWorkDone();
     const frame = await readTexturePixels(device, texture, width, height);
+    const centerX = width * 0.5;
+    const centerY = height * 0.5;
+    const radiusPixels = ringBody.radius * scale;
+    const innerBandRadius = radiusPixels * 0.45;
+    const outerBandRadius = radiusPixels * 1.35;
+    let ringBandAlpha = 0;
+    for (let y = Math.floor(centerY - outerBandRadius);
+        y <= Math.ceil(centerY + outerBandRadius); y += 1) {
+        for (let x = Math.floor(centerX - outerBandRadius);
+            x <= Math.ceil(centerX + outerBandRadius); x += 1) {
+            const distance = Math.hypot(x - centerX, y - centerY);
+            if (distance < innerBandRadius || distance > outerBandRadius) {
+                continue;
+            }
+            ringBandAlpha = Math.max(ringBandAlpha, alphaAt(frame, x, y));
+        }
+    }
     return Object.freeze({
-        centerAlpha: alphaAt(frame, width * 0.5, height * 0.5),
-        ringBandAlpha: alphaAt(
-            frame,
-            (width * 0.5) + (ringBody.radius * scale * 0.85),
-            height * 0.5
-        ),
+        centerAlpha: alphaAt(frame, centerX, centerY),
+        ringBandAlpha,
         width,
         height,
         scale
@@ -967,7 +1852,7 @@ async function runReleaseRoundTrip(device, format, { withTower, render }) {
     let director = null;
     const prefix = withTower ? 'release-tower' : 'release-forward';
     try {
-        assert(endpoint.init(tileMap), `${prefix}: endpoint init failed`);
+        initializeEndpoint(endpoint, tileMap, prefix);
         director = createDirector(endpoint);
         let towerHandle = null;
         let firstTick = 1;
@@ -1009,15 +1894,6 @@ async function runReleaseRoundTrip(device, format, { withTower, render }) {
             targetFixedTick: firstTick,
             commandId: `${prefix}:projectile`
         }];
-        if (!withTower) {
-            captureRequests.push({
-                intent: createGpuCoreProxySpawnIntent({
-                    position: { x: 20, y: 12 }
-                }),
-                targetFixedTick: firstTick,
-                commandId: `${prefix}:core-proxy`
-            });
-        }
         assert(endpoint.requestSpawnBatch(captureRequests).accepted,
             `${prefix}: capture spawn batch rejected`);
         let captorHandle = null;
@@ -1039,10 +1915,7 @@ async function runReleaseRoundTrip(device, format, { withTower, render }) {
                     lifecycle,
                     `${prefix}:projectile`
                 );
-                coreProxyHandle = withTower ? null : requireSpawnHandle(
-                    lifecycle,
-                    `${prefix}:core-proxy`
-                );
+                coreProxyHandle = null;
                 preCaptureProjectileBody = copyBody(findBody(
                     await readBodies(endpoint),
                     projectileHandle,
@@ -1140,12 +2013,20 @@ async function runReleaseRoundTrip(device, format, { withTower, render }) {
         ));
         assert(heldCaptorAudit && heldProjectileAudit,
             `${prefix}: held body audit sample missing`);
+        let preReleaseCaptorBody = null;
         const releaseSubmit = await advanceTick({
             endpoint,
             director,
             tick: releaseTick,
             towerTargetHandle: towerHandle,
-            label: `${prefix} release publication`
+            label: `${prefix} release publication`,
+            async afterCommit() {
+                preReleaseCaptorBody = copyBody(findBody(
+                    await readBodies(endpoint),
+                    captorHandle,
+                    `${prefix} pre-release R`
+                ));
+            }
         });
         const preparations = releaseSubmit.boundary.captures
             .releasePreparations ?? [];
@@ -1233,6 +2114,7 @@ async function runReleaseRoundTrip(device, format, { withTower, render }) {
             heldProjectileBody,
             heldCaptorAudit,
             heldProjectileAudit,
+            preReleaseCaptorBody,
             releasedCaptorBody,
             releasedProjectileBody,
             releasedProjectileAudit,
@@ -1277,7 +2159,7 @@ async function runCaptorExitRelease(device, format, mode) {
     let coreDirector = null;
     const prefix = `captor-${mode}`;
     try {
-        assert(endpoint.init(tileMap), `${prefix}: endpoint init failed`);
+        initializeEndpoint(endpoint, tileMap, prefix);
         director = createDirector(endpoint);
         if (mode === 'core-impact') {
             assert(coreBinding?.port, `${prefix}: Core cleanup port missing`);
@@ -1318,17 +2200,10 @@ async function runCaptorExitRelease(device, format, mode) {
         const captorBody = findBody(tick1.bodies, captorHandle, `${prefix} R`);
         const interventionIntent = mode === 'core-impact'
             ? createGpuCoreProxySpawnIntent({ position: captorBody.position })
-            : createBulletIntent(
-                captorBody.position,
-                { x: 0, y: 0 },
-                {
-                    definitionId: 'nw-ring-non-capturable-lethal-projectile',
-                    capturePolicyId:
-                        PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
-                    damage: 100,
-                    spawnSequence: 2
-                }
-            );
+            : createLethalEnemyHitIntent(captorBody, {
+                definitionId: 'nw-ring-non-capturable-lethal-projectile',
+                spawnSequence: 2
+            });
         assert(endpoint.requestSpawn(
             interventionIntent,
             2,
@@ -1409,14 +2284,18 @@ async function runCaptorExitRelease(device, format, mode) {
             lifecycleRelease: Object.freeze({
                 projectileHandle: copyHandle(lifecycleRelease.projectileHandle),
                 captorHandle: copyHandle(lifecycleRelease.captorHandle),
+                captureSequence: lifecycleRelease.captureSequence,
                 releaseReason: lifecycleRelease.releaseReason,
                 commandIdFingerprint:
                     lifecycleRelease.commandIdFingerprint,
                 batchIdFingerprint: lifecycleRelease.batchIdFingerprint,
                 prepareFingerprint: lifecycleRelease.prepareFingerprint,
+                prepareSourceTick: lifecycleRelease.prepareSourceTick,
+                targetFixedTick: lifecycleRelease.targetFixedTick,
                 targetHandle: lifecycleRelease.targetHandle
                     ? copyHandle(lifecycleRelease.targetHandle)
                     : null,
+                metadataRevision: lifecycleRelease.metadataRevision,
                 backendCommitRequested:
                     lifecycleRelease.backendCommitRequested
             }),
@@ -1448,7 +2327,7 @@ async function runHeldProjectileExpiry(device, format) {
     const endpoint = createEndpoint(device, format, 3);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'held-expiry endpoint init failed');
+        initializeEndpoint(endpoint, tileMap, 'held-expiry');
         director = createDirector(endpoint);
         assert(endpoint.requestSpawnBatch([{
             intent: createRingIntent(route, 1, { x: 4, y: 4 }),
@@ -1584,7 +2463,7 @@ async function runUnpublishedTerminal(device, format) {
     const endpoint = createEndpoint(device, format, 4);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'terminal-unpublished init failed');
+        initializeEndpoint(endpoint, tileMap, 'terminal-unpublished');
         director = createDirector(endpoint);
         const seeded = await seedHeldPair(
             endpoint,
@@ -1603,6 +2482,14 @@ async function runUnpublishedTerminal(device, format) {
             'terminal-unpublished held audit'
         );
         const finalTick = 3;
+        const preTerminalBoundary = drainCaptureBoundary(
+            endpoint,
+            director,
+            finalTick
+        );
+        assert(preTerminalBoundary.captures.sourceTick === finalTick - 1
+            && preTerminalBoundary.captures.pending === false,
+        'terminal-unpublished pre-terminal boundary missing');
         director.closeForTerminal(finalTick, 'core-depleted');
         endpoint.closeGameplayIngress('core-depleted', finalTick);
         const lifecycle = assertBoundaryHealthy(
@@ -1611,8 +2498,26 @@ async function runUnpublishedTerminal(device, format) {
         );
         director.observeFixedCommit(lifecycle, finalTick);
         director.observeLifecycle(lifecycle, finalTick);
-        assert(endpoint.fixedUpdate(FIXED_DELTA, finalTick),
-            'terminal-unpublished final submit failed');
+        const finalSubmitted = endpoint.fixedUpdate(FIXED_DELTA, finalTick);
+        const simulation = endpoint.getBackend().simulation;
+        assert(finalSubmitted,
+            `terminal-unpublished final submit failed ${JSON.stringify({
+                endpointRecovery: endpoint.requiresRecovery(),
+                runtime: endpoint.getProjectileCaptureRuntimeStatus(),
+                terminal: endpoint
+                    .getTerminalProjectileCaptureProgramCancelStatus(),
+                terminalStates: {
+                    fixed: simulation.terminalFixedProgramCancelStatus,
+                    effect: simulation.terminalEffectProgramCancelStatus,
+                    formation: simulation.terminalFormationProgramCancelStatus,
+                    atomic: simulation.terminalAtomicTransformProgramCancelStatus,
+                    capture:
+                        simulation.terminalProjectileCaptureProgramCancelStatus,
+                    route:
+                        simulation.terminalRouteAvailabilityProgramCancelStatus
+                },
+                lifecycle
+            })}`);
         await waitForSimulation(
             endpoint,
             'terminal-unpublished'
@@ -1630,6 +2535,11 @@ async function runUnpublishedTerminal(device, format) {
         const terminal = endpoint
             .getTerminalProjectileCaptureProgramCancelStatus();
         const runtime = endpoint.getProjectileCaptureRuntimeStatus();
+        const survivingCaptorAudit = copyCaptureBodyAudit(
+            endpoint,
+            seeded.captorHandle,
+            'terminal-unpublished surviving captor audit'
+        );
         return Object.freeze({
             finalFixedTick: finalTick,
             captorHandle: copyHandle(seeded.captorHandle),
@@ -1637,12 +2547,19 @@ async function runUnpublishedTerminal(device, format) {
             captureRecord: snapshotCaptureRecord(seeded.captureRecord),
             beforeBody,
             beforeAudit,
+            survivingCaptorAudit,
             afterBody: body ? copyBody(body) : null,
             lifecycleReleaseCount:
                 lifecycle.projectileCaptureReleases?.length ?? 0,
             registryHasProjectile:
                 endpoint.getRegistry().has(seeded.projectileHandle),
             terminalBoundary: Object.freeze({
+                captureSourceTick: terminalBoundary.captures.sourceTick,
+                captureCompletedThroughTick:
+                    terminalBoundary.captures.completedThroughTick,
+                releaseSourceTick: terminalBoundary.releases.sourceTick,
+                releaseCompletedThroughTick:
+                    terminalBoundary.releases.completedThroughTick,
                 captureCount:
                     terminalBoundary.captures.captures?.length ?? 0,
                 releasePreparationCount:
@@ -1670,7 +2587,7 @@ async function runPublishedTerminal(device, format) {
     const endpoint = createEndpoint(device, format, 5);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'terminal-published init failed');
+        initializeEndpoint(endpoint, tileMap, 'terminal-published');
         director = createDirector(endpoint);
         const seeded = await seedHeldPair(
             endpoint,
@@ -1684,18 +2601,11 @@ async function runPublishedTerminal(device, format) {
             'terminal-published R'
         );
         assert(endpoint.requestSpawn(
-            createBulletIntent(
-                captorBody.position,
-                { x: 0, y: 0 },
-                {
-                    definitionId:
-                        'nw-ring-terminal-non-capturable-lethal-projectile',
-                    capturePolicyId:
-                        PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
-                    damage: 100,
-                    spawnSequence: 2
-                }
-            ),
+            createLethalEnemyHitIntent(captorBody, {
+                definitionId:
+                    'nw-ring-terminal-non-capturable-lethal-projectile',
+                spawnSequence: 2
+            }),
             3,
             'terminal-published:lethal'
         ).accepted, 'terminal-published lethal spawn rejected');
@@ -1778,6 +2688,12 @@ async function runPublishedTerminal(device, format) {
             registryHasProjectile:
                 endpoint.getRegistry().has(seeded.projectileHandle),
             terminalBoundary: Object.freeze({
+                captureSourceTick: terminalBoundary.captures.sourceTick,
+                captureCompletedThroughTick:
+                    terminalBoundary.captures.completedThroughTick,
+                releaseSourceTick: terminalBoundary.releases.sourceTick,
+                releaseCompletedThroughTick:
+                    terminalBoundary.releases.completedThroughTick,
                 captureCount:
                     terminalBoundary.captures.captures?.length ?? 0,
                 releasePreparationCount:
@@ -1809,7 +2725,7 @@ async function runTerminalAndReplacement(device, format) {
     let oldCaptorHandle = null;
     let oldProjectileHandle = null;
     try {
-        assert(endpoint.init(tileMap), 'replacement-old init failed');
+        initializeEndpoint(endpoint, tileMap, 'replacement-old');
         director = createDirector(endpoint);
         const binding = DIRECTOR_BINDING.get(director);
         oldPort = binding.commandPort;
@@ -1865,7 +2781,7 @@ async function runTerminalAndReplacement(device, format) {
     const replacement = createEndpoint(device, format, 4);
     let replacementDirector = null;
     try {
-        assert(replacement.init(tileMap), 'replacement-new init failed');
+        initializeEndpoint(replacement, tileMap, 'replacement-new');
         replacementDirector = createDirector(replacement);
         const seeded = await seedHeldPair(
             replacement,
@@ -1978,7 +2894,7 @@ async function runCapturePlaneSlotReuse(device, format) {
     const endpoint = createEndpoint(device, format, 3);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'capture-plane-reuse endpoint init failed');
+        initializeEndpoint(endpoint, tileMap, 'capture-plane-reuse');
         director = createDirector(endpoint);
         assert(endpoint.requestSpawnBatch([{
             intent: createGpuTowerSpawnIntent({ position: { x: 9, y: 4 } }),
@@ -2305,7 +3221,7 @@ async function runCoexistence(device, format) {
     const endpoint = createEndpoint(device, format, 9);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'coexistence endpoint init failed');
+        initializeEndpoint(endpoint, tileMap, 'coexistence');
         director = createDirector(endpoint);
         const requests = [{
             intent: createGpuTowerSpawnIntent({ position: { x: 8, y: 4 } }),
@@ -2415,6 +3331,10 @@ async function runCoexistence(device, format) {
         const simulationStatus = endpoint.getBackend().simulation.getStatus();
         const captureRuntimeStatus
             = endpoint.getProjectileCaptureRuntimeStatus();
+        const collisionStorageValues = [
+            ...Object.values(simulationStatus.collision?.storageProfile ?? {}),
+            simulationStatus.formations?.storageProfile?.render
+        ].filter((value) => Number.isSafeInteger(value) && value > 0);
         return Object.freeze({
             towerHandle: copyHandle(towerHandle),
             handles,
@@ -2437,7 +3357,8 @@ async function runCoexistence(device, format) {
             collisionStorageProfile: Object.freeze({
                 ...(simulationStatus.collision?.storageProfile ?? {}),
                 render:
-                    simulationStatus.formations?.storageProfile?.render ?? null
+                    simulationStatus.formations?.storageProfile?.render ?? null,
+                requiredMaximum: Math.max(...collisionStorageValues)
             }),
             captureStorageProfile: Object.freeze({
                 ...captureRuntimeStatus.storageProfile
@@ -2457,6 +3378,12 @@ async function runFixture(device, format) {
         actualRuntime: Object.freeze({
             funnelAndMutualSelection:
                 await runFunnelAndMutualSelection(device, format),
+            capacityWholeBatchRejection:
+                await runCapacityWholeBatchRejection(device, format),
+            releasePreparationCapacityRetry:
+                await runReleasePreparationCapacityRetry(device, format),
+            cleanupCapacityRetry:
+                await runCleanupCapacityRetry(device, format),
             heldTowerRelease: await runReleaseRoundTrip(
                 device,
                 format,

@@ -1,7 +1,17 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
+
+const NW_WEBGPU_CAPABILITY_RUNNER_SOURCE = await readFile(
+    new URL('./nw_webgpu_capability/runner.js', import.meta.url),
+    'utf8'
+);
+const NW_WEBGPU_CAPABILITY_SUPPORT_SOURCE = await readFile(
+    new URL('./support/run_nw_webgpu_capability.mjs', import.meta.url),
+    'utf8'
+);
 
 const {
     GpuSimulationEndpoint,
@@ -22,6 +32,13 @@ const {
 const {
     GPU_SPAWN_PROGRAM_MODE
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
+const {
+    GPU_PROJECTILE_CAPTURE_ROLE
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} = await loadGameModule('ingame/contract/projectile_capture_contract.js');
 const {
     BASIC_RHOM_ENEMY_DATA
 } = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
@@ -59,6 +76,25 @@ function createCanonicalSpawnIntent(
     return {
         kindId: 'projectile',
         definitionId,
+        projectileCapturePolicyId:
+            PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: definitionId,
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: null,
+        originSourceAbilityId: null,
+        originOwnerEntityId: null,
+        originOwnerIncarnation: null,
+        originSourceEntityId: null,
+        originSourceIncarnation: null,
+        originTargetEntityId: null,
+        originTargetIncarnation: null,
+        projectileCaptureState: Object.freeze({
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+        }),
         position: { x: 1, y: 2 },
         velocity: { x: 0.5, y: -0.25 },
         radius: 0.2,
@@ -79,6 +115,165 @@ function createCanonicalSpawnIntent(
         ...overrides
     };
 }
+
+test('default actual fixed primitive projectile fixture는 canonical capture ingress를 보존한다', () => {
+    const start = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        'function createPhase3SpawnIntent('
+    );
+    const end = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        '\nfunction integrateTowerControlOracle(',
+        start
+    );
+    assert.ok(start >= 0 && end > start);
+    const helperSource = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.slice(start, end);
+    for (const marker of [
+        "kindId === 'projectile'",
+        'PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE',
+        'PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION',
+        'archetypeId: definitionId',
+        'projectileGeneration: 1',
+        'originProducerId: null',
+        'originSourceAbilityId: null',
+        'originOwnerEntityId: null',
+        'originSourceEntityId: null',
+        'originTargetEntityId: null',
+        'role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE'
+    ]) {
+        assert.ok(helperSource.includes(marker), `Phase 3 helper marker 누락: ${marker}`);
+    }
+
+    const boundaryStart = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        'function commitPhase3CompletionBoundary('
+    );
+    const boundaryEnd = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        '\nasync function deviceQueueDone(',
+        boundaryStart
+    );
+    assert.ok(boundaryStart >= 0 && boundaryEnd > boundaryStart);
+    const boundarySource = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.slice(
+        boundaryStart,
+        boundaryEnd
+    );
+    const captureIndex = boundarySource.indexOf(
+        'commitCompletedProjectileCaptureProgramsAtFixedBoundary'
+    );
+    const releaseIndex = boundarySource.indexOf(
+        'commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary'
+    );
+    const genericIndex = boundarySource.indexOf(
+        'commitCompletedEventsAtFixedBoundary'
+    );
+    assert.ok(
+        captureIndex >= 0
+            && releaseIndex > captureIndex
+            && genericIndex > releaseIndex
+    );
+    assert.match(
+        NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
+        /commitPhase3CompletionBoundary\(\s*endpoint,\s*11,\s*'Phase 3 source-relative'/
+    );
+
+    const publicationStart = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        'function installProductionCompletionPublicationOrder('
+    );
+    const publicationEnd = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        '\nfunction createGpuSimulationEndpoint(',
+        publicationStart
+    );
+    assert.ok(publicationStart >= 0 && publicationEnd > publicationStart);
+    const publicationSource = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.slice(
+        publicationStart,
+        publicationEnd
+    );
+    const publicationCaptureIndex = publicationSource.indexOf(
+        'commitCompletedProjectileCaptureProgramsAtFixedBoundary'
+    );
+    const publicationReleaseIndex = publicationSource.indexOf(
+        'commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary'
+    );
+    const publicationGenericIndex = publicationSource.indexOf(
+        'commitGenericEvents(targetFixedTick)'
+    );
+    assert.ok(
+        publicationCaptureIndex >= 0
+            && publicationReleaseIndex > publicationCaptureIndex
+            && publicationGenericIndex > publicationReleaseIndex
+    );
+
+    const saturationStart = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        "const poseRingBurstPolicy =\n            'intentional-no-settle-or-publication-backpressure-window'"
+    );
+    const saturationEnd = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.indexOf(
+        'const activeBeforeCapacityReject',
+        saturationStart
+    );
+    assert.ok(saturationStart >= 0 && saturationEnd > saturationStart);
+    const saturationSource = NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.slice(
+        saturationStart,
+        saturationEnd
+    );
+    const saturationLoopStart = saturationSource.indexOf(
+        'for (let tick = 11; tick <= 16; tick++)'
+    );
+    const saturationSettleStart = saturationSource.indexOf(
+        'await device.queue.onSubmittedWorkDone()'
+    );
+    assert.ok(
+        saturationLoopStart >= 0 && saturationSettleStart > saturationLoopStart
+    );
+    const saturationLoop = saturationSource.slice(
+        saturationLoopStart,
+        saturationSettleStart
+    );
+    assert.ok(saturationLoop.includes('endpoint.fixedUpdate(fixedDelta, tick)'));
+    assert.ok(!saturationLoop.includes('await '));
+    assert.ok(!saturationLoop.includes('commitCompletedEventsAtFixedBoundary'));
+});
+
+test('default actual stale target/control fixtures는 completion coherence와 GPU ABA evidence를 분리한다', () => {
+    for (const marker of [
+        'runProductionTargetEntityDeathBeforeRequestHardwareSmoke',
+        "scenario: 'target-death-published-before-target-entity-request'",
+        "publicationPolicy: 'capture-release-generic-per-boundary'",
+        "shotRequest.reason === 'stale-target'",
+        'const slotAba = await runProductionTargetEntitySlotAbaHardwareSmoke',
+        "slotAba.outcome.reason === 'target-invalid'",
+        "scenario: 'tower-lethal-published-then-stale-control-rejected'",
+        "code === 'stale-handle'",
+        'deadControlGpuSubmitted: false',
+        "scenario: 'target-death-published-before-hostile-shot-commit'",
+        'const targetDeathCompleted = endpoint.commitCompletedEventsAtFixedBoundary(',
+        "code === 'stale-target'",
+        "rejectionPhase: 'fixed-commit-after-death-publication'",
+        "targetInvalid.outcome === 'stale-target'"
+    ]) {
+        assert.ok(
+            NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.includes(marker),
+            `coherent actual fixture marker 누락: ${marker}`
+        );
+    }
+    assert.ok(
+        !NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.includes(
+            'runProductionTargetEntityDeathBeforeResolveHardwareSmoke'
+        )
+    );
+    assert.ok(
+        !NW_WEBGPU_CAPABILITY_RUNNER_SOURCE.includes(
+            "scenario: 'tower-lethal-then-exact-dead-control-two-submit'"
+        )
+    );
+    for (const marker of [
+        "=== 'tower-lethal-published-then-stale-control-rejected'",
+        'fixture.deadControlGpuSubmitted === false',
+        "fixture.submissions.deadControl.rejectionCode === 'stale-handle'",
+        'fixture.submissions.deadControl.publishedBatchCountBeforeCommit === 1'
+    ]) {
+        assert.ok(
+            NW_WEBGPU_CAPABILITY_SUPPORT_SOURCE.includes(marker),
+            `coherent support schema marker 누락: ${marker}`
+        );
+    }
+});
 
 function createPrimitiveBackend(options = {}) {
     const bodies = new Map();
@@ -346,6 +541,13 @@ function createEventBatch(protocol, handle, sourceTick) {
         sourceTick,
         submittedTick: 1,
         completedThroughTick: sourceTick,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 1,
         events: Object.freeze([Object.freeze({
             type: 'contact',
             eventType: 'interaction-enter',

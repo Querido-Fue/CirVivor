@@ -376,7 +376,7 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
     );
     assert.equal(atomicTransformImplementation.implementationId,
         'profile-discriminated-atomic-transform');
-    assert.equal('rosterPort' in atomicTransformImplementation, false);
+    assert.equal(atomicTransformImplementation.rosterPort, null);
 
     assert.throws(() => normalizeEnemyDefinition(definitionSource(
         BASIC_HEXA_ENEMY_DATA,
@@ -437,9 +437,9 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
             ])
         }
     ), ENEMY_PROFILE_CATALOG);
-    assert.doesNotThrow(() => assertGpuEnemyDefinitionCapabilities(
+    assert.throws(() => assertGpuEnemyDefinitionCapabilities(
         futureAtomicWithoutFormation
-    ));
+    ), /canonical allowlist/);
 });
 
 test('n1..6 raw stats와 final-only f32/inverseMass/Core/bounty를 고정한다', () => {
@@ -550,7 +550,7 @@ test('public raw/private transform ingress와 natural H registry facts는 분리
     assert.throws(() => normalizeGpuSpawnIntent({
         ...rawIntent,
         formationMemberCount: '1'
-    }), /uint32/);
+    }), /uint32|안전한 정수/);
     const normalizedRaw = normalizeGpuSpawnIntent(rawIntent);
     const handle = Object.freeze({ entityId: 41, incarnation: 3 });
     const activated = materializeNaturalHexaFormationActivation(normalizedRaw, handle);

@@ -231,7 +231,8 @@ test('replacement는 새 endpoint all-open Director를 먼저 만들고 old Dire
     assertOrdered(restartSource, [
         'replacementEndpoint.init(this.tileMap)',
         'replacementCorkRouteClosureDirector',
-        '= this.#createCorkRouteClosureDirector(replacementEndpoint)',
+        '= this.corkRouteClosureDirector',
+        '? this.#createCorkRouteClosureDirector(replacementEndpoint)',
         'this.corkRouteClosureDirector?.destroy()',
         'this.enemySimulationEndpoint.destroy()',
         'this.#installGpuEndpoint',

@@ -23,6 +23,8 @@ import {
 } from './gpu_enemy_spawn_adapter.js';
 const INVALID_U32 = 0xffffffff;
 const TRANSFORM_DISPOSITION = 'atomic-transform';
+const FIRST_HIT_EVENT_CAPACITY_REJECTION_REASON
+    = 'atomic-transform-first-hit-event-capacity';
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -52,6 +54,79 @@ function requireUint32(value, label) {
         throw new RangeError(`${label}은 uint32 정수여야 합니다.`);
     }
     return value;
+}
+
+function normalizeFirstHitCapacityEvidence(snapshot) {
+    for (const key of [
+        'atomicTransformFirstHitCapacityRejected',
+        'retryableAtomicTransformFirstHitCapacityRejected',
+        'atomicTransformFirstHitRejectionReason',
+        'atomicTransformFirstHitCandidateCount',
+        'atomicTransformFirstHitCommittedCount',
+        'atomicTransformFirstHitEventBase',
+        'atomicTransformFirstHitEventCapacity'
+    ]) {
+        if (!Object.hasOwn(snapshot, key)) {
+            throw new TypeError(`completedEvents.${key}가 필요합니다.`);
+        }
+    }
+    const capacityRejected
+        = snapshot.atomicTransformFirstHitCapacityRejected;
+    const retryable
+        = snapshot.retryableAtomicTransformFirstHitCapacityRejected;
+    const reason = snapshot.atomicTransformFirstHitRejectionReason;
+    if (typeof capacityRejected !== 'boolean'
+        || typeof retryable !== 'boolean') {
+        throw new TypeError(
+            'first-hit capacity rejection marker는 boolean이어야 합니다.'
+        );
+    }
+    const candidateCount = requireNonNegativeSafeInteger(
+        snapshot.atomicTransformFirstHitCandidateCount,
+        'completedEvents.atomicTransformFirstHitCandidateCount'
+    );
+    const committedCount = requireNonNegativeSafeInteger(
+        snapshot.atomicTransformFirstHitCommittedCount,
+        'completedEvents.atomicTransformFirstHitCommittedCount'
+    );
+    const eventBase = requireNonNegativeSafeInteger(
+        snapshot.atomicTransformFirstHitEventBase,
+        'completedEvents.atomicTransformFirstHitEventBase'
+    );
+    const eventCapacity = requireNonNegativeSafeInteger(
+        snapshot.atomicTransformFirstHitEventCapacity,
+        'completedEvents.atomicTransformFirstHitEventCapacity'
+    );
+    if (capacityRejected) {
+        if (retryable !== true
+            || reason !== FIRST_HIT_EVENT_CAPACITY_REJECTION_REASON
+            || candidateCount <= 0
+            || committedCount !== 0
+            || eventCapacity <= 0
+            || eventBase > eventCapacity
+            || candidateCount <= eventCapacity - eventBase) {
+            throw new RangeError(
+                'first-hit event capacity rejection evidence가 exact whole-batch 계약과 다릅니다.'
+            );
+        }
+    } else if (retryable !== false
+        || reason !== null
+        || candidateCount !== committedCount
+        || eventBase > eventCapacity
+        || candidateCount > eventCapacity - eventBase) {
+        throw new RangeError(
+            'normal first-hit event capacity evidence가 잘못되었습니다.'
+        );
+    }
+    return Object.freeze({
+        capacityRejected,
+        retryable,
+        reason,
+        candidateCount,
+        committedCount,
+        eventBase,
+        eventCapacity
+    });
 }
 
 function normalizeHandle(source, label) {
@@ -153,12 +228,14 @@ export class JorangSplitLineageDirector {
         this.pendingTransformsByParent = new Map();
         this.completedPrepareFingerprintByTick = new Map();
         this.observedLifecycleCommits = new WeakSet();
+        this.observedFirstHitCapacitySnapshots = new WeakSet();
         this.lastFixedCommitTick = 0;
         this.lastObservedFixedTick = 0;
         this.lastPreparedSourceTick = 0;
         this.lastPrepareStageTick = 0;
         this.lastPrepareStageResult = null;
         this.lastTriggerEventCount = 0;
+        this.retryableFirstHitEventCapacityCount = 0;
         this.pendingFirstHitsByHandleKey = new Map();
         this.circlePrimeDueByHandleKey = new Map();
         this.retryableCapacityCount = 0;
@@ -182,9 +259,48 @@ export class JorangSplitLineageDirector {
         if (!Array.isArray(snapshot.events)) {
             return this.#fail('trigger-event-array-contract');
         }
+        let capacityEvidence;
+        try {
+            capacityEvidence = normalizeFirstHitCapacityEvidence(snapshot);
+        } catch (error) {
+            return this.#fail(
+                'trigger-event-capacity-contract',
+                error?.message
+            );
+        }
         const triggerEvents = snapshot.events.filter((event) => (
             event?.atomicTransformTriggerFirstHit === true
         ));
+        if (capacityEvidence.capacityRejected) {
+            if (triggerEvents.length !== 0) {
+                return this.#fail(
+                    'trigger-event-capacity-partial-mutation',
+                    'capacity rejection snapshot에 first-hit trigger event가 있습니다.'
+                );
+            }
+            if (this.observedFirstHitCapacitySnapshots.has(snapshot)) {
+                return Object.freeze({
+                    accepted: true,
+                    retryable: true,
+                    replayed: true,
+                    triggerCount: 0,
+                    pendingCount: this.pendingFirstHitsByHandleKey.size,
+                    capacityRejectionCount: 1,
+                    transformStartCount: 0
+                });
+            }
+            this.observedFirstHitCapacitySnapshots.add(snapshot);
+            this.lastTriggerEventCount = 0;
+            this.retryableFirstHitEventCapacityCount++;
+            return Object.freeze({
+                accepted: true,
+                retryable: true,
+                triggerCount: 0,
+                pendingCount: this.pendingFirstHitsByHandleKey.size,
+                capacityRejectionCount: 1,
+                transformStartCount: 0
+            });
+        }
         const acceptedTriggers = [];
         const acceptedTargetKeys = new Set();
         try {
@@ -281,8 +397,10 @@ export class JorangSplitLineageDirector {
         this.lastTriggerEventCount = acceptedTriggers.length;
         return Object.freeze({
             accepted: true,
+            retryable: false,
             triggerCount: acceptedTriggers.length,
             pendingCount: this.pendingFirstHitsByHandleKey.size,
+            capacityRejectionCount: 0,
             transformStartCount: 0
         });
     }
@@ -1033,12 +1151,14 @@ export class JorangSplitLineageDirector {
         this.pendingFirstHitsByHandleKey.clear();
         this.circlePrimeDueByHandleKey.clear();
         this.observedLifecycleCommits = new WeakSet();
+        this.observedFirstHitCapacitySnapshots = new WeakSet();
         this.lastFixedCommitTick = 0;
         this.lastObservedFixedTick = 0;
         this.lastPreparedSourceTick = 0;
         this.lastPrepareStageTick = 0;
         this.lastPrepareStageResult = null;
         this.lastTriggerEventCount = 0;
+        this.retryableFirstHitEventCapacityCount = 0;
         this.retryableCapacityCount = 0;
         this.recoveryRequired = false;
         this.failure = null;
@@ -1061,6 +1181,8 @@ export class JorangSplitLineageDirector {
             lastPreparedSourceTick: this.lastPreparedSourceTick,
             lastPrepareStageTick: this.lastPrepareStageTick,
             lastTriggerEventCount: this.lastTriggerEventCount,
+            retryableFirstHitEventCapacityCount:
+                this.retryableFirstHitEventCapacityCount,
             retryableCapacityCount: this.retryableCapacityCount,
             maximumTransformStartsPerFixedTick:
                 JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK,

@@ -309,10 +309,12 @@ test('atomic batch 거절은 schedule index를 보존하고 동일 command ident
         initialized: true,
         totalSpawnCount: 2,
         queuedSpawnCount: 0,
+        blockedSpawnCount: 0,
         remainingSpawnCount: 2,
         allSpawnsQueued: false,
         completionOwned: false,
-        fixedTickOffset: 0
+        fixedTickOffset: 0,
+        routeAvailabilityVersion: null
     });
 
     assert.equal(director.queueSpawnsForFixedTick(1, {

@@ -37,6 +37,11 @@ const {
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_atomic_transform_runtime_shaders.js'
 );
+const {
+    GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL
+} = await loadGameModule(
+    'ingame/physics/gpu/gpu_atomic_transform_positive_damage_hit_shaders.js'
+);
 
 const COLLISION_SHADER_SOURCE = await readFile(new URL(
     '../script/module/ingame/physics/gpu/gpu_collision_shaders.js',
@@ -44,6 +49,10 @@ const COLLISION_SHADER_SOURCE = await readFile(new URL(
 ), 'utf8');
 const SIMULATION_SOURCE = await readFile(new URL(
     '../script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
+    import.meta.url
+), 'utf8');
+const GAME_OBJECT_SYSTEM_SOURCE = await readFile(new URL(
+    '../script/module/ingame/object/game_object_system.js',
     import.meta.url
 ), 'utf8');
 const LIFECYCLE_SOURCE = await readFile(new URL(
@@ -267,9 +276,32 @@ test('prepare ABI v1 is exact 32+64N and derives program/phase from topology', (
     ]) {
         assert.match(fingerprintFunction, fingerprintFieldOrder);
     }
+    const prepareStart = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
+        .indexOf('fn prepare_atomic_transforms');
+    const prepareEnd = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
+        .indexOf('fn fail_transform', prepareStart);
+    const prepare = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL.slice(
+        prepareStart,
+        prepareEnd
+    );
+    assert.match(prepare, /let record_due\s*=\s*stored_due/);
+    assert.doesNotMatch(prepare,
+        /record_due\s*=\s*prepare_program\.header\.target_fixed_tick/);
+    const preflightStart = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
+        .indexOf('fn preflight_atomic_transform_records');
+    const preflightEnd = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL
+        .indexOf('fn seal_atomic_transform_program', preflightStart);
+    const preflight = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL.slice(
+        preflightStart,
+        preflightEnd
+    );
+    assert.match(preflight,
+        /let source_due\s*=\s*atomic_transform_states\.values\[record\.source_slot\]\.due_fixed_tick/);
+    assert.doesNotMatch(preflight,
+        /let source_due\s*=\s*select\([\s\S]*?target_fixed_tick/);
 });
 
-test('generic atomic runtime ABI carries 1-to-2 destinations and child0 Effect authority', () => {
+test('generic atomic runtime ABI carries 1-to-2 destinations and reserved legacy transfer field', () => {
     assert.deepEqual(GPU_ATOMIC_TRANSFORM_RUNTIME_STORAGE_PROFILE, {
         prepare: 5,
         transformBodies: 9,
@@ -343,6 +375,7 @@ test('generic atomic runtime ABI carries 1-to-2 destinations and child0 Effect a
         'commit_atomic_transform_state',
         'commit_atomic_transform_auxiliary',
         'commit_atomic_transform_control',
+        'commit_atomic_transform_route_state',
         'rekey_atomic_transform_effect_instances',
         'finalize_atomic_transform_program'
     ]);
@@ -364,9 +397,9 @@ test('atomic runtime copies exact source pose, velocity, and flow to both split 
     assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
         /let source_flow_speed\s*=\s*simulations\.values\[source_slot\]\.flow_speed/);
     assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
-        /write_body_destination\(record,\s*record\.destination_0_slot,[\s\S]*?source_position,\s*source_velocity[\s\S]*?source_flow_field_index,\s*source_flow_speed\)/);
+        /write_body_destination\(record,\s*record\.destination_0_slot,\s*record\.destination_0_slot,\s*source_position,\s*source_velocity,\s*source_previous_position,\s*source_predicted_position,\s*source_position_delta,\s*source_grid_index,\s*source_previous_flow_field_index,\s*source_flow_field_index,\s*source_flow_speed,\s*source_flags\)/);
     assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
-        /write_body_destination\(record,\s*record\.destination_1_slot,[\s\S]*?source_position,\s*source_velocity[\s\S]*?source_flow_field_index,\s*source_flow_speed\)/);
+        /write_body_destination\(record,\s*record\.destination_1_slot,\s*record\.destination_1_slot,\s*source_position,\s*source_velocity,\s*source_previous_position,\s*source_predicted_position,\s*source_position_delta,\s*source_grid_index,\s*source_previous_flow_field_index,\s*source_flow_field_index,\s*source_flow_speed,\s*source_flags\)/);
     const rekeyStart = GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL.indexOf(
         'fn rekey_atomic_transform_effect_instances'
     );
@@ -378,8 +411,19 @@ test('atomic runtime copies exact source pose, velocity, and flow to both split 
         rekeyStart,
         rekeyEnd
     );
-    assert.match(rekey, /record\.destination_0_(?:slot|entity_id|incarnation)/);
-    assert.doesNotMatch(rekey, /record\.destination_1_/);
+    assert.match(rekey, /effect_atomic_transform_destination_index/);
+    assert.match(rekey,
+        /transform_program\.records\[index\]\.destination_0_(?:slot|entity_id|incarnation)/);
+    assert.match(rekey,
+        /transform_program\.records\[index\]\.destination_1_(?:slot|entity_id|incarnation)/);
+    assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
+        /effect_instance_id\s*%\s*record\.destination_count/);
+    assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
+        /effect_atomic_transform_transfer_policy\(\s*effect_definition_code/);
+    assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
+        /fn effect_atomic_transform_transfer_policy[\s\S]*return 0u/);
+    assert.match(GPU_ATOMIC_TRANSFORM_RUNTIME_COMPUTE_WGSL,
+        /destination_index[\s\S]*>=\s*transform_program\.records\[[^\]]+\][\s\S]*\.destination_count[\s\S]*STATUS_EFFECT_REKEY_MISMATCH/);
 });
 
 test('J/C′ state ABI preserves exact handles, branch budget, and delayed due tick', () => {
@@ -419,7 +463,8 @@ test('J/C′ state ABI preserves exact handles, branch budget, and delayed due t
         lineageRootEntityId: 41,
         lineageRootIncarnation: 3,
         branchIndex: 0,
-        bountyBudget: 12
+        bountyBudget: 12,
+        commandGeneration: 1
     });
     writeGpuCircleAtomicTransformState(storage, 1, {
         programId: GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.C_PRIME_DELAYED_RECOMBINE,
@@ -430,7 +475,8 @@ test('J/C′ state ABI preserves exact handles, branch budget, and delayed due t
         lineageRootEntityId: 41,
         lineageRootIncarnation: 3,
         branchIndex: 1,
-        bountyBudget: 6
+        bountyBudget: 6,
+        commandGeneration: 2
     });
     assert.deepEqual(readGpuCircleAtomicTransformState(storage, 0), {
         programId: 1,
@@ -444,7 +490,7 @@ test('J/C′ state ABI preserves exact handles, branch budget, and delayed due t
         bountyBudget: 12,
         triggerSourceTick: 0,
         triggerSequence: 0,
-        commandGeneration: 0
+        commandGeneration: 1
     });
     assert.deepEqual(readGpuCircleAtomicTransformState(storage, 1), {
         programId: 2,
@@ -458,7 +504,7 @@ test('J/C′ state ABI preserves exact handles, branch budget, and delayed due t
         bountyBudget: 6,
         triggerSourceTick: 0,
         triggerSequence: 0,
-        commandGeneration: 0
+        commandGeneration: 2
     });
     assert.throws(() => writeGpuCircleAtomicTransformState(storage, 1, {
         programId: GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.C_PRIME_DELAYED_RECOMBINE,
@@ -469,8 +515,9 @@ test('J/C′ state ABI preserves exact handles, branch budget, and delayed due t
         lineageRootEntityId: 41,
         lineageRootIncarnation: 3,
         branchIndex: 1,
-        bountyBudget: 6
-    }), /dueFixedTick/);
+        bountyBudget: 6,
+        commandGeneration: 2
+    }), /C prime|dueFixedTick/);
 });
 
 test('first valid hit has a dedicated zero-damage applied-event flag', () => {
@@ -492,15 +539,15 @@ test('first valid hit has a dedicated zero-damage applied-event flag', () => {
         /APPLIED_EVENT_FLAG_ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT/);
     assert.match(COLLISION_SHADER_SOURCE,
         /AppliedEvent\([\s\S]*?contact\.other_incarnation,\s*0,\s*APPLIED_EVENT_TYPE_DAMAGE_APPLIED[\s\S]*?APPLIED_EVENT_FLAG_ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT/);
-    assert.match(COLLISION_SHADER_SOURCE,
+    assert.match(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
         /atomicCompareExchangeWeak\([\s\S]*ATOMIC_TRANSFORM_PHASE_ARMED[\s\S]*ATOMIC_TRANSFORM_PHASE_SPLIT_PENDING/);
     assert.match(SIMULATION_SOURCE,
         /const atomicTransformTriggerFirstHit\s*=\s*\([\s\S]*?GPU_CIRCLE_APPLIED_EVENT_FLAG\.ATOMIC_TRANSFORM_TRIGGER_FIRST_HIT[\s\S]*?\)\s*!==\s*0/);
 });
 
-test('J immunity is scoped to a valid positive CLOSEST_ONLY projectile hit', () => {
+test('projectile validates its own hit policy before the producer-neutral positive-damage seam', () => {
     const helperStart = COLLISION_SHADER_SOURCE.indexOf(
-        'fn atomic_transform_projectile_hit_is_valid_for_phase'
+        'fn atomic_transform_projectile_positive_damage_after_hit_policy'
     );
     const helperEnd = COLLISION_SHADER_SOURCE.indexOf(
         'fn atomic_transform_first_hit_candidate_is_valid',
@@ -511,10 +558,34 @@ test('J immunity is scoped to a valid positive CLOSEST_ONLY projectile hit', () 
     assert.match(helper, /BODY_LAYER_PROJECTILE/);
     assert.match(helper, /CONTACT_HANDLER_FLAG_CLOSEST_ONLY/);
     assert.match(helper, /damage_self\s*<=\s*0/);
-    assert.match(helper, /source_damage\s*>\s*0/);
-    assert.match(helper, /resolve_contact_target_mitigation[\s\S]*?>\s*0/);
+    assert.match(helper, /let final_damage\s*=\s*resolve_contact_target_mitigation/);
+    assert.match(helper,
+        /atomic_transform_positive_damage_hit_is_valid_for_phase\([\s\S]*POSITIVE_DAMAGE_PRODUCER_PROJECTILE,[\s\S]*true/);
     assert.match(COLLISION_SHADER_SOURCE,
-        /valid_pending[\s\S]*?atomic_transform_projectile_hit_is_valid_for_phase/);
+        /valid_pending[\s\S]*?atomic_transform_projectile_positive_damage_after_hit_policy/);
+    assert.match(COLLISION_SHADER_SOURCE,
+        /try_commit_atomic_transform_first_valid_positive_damage_hit\([\s\S]*?source_body_id,[\s\S]*?target_body_id,[\s\S]*?validated_positive_damage,[\s\S]*?POSITIVE_DAMAGE_PRODUCER_PROJECTILE,[\s\S]*?true/);
+});
+
+test('common J split seam is contact/budget independent and admits all authored producer kinds', () => {
+    assert.match(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
+        /fn try_commit_atomic_transform_first_valid_positive_damage_hit\(\s*source_body_id:\s*u32,\s*target_body_id:\s*u32,\s*target_incarnation:\s*u32,\s*final_positive_damage:\s*i32,\s*producer_kind:\s*u32,\s*producer_hit_policy_validated:\s*bool/);
+    for (const producer of [
+        'PROJECTILE',
+        'EXPLOSION',
+        'EFFECT',
+        'DIRECT',
+        'MELEE'
+    ]) {
+        assert.match(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
+            new RegExp(`POSITIVE_DAMAGE_PRODUCER_${producer}`));
+    }
+    assert.match(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
+        /final_positive_damage\s*<=\s*0/);
+    assert.match(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
+        /!producer_hit_policy_validated/);
+    assert.doesNotMatch(GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL,
+        /\bContact\b|contact_handlers|damage_self|BODY_LAYER_PROJECTILE/);
 });
 
 test('first-hit classification/seal/commit/shield runs before normal damage handling', () => {
@@ -570,21 +641,69 @@ test('GPU admits every same-tick J first hit without applying the host quota of 
         /atomic_transform_committed_count[\s\S]*?event_index/);
 });
 
-test('lifecycle owner uses generic atomic transaction port names for J and H', () => {
+test('first-hit event capacity is a singleton retryable whole-batch rejection', () => {
+    const sealStart = COLLISION_SHADER_SOURCE.indexOf(
+        'fn seal_atomic_transform_first_hits'
+    );
+    const sealEnd = COLLISION_SHADER_SOURCE.indexOf(
+        'fn commit_atomic_transform_first_hits',
+        sealStart
+    );
+    const seal = COLLISION_SHADER_SOURCE.slice(sealStart, sealEnd);
+    assert.match(seal,
+        /atomic_transform_candidate_count,\s*selected_count/);
+    assert.match(seal,
+        /atomic_transform_event_base,\s*event_base/);
+    assert.match(seal,
+        /selected_count\s*>\s*params\.max_events\s*-\s*event_base[\s\S]*ATOMIC_TRANSFORM_CANDIDATE_STATUS_EVENT_CAPACITY_EXCEEDED[\s\S]*return/);
+    assert.ok(seal.indexOf('atomic_transform_candidate_count')
+        < seal.indexOf('ATOMIC_TRANSFORM_CANDIDATE_STATUS_EVENT_CAPACITY_EXCEEDED'));
+    assert.ok(seal.indexOf('atomic_transform_event_base')
+        < seal.indexOf('ATOMIC_TRANSFORM_CANDIDATE_STATUS_EVENT_CAPACITY_EXCEEDED'));
+    const finalizeStart = COLLISION_SHADER_SOURCE.indexOf(
+        'fn finalize_atomic_transform_first_hits'
+    );
+    const finalizeEnd = COLLISION_SHADER_SOURCE.indexOf(
+        'fn shield_atomic_transform_first_hit_contacts',
+        finalizeStart
+    );
+    const finalize = COLLISION_SHADER_SOURCE.slice(finalizeStart, finalizeEnd);
+    assert.match(finalize,
+        /atomic_transform_protocol_status[\s\S]*==\s*ATOMIC_TRANSFORM_CANDIDATE_STATUS_EVENT_CAPACITY_EXCEEDED[\s\S]*return/);
+    assert.match(SIMULATION_SOURCE,
+        /atomicTransformProtocolStatus\s*===\s*GPU_CIRCLE_ATOMIC_TRANSFORM_CANDIDATE_STATUS\s*\.EVENT_CAPACITY_EXCEEDED/);
+    assert.match(SIMULATION_SOURCE,
+        /atomicTransformCandidateCount\s*>\s*this\.eventCapacity\s*-\s*atomicTransformEventBase/);
+    assert.match(SIMULATION_SOURCE,
+        /atomicTransformFirstHitCapacityRejected/);
+    assert.match(GAME_OBJECT_SYSTEM_SOURCE,
+        /retryableJorangFirstHitCapacityBackoff[\s\S]*capacityRejectionCount\s*===\s*1/);
+});
+
+test('lifecycle owner uses generic J atomic transaction port names while H keeps its formation port', () => {
+    const jAtomicStart = LIFECYCLE_SOURCE.indexOf(
+        '#commitEnemyAtomicTransforms(commands'
+    );
+    const jAtomicEnd = LIFECYCLE_SOURCE.indexOf(
+        '#commitProjectileCaptureReleases',
+        jAtomicStart
+    );
+    assert.ok(jAtomicStart >= 0 && jAtomicEnd > jAtomicStart);
+    const jAtomicSource = LIFECYCLE_SOURCE.slice(jAtomicStart, jAtomicEnd);
     for (const methodName of [
         'armPreparedAtomicTransformBatch',
         'commitArmedAtomicTransformBatch',
         'cancelArmedAtomicTransformBatch'
     ]) {
-        assert.match(LIFECYCLE_SOURCE, new RegExp(methodName));
+        assert.match(jAtomicSource, new RegExp(methodName));
     }
-    assert.doesNotMatch(LIFECYCLE_SOURCE,
+    assert.doesNotMatch(jAtomicSource,
         /transactionPort\.armPreparedFormationTransformBatch/);
-    assert.match(LIFECYCLE_SOURCE,
+    assert.match(jAtomicSource,
         /retryDisposition:\s*'restage-next-prepare'[\s\S]*?sourcePendingPreserved:\s*true[\s\S]*?attemptConsumed:\s*true/);
-    assert.match(LIFECYCLE_SOURCE,
+    assert.match(jAtomicSource,
         /const armRecords[\s\S]*?destinationHandles:[\s\S]*?destinationIntents:[\s\S]*?effectTransferDestinationIndex:/);
-    assert.match(LIFECYCLE_SOURCE,
+    assert.match(jAtomicSource,
         /result\.atomicTransforms\.push\([\s\S]*?destinationHandles[\s\S]*?effectTransferDestinationIndex:/);
 });
 

@@ -8,7 +8,9 @@ const {
     BASIC_OCTA_ENEMY_CAPABILITY_MASK,
     BASIC_OCTA_ENEMY_DATA,
     BASIC_OCTA_ENEMY_DEFINITION_ID,
+    BASIC_OCTA_FUTURE_TARGET_REACQUISITION_REQUIREMENT,
     BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE,
+    BASIC_OCTA_ORBIT_CAPACITY_POLICY,
     BASIC_OCTA_ORBIT_SLOT_CAPACITY,
     BASIC_OCTA_ORBIT_SLOT_FILL_ORDER
 } = await loadGameModule('data/object/enemy/basic_octa_enemy_data.js');
@@ -30,7 +32,11 @@ const {
     ENEMY_DIRECTIONAL_DEFENSE_FIXED_POINT_SCALE,
     ENEMY_DIRECTIONAL_DEFENSE_ZERO_DIRECTION_POLICY,
     ENEMY_ORBIT_CENTER_TARGET_POLICY,
+    ENEMY_ORBIT_CAPACITY_OVERFLOW_POLICY,
+    ENEMY_ORBIT_CAPACITY_RETRY_POLICY,
     ENEMY_ORBIT_FIXED_TICKS_PER_SECOND,
+    ENEMY_ORBIT_FUTURE_TARGET_REACQUISITION_POLICY,
+    ENEMY_ORBIT_FUTURE_TARGET_SELECTION_POLICY,
     ENEMY_ORBIT_LEASE_METADATA_FIELDS,
     ENEMY_ORBIT_PHASE_Q32_SCALE,
     ENEMY_ORBIT_SLOT_CAPACITY,
@@ -268,6 +274,43 @@ test('orbit/defense vocabulary와 f32→fixed/Q32 변환은 fail-fast exact다',
         ...defense,
         minimumDamage: -0.01
     }), /no-minimum|null/);
+});
+
+test('O 8-slot overflow와 future Tower reacquisition은 data-owned carry-forward다', () => {
+    assert.deepEqual({ ...BASIC_OCTA_ORBIT_CAPACITY_POLICY }, {
+        maximumSimultaneousActors: 8,
+        overflowPolicyId:
+            ENEMY_ORBIT_CAPACITY_OVERFLOW_POLICY
+                .REJECT_WHOLE_FIXED_TICK_SPAWN_BATCH,
+        retryPolicyId:
+            ENEMY_ORBIT_CAPACITY_RETRY_POLICY
+                .AUTHORED_STAGGER_AFTER_SLOT_AVAILABLE,
+        wholeBatchZeroMutation: true,
+        recoveryRequired: false
+    });
+    assert.equal(Object.isFrozen(BASIC_OCTA_ORBIT_CAPACITY_POLICY), true);
+    assert.deepEqual({ ...BASIC_OCTA_FUTURE_TARGET_REACQUISITION_REQUIREMENT }, {
+        currentSingleTowerLossPolicyId:
+            ENEMY_ORBIT_TOWER_LOSS_POLICY.LATCH_CORE_FALLBACK,
+        futurePolicyId:
+            ENEMY_ORBIT_FUTURE_TARGET_REACQUISITION_POLICY
+                .EXACT_LIVING_TOWER_ON_ROSTER_CHANGE,
+        selectionPolicyId:
+            ENEMY_ORBIT_FUTURE_TARGET_SELECTION_POLICY
+                .LOWEST_ENTITY_ID_THEN_INCARNATION,
+        requiredForTowerReappearance: true,
+        requiredForMultipleLivingTowers: true,
+        activeInCurrentSingleTowerRuntime: false
+    });
+    assert.equal(
+        BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE.orbit.towerLossPolicy,
+        ENEMY_ORBIT_TOWER_LOSS_POLICY.LATCH_CORE_FALLBACK
+    );
+    assert.equal(
+        BASIC_OCTA_FUTURE_TARGET_REACQUISITION_REQUIREMENT
+            .activeInCurrentSingleTowerRuntime,
+        false
+    );
 });
 
 test('raw O spawn은 unassigned lease와 program3 payload를 함께 갖고 lifecycle 외 materialize를 거부한다', () => {

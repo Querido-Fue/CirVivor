@@ -24,7 +24,6 @@ const ALIAS_ROOTS = Object.freeze({
     'util/': path.join(SCRIPT_ROOT, 'util')
 });
 
-const context = vm.createContext({ console });
 const moduleCache = new Map();
 
 /**
@@ -55,7 +54,6 @@ function resolveModuleUrl(specifier, parentUrl) {
 async function createModuleByUrl(moduleUrl) {
     const source = await readFile(fileURLToPath(moduleUrl), 'utf8');
     const module = new vm.SourceTextModule(source, {
-        context,
         identifier: moduleUrl,
         initializeImportMeta(meta) {
             meta.url = moduleUrl;

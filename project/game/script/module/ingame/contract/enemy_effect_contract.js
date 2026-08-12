@@ -19,6 +19,12 @@ export const ENEMY_EFFECT_APPLICATION_POLICY = Object.freeze({
     REPLACE_WEAKER: 'replace-weaker'
 });
 
+/** Atomic transform 시 각 exact instance의 단일 목적지를 고르는 정책입니다. */
+export const ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY = Object.freeze({
+    STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT:
+        'stable-instance-id-modulo-destination-count'
+});
+
 export const ENEMY_EFFECT_TARGET_POLICY_ID = Object.freeze({
     HOSTILE_ENEMY: 'hostile-enemy'
 });
@@ -34,6 +40,7 @@ const EFFECT_DEFINITION_KEYS = new Set([
     'family',
     'stackPolicy',
     'applicationPolicy',
+    'atomicTransformTransferPolicy',
     'durationTicks',
     'healthDeltaFixedPerTick',
     'healthDeltaMinimumStackCount',
@@ -69,6 +76,9 @@ const VALID_EFFECT_FAMILIES = new Set(Object.values(ENEMY_EFFECT_FAMILY));
 const VALID_STACK_POLICIES = new Set(Object.values(ENEMY_EFFECT_STACK_POLICY));
 const VALID_APPLICATION_POLICIES = new Set(
     Object.values(ENEMY_EFFECT_APPLICATION_POLICY)
+);
+const VALID_ATOMIC_TRANSFORM_TRANSFER_POLICIES = new Set(
+    Object.values(ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY)
 );
 const TARGET_POLICY_CODE_BY_ID = Object.freeze({
     [ENEMY_EFFECT_TARGET_POLICY_ID.HOSTILE_ENEMY]:
@@ -194,6 +204,17 @@ export function normalizeEnemyEffectDefinition(
             `${label}.applicationPolicy는 알려진 EffectApplicationPolicy여야 합니다.`
         );
     }
+    const atomicTransformTransferPolicy = requireNonEmptyString(
+        definition.atomicTransformTransferPolicy,
+        `${label}.atomicTransformTransferPolicy`
+    );
+    if (!VALID_ATOMIC_TRANSFORM_TRANSFER_POLICIES.has(
+        atomicTransformTransferPolicy
+    )) {
+        throw new RangeError(
+            `${label}.atomicTransformTransferPolicy는 알려진 transfer policy여야 합니다.`
+        );
+    }
     return Object.freeze({
         id: requireNonEmptyString(definition.id, `${label}.id`),
         effectDefinitionCode: requirePositiveUint32(
@@ -203,6 +224,7 @@ export function normalizeEnemyEffectDefinition(
         family,
         stackPolicy,
         applicationPolicy,
+        atomicTransformTransferPolicy,
         durationTicks: requirePositiveUint32(
             definition.durationTicks,
             `${label}.durationTicks`

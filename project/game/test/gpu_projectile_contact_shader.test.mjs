@@ -183,8 +183,8 @@ assert.match(compute, /struct ContactHandler \{\s*damage_self: f32,\s*damage_oth
 assert.match(compute, /let damage_self = max\(i32\(handler\.damage_self \* 100\.0\), 0\);/);
 assert.match(compute, /fn resolve_contact_source_modified_damage\(/);
 assert.match(compute, /fn resolve_contact_target_mitigation\(/);
-assert.match(compute, /fn resolve_final_contact_damage\(/);
-assert.match(compute, /let final_damage = resolve_final_contact_damage\(/);
+assert.doesNotMatch(compute, /fn resolve_final_contact_damage\(/);
+assert.match(compute, /let final_damage = resolve_contact_target_mitigation\(/);
 assert.match(compute, /const GAMEPLAY_TEAM_NEUTRAL: u32 = 0u;/);
 assert.match(compute, /const GAMEPLAY_TEAM_PLAYER: u32 = 1u;/);
 assert.match(compute, /const GAMEPLAY_TEAM_HOSTILE: u32 = 2u;/);
@@ -989,7 +989,10 @@ assert.equal((markDeadBlock.match(/append_death_event\(body_id, reason_flags\);/
 assert.match(render, /@group\(0\) @binding\(4\) var<storage, read> simulations: SimulationBuffer;/);
 assert.match(render, /@group\(0\) @binding\(5\) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;/);
 assert.match(render, /counts\.abi_version != BODY_ABI_VERSION/);
-assert.match(render, /if \(\(simulation_flags & 1u\) == 0u\)[\s\S]*?output\.color = vec4f\(0\.0\);[\s\S]*?return output;/);
+assert.match(
+    render,
+    /if \(\(simulation_flags & 1u\) == 0u[\s\S]*?BODY_FLAG_PROJECTILE_CAPTURED[\s\S]*?output\.color = vec4f\(0\.0\);[\s\S]*?return output;/
+);
 assert.match(indirect, /counts\.abi_version != BODY_ABI_VERSION[\s\S]*?draw_args\.instance_count = 0u/);
 
 // 모든 compute entrypoint는 mismatch에서 fail closed하고 clear_contact_state는 status를 남깁니다.

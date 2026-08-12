@@ -106,10 +106,12 @@ function requireNonNegativeSafeInteger(value, label) {
     return value;
 }
 
-function requireUint32(value, label) {
+function requireUint32(value, label, allowZero = true) {
     const number = requireNonNegativeSafeInteger(value, label);
-    if (number > 0xffffffff) {
-        throw new RangeError(`${label}은 uint32 범위여야 합니다.`);
+    if (number > 0xffffffff || (!allowZero && number === 0)) {
+        throw new RangeError(
+            `${label}은 ${allowZero ? '' : 'nonzero '}uint32 범위여야 합니다.`
+        );
     }
     return number;
 }
@@ -522,16 +524,6 @@ function copyOptionalEnemyOrbitMetadata(intent) {
     });
     requireEnemyOrbitBehaviorState(intent, lease, 'activatedSpawnIntent');
     return lease;
-}
-
-function requireUint32(value, label, allowZero = true) {
-    if (typeof value !== 'number'
-        || !Number.isSafeInteger(value)
-        || value < (allowZero ? 0 : 1)
-        || value > 0xffffffff) {
-        throw new RangeError(`${label}은 ${allowZero ? '' : 'nonzero '}uint32여야 합니다.`);
-    }
-    return value >>> 0;
 }
 
 function requireSignedInt32Positive(value, label) {
@@ -1879,6 +1871,12 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             ...copyOptionalEnemyEffectMetadata(intent),
             ...copyOptionalEnemyFormationMetadata(intent),
             ...copyOptionalResolvedEnemyStatMetadata(intent)
+        };
+    }
+    if (intent.kindId !== 'projectile') {
+        return {
+            ...common,
+            spawnSequence: intent.spawnSequence
         };
     }
     return {

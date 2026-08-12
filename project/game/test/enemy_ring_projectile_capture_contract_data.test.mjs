@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
 
+const localValue = (value) => JSON.parse(JSON.stringify(value));
+
 const {
     ENEMY_CAPABILITY_ID
 } = await loadGameModule('ingame/contract/enemy_capability_contract.js');
@@ -14,6 +16,7 @@ const {
     PROJECTILE_CAPTURE_CAPTOR_DEATH_POLICY,
     PROJECTILE_CAPTURE_EXIT_POLICY,
     PROJECTILE_CAPTURE_FUNNEL_BOUNDARY_POLICY,
+    PROJECTILE_CAPTURE_FUNNEL_APPROACH_POLICY,
     PROJECTILE_CAPTURE_FUNNEL_FACING_POLICY,
     PROJECTILE_CAPTURE_LIFETIME_POLICY,
     PROJECTILE_CAPTURE_POLICY_ID,
@@ -122,7 +125,7 @@ function originProvenance(overrides = {}) {
 }
 
 test('R capture catalog은 single-slot 60-tick inclusive funnel과 exact release policy를 고정한다', () => {
-    assert.deepEqual(GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE, {
+    assert.deepEqual(localValue(GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE), {
         NONE: 0,
         RING_SINGLE_SLOT: 1
     });
@@ -141,7 +144,7 @@ test('R capture catalog은 single-slot 60-tick inclusive funnel과 exact release
         ENEMY_PROJECTILE_CAPTURE_PROFILE_BY_CODE[1],
         RING_PROJECTILE_CAPTURE_PROFILE
     );
-    assert.deepEqual(RING_PROJECTILE_CAPTURE_PROFILE, {
+    assert.deepEqual(localValue(RING_PROJECTILE_CAPTURE_PROFILE), {
         id: 'ring-projectile-capture-01',
         definitionCode: 1,
         slotCapacity: 1,
@@ -149,6 +152,9 @@ test('R capture catalog은 single-slot 60-tick inclusive funnel과 exact release
         captureTeamId: GAMEPLAY_TEAM_ID.PLAYER,
         funnelHalfAngleRadians: Math.PI / 4,
         funnelBoundaryPolicy: PROJECTILE_CAPTURE_FUNNEL_BOUNDARY_POLICY.INCLUSIVE,
+        funnelApproachPolicy:
+            PROJECTILE_CAPTURE_FUNNEL_APPROACH_POLICY
+                .RELATIVE_VELOCITY_STRICTLY_CLOSING,
         funnelFacingPolicy:
             PROJECTILE_CAPTURE_FUNNEL_FACING_POLICY.LAST_NONZERO_ROUTE_VELOCITY,
         capturedVisibilityPolicy: PROJECTILE_CAPTURE_VISIBILITY_POLICY.HIDDEN,
@@ -183,6 +189,10 @@ test('R capture catalog은 single-slot 60-tick inclusive funnel과 exact release
 });
 
 test('R profile normalizer는 phantom Core fallback, accessor, extra와 duplicate code를 거절한다', () => {
+    assert.throws(() => normalizeEnemyProjectileCaptureProfile({
+        ...RING_PROJECTILE_CAPTURE_PROFILE,
+        funnelApproachPolicy: 'allow-outbound-overlap'
+    }), /알려진 projectile capture policy/);
     assert.throws(() => normalizeEnemyProjectileCaptureProfile({
         ...RING_PROJECTILE_CAPTURE_PROFILE,
         releaseAimPolicy: 'exact-living-tower-then-core-then-forward'
@@ -234,7 +244,7 @@ test('basic_ring_01은 common-C stats와 capture bit/profile을 GPU definition c
         BASIC_RING_ENEMY_DATA.projectileCaptureProfileId,
         RING_PROJECTILE_CAPTURE_PROFILE_ID
     );
-    assert.deepEqual(BASIC_RING_ENEMY_CAPABILITY_IDS, [
+    assert.deepEqual(Array.from(BASIC_RING_ENEMY_CAPABILITY_IDS), [
         ENEMY_CAPABILITY_ID.NAVIGATION,
         ENEMY_CAPABILITY_ID.CONTACT_COMBAT,
         ENEMY_CAPABILITY_ID.CORE_IMPACT,
@@ -268,9 +278,9 @@ test('basic_ring_01은 common-C stats와 capture bit/profile을 GPU definition c
     });
 
     // CPU legacy pool roster에는 Ring class가 없으므로 GPU-only R을 섞지 않습니다.
-    assert.deepEqual(ENEMY_SHAPE_TYPES, [
+    assert.deepEqual(Array.from(ENEMY_SHAPE_TYPES), [
         'square', 'triangle', 'arrow', 'hexa',
-        'penta', 'rhom', 'octa', 'gen'
+        'penta', 'rhom', 'octa', 'gen', 'jorang'
     ]);
     assert.equal(ENEMY_SHAPE_TYPES.includes('ring'), false);
 });
@@ -326,24 +336,24 @@ test('basic bullet은 capturable logical metadata를 definition authority에서 
         BASIC_BULLET_PROJECTILE_DATA.archetypeId,
         BASIC_BULLET_LOGICAL_PROJECTILE_METADATA.archetypeId
     );
-    assert.deepEqual(BASIC_BULLET_LOGICAL_PROJECTILE_METADATA, {
+    assert.deepEqual(localValue(BASIC_BULLET_LOGICAL_PROJECTILE_METADATA), {
         archetypeId: 'basic_bullet_01',
         wordTagMask: 0,
         modifierSetId: null,
         sourceExecutionId: null,
         projectileGeneration: 1
     });
-    assert.deepEqual(normalizeProjectileLogicalMetadata({
+    assert.deepEqual(localValue(normalizeProjectileLogicalMetadata({
         archetypeId: 'basic_bullet_01',
         wordTagMask: 0,
         modifierSetId: null,
         sourceExecutionId: null,
         projectileGeneration: 1
-    }), BASIC_BULLET_LOGICAL_PROJECTILE_METADATA);
+    })), localValue(BASIC_BULLET_LOGICAL_PROJECTILE_METADATA));
 });
 
 test('origin provenance는 nullable exact pairs와 subject metadata를 immutable하게 보존한다', () => {
-    assert.deepEqual(PROJECTILE_ORIGIN_PROVENANCE_KEYS, [
+    assert.deepEqual(Array.from(PROJECTILE_ORIGIN_PROVENANCE_KEYS), [
         'schemaVersion',
         'archetypeId',
         'wordTagMask',
@@ -361,7 +371,7 @@ test('origin provenance는 nullable exact pairs와 subject metadata를 immutable
     ]);
     const normalized = normalizeProjectileOriginProvenance(originProvenance());
     assert.equal(Object.isFrozen(normalized), true);
-    assert.deepEqual(normalized, originProvenance());
+    assert.deepEqual(localValue(normalized), originProvenance());
     assert.equal('ownerEntityId' in normalized, false);
     assert.equal('sourceEntityId' in normalized, false);
     assert.equal('targetEntityId' in normalized, false);

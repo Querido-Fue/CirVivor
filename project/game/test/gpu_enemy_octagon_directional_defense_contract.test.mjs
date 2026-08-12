@@ -165,7 +165,9 @@ test('classifier pass는 transient contact.normal marker로 inclusive front 3/8 
     assert.match(classifier,
         /dot\(target_facing, incoming_direction\) < cos\(armored_half_angle\)/);
     assert.match(classifier,
-        /contacts\.values\[contact_index\]\.normal = vec2f\([\s\S]*bitcast<f32>\(flat_reduction\)[\s\S]*DIRECTIONAL_DEFENSE_MARKER_MAGIC/);
+        /contacts\.values\[contact_index\]\.normal = vec2f\([\s\S]*bitcast<f32>\(flat_reduction\)[\s\S]*directional_defense_marker_payload\(\)/);
+    assert.match(GPU_COLLISION_COMPUTE_WGSL,
+        /fn directional_defense_marker_payload\(\) -> f32[\s\S]*marker_bits:\s*u32 = DIRECTIONAL_DEFENSE_MARKER_MAGIC[\s\S]*bitcast<f32>\(marker_bits\)/);
     assert.doesNotMatch(classifier, /combat_states/);
     assert.doesNotMatch(classifier, /minimum|min_damage|random/iu);
 });
@@ -186,7 +188,7 @@ test('generic handler는 team/stale gate 뒤 budget을 소비하고 flat 50을 m
     assert.match(GPU_COLLISION_COMPUTE_WGSL,
         /source_modified_damage - directional_defense_flat_reduction\(contact\)[\s\S]*0/);
     assert.match(handler,
-        /final_damage <= 0[\s\S]*Valid fully absorbed hits consume the source\/self budget[\s\S]*APPLIED_EVENT_FLAG_DIRECTIONAL_DEFENSE/);
+        /directional_defense_event_flag = select\([\s\S]*APPLIED_EVENT_FLAG_DIRECTIONAL_DEFENSE[\s\S]*directional_flat_reduction > 0[\s\S]*final_damage <= 0[\s\S]*Valid fully absorbed hits consume the source\/self budget[\s\S]*directional_defense_event_flag/);
     assert.match(handler,
         /damage\.applied[\s\S]*directional_defense_event_flag/);
     assert.doesNotMatch(handler, /max\(final_damage,\s*1\)|minimum_damage/);
@@ -259,13 +261,13 @@ test('simulation ordering/storage와 dedicated author fixture routing을 exact �
     assert.match(SIMULATION_SOURCE,
         /maximumDamageWindow:\s*9/);
     assert.match(appliedEventDecoder,
-        /\|\| \(maximumDamageWindow && directionalDefense\)[\s\S]*if \(unknownFlags !== 0[\s\S]*\|\| contactFlagsInvalid[\s\S]*throw new RangeError/);
+        /Number\(maximumDamageWindow\)[\s\S]*Number\(directionalDefense\)[\s\S]*Number\(atomicTransformTriggerFirstHit\) > 1[\s\S]*if \(unknownFlags !== 0[\s\S]*\|\| contactFlagsInvalid[\s\S]*throw new RangeError/);
     assert.match(endpointEventNormalizer,
         /directionalDefense !== encodedDirectionalDefense[\s\S]*throw new RangeError/);
     assert.match(endpointEventNormalizer,
-        /maximumDamageWindow && directionalDefense[\s\S]*throw new RangeError/);
+        /Number\(maximumDamageWindow\)[\s\S]*Number\(directionalDefense\)[\s\S]*Number\(atomicTransformTriggerFirstHit\) > 1[\s\S]*throw new RangeError/);
     assert.match(endpointEventNormalizer,
-        /allowsZeroDamage = eventType === 'damage-applied'[\s\S]*maximumDamageWindow \|\| directionalDefense/);
+        /allowsZeroDamage = eventType === 'damage-applied'[\s\S]*maximumDamageWindow[\s\S]*\|\| directionalDefense[\s\S]*\|\| atomicTransformTriggerFirstHit/);
     assert.match(endpointEventNormalizer,
         /valueFixedPoint === 0 && targetDied/);
     assert.match(SIMULATION_SOURCE,

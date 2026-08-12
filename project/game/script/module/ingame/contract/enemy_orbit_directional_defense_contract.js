@@ -24,6 +24,34 @@ export const ENEMY_ORBIT_TOWER_LOSS_POLICY = Object.freeze({
     LATCH_CORE_FALLBACK: 'latch-core-fallback'
 });
 
+/**
+ * Current RING_SLOTS roster가 한 fixed tick의 O spawn 전체를 수용하지 못할 때의
+ * normal-capacity 정책입니다. 부분 slot publication은 허용하지 않습니다.
+ */
+export const ENEMY_ORBIT_CAPACITY_OVERFLOW_POLICY = Object.freeze({
+    REJECT_WHOLE_FIXED_TICK_SPAWN_BATCH:
+        'reject-whole-fixed-tick-spawn-batch'
+});
+
+export const ENEMY_ORBIT_CAPACITY_RETRY_POLICY = Object.freeze({
+    AUTHORED_STAGGER_AFTER_SLOT_AVAILABLE:
+        'authored-stagger-after-slot-available'
+});
+
+/**
+ * Tower 재등장/다중 Tower가 도입될 때 요구되는 미래 target 정책입니다.
+ * current single-Tower runtime의 LATCH_CORE_FALLBACK을 활성 상태에서 바꾸지 않습니다.
+ */
+export const ENEMY_ORBIT_FUTURE_TARGET_REACQUISITION_POLICY = Object.freeze({
+    EXACT_LIVING_TOWER_ON_ROSTER_CHANGE:
+        'exact-living-tower-on-roster-change'
+});
+
+export const ENEMY_ORBIT_FUTURE_TARGET_SELECTION_POLICY = Object.freeze({
+    LOWEST_ENTITY_ID_THEN_INCARNATION:
+        'lowest-entity-id-then-incarnation'
+});
+
 export const ENEMY_DIRECTIONAL_DEFENSE_BOUNDARY_POLICY = Object.freeze({
     INCLUSIVE: 'inclusive'
 });

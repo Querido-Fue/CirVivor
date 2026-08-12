@@ -4,6 +4,8 @@ import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
 
+const localValue = (value) => JSON.parse(JSON.stringify(value));
+
 const {
     BASIC_RING_ENEMY_CAPABILITY_MASK,
     BASIC_RING_ENEMY_DATA
@@ -31,6 +33,7 @@ const {
     writeGpuProjectileCaptureState
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG,
     GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE,
     GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG,
     GPU_PROJECTILE_CAPTURE_RELEASE_REASON,
@@ -38,6 +41,7 @@ const {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT,
     GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG,
+    GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG,
     GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR,
     GPU_PROJECTILE_CAPTURE_TICK_STATUS,
     writeGpuProjectileCaptureProfile,
@@ -135,18 +139,18 @@ test('R body side-plane은 ABI v8의 independent 48/16-byte exact-handle state�
         GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED,
         1 << 5
     );
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_ROLE, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_ROLE), {
         NONE: 0,
         CAPTOR: 1,
         PROJECTILE: 2
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_PHASE, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_PHASE), {
         IDLE: 0,
         HELD: 1,
         RELEASE_PREPARED: 2,
         TOMBSTONED: 3
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_POLICY_CODE, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_POLICY_CODE), {
         NOT_CAPTURABLE: 0,
         CAPTURABLE: 1
     });
@@ -169,7 +173,7 @@ test('R body side-plane은 ABI v8의 independent 48/16-byte exact-handle state�
         policyCode: GPU_PROJECTILE_CAPTURE_POLICY_CODE.CAPTURABLE,
         flags: 0x5a5a
     });
-    assert.deepEqual(unpackGpuProjectileCaptureStateMeta(packed), {
+    assert.deepEqual(localValue(unpackGpuProjectileCaptureStateMeta(packed)), {
         role: 2,
         phase: 1,
         profileCode: 1,
@@ -314,11 +318,14 @@ test('capture fingerprint는 0과 uint32 sentinel을 모든 producer/seal에서 
     const prepareFinalizeStart = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.indexOf(
         'fn finalize_projectile_capture_release_preparations()'
     );
-    const prepareFinalizeEnd = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.indexOf(
+    const nextPrepareEntrypoint = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.indexOf(
         '\n@compute',
         prepareFinalizeStart
             + 'fn finalize_projectile_capture_release_preparations()'.length
     );
+    const prepareFinalizeEnd = nextPrepareEntrypoint >= 0
+        ? nextPrepareEntrypoint
+        : GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.length;
     const prepareFinalizeSource = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.slice(
         prepareFinalizeStart,
         prepareFinalizeEnd
@@ -378,6 +385,7 @@ test('capture runtime ABI v1은 prepare/publication/result status와 Tower-or-fo
         CLEANUP_COUNT: 48,
         OVERFLOW_FLAGS: 52,
         BATCH_FINGERPRINT: 56,
+        RETRY_STATE_FLAGS: 60,
         RESERVED: 60
     });
     assert.equal(GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.COMPLETION.STRIDE, 96);
@@ -401,14 +409,14 @@ test('capture runtime ABI v1은 prepare/publication/result status와 Tower-or-fo
         INCARNATION: 8,
         SELECTOR: 12
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_TICK_STATUS, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_TICK_STATUS), {
         RESET: 0,
         SEALED: 1,
         COMPLETE: 2,
         REJECTED: 3,
         PROTOCOL_FAILURE: 4
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_COMPLETION_TYPE), {
         CAPTURED: 1,
         RELEASE_PREPARED_NORMAL: 2,
         RELEASE_PREPARED_CAPTOR_DEATH: 3,
@@ -416,20 +424,20 @@ test('capture runtime ABI v1은 prepare/publication/result status와 Tower-or-fo
         HELD_PROJECTILE_EXPIRED: 5,
         RELEASE_COMMITTED: 6
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR), {
         INVALID_FORWARD: 0,
         TOWER: 1
     });
     assert.equal('CORE' in GPU_PROJECTILE_CAPTURE_TARGET_SELECTOR, false);
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_RELEASE_REASON, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_RELEASE_REASON), {
         NORMAL_DUE: 1,
         CAPTOR_DEATH: 2,
         CAPTOR_CORE_IMPACT: 3
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG), {
         COMMIT_REQUESTED: 1
     });
-    assert.deepEqual(GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG, {
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG), {
         ABI_MISMATCH: 1,
         CONTACT_OVERFLOW: 2,
         COMPLETION_CAPACITY: 4,
@@ -440,6 +448,15 @@ test('capture runtime ABI v1은 prepare/publication/result status와 Tower-or-fo
         FIXED_TICK_OVERFLOW: 128,
         CAPTURE_SEQUENCE_EXHAUSTED: 256
     });
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG), {
+        CAPTURE: 1,
+        RELEASE_PREPARATION: 2,
+        CLEANUP: 4
+    });
+    assert.deepEqual(localValue(GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG), {
+        ACTIVE: 1,
+        BACKLOG_REMAINS: 2
+    });
     assert.deepEqual(Object.values(GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT), [
         'clear_projectile_capture_tick',
         'update_projectile_capture_facing',
@@ -449,8 +466,12 @@ test('capture runtime ABI v1은 prepare/publication/result status와 Tower-or-fo
         'select_ring_capture_distances',
         'select_ring_capture_projectiles',
         'preflight_projectile_capture_batch',
+        'preflight_projectile_capture_retry_batch',
+        'select_projectile_capture_retry_prefix',
+        'shield_projectile_capture_contacts',
         'seal_projectile_capture_batch',
         'commit_projectile_capture_batch',
+        'commit_projectile_capture_retry_batch',
         'finalize_projectile_capture_batch',
         'mark_projectile_capture_core_impacts',
         'attach_projectile_capture_holds',
@@ -477,8 +498,12 @@ test('capture runtime은 storage 9, release program은 7이며 모든 dispatch�
         select_ring_capture_distances: 7,
         select_ring_capture_projectiles: 7,
         preflight_projectile_capture_batch: 7,
+        shield_projectile_capture_contacts: 7,
+        preflight_projectile_capture_retry_batch: 6,
+        select_projectile_capture_retry_prefix: 6,
         seal_projectile_capture_batch: 1,
         commit_projectile_capture_batch: 7,
+        commit_projectile_capture_retry_batch: 7,
         finalize_projectile_capture_batch: 1,
         mark_projectile_capture_core_impacts: 7,
         attach_projectile_capture_holds: 5,
@@ -564,6 +589,68 @@ test('profile writer는 data angle에서 파생한 f32 cosine과 exact epsilon�
     );
 });
 
+test('strict-closing funnel과 capacity retry는 shader/dispatch/host ledger에서 함께 봉인된다', () => {
+    assert.match(GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+        /relative_projectile_velocity = projectile_velocity[\s\S]*radial_closing_dot < 0\.0[\s\S]*>= params\.funnel_cos_half_angle/);
+    assert.match(GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+        /const PROJECTILE_CAPTURE_PREPARED_SHIELD: u32 = 0x7fc00052u/);
+    assert.match(GPU_COLLISION_COMPUTE_WGSL,
+        /PROJECTILE_CAPTURE_PREPARED_SHIELD: u32 = 0x7fc00052u/);
+    assert.match(GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+        /capture_demand > params\.capture_capacity[\s\S]*release_demand > params\.release_capacity[\s\S]*cleanup_demand > params\.cleanup_capacity/);
+    assert.match(GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+        /fn retry_held_rank\(captor_slot: u32, cleanup_partition: bool\)[\s\S]*other_kind != 1u && other_kind != 2u && other_kind != 4u/);
+    assert.match(SIMULATION_SOURCE,
+        /PREFLIGHT_RETRY[\s\S]*SELECT_RETRY_PREFIX[\s\S]*SEAL_CAPTURE[\s\S]*COMMIT_RETRY_CAPTURE/);
+    assert.match(SIMULATION_SOURCE,
+        /projectile-capture-retry-active/);
+    assert.match(SIMULATION_SOURCE,
+        /projectileCaptureReadbackLease[\s\S]*expectedRetryState/);
+    assert.match(SIMULATION_SOURCE,
+        /capacityRejected = header\.status[\s\S]*expectedRetry === null[\s\S]*retryStateFlags === 0[\s\S]*COMPLETION_CAPACITY/);
+    assert.match(ENDPOINT_SOURCE,
+        /projectileCaptureDeferredDeathReceipts[\s\S]*projectile-capture-capacity-deferred[\s\S]*#stageDeferredProjectileCaptureDeaths/);
+    assert.match(ENDPOINT_SOURCE,
+        /exactCapacityRejected = batch\.capacityRejected === true[\s\S]*batch\.retryBatch !== true[\s\S]*batch\.retryBacklogRemaining !== true[\s\S]*\(batch\.retryOriginTick \?\? 0\) === 0/);
+    assert.match(DIRECTOR_SOURCE,
+        /lastCapacityRejection[\s\S]*retryBatch[\s\S]*deferredCaptorDeathReceipt/);
+    assert.match(DIRECTOR_SOURCE,
+        /exactCapacityRejection = snapshot\.retryable === true[\s\S]*snapshot\.retryBatch !== true[\s\S]*snapshot\.retryBacklogRemaining !== true[\s\S]*\(snapshot\.retryOriginTick \?\? 0\) === 0/);
+    assert.match(RUNNER_SOURCE,
+        /insideOutbound[\s\S]*captureRecords\.length === 0/);
+    assert.match(RUNNER_SOURCE,
+        /const ringIntent = createRingIntent[\s\S]*x: ringIntent\.velocity\.x[\s\S]*relativeRadialSpeed \* radialUnit\.x[\s\S]*y: ringIntent\.velocity\.y[\s\S]*relativeRadialSpeed \* radialUnit\.y/);
+    assert.match(RUNNER_SOURCE,
+        /relativeClosingDot = \(relativeVelocity\.x \* radialDelta\.x\)[\s\S]*approachDirection === 'outbound'[\s\S]*relativeClosingDot > 0[\s\S]*relativeClosingDot < 0/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityWholeBatchRejection[\s\S]*retryOne\.captures\.length === 1[\s\S]*retryTwo\.captures\.length === 1/);
+    assert.match(RUNNER_SOURCE,
+        /runReleasePreparationCapacityRetry[\s\S]*releasePreparationDemandCount === 2[\s\S]*releaseCompletions\.length === 2/);
+    assert.match(RUNNER_SOURCE,
+        /runCleanupCapacityRetry[\s\S]*cleanupDemandCount === 2[\s\S]*projectileRegistryCount/);
+});
+
+test('Ring terminal empty-world header와 모든 body candidate를 함께 clear한다', () => {
+    assert.match(GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL,
+        /fn clear_projectile_capture_tick[\s\S]*if \(slot == 0u\)[\s\S]*H_SOURCE_TICK[\s\S]*params\.fixed_tick/);
+    const clearDispatchStart = SIMULATION_SOURCE.indexOf(
+        'GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.CLEAR_TICK'
+    );
+    const validateDispatchStart = SIMULATION_SOURCE.indexOf(
+        'GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.VALIDATE_HELD',
+        clearDispatchStart
+    );
+    assert.ok(clearDispatchStart >= 0
+        && validateDispatchStart > clearDispatchStart);
+    const clearDispatchSource = SIMULATION_SOURCE.slice(
+        clearDispatchStart,
+        validateDispatchStart
+    );
+    assert.match(clearDispatchSource,
+        /pass\.dispatchWorkgroups\(Math\.max\([\s\S]*1,[\s\S]*Math\.ceil\(this\.bodyCount \/ BODY_WORKGROUP_SIZE\)[\s\S]*\)\)/);
+    assert.doesNotMatch(clearDispatchSource, /dispatchWorkgroupsIndirect/);
+});
+
 test('R definition/render source는 capability bit 0x080과 GPU-only hollow funnel을 고정한다', () => {
     assert.equal(BASIC_RING_ENEMY_DATA.id, 'basic_ring_01');
     assert.equal(BASIC_RING_ENEMY_CAPABILITY_MASK, 0x285);
@@ -645,6 +732,14 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
     assert.match(ENDPOINT_SOURCE, /getProjectileCaptureRuntimeStatus/);
     assert.match(ENDPOINT_SOURCE,
         /getTerminalProjectileCaptureProgramCancelStatus/);
+    assert.match(ENDPOINT_SOURCE,
+        /backendBindingMatchesOwner[\s\S]*projectile-capture-terminal-binding-drift/);
+    assert.match(ENDPOINT_SOURCE,
+        /captureCompletionObserved[\s\S]*releaseCompletionObserved[\s\S]*ownerCompletionObserved/);
+    assert.match(ENDPOINT_SOURCE,
+        /submittedTick: ownerCompletionObserved[\s\S]*completedThroughTick: ownerCompletionObserved/);
+    assert.doesNotMatch(ENDPOINT_SOURCE,
+        /abiVersion: backend\?\.abiVersion \?\? initialOwner\.abiVersion/);
     assert.match(ENDPOINT_SOURCE, /requestTerminalHeldProjectileDespawn/);
     assert.match(BACKEND_SOURCE, /getProjectileCaptureBodyState/);
     assert.match(LIFECYCLE_SOURCE, /projectileCapture/);
@@ -676,12 +771,16 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
         /requestPreparedReleaseBatch[\s\S]*discardPreparedBatch[\s\S]*requestTerminalHeldProjectileDespawn/);
     assert.equal(
         [...RUNNER_SOURCE.matchAll(/getProjectileCaptureCommandPort\(/g)].length,
-        1
+        2
     );
+    assert.match(RUNNER_SOURCE,
+        /function refreshIdleDirectorBinding[\s\S]*director\.resetGpuBinding/);
     assert.match(RUNNER_SOURCE,
         /staleTerminalCleanup = oldPort\.requestTerminalHeldProjectileDespawn[\s\S]*projectile-capture-terminal-cleanup-rejected/);
     assert.match(RUNNER_SOURCE,
         /sessionGeneration:[\s\S]*deviceGeneration:[\s\S]*authoritativeEpoch:/);
+    assert.match(RUNNER_SOURCE,
+        /registryHasCaptor: endpoint\.getRegistry\(\)\.has\(captorHandle\)/);
     assert.match(RUNNER_SOURCE,
         /new RingProjectileCaptureDirector\(\{[\s\S]*registry: endpoint\.getRegistry\(\)[\s\S]*projectileCaptureCommandPort: commandPort[\s\S]*sessionGeneration: runtime\.sessionGeneration[\s\S]*deviceGeneration: runtime\.deviceGeneration[\s\S]*authoritativeEpoch: runtime\.authoritativeEpoch[\s\S]*capacity: endpoint\.getCapacity\(\)/);
     assert.doesNotMatch(RUNNER_SOURCE, /synthetic|mockEndpoint|fakeRegistry/iu);
@@ -693,6 +792,8 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
         /staleTerminalCleanup\.reason[\s\S]*projectile-capture-terminal-cleanup-rejected/);
     assert.match(SUPPORT_SOURCE,
         /capturedProjectileBody\.healthFixedPoint[\s\S]*preCaptureProjectileBody\.healthFixedPoint/);
+    assert.match(SUPPORT_SOURCE,
+        /director\?\.sessionGeneration === owner\.sessionGeneration[\s\S]*director\.lastCompletedCaptureTick === finalFixedTick[\s\S]*director\.lastCompletedReleaseTick === finalFixedTick/);
     assert.doesNotMatch(SUPPORT_SOURCE,
         /productionEnemyRingProjectileCapture[\s\S]{0,300}\.passed === true/);
     const ringStageStart = SUPPORT_SOURCE.indexOf(
@@ -705,7 +806,7 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
     const ringStageSource = SUPPORT_SOURCE.slice(ringStageStart, ringStageEnd);
     assert.ok(ringStageStart >= 0 && ringStageEnd > ringStageStart);
     assert.match(ringStageSource, /actualRuntime/);
-    assert.match(ringStageSource, /captureStorageValues\.length === 23/);
+    assert.match(ringStageSource, /captureStorageValues\.length === 27/);
     assert.match(ringStageSource,
         /Math\.max\(\.\.\.captureStorageValues\) === 7/);
     assert.match(ringStageSource, /collisionStorageProfile\?\.render === 9/);
@@ -713,6 +814,13 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
         /collisionStorageProfile\.requiredMaximum === 9/);
     assert.match(ringStageSource,
         /requestedMaxStorageBuffersPerShaderStage === 9/);
+    assert.match(ringStageSource,
+        /exitReleaseValid\(death, 2\)[\s\S]*death\.registryHasCaptor === false[\s\S]*exitReleaseValid\(core, 3\)[\s\S]*core\.registryHasCaptor === false/);
+    assert.match(ringStageSource,
+        /eventType === 'interaction-enter'[\s\S]*eventType === 'interaction-continuous'/);
     assert.doesNotMatch(ringStageSource, /\.passed\s*===\s*true/);
-    assert.match(GPU_COLLISION_COMPUTE_WGSL, /projectile_capture/);
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /PROJECTILE_CAPTURE_PREPARED_SHIELD/
+    );
 });

@@ -119,6 +119,13 @@ function createEmptyGpuEventSnapshot(completedThroughTick = 0) {
         events: Object.freeze([]),
         contactEvents: Object.freeze([]),
         deathEvents: Object.freeze([]),
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 0,
         protocolFailure: null
     });
 }
@@ -963,10 +970,21 @@ export class GameObjectSystem {
                 }
                 return this.#pauseForGpuRecovery();
             }
-            this.jorangSplitLineageDirector?.observeCompletedEvents(
-                completedEvents
-            );
-            if (this.jorangSplitLineageDirector?.requiresRecovery() === true) {
+            const jorangFirstHitObservation
+                = this.jorangSplitLineageDirector?.observeCompletedEvents(
+                    completedEvents
+                ) ?? null;
+            const retryableJorangFirstHitCapacityBackoff
+                = jorangFirstHitObservation?.accepted === true
+                    && jorangFirstHitObservation.retryable === true
+                    && jorangFirstHitObservation.capacityRejectionCount === 1
+                    && jorangFirstHitObservation.triggerCount === 0
+                    && jorangFirstHitObservation.transformStartCount === 0;
+            if (this.jorangSplitLineageDirector?.requiresRecovery() === true
+                || jorangFirstHitObservation?.recoveryRequired === true
+                || jorangFirstHitObservation?.accepted === false
+                || (jorangFirstHitObservation?.retryable === true
+                    && !retryableJorangFirstHitCapacityBackoff)) {
                 if (this.runOutcome.isDefeated()
                     || this.coreIntegrity.isDepleted()) {
                     return this.#sealTerminalFailure(
@@ -1139,7 +1157,8 @@ export class GameObjectSystem {
 
             const lifecycleResult = this.enemySimulationEndpoint
                 .commitAtFixedBoundary(proposedFixedTick);
-            if (lifecycleResult.recoveryRequired) {
+            if (lifecycleResult.recoveryRequired
+                || lifecycleResult.state === 'stalled') {
                 this.corkRouteClosureDirector?.observeFixedCommit(
                     lifecycleResult,
                     proposedFixedTick
@@ -2161,8 +2180,12 @@ export class GameObjectSystem {
             && atomicTransformRosterEvidence.terminal.rosterSealed === true;
         const projectileCaptureSettlementSubmitted
             = projectileCaptureOwnerEvidence?.accepted === true
+            && projectileCaptureOwnerEvidence.abiVersion
+                === GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
             && projectileCaptureOwnerEvidence.state === 'settled'
             && projectileCaptureOwnerEvidence.finalFixedTick === fixedTick
+            && projectileCaptureOwnerEvidence.submittedTick === fixedTick
+            && projectileCaptureOwnerEvidence.completedThroughTick === fixedTick
             && projectileCaptureOwnerEvidence.pendingPreparedBatchCount === 0
             && projectileCaptureOwnerEvidence.armedBatchCount === 0
             && projectileCaptureOwnerEvidence.terminalHeldDespawnRequestCount
@@ -2174,12 +2197,19 @@ export class GameObjectSystem {
             && projectileCaptureBackendEvidence.accepted === true
             && projectileCaptureBackendEvidence.state === 'settled'
             && projectileCaptureBackendEvidence.finalFixedTick === fixedTick
+            && projectileCaptureBackendEvidence.submittedTick === fixedTick
+            && projectileCaptureBackendEvidence.completedThroughTick === fixedTick
+            && projectileCaptureOwnerEvidence.sessionGeneration
+                === projectileCaptureBackendEvidence.sessionGeneration
+            && projectileCaptureOwnerEvidence.deviceGeneration
+                === projectileCaptureBackendEvidence.deviceGeneration
+            && projectileCaptureOwnerEvidence.authoritativeEpoch
+                === projectileCaptureBackendEvidence.authoritativeEpoch
             && projectileCaptureBackendEvidence.stagedReleaseCount === 0
             && projectileCaptureBackendEvidence.commitRequested
                 === projectileCaptureOwnerEvidence.commitRequested
             && projectileCaptureBackendEvidence.pendingCaptureReadbackCount === 0
             && projectileCaptureBackendEvidence.pendingReleaseReadbackCount === 0
-            && projectileCaptureBackendEvidence.completedThroughTick >= fixedTick
             && projectileCaptureBackendEvidence.failure === null
             && projectileCaptureHostCleanupEvidence?.authority
                 === 'lifecycle-terminal-despawn'
@@ -2192,10 +2222,27 @@ export class GameObjectSystem {
                 .releaseCommittedExcluded === true
             && projectileCaptureRuntimeEvidence?.abiVersion
                 === GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
+            && projectileCaptureRuntimeEvidence.sessionGeneration
+                === projectileCaptureBackendEvidence.sessionGeneration
+            && projectileCaptureRuntimeEvidence.deviceGeneration
+                === projectileCaptureBackendEvidence.deviceGeneration
+            && projectileCaptureRuntimeEvidence.authoritativeEpoch
+                === projectileCaptureBackendEvidence.authoritativeEpoch
+            && projectileCaptureRuntimeEvidence.completedThroughTick === fixedTick
             && projectileCaptureRuntimeEvidence.stagedReleaseCount === 0
             && projectileCaptureRuntimeEvidence.pendingCaptureReadbackCount === 0
             && projectileCaptureRuntimeEvidence.pendingReleaseReadbackCount === 0
-            && projectileCaptureRuntimeEvidence.requiresRecovery === false;
+            && projectileCaptureRuntimeEvidence.requiresRecovery === false
+            && projectileCaptureRosterEvidence?.sessionGeneration
+                === projectileCaptureOwnerEvidence.sessionGeneration
+            && projectileCaptureRosterEvidence.deviceGeneration
+                === projectileCaptureOwnerEvidence.deviceGeneration
+            && projectileCaptureRosterEvidence.authoritativeEpoch
+                === projectileCaptureOwnerEvidence.authoritativeEpoch
+            && projectileCaptureRosterEvidence.lastCompletedCaptureTick
+                === fixedTick
+            && projectileCaptureRosterEvidence.lastCompletedReleaseTick
+                === fixedTick;
         const projectileCaptureRosterSealed
             = projectileCaptureRosterEvidence?.recoveryRequired === false
             && projectileCaptureRosterEvidence.capturedProjectileCount === 0

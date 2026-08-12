@@ -115,6 +115,25 @@ function createDirector(registry, commandPort, capacity = 32) {
     });
 }
 
+function completedEventSnapshot(events = [], overrides = {}) {
+    return Object.freeze({
+        events: Object.freeze(events),
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: events.filter((event) => (
+            event?.atomicTransformTriggerFirstHit === true
+        )).length,
+        atomicTransformFirstHitCommittedCount: events.filter((event) => (
+            event?.atomicTransformTriggerFirstHit === true
+        )).length,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 32,
+        protocolFailure: null,
+        ...overrides
+    });
+}
+
 function preparedRecord(stageRecord, registry, overrides = {}) {
     const sourceView = registry.copyEntityView(stageRecord.sourceHandle, {});
     return Object.freeze({
@@ -183,8 +202,8 @@ function seedSingleSplit({
     bountyBudget = 12
 }) {
     registry.put(root, J_ID, metadata(root, { bountyBudget }));
-    const observed = director.observeCompletedEvents({
-        events: [Object.freeze({
+    const observed = director.observeCompletedEvents(completedEventSnapshot([
+        Object.freeze({
             type: 'contact',
             eventType: 'damage-applied',
             disposition: 'applied',
@@ -199,9 +218,8 @@ function seedSingleSplit({
             otherIncarnation: root.incarnation,
             sourceTick,
             sequence: 0
-        })],
-        protocolFailure: null
-    });
+        })
+    ]));
     assert.equal(observed.accepted, true);
     director.stageForFixedTick({ targetFixedTick: sourceTick });
     const prepared = publishPreparation(
@@ -241,8 +259,8 @@ test('five same-tick first hits are all admitted while host starts drain 4 then 
     const roots = Array.from({ length: 5 }, (_, index) => handle(index + 1));
     for (const root of roots) registry.put(root, J_ID, metadata(root));
 
-    const observed = director.observeCompletedEvents({
-        events: roots.map((root, sequence) => Object.freeze({
+    const observed = director.observeCompletedEvents(completedEventSnapshot(
+        roots.map((root, sequence) => Object.freeze({
             type: 'contact',
             eventType: 'damage-applied',
             disposition: 'applied',
@@ -257,13 +275,14 @@ test('five same-tick first hits are all admitted while host starts drain 4 then 
             otherIncarnation: root.incarnation,
             sourceTick: 10,
             sequence
-        })),
-        protocolFailure: null
-    });
+        }))
+    ));
     assert.deepEqual(observed, {
         accepted: true,
+        retryable: false,
         triggerCount: 5,
         pendingCount: 5,
+        capacityRejectionCount: 0,
         transformStartCount: 0
     });
 
@@ -347,8 +366,7 @@ test('capacity rejection consumes T command but preserves backlog for a new T+1 
     const director = createDirector(registry, commandPort);
     const root = handle(21, 3);
     registry.put(root, J_ID, metadata(root));
-    director.observeCompletedEvents({
-        events: [{
+    director.observeCompletedEvents(completedEventSnapshot([{
             type: 'contact',
             eventType: 'damage-applied',
             disposition: 'applied',
@@ -363,9 +381,7 @@ test('capacity rejection consumes T command but preserves backlog for a new T+1 
             otherIncarnation: root.incarnation,
             sourceTick: 20,
             sequence: 0
-        }],
-        protocolFailure: null
-    });
+        }]));
 
     director.stageForFixedTick({ targetFixedTick: 20 });
     const atT = publishPreparation(
@@ -408,6 +424,101 @@ test('capacity rejection consumes T command but preserves backlog for a new T+1 
     assert.equal(commandPort.transformRequests.length, 2);
 });
 
+test('first-hit event capacity rejection is retryable and leaves every lineage roster unchanged', () => {
+    const registry = createRegistry();
+    const commandPort = createCommandPort();
+    const director = createDirector(registry, commandPort);
+    const root = handle(31, 4);
+    registry.put(root, J_ID, metadata(root));
+    const before = director.getStatus();
+
+    const capacitySnapshot = completedEventSnapshot([], {
+        atomicTransformFirstHitCapacityRejected: true,
+        retryableAtomicTransformFirstHitCapacityRejected: true,
+        atomicTransformFirstHitRejectionReason:
+            'atomic-transform-first-hit-event-capacity',
+        atomicTransformFirstHitCandidateCount: 2,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 1
+    });
+    const observed = director.observeCompletedEvents(capacitySnapshot);
+
+    assert.deepEqual(observed, {
+        accepted: true,
+        retryable: true,
+        triggerCount: 0,
+        pendingCount: 0,
+        capacityRejectionCount: 1,
+        transformStartCount: 0
+    });
+    const after = director.getStatus();
+    assert.equal(after.retryableFirstHitEventCapacityCount, 1);
+    assert.equal(after.pendingFirstHitCount, before.pendingFirstHitCount);
+    assert.equal(after.pendingTransformBatchCount,
+        before.pendingTransformBatchCount);
+    assert.equal(after.circlePrimeDueCount, before.circlePrimeDueCount);
+    assert.equal(after.recoveryRequired, false);
+    assert.equal(commandPort.prepareRequests.length, 0);
+    assert.equal(commandPort.transformRequests.length, 0);
+    assert.deepEqual(director.observeCompletedEvents(capacitySnapshot), {
+        accepted: true,
+        retryable: true,
+        replayed: true,
+        triggerCount: 0,
+        pendingCount: 0,
+        capacityRejectionCount: 1,
+        transformStartCount: 0
+    });
+    assert.equal(
+        director.getStatus().retryableFirstHitEventCapacityCount,
+        1
+    );
+});
+
+test('first-hit event capacity evidence fails closed for partial or mixed-shaped snapshots', () => {
+    for (const overrides of [
+        {
+            atomicTransformFirstHitCapacityRejected: true,
+            retryableAtomicTransformFirstHitCapacityRejected: true,
+            atomicTransformFirstHitRejectionReason:
+                'atomic-transform-first-hit-event-capacity',
+            atomicTransformFirstHitCandidateCount: 1,
+            atomicTransformFirstHitCommittedCount: 0,
+            atomicTransformFirstHitEventBase: 0,
+            atomicTransformFirstHitEventCapacity: 1
+        },
+        {
+            atomicTransformFirstHitCapacityRejected: true,
+            retryableAtomicTransformFirstHitCapacityRejected: false,
+            atomicTransformFirstHitRejectionReason:
+                'atomic-transform-first-hit-event-capacity',
+            atomicTransformFirstHitCandidateCount: 2,
+            atomicTransformFirstHitCommittedCount: 0,
+            atomicTransformFirstHitEventBase: 0,
+            atomicTransformFirstHitEventCapacity: 1
+        },
+        {
+            atomicTransformFirstHitCapacityRejected: true,
+            retryableAtomicTransformFirstHitCapacityRejected: true,
+            atomicTransformFirstHitRejectionReason:
+                'atomic-transform-first-hit-event-capacity',
+            atomicTransformFirstHitCandidateCount: 2,
+            atomicTransformFirstHitCommittedCount: 1,
+            atomicTransformFirstHitEventBase: 0,
+            atomicTransformFirstHitEventCapacity: 1
+        }
+    ]) {
+        const director = createDirector(createRegistry(), createCommandPort());
+        const result = director.observeCompletedEvents(
+            completedEventSnapshot([], overrides)
+        );
+        assert.equal(result.accepted, false);
+        assert.equal(result.recoveryRequired, true);
+        assert.equal(result.reason, 'trigger-event-capacity-contract');
+    }
+});
+
 test('actual start ordering is due C prime, lineage root pair, then source handle ASC', () => {
     const registry = createRegistry();
     const commandPort = createCommandPort();
@@ -423,8 +534,8 @@ test('actual start ordering is due C prime, lineage root pair, then source handl
     });
     const jRoots = Array.from({ length: 5 }, (_, index) => handle(80 + index));
     for (const root of jRoots) registry.put(root, J_ID, metadata(root));
-    director.observeCompletedEvents({
-        events: jRoots.map((root, sequence) => Object.freeze({
+    director.observeCompletedEvents(completedEventSnapshot(
+        jRoots.map((root, sequence) => Object.freeze({
             type: 'contact',
             eventType: 'damage-applied',
             disposition: 'applied',
@@ -439,9 +550,8 @@ test('actual start ordering is due C prime, lineage root pair, then source handl
             otherIncarnation: root.incarnation,
             sourceTick: 70,
             sequence
-        })),
-        protocolFailure: null
-    });
+        }))
+    ));
     director.stageForFixedTick({ targetFixedTick: 70 });
     const staged = commandPort.prepareRequests.at(-1);
     assert.equal(staged.records.length, 7);
@@ -612,8 +722,8 @@ test('zero-bounty branch returns J and recursively splits to two zero-bounty chi
         recoveryRequired: false
     }, 71);
 
-    const recursiveTrigger = director.observeCompletedEvents({
-        events: [Object.freeze({
+    const recursiveTrigger = director.observeCompletedEvents(
+        completedEventSnapshot([Object.freeze({
             type: 'contact',
             eventType: 'damage-applied',
             disposition: 'applied',
@@ -628,9 +738,8 @@ test('zero-bounty branch returns J and recursively splits to two zero-bounty chi
             otherIncarnation: returnedJ.incarnation,
             sourceTick: 72,
             sequence: 0
-        })],
-        protocolFailure: null
-    });
+        })])
+    );
     assert.equal(recursiveTrigger.triggerCount, 1);
     director.stageForFixedTick({ targetFixedTick: 72 });
     const recursivePreparation = commandPort.prepareRequests.at(-1);

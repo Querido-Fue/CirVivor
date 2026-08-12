@@ -93,6 +93,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/tower_core_camera_follow_target.js',
     'module/ingame/object/world_registry.js',
     'module/ingame/physics/gpu/gpu_atomic_transform_runtime_abi.js',
+    'module/ingame/physics/gpu/gpu_atomic_transform_positive_damage_hit_shaders.js',
     'module/ingame/physics/gpu/gpu_atomic_transform_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
@@ -149,12 +150,16 @@ const NW_RUNTIME_DIRECTORIES = Object.freeze(['Dictionaries', 'locales', 'swifts
 function assertDeadControlRaceResult(result) {
     const fixture = result?.productionFixedPrimitives?.deadControlRace;
     const valid = fixture?.scenario
-            === 'tower-lethal-then-exact-dead-control-two-submit'
-        && fixture.settledBetweenSubmits === false
-        && fixture.deadControlSubmitted === true
+            === 'tower-lethal-published-then-stale-control-rejected'
+        && fixture.publicationPolicy
+            === 'capture-release-generic-per-boundary'
+        && fixture.settledBeforeDeathPublication === true
+        && fixture.deadControlRequestAccepted === true
+        && fixture.deadControlGpuSubmitted === false
         && fixture.sourceTicks?.deadControl === fixture.sourceTicks?.lethal + 1
-        && fixture.submissions?.deadControl?.fixedCommandCount === 2
-        && fixture.submissions.deadControl.completedBatchCountBeforeSubmit === 0
+        && fixture.submissions?.deadControl?.fixedCommandCount === 1
+        && fixture.submissions.deadControl.rejectionCode === 'stale-handle'
+        && fixture.submissions.deadControl.publishedBatchCountBeforeCommit === 1
         && fixture.towerDeath?.observed === true
         && fixture.towerDeath.towerRegistryPresentAfterCleanup === false
         && fixture.towerDeath.towerBackendPresentAfterCleanup === false
@@ -198,6 +203,10 @@ function ringVectorLength(vector) {
     return Math.hypot(Number(vector?.x), Number(vector?.y));
 }
 
+function ringFiniteVector(vector) {
+    return Number.isFinite(vector?.x) && Number.isFinite(vector?.y);
+}
+
 function ringRuntimeHealthy(status) {
     const storageValues = Object.values(status?.storageProfile ?? {});
     const nonNegativeIntegerFields = [
@@ -235,7 +244,7 @@ function ringRuntimeHealthy(status) {
         && nonNegativeIntegerFields.every((key) => (
             Number.isSafeInteger(status[key]) && status[key] >= 0
         ))
-        && storageValues.length === 23
+        && storageValues.length === 27
         && storageValues.every((value) => (
             Number.isSafeInteger(value) && value > 0 && value <= 9
         ))
@@ -361,6 +370,42 @@ function ringTerminalSettled(terminal) {
         && terminal.hostCleanup?.pendingHeldDespawnCount === 0
         && terminal.hostCleanup.failure === null
         && terminal.hostCleanup.releaseCommittedExcluded === true;
+}
+
+function ringTerminalWatermarkValid(value) {
+    const finalFixedTick = value?.finalFixedTick;
+    const owner = value?.terminal?.owner;
+    const backend = value?.terminal?.backend;
+    const runtime = value?.runtimeStatus;
+    const director = value?.directorStatus;
+    const boundary = value?.terminalBoundary;
+    return Number.isSafeInteger(finalFixedTick) && finalFixedTick > 0
+        && owner?.accepted === true
+        && owner.abiVersion === 1
+        && owner.finalFixedTick === finalFixedTick
+        && owner.submittedTick === finalFixedTick
+        && owner.completedThroughTick === finalFixedTick
+        && backend?.abiVersion === 1
+        && backend.accepted === true
+        && backend.finalFixedTick === finalFixedTick
+        && backend.submittedTick === finalFixedTick
+        && backend.completedThroughTick === finalFixedTick
+        && owner.sessionGeneration === backend.sessionGeneration
+        && owner.deviceGeneration === backend.deviceGeneration
+        && owner.authoritativeEpoch === backend.authoritativeEpoch
+        && runtime?.sessionGeneration === backend.sessionGeneration
+        && runtime.deviceGeneration === backend.deviceGeneration
+        && runtime.authoritativeEpoch === backend.authoritativeEpoch
+        && runtime?.completedThroughTick === finalFixedTick
+        && director?.sessionGeneration === owner.sessionGeneration
+        && director.deviceGeneration === owner.deviceGeneration
+        && director.authoritativeEpoch === owner.authoritativeEpoch
+        && director.lastCompletedCaptureTick === finalFixedTick
+        && director.lastCompletedReleaseTick === finalFixedTick
+        && boundary?.captureSourceTick === finalFixedTick
+        && boundary.captureCompletedThroughTick === finalFixedTick
+        && boundary.releaseSourceTick === finalFixedTick
+        && boundary.releaseCompletedThroughTick === finalFixedTick;
 }
 
 function assertDedicatedFixtureResult(result, fixtureStage) {
@@ -681,6 +726,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         const delayed = lineage?.delayedReturn;
         const burst = actual?.fiveToFourPlusOne;
         const capacity = actual?.capacityRestage;
+        const firstHitEventCapacity = actual?.firstHitEventCapacity;
         const terminal = actual?.terminalReplacement;
         const unpublished = terminal?.unpublished;
         const published = terminal?.published;
@@ -698,6 +744,14 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.firstHit.sameTickOrientedEventCount === 5
             && fixture.firstHit.sameTickPendingCount === 5
             && fixture.firstHit.sameTickConsumedSourceBudgetCount === 5
+            && fixture.triggerScope?.contract
+                === 'first-valid-positive-damage-hit'
+            && fixture.triggerScope.actualTriggerProducer === 'projectile'
+            && fixture.triggerScope
+                .projectileHitPolicyValidatedBeforeCommonSeam === true
+            && fixture.triggerScope.futureProducerExecutionClaimed === false
+            && fixture.triggerScope.commonProducerKinds?.join(',')
+                === 'projectile,explosion,effect,direct,melee'
             && fixture.triggerScope?.nonClosestTriggerEventCount === 0
             && fixture.triggerScope.nonClosestPendingCount === 0
             && fixture.triggerScope.nonClosestUnchangedJHealthCount === 0
@@ -715,12 +769,30 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && split.lineageRootPairPreserved === true
             && split.branchIndices?.join(',') === '0,1'
             && split.effectTransferDestinationIndex === 0
+            && (split.effectDefinitionTransferDestinationIndex === 0
+                || split.effectDefinitionTransferDestinationIndex === 1)
+            && split.effectDistributionPolicy
+                === 'stable-instance-id-modulo-destination-count'
+            && split.sourceEffectInstanceCount === 2
+            && split.sourceEffectInstanceIds?.length === 2
+            && new Set(split.sourceEffectInstanceIds).size === 2
+            && split.sourceEffectDestinationParity?.length === 2
+            && split.sourceEffectDestinationParity.every(
+                (value) => value === 0 || value === 1
+            )
+            && new Set(split.sourceEffectDestinationParity).size === 2
+            && split.distributedEffectInstanceCount === 2
+            && split.distributedEffectInstanceIds?.join(',')
+                === split.sourceEffectInstanceIds.join(',')
+            && split.everyEffectRekeyedExactlyOnce === true
+            && split.effectCloneCount === 0
+            && split.effectDropCount === 0
             && split.child0EffectInstanceCount === 1
-            && split.child1EffectInstanceCount === 0
+            && split.child1EffectInstanceCount === 1
             && split.effectTargetSlotMatchesBody === true
             && split.exactEffectPayloadPreserved === true
             && split.gpuCommittedCount === 1
-            && split.gpuEffectRekeyCount === 1
+            && split.gpuEffectRekeyCount === 2
             && core?.impactFactCount === 1
             && core.cleanupCommitted === true
             && core.forfeitedBudget === 6
@@ -773,6 +845,28 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && capacity.retryGpuCommittedCount === 1
             && capacity.finalCirclePrimeCount === 2
             && capacity.requiresRecovery === false
+            && firstHitEventCapacity?.rejectionReason
+                === 'atomic-transform-first-hit-event-capacity'
+            && firstHitEventCapacity.retryable === true
+            && firstHitEventCapacity.candidateCount === 2
+            && firstHitEventCapacity.committedCount === 0
+            && firstHitEventCapacity.eventBase === 0
+            && firstHitEventCapacity.eventCapacity === 1
+            && firstHitEventCapacity.triggerEventCountAtRejection === 0
+            && firstHitEventCapacity.sourcePhaseUnchanged === true
+            && firstHitEventCapacity.sourceHealthUnchanged === true
+            && firstHitEventCapacity.sourcePoseFlowVelocityUnchanged === true
+            && firstHitEventCapacity.sourceMetadataUnchanged === true
+            && firstHitEventCapacity.sourceBudgetUnchanged === true
+            && firstHitEventCapacity.effectInstancesUnchanged === true
+            && firstHitEventCapacity.recoveryRequiredAtRejection === false
+            && firstHitEventCapacity.directorRetryableCapacityCount === 1
+            && firstHitEventCapacity.retryTriggerCount === 1
+            && firstHitEventCapacity.retryPrepareCandidateCount === 1
+            && firstHitEventCapacity.retryLifecycleTransformCount === 1
+            && firstHitEventCapacity.retryGpuCommittedCount === 1
+            && firstHitEventCapacity.finalCirclePrimeCount === 2
+            && firstHitEventCapacity.requiresRecovery === false
             && unpublished?.cancelledBeforePublication === true
             && unpublished.sourceStayedPending === true
             && unpublished.lifecycleTransformCount === 0
@@ -789,7 +883,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && unpublished.fixedCommitObserved === true
             && unpublished.lifecycleObserved === true
             && unpublished.rosterSealed === true
-            && unpublished.lastFixedCommitTick === 3
+            && unpublished.lastFixedCommitTick === 2
             && unpublished.requiresRecovery === false
             && published?.hostPublishedBeforeClose === true
             && published.lifecycleTransformCount === 1
@@ -803,14 +897,14 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && published.ownerPendingTransformCount === 0
             && published.ownerPendingReadbackCount === 0
             && published.backendState === 'submitted'
-            && published.backendSubmittedTick === 3
+            && published.backendSubmittedTick === 2
             && published.backendPendingPrepareCount === 0
             && published.backendPendingTransformCount === 0
             && published.backendPendingReadbackCount === 0
             && published.fixedCommitObserved === true
             && published.lifecycleObserved === true
             && published.rosterSealed === true
-            && published.lastFixedCommitTick === 3
+            && published.lastFixedCommitTick === 2
             && published.requiresRecovery === false
             && replacement?.sessionGenerationChanged === true
             && replacement.stalePrepareRejected === true
@@ -825,6 +919,9 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && replacement.pendingTransformCount === 0
             && replacement.pendingReadbackCount === 0
             && replacement.requiresRecovery === false
+            && fixture.presentation?.definitionShape === 'jorang'
+            && fixture.presentation.gpuShapeCode === 10
+            && fixture.presentation.dedicatedJorangShape === true
             && fixture.storageProfile?.atomicTransformFirstHit === 9
             && fixture.storageProfile.requiredMaximum === 9;
     } else if (fixtureStage === 'enemy-octagon-directional-defense') {
@@ -907,6 +1004,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && orbit?.mapId === 'nw-octagon-open-orbit-authority'
             && orbit.phaseBaseQ32 === 0x80000000
             && orbit.captureSeedRadius === 5.999
+            && orbit.gpuTrigPositionTolerance === 0.005
             && Number.isFinite(orbit.towerPosition?.x)
             && Number.isFinite(orbit.towerPosition?.y)
             && Number.isFinite(orbit.slotZeroDesiredPosition?.x)
@@ -949,7 +1047,8 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && Array.isArray(orbit.desiredPositionErrorSamples)
             && orbit.desiredPositionErrorSamples.length === 8
             && orbit.desiredPositionErrorSamples.every((error) => (
-                Number.isFinite(error) && error <= 0.001
+                Number.isFinite(error)
+                && error <= orbit.gpuTrigPositionTolerance
             ))
             && Array.isArray(orbit.captureSeedSquaredDistanceSamples)
             && orbit.captureSeedSquaredDistanceSamples.length === 8
@@ -1068,8 +1167,8 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && damage.returningOriginDamageCenti === 100
             && damage.fullyAbsorbedInputCenti === 50
             && damage.fullyAbsorbedAppliedCenti === 0
-            && damage.fullyAbsorbedBudgetBefore === 1
-            && damage.fullyAbsorbedBudgetAfter === 0
+            && damage.fullyAbsorbedBudgetBefore === 2
+            && damage.fullyAbsorbedBudgetAfter === 1
             && damage.friendlyBudgetBefore > 0
             && damage.friendlyBudgetBefore === damage.friendlyBudgetAfter
             && damage.friendlyDamageEventCount === 0
@@ -1234,8 +1333,12 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         const inside = funnel?.inside;
         const boundary = funnel?.boundary;
         const outside = funnel?.outside;
+        const insideOutbound = funnel?.insideOutbound;
         const oneCaptor = funnel?.oneCaptorTwoProjectiles;
         const twoCaptors = funnel?.twoCaptorsOneProjectile;
+        const capacityRejection = actual?.capacityWholeBatchRejection;
+        const releaseCapacityRetry = actual?.releasePreparationCapacityRetry;
+        const cleanupCapacityRetry = actual?.cleanupCapacityRetry;
         const tower = actual?.heldTowerRelease;
         const forward = actual?.forwardReleaseNoCore;
         const death = actual?.captorDeath;
@@ -1271,11 +1374,26 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 Number(event?.damageFixedPoint) === 0
             ));
         const funnelValid = inside?.angleRadians === 0
+            && inside.approachDirection === 'inbound'
             && Math.abs(boundary?.angleRadians - (Math.PI / 4)) <= 1e-12
+            && boundary.approachDirection === 'inbound'
             && outside?.angleRadians > Math.PI / 4
+            && outside.approachDirection === 'inbound'
+            && insideOutbound?.angleRadians === 0
+            && insideOutbound.approachDirection === 'outbound'
+            && inside.relativeClosingDot < 0
+            && boundary.relativeClosingDot < 0
+            && outside.relativeClosingDot < 0
+            && insideOutbound.relativeClosingDot > 0
+            && [inside, boundary, outside, insideOutbound].every((entry) => (
+                Number.isFinite(entry.relativeClosingDot)
+                && ringFiniteVector(entry.preSubmitCaptorVelocity)
+                && ringFiniteVector(entry.preSubmitProjectileVelocity)
+            ))
             && inside.captureRecords?.length === 1
             && boundary.captureRecords?.length === 1
             && outside.captureRecords?.length === 0
+            && insideOutbound.captureRecords?.length === 0
             && capturePair(
                 inside.captureRecords[0],
                 inside.captorHandle,
@@ -1302,9 +1420,14 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && outside.projectileAudit?.state?.role === 2
             && outside.projectileAudit?.state?.phase === 0
             && outside.projectileAudit?.state?.captureSequence === 0
+            && insideOutbound.projectileAudit?.capturedMirror === false
+            && insideOutbound.projectileAudit?.state?.role === 2
+            && insideOutbound.projectileAudit?.state?.phase === 0
+            && insideOutbound.projectileAudit?.state?.captureSequence === 0
             && ringRuntimeHealthy(inside.runtimeStatus)
             && ringRuntimeHealthy(boundary.runtimeStatus)
             && ringRuntimeHealthy(outside.runtimeStatus)
+            && ringRuntimeHealthy(insideOutbound.runtimeStatus)
             && oneCaptor?.captureRecords?.length === 1
             && oneCaptor.capturedProjectileCount === 1
             && oneCaptor.projectileHandles?.length === 2
@@ -1456,10 +1579,19 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && tower.render?.centerAlpha === 0
             && tower.render.ringBandAlpha > 0
             && ringVectorDistance(
-                tower.releasedCaptorBody.position,
-                tower.releasedProjectileBody.position
-            ) >= tower.releasedCaptorBody.radius
+                tower.preReleaseCaptorBody.position,
+                tower.releasePreparation.anchor
+            ) >= tower.preReleaseCaptorBody.radius
                 + tower.releasedProjectileBody.radius
+            && ringVectorDistance(
+                tower.releasedProjectileBody.position,
+                {
+                    x: tower.releasePreparation.anchor.x
+                        + tower.releasedProjectileBody.velocity.x / 60,
+                    y: tower.releasePreparation.anchor.y
+                        + tower.releasedProjectileBody.velocity.y / 60
+                }
+            ) <= 0.0001
             && Math.abs(
                 ringVectorLength(towerVelocity)
                     - tower.releasePreparation.capturedSpeed
@@ -1509,8 +1641,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         const forwardFields = forward?.metadataAfter?.releaseFields;
         const forwardValid = forward?.withTower === false
             && forward.towerHandle === null
-            && Number.isSafeInteger(forward.coreProxyHandle?.entityId)
-            && Number.isSafeInteger(forward.coreProxyHandle?.incarnation)
+            && forward.coreProxyHandle === null
             && forward.releasePreparation?.releaseReason === 1
             && forward.releasePreparation.targetSelector === 0
             && forward.releasePreparation.targetHandle === null
@@ -1529,10 +1660,6 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                     + (forwardVelocity.y * forwardFacing.y)
                     - forward.releasePreparation.capturedSpeed
             ) <= 0.0001
-            && !ringSameHandle(
-                forward.releasePreparation.targetHandle,
-                forward.coreProxyHandle
-            )
             && JSON.stringify(forward.metadataBefore?.origin)
                 === JSON.stringify(forward.metadataAfter?.origin)
             && ringReleasedAuditValid(
@@ -1541,6 +1668,58 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             )
             && forward.finalDirectorStatus?.capturedProjectileCount === 0
             && ringRuntimeHealthy(forward.finalRuntimeStatus);
+        const capacityRejectionValid = capacityRejection?.capacityRejected === true
+            && capacityRejection.retryable === true
+            && capacityRejection.rejectionReason
+                === 'projectile-capture-completion-capacity'
+            && capacityRejection.capacityRejectionFlags === 1
+            && capacityRejection.captureDemandCount === 2
+            && capacityRejection.captureCapacity === 1
+            && capacityRejection.retryAfterFixedTick === 2
+            && capacityRejection.recordCount === 0
+            && capacityRejection.stateUnchanged === true
+            && capacityRejection.metadataUnchanged === true
+            && capacityRejection.retry?.originSourceTick === 1
+            && capacityRejection.retry.firstBacklogRemaining === true
+            && capacityRejection.retry.secondBacklogRemaining === false
+            && capacityRejection.retry.firstRecords?.length === 1
+            && capacityRejection.retry.secondRecords?.length === 1
+            && capacityRejection.retry.finalCapturedProjectileCount === 2
+            && capacityRejection.runtimeStatus?.retryMode === true
+            && capacityRejection.runtimeStatus.requiresRecovery === false
+            && capacityRejection.finalRuntimeStatus?.retryMode === false
+            && capacityRejection.finalRuntimeStatus.requiresRecovery === false
+            && capacityRejection.directorStatus?.capturedProjectileCount === 2
+            && capacityRejection.directorStatus.recoveryRequired === false;
+        const releaseCapacityRetryValid = releaseCapacityRetry
+                ?.capacityRejected === true
+            && releaseCapacityRetry.releasePreparationDemandCount === 2
+            && releaseCapacityRetry.releasePreparationCapacity === 1
+            && releaseCapacityRetry.stateUnchanged === true
+            && releaseCapacityRetry.metadataUnchanged === true
+            && releaseCapacityRetry.heldPoseMaintained === true
+            && releaseCapacityRetry.firstRetry?.backlogRemaining === true
+            && releaseCapacityRetry.firstRetry.records?.length === 1
+            && releaseCapacityRetry.secondRetry?.backlogRemaining === false
+            && releaseCapacityRetry.secondRetry.records?.length === 1
+            && releaseCapacityRetry.releaseCompletions?.length === 2
+            && releaseCapacityRetry.finalCapturedProjectileCount === 0
+            && releaseCapacityRetry.captorRegistryCount === 0
+            && releaseCapacityRetry.recoveryRequired === false;
+        const cleanupCapacityRetryValid = cleanupCapacityRetry
+                ?.capacityRejected === true
+            && cleanupCapacityRetry.cleanupDemandCount === 2
+            && cleanupCapacityRetry.cleanupCapacity === 1
+            && cleanupCapacityRetry.stateUnchanged === true
+            && cleanupCapacityRetry.metadataUnchanged === true
+            && cleanupCapacityRetry.heldExpiryPoseMaintained === true
+            && cleanupCapacityRetry.firstRetry?.backlogRemaining === true
+            && cleanupCapacityRetry.firstRetry.records?.length === 1
+            && cleanupCapacityRetry.secondRetry?.backlogRemaining === false
+            && cleanupCapacityRetry.secondRetry.records?.length === 1
+            && cleanupCapacityRetry.finalCapturedProjectileCount === 0
+            && cleanupCapacityRetry.projectileRegistryCount === 0
+            && cleanupCapacityRetry.recoveryRequired === false;
         const deathEventExact = death?.eventEvidence?.some((event) => (
             event?.type === 'death'
             && event.entityId === death.captorHandle.entityId
@@ -1552,7 +1731,8 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 incarnation: event?.incarnation
             };
             return event?.type === 'contact'
-                && event.eventType === 'interaction-enter'
+                && (event.eventType === 'interaction-enter'
+                    || event.eventType === 'interaction-continuous')
                 && event.disposition === 'applied'
                 && (ringSameHandle(subject, core.captorHandle)
                     && ringSameHandle(event.other, core.interventionHandle)
@@ -1618,12 +1798,13 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 - value.releasePreparation.capturedSpeed
             ) <= 0.0001
             && value.capturedProjectileCount === 0
-            && value.registryHasCaptor === false
             && value.registryHasProjectile === true
             && value.recoveryRequired === false;
         const exitValid = exitReleaseValid(death, 2)
+            && death.registryHasCaptor === false
             && deathEventExact === true
             && exitReleaseValid(core, 3)
+            && core.registryHasCaptor === false
             && coreEvent
             && coreEvent.sourceTick === core.releasePreparation.prepareSourceTick
             && coreEvent.sessionGeneration
@@ -1658,6 +1839,16 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && unpublished.lifecycleReleaseCount === 0
             && unpublished.registryHasProjectile === false
             && unpublished.beforeAudit?.capturedMirror === true
+            && unpublished.survivingCaptorAudit?.capturedMirror === false
+            && unpublished.survivingCaptorAudit.state?.role === 1
+            && unpublished.survivingCaptorAudit.state.phase === 0
+            && unpublished.survivingCaptorAudit.state.profileCode === 1
+            && unpublished.survivingCaptorAudit.state.policyCode === 0
+            && unpublished.survivingCaptorAudit.state.flags === 0
+            && unpublished.survivingCaptorAudit.state.peerBodySlot === 0xffffffff
+            && unpublished.survivingCaptorAudit.state.peerEntityId === 0xffffffff
+            && unpublished.survivingCaptorAudit.state.peerIncarnation
+                === 0xffffffff
             && unpublished.terminalBoundary?.releasePreparationCount === 0
             && unpublished.terminalBoundary?.releaseCompletionCount === 0
             && unpublished.terminal?.hostCleanup?.requestedHeldDespawnCount === 1
@@ -1667,6 +1858,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && unpublished.directorStatus.terminal?.cleanupRequestedCount === 1
             && unpublished.directorStatus.terminal.publishedReleaseCount === 0
             && unpublished.directorStatus.terminal.rosterSealed === true
+            && ringTerminalWatermarkValid(unpublished)
             && ringTerminalSettled(unpublished.terminal)
             && ringRuntimeHealthy(unpublished.runtimeStatus);
         const publishedValid = published?.lifecycleReleaseCount === 1
@@ -1684,6 +1876,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && published.directorStatus.terminal?.cleanupRequestedCount === 0
             && published.directorStatus.terminal.publishedReleaseCount === 1
             && published.directorStatus.terminal.rosterSealed === true
+            && ringTerminalWatermarkValid(published)
             && ringTerminalSettled(published.terminal)
             && ringRuntimeHealthy(published.runtimeStatus);
         const replacementValid = replacement?.oldSessionGeneration > 0
@@ -1845,7 +2038,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                     'requestPreparedReleaseBatch',
                     'requestTerminalHeldProjectileDespawn'
                 ])
-            && captureStorageValues.length === 23
+            && captureStorageValues.length === 27
             && captureStorageValues.every((value) => (
                 Number.isSafeInteger(value) && value > 0 && value <= 9
             ))
@@ -1859,6 +2052,9 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 === 'ring-single-slot-projectile-capture-release'
             && actual && typeof actual === 'object'
             && funnelValid
+            && capacityRejectionValid
+            && releaseCapacityRetryValid
+            && cleanupCapacityRetryValid
             && towerValid
             && forwardValid
             && exitValid
@@ -1875,16 +2071,23 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         fixture = result?.productionEnemyCorkRouteClosure;
         const lifecycle = fixture?.lifecycle;
         const route = fixture?.route;
+        const effect = fixture?.effect;
+        const formation = fixture?.formation;
+        const crossSystem = fixture?.crossSystem;
         const interaction = fixture?.interaction;
         const capacity = fixture?.capacity;
         const terminal = fixture?.terminal;
         const replacement = fixture?.replacement;
+        const mixedChurn = fixture?.mixedChurn;
+        const churnCycles = mixedChurn?.cycles ?? [];
         const storageValues = Object.values(fixture?.storageProfile ?? {});
         scenarioValid = fixture?.scenario
                 === 'cork-dynamic-route-closure'
             && lifecycle?.helperBodyCount === 0
             && lifecycle.assigned === true
             && lifecycle.expanded === true
+            && lifecycle.precloseExpandNonblockingOpen === true
+            && lifecycle.atomicCloseBlockingAndClosed === true
             && lifecycle.closed === true
             && lifecycle.reopened === true
             && lifecycle.exactOwnerDeath === true
@@ -1892,8 +2095,64 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && route.activeActorReroutedForward === true
             && route.trappedActorWaitedAtClearance === true
             && route.waitingActorResumedAfterReopen === true
+            && route.closeSourceTick === 62
+            && Number.isSafeInteger(route.closeAvailabilityVersion)
+            && route.closeAvailabilityVersion >= 2
+            && route.closeCompletedVersionMatch === true
+            && route.precloseGpuSourceTick === 61
+            && route.precloseGpuAvailabilityState === 1
+            && route.closeSubmitGpuSourceTick === 62
+            && route.closeSubmitGpuClosedState === 2
             && route.closedPathCount === 1
             && route.finalClosedPathCount === 0
+            && effect?.sourceDefinitionId === 'basic_penta_01'
+            && effect.blockingCorkBoostApplied === true
+            && effect.exactTarget === true
+            && effect.appliedInstanceCount >= 1
+            && effect.boostStackCount === 1
+            && effect.targetPhysicalLayer === 1024
+            && effect.targetInteractionLayer === 1
+            && effect.recoveryRequired === false
+            && formation?.firstRowMemberCount === 2
+            && formation.closeQueuedMemberCount === 0
+            && formation.closeSinkCallCount === 0
+            && formation.backlogMemberCount === 2
+            && formation.backlogRetained === true
+            && formation.reopenBatchCount === 1
+            && formation.reopenedMemberCount === 2
+            && formation.reopenedOnOriginalPath === true
+            && formation.partialRowCount === 0
+            && formation.arbitraryRowSplit === false
+            && formation.finalBacklogMemberCount === 0
+            && crossSystem?.arrowRhomOctagonRouteOwnedWait === true
+            && crossSystem.waitingBehaviorActors?.length === 3
+            && crossSystem.waitingBehaviorActors.map(({ key }) => key).join(',')
+                === 'arrow,rhom,octagon'
+            && crossSystem.waitingBehaviorActors.map(
+                ({ programId }) => programId
+            ).join(',') === '1,2,3'
+            && crossSystem.waitingBehaviorActors.every((entry) => (
+                entry.routePhase === 6
+                && entry.routeOwnedWait === true
+                && entry.velocityMagnitude <= 0.001
+                && entry.recoveryRequired === false
+            ))
+            && crossSystem.rerouteOrWaitActors?.length === 3
+            && crossSystem.rerouteOrWaitActors.map(({ key }) => key).join(',')
+                === 'ring,jorang,hexa'
+            && crossSystem.rerouteOrWaitActors.every((entry) => (
+                (entry.rerouted === true || entry.waited === true)
+                && entry.recoveryRequired === false
+            ))
+            && crossSystem.ringCaptureRole === 1
+            && crossSystem.ringCapturePhase === 0
+            && crossSystem.ringCaptureStatePreserved === true
+            && crossSystem.jorangAtomicPhase === 1
+            && crossSystem.jorangAtomicStatePreserved === true
+            && (crossSystem.hexaFormationFlags & 1) !== 0
+            && crossSystem.hexaFormationStateActive === true
+            && crossSystem.hexaFormationMemberCount === 1
+            && crossSystem.recoveryRequired === false
             && interaction?.towerBlocked === true
             && interaction.projectilePhysicallyPassed === true
             && interaction.projectileDamagedCork === true
@@ -1901,6 +2160,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && capacity?.maximumCloserCount === 8
             && capacity.ninthRejectedWholeBatch === true
             && capacity.ninthRejectionRecoveryRequired === false
+            && capacity.leaseGenerationAdvanced === true
             && capacity.abaOldIncarnationDidNotReopen === true
             && terminal?.allOpen === true
             && terminal.rosterCount === 0
@@ -1910,7 +2170,110 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && replacement.allOpen === true
             && replacement.rosterCount === 0
             && replacement.staleAuthorityRejected === true
+            && mixedChurn?.contractVersion === 2
+            && mixedChurn.scenario
+                === 'single-device-single-session-mixed-o-j-r-z-h-p-projectile-churn'
+            && Number.isSafeInteger(mixedChurn.requestedCycles)
+            && mixedChurn.requestedCycles >= 1
+            && mixedChurn.requestedCycles <= 12
+            && mixedChurn.completedCycles === mixedChurn.requestedCycles
+            && mixedChurn.oneEndpoint === true
+            && mixedChurn.stableTuple === true
+            && mixedChurn.cycleTuple?.sessionGeneration
+                === mixedChurn.initialTuple.sessionGeneration
+            && mixedChurn.cycleTuple.deviceGeneration
+                === mixedChurn.initialTuple.deviceGeneration
+            && mixedChurn.cycleTuple.captureSessionGeneration
+                === mixedChurn.initialTuple.captureSessionGeneration
+            && mixedChurn.cycleTuple.captureDeviceGeneration
+                === mixedChurn.initialTuple.captureDeviceGeneration
+            && mixedChurn.cycleTuple.authoritativeEpoch > 0
+            && mixedChurn.cycleTuple.captureAuthoritativeEpoch > 0
+            && mixedChurn.exactIncarnationChurn === true
+            && mixedChurn.roster?.join(',')
+                === 'octagon,jorang,ring,cork,hexa,penta,projectile'
+            && mixedChurn.capacity === 12
+            && mixedChurn.peakActiveCount === 8
+            && mixedChurn.boundedHighWater === true
+            && mixedChurn.lifetimeSentinelActive === true
+            && mixedChurn.finalActiveCount === 1
+            && mixedChurn.finalChurnActiveCount === 0
+            && mixedChurn.finalReservedCount === 0
+            && mixedChurn.finalGpuBodyCount === 1
+            && mixedChurn.finalChurnGpuBodyCount === 0
+            && mixedChurn.finalRouteAllOpen === true
+            && mixedChurn.finalRouteRosterCount === 0
+            && mixedChurn.finalRouteLeaseCount === 0
+            && mixedChurn.finalPendingAllZero === true
+            && mixedChurn.submittedTickCount
+                === mixedChurn.expectedSubmittedTickCount
+            && mixedChurn.expectedSubmittedTickCount
+                === mixedChurn.requestedCycles * 2
+            && mixedChurn.storageMaximum === 9
+            && mixedChurn.recoveryRequired === false
+            && churnCycles.length === mixedChurn.requestedCycles
+            && churnCycles.every((cycle, index) => (
+                cycle.cycle === index + 1
+                && cycle.spawnTick === (index * 2) + 1
+                && cycle.cleanupTick === (index * 2) + 2
+                && cycle.tupleStable === true
+                && cycle.reusedEntityIds === true
+                && cycle.incarnationAdvanced === true
+                && cycle.roster?.length === 7
+                && cycle.roster.map(({ key }) => key).join(',')
+                    === 'octagon,jorang,ring,cork,hexa,penta,projectile'
+                && cycle.roster.every((entry) => (
+                    Number.isSafeInteger(entry.handle?.entityId)
+                    && Number.isSafeInteger(entry.handle?.incarnation)
+                    && (index === 0
+                        || (entry.reusedEntityId === true
+                            && entry.incarnationAdvanced === true))
+                ))
+                && cycle.activeCountAtPeak === 8
+                && cycle.activeCountAfterCleanup === 1
+                && cycle.reservedCountAfterCleanup === 0
+                && cycle.gpuBodyCountAfterCleanup === 1
+                && cycle.sidePlanesValid === true
+                && cycle.pentaEmitterDefinitionCode > 0
+                && cycle.hexaFormationMemberCount === 1
+                && cycle.ringCaptureRole === 1
+                && cycle.ringCapturePhase === 0
+                && cycle.jorangAtomicPhase === 1
+                && cycle.octagonProgramId === 3
+                && cycle.octagonOrbitSlotIndex === 0
+                && cycle.corkRouteRole === 2
+                && Number.isSafeInteger(cycle.corkLeaseGeneration)
+                && cycle.corkLeaseGeneration > 0
+                && (index === 0
+                    || cycle.corkLeaseGeneration
+                        > churnCycles[index - 1].corkLeaseGeneration)
+                && Number.isSafeInteger(cycle.projectileEntityId)
+                && cycle.routeAllOpen === true
+                && cycle.routeRosterCount === 0
+                && cycle.routeLeaseCount === 0
+                && cycle.pendingAllZero === true
+                && cycle.fixedTickDelta === 2
+                && cycle.submittedTickDelta === 2
+                && cycle.recoveryRequired === false
+            ))
+            && churnCycles.every((cycle) => (
+                cycle.tuple.sessionGeneration
+                    === mixedChurn.cycleTuple.sessionGeneration
+                && cycle.tuple.deviceGeneration
+                    === mixedChurn.cycleTuple.deviceGeneration
+                && cycle.tuple.authoritativeEpoch
+                    === mixedChurn.cycleTuple.authoritativeEpoch
+                && cycle.tuple.captureSessionGeneration
+                    === mixedChurn.cycleTuple.captureSessionGeneration
+                && cycle.tuple.captureDeviceGeneration
+                    === mixedChurn.cycleTuple.captureDeviceGeneration
+                && cycle.tuple.captureAuthoritativeEpoch
+                    === mixedChurn.cycleTuple.captureAuthoritativeEpoch
+            ))
             && fixture?.coexistence?.bodyAbiVersion === 8
+            && fixture.coexistence.mainHarnessCapacity === 20
+            && fixture.coexistence.peakActiveCount === 13
+            && fixture.coexistence.peakCapacityHeadroom === 7
             && fixture.coexistence.previousDomainsPreserved === true
             && storageValues.length > 0
             && storageValues.every((count) => Number.isSafeInteger(count)

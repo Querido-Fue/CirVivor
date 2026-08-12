@@ -2,6 +2,22 @@ import {
     BASIC_CORK_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_cork_enemy_data.js';
 import {
+    BASIC_ARROW_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DATA,
+    BASIC_OCTA_ENEMY_DATA,
+    BASIC_PENTA_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA,
+    BASIC_RING_ENEMY_DATA,
+    BASIC_SQUARE_ENEMY_DATA
+} from './production/script/data/object/enemy/basic_circle_enemy_data.js';
+import {
+    BASIC_JORANG_ENEMY_DATA
+} from './production/script/data/object/enemy/basic_jorang_enemy_data.js';
+import {
+    PENTA_BOOST_EFFECT_DEFINITION,
+    PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE
+} from './production/script/data/object/enemy/enemy_effect_catalog_data.js';
+import {
     CORK_DUAL_ROUTE_MAP_DATA,
     CORK_DUAL_ROUTE_LOWER_PATH_ID,
     CORK_DUAL_ROUTE_ROUTE_SET_ID,
@@ -9,6 +25,7 @@ import {
     CORK_DUAL_ROUTE_UPPER_PATH_ID
 } from './production/script/data/scene/game/cork_dual_route_map_data.js';
 import {
+    CORK_DUAL_ROUTE_FOLLOWUP_WAIT_SECONDS,
     CORK_DUAL_ROUTE_WAVE_01_DATA
 } from './production/script/data/scene/game/cork_dual_route_wave_01_data.js';
 import {
@@ -25,8 +42,16 @@ import {
     WaveDirector
 } from './production/script/module/ingame/flow/wave_director.js';
 import {
+    AUTHORED_FORMATION_COORDINATE_SYSTEM,
+    AUTHORED_FORMATION_SPAWN_MODE,
+    AUTHORED_WAVE_TIMELINE_COMMAND_TYPE
+} from './production/script/module/ingame/flow/authored_wave_timeline_contract.js';
+import {
     TileMap
 } from './production/script/module/ingame/map/tile_map.js';
+import {
+    createRouteFlowFieldAtlas
+} from './production/script/module/ingame/navigation/route_flow_field_atlas.js';
 import {
     CorkRouteClosureDirector
 } from './production/script/module/ingame/object/enemy/cork_route_closure_director.js';
@@ -46,14 +71,42 @@ import {
     createGpuTowerSpawnIntent
 } from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
 import {
-    GPU_CIRCLE_BODY_ABI_VERSION
+    GPU_CIRCLE_BODY_ABI,
+    GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_CIRCLE_BODY_INTERACTION_LAYER,
+    GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
+    GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI,
+    createGpuCircleBodyAbiStorage,
+    GPU_PROJECTILE_CAPTURE_PHASE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
+    readGpuProjectileCaptureState,
+    unpackGpuCircleInteractionMeta,
+    unpackGpuCirclePhysicsMeta
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
+    GPU_EFFECT_EVENT_TYPE,
+    GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+    GPU_EFFECT_PULSE_PROGRAM_FLAG,
+    GPU_EFFECT_RUNTIME_ABI,
+    GPU_EFFECT_RUNTIME_STATUS,
+    GPU_EFFECT_TARGET_POLICY
+} from './production/script/module/ingame/physics/gpu/gpu_effect_runtime_abi.js';
+import {
+    GPU_FORMATION_BODY_STATE_FLAG,
+    GPU_FORMATION_RUNTIME_ABI,
+    readGpuFormationBodyState
+} from './production/script/module/ingame/physics/gpu/gpu_formation_runtime_abi.js';
+import {
+    GPU_ROUTE_AVAILABILITY_STATE,
     GPU_ROUTE_RUNTIME_ABI,
+    GPU_ROUTE_RUNTIME_FLAG,
     GPU_ROUTE_RUNTIME_MAX_CLOSERS,
     GPU_ROUTE_RUNTIME_PHASE,
     GPU_ROUTE_RUNTIME_ROLE,
-    readGpuRouteRuntimeState
+    readGpuRouteRuntimeState,
+    writeGpuRouteRuntimeState
 } from './production/script/module/ingame/physics/gpu/gpu_route_runtime_abi.js';
 import {
     GPU_ROUTE_RUNTIME_STORAGE_PROFILE
@@ -65,6 +118,51 @@ const FIXED_DELTA = 1 / 60;
 const CORK_EXPANSION_CLOSE_SUBMIT_TICK = 62;
 const CORK_CLOSE_COMPLETION_TICK = 63;
 const TOWER_BLOCKER_PROBE_START_DISTANCE = 3.2;
+const PENTA_BLOCKING_PROBE_DISTANCE = 4.5;
+const MAIN_HARNESS_CAPACITY = 20;
+const MAIN_EXPECTED_PEAK_ACTIVE_COUNT = 13;
+const MIXED_CHURN_CONTRACT_VERSION = 2;
+const MIXED_CHURN_DEFAULT_CYCLES = 3;
+const MIXED_CHURN_MAXIMUM_CYCLES = 12;
+const MIXED_CHURN_HARNESS_CAPACITY = 12;
+const CROSS_ACTOR_LANE_OFFSETS = Object.freeze([-1.5, -0.75, 0.75]);
+const REQUIRED_EFFECT_FLAGS = GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE;
+const WAITING_BEHAVIOR_ACTORS = Object.freeze([
+    Object.freeze({
+        key: 'arrow',
+        definition: BASIC_ARROW_ENEMY_DATA,
+        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE
+    }),
+    Object.freeze({
+        key: 'rhom',
+        definition: BASIC_RHOM_ENEMY_DATA,
+        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE
+    }),
+    Object.freeze({
+        key: 'octagon',
+        definition: BASIC_OCTA_ENEMY_DATA,
+        programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
+    })
+]);
+const REROUTE_OR_WAIT_ACTORS = Object.freeze([
+    Object.freeze({ key: 'ring', definition: BASIC_RING_ENEMY_DATA }),
+    Object.freeze({ key: 'jorang', definition: BASIC_JORANG_ENEMY_DATA }),
+    Object.freeze({ key: 'hexa', definition: BASIC_HEXA_ENEMY_DATA })
+]);
+const MIXED_CHURN_ENEMY_ACTORS = Object.freeze([
+    Object.freeze({ key: 'octagon', definition: BASIC_OCTA_ENEMY_DATA }),
+    Object.freeze({ key: 'jorang', definition: BASIC_JORANG_ENEMY_DATA }),
+    Object.freeze({ key: 'ring', definition: BASIC_RING_ENEMY_DATA }),
+    Object.freeze({ key: 'cork', definition: BASIC_CORK_ENEMY_DATA }),
+    Object.freeze({ key: 'hexa', definition: BASIC_HEXA_ENEMY_DATA }),
+    Object.freeze({ key: 'penta', definition: BASIC_PENTA_ENEMY_DATA })
+]);
+const MIXED_CHURN_ROSTER = Object.freeze([
+    ...MIXED_CHURN_ENEMY_ACTORS.map(({ key }) => key),
+    'projectile'
+]);
 
 const ROUTE_ACTOR_DEFINITION = Object.freeze({
     id: 'nw-cork-route-actor',
@@ -95,6 +193,25 @@ function copyHandle(handle) {
     });
 }
 
+function readMixedChurnCycleCount() {
+    const raw = process.env.CIRVIVOR_R2_CHURN_CYCLES;
+    if (raw === undefined || raw === '') {
+        return MIXED_CHURN_DEFAULT_CYCLES;
+    }
+    if (!/^[1-9][0-9]*$/u.test(raw)) {
+        throw new RangeError(
+            'CIRVIVOR_R2_CHURN_CYCLES 형식은 1 이상의 정수여야 합니다.'
+        );
+    }
+    const value = Number(raw);
+    if (!Number.isSafeInteger(value) || value > MIXED_CHURN_MAXIMUM_CYCLES) {
+        throw new RangeError(
+            `CIRVIVOR_R2_CHURN_CYCLES는 1..${MIXED_CHURN_MAXIMUM_CYCLES} 범위여야 합니다.`
+        );
+    }
+    return value;
+}
+
 function createPlatformPort(device, format) {
     return Object.freeze({
         getState: () => Object.freeze({ ready: true, status: 'ready' }),
@@ -120,7 +237,21 @@ function createEndpoint(device, format, capacity) {
 function createRouteHarness(device, format, capacity) {
     const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
     const endpoint = createEndpoint(device, format, capacity);
-    assert(endpoint.init(tileMap), 'Cork endpoint init failed');
+    const ready = endpoint.init(tileMap);
+    const backend = endpoint.getBackend();
+    const runtimeState = backend.getRuntimeState();
+    assert(backend.simulation
+        && ((ready === true && runtimeState === 'gpu-ready')
+            || (ready === false && runtimeState === 'gpu-deferred')),
+    `Cork endpoint init state mismatch: ${JSON.stringify({
+        ready,
+        runtimeState
+    })}`);
+    if (runtimeState === 'gpu-deferred') {
+        assert(backend.simulation.init() === true
+            && backend.getRuntimeState() === 'gpu-ready',
+        'Cork deferred GPU bootstrap failed');
+    }
     const runtime = endpoint.getRouteAvailabilityRuntimeStatus();
     assert(runtime.graphEnabled === true
         && runtime.closureCount === tileMap.getRouteGraph().closures.length
@@ -190,6 +321,56 @@ function createCorkIntent(harness, spawnSequence, position) {
     });
 }
 
+function createPentaIntent(harness, spawnSequence, position) {
+    return Object.freeze({
+        ...createDynamicRouteIntent({
+            definition: BASIC_PENTA_ENEMY_DATA,
+            route: harness.upperRoute,
+            position,
+            spawnSequence,
+            availability: harness.director.getAvailabilitySnapshot(),
+            graphContentKey: harness.initialRuntime.graphContentKey
+        }),
+        velocity: Object.freeze({ x: 0, y: 0 }),
+        contactHandler: null
+    });
+}
+
+function createCrossSystemRouteIntent({
+    harness,
+    definition,
+    position,
+    spawnSequence
+}) {
+    return createDynamicRouteIntent({
+        definition,
+        route: harness.upperRoute,
+        position,
+        spawnSequence,
+        availability: harness.director.getAvailabilitySnapshot(),
+        graphContentKey: harness.initialRuntime.graphContentKey
+    });
+}
+
+function createBlockingCorkBoostPulse(sourceHandle, sourceTick) {
+    return Object.freeze({
+        sourceEntityId: sourceHandle.entityId,
+        sourceIncarnation: sourceHandle.incarnation,
+        effectDefinitionCode: PENTA_BOOST_EFFECT_DEFINITION.effectDefinitionCode,
+        emitterDefinitionCode:
+            PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.emitterDefinitionCode,
+        sourceTick,
+        pulseSequence: 0,
+        radiusTiles: PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.pulseRadiusTiles,
+        targetLayerMask: GPU_CIRCLE_BODY_INTERACTION_LAYER.ENEMY,
+        targetPolicy: GPU_EFFECT_TARGET_POLICY.HOSTILE_ENEMY,
+        fingerprint: 0x7c0c003f,
+        flags: REQUIRED_EFFECT_FLAGS,
+        retargetIntervalTicks:
+            PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.retargetIntervalTicks
+    });
+}
+
 function createProjectileIntent(position, velocity, spawnSequence) {
     const definition = Object.freeze({
         ...BASIC_BULLET_PROJECTILE_DATA,
@@ -256,6 +437,190 @@ async function readBodies(endpoint) {
     return promise;
 }
 
+async function readProjectileCaptureState(endpoint, body, handle, label) {
+    assert(body && exactHandle(body.handle, handle),
+        `${label}: exact Ring body missing`);
+    const simulation = endpoint.getBackend().simulation;
+    const abi = GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE;
+    const readback = simulation.device.createBuffer({
+        label: `cirvivor-nw-cork-capture-state-${label}`,
+        size: abi.STRIDE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = simulation.device.createCommandEncoder({
+            label: `cirvivor-nw-cork-capture-state-copy-${label}`
+        });
+        encoder.copyBufferToBuffer(
+            simulation.buffers.projectileCaptureStates,
+            body.index * abi.STRIDE,
+            readback,
+            0,
+            abi.STRIDE
+        );
+        simulation.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const storage = createGpuCircleBodyAbiStorage(1);
+        new Uint8Array(storage.projectileCaptureStateBuffer).set(
+            new Uint8Array(readback.getMappedRange())
+        );
+        const state = readGpuProjectileCaptureState(storage, 0);
+        assert(state.selfEntityId === handle.entityId
+            && state.selfIncarnation === handle.incarnation,
+        `${label}: capture state identity mismatch ${JSON.stringify({
+            expected: handle,
+            actual: state
+        })}`);
+        return state;
+    } finally {
+        try {
+            readback.unmap();
+        } catch {
+            // already unmapped
+        }
+        readback.destroy();
+    }
+}
+
+async function waitForEffectCompletion(endpoint, label, timeoutMs = 8_000) {
+    const backend = endpoint.getBackend();
+    await backend.simulation.device.queue.onSubmittedWorkDone();
+    const deadline = performance.now() + timeoutMs;
+    while (performance.now() < deadline) {
+        const completed = backend.drainCompletedEffectProgramBatches([]);
+        if (completed.length > 0) {
+            const result = completed[0];
+            assert(result.status === GPU_EFFECT_RUNTIME_STATUS.OK,
+                `${label}: Effect status ${JSON.stringify(result)}`);
+            return result;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 4));
+    }
+    throw new Error(`${label}: Effect completion timeout ${JSON.stringify(
+        backend.getEffectRuntimeStatus()
+    )}`);
+}
+
+async function readEffectSummary(endpoint, body, handle, label) {
+    const simulation = endpoint.getBackend().simulation;
+    const abi = GPU_EFFECT_RUNTIME_ABI.SUMMARY;
+    const readback = simulation.device.createBuffer({
+        label: `cirvivor-nw-cork-effect-summary-${label}`,
+        size: abi.STRIDE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = simulation.device.createCommandEncoder({
+            label: `cirvivor-nw-cork-effect-summary-copy-${label}`
+        });
+        encoder.copyBufferToBuffer(
+            simulation.buffers.effectSummaries,
+            body.index * abi.STRIDE,
+            readback,
+            0,
+            abi.STRIDE
+        );
+        simulation.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const view = new DataView(readback.getMappedRange());
+        const entityId = view.getUint32(abi.ENTITY_ID, true);
+        const incarnation = view.getUint32(abi.INCARNATION, true);
+        assert(entityId === handle.entityId && incarnation === handle.incarnation,
+            `${label}: Effect summary exact identity mismatch`);
+        return Object.freeze({
+            entityId,
+            incarnation,
+            activeFamilyMask: view.getUint32(abi.ACTIVE_FAMILY_MASK, true),
+            boostStackCount: view.getUint32(abi.BOOST_STACK_COUNT, true),
+            summaryTick: view.getUint32(abi.SUMMARY_TICK, true)
+        });
+    } finally {
+        try { readback.unmap(); } catch { /* already unmapped */ }
+        readback.destroy();
+    }
+}
+
+async function readEffectEmitterState(endpoint, body, handle, label) {
+    const simulation = endpoint.getBackend().simulation;
+    const abi = GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE;
+    const readback = simulation.device.createBuffer({
+        label: `cirvivor-nw-cork-effect-emitter-${label}`,
+        size: abi.STRIDE,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = simulation.device.createCommandEncoder({
+            label: `cirvivor-nw-cork-effect-emitter-copy-${label}`
+        });
+        encoder.copyBufferToBuffer(
+            simulation.buffers.effectEmitterStates,
+            body.index * abi.STRIDE,
+            readback,
+            0,
+            abi.STRIDE
+        );
+        simulation.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const view = new DataView(readback.getMappedRange());
+        const state = Object.freeze({
+            entityId: view.getUint32(abi.ENTITY_ID, true),
+            incarnation: view.getUint32(abi.INCARNATION, true),
+            emitterDefinitionCode: view.getUint32(
+                abi.EMITTER_DEFINITION_CODE,
+                true
+            ),
+            effectDefinitionCode: view.getUint32(
+                abi.EFFECT_DEFINITION_CODE,
+                true
+            ),
+            flags: view.getUint32(abi.FLAGS, true)
+        });
+        assert(state.entityId === handle.entityId
+            && state.incarnation === handle.incarnation,
+        `${label}: Effect emitter exact identity mismatch ${JSON.stringify({
+            expected: handle,
+            actual: state
+        })}`);
+        return state;
+    } finally {
+        try { readback.unmap(); } catch { /* already unmapped */ }
+        readback.destroy();
+    }
+}
+
+async function readFormationState(endpoint, body, handle, label) {
+    const simulation = endpoint.getBackend().simulation;
+    const stride = GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE;
+    const readback = simulation.device.createBuffer({
+        label: `cirvivor-nw-cork-formation-state-${label}`,
+        size: stride,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = simulation.device.createCommandEncoder({
+            label: `cirvivor-nw-cork-formation-copy-${label}`
+        });
+        encoder.copyBufferToBuffer(
+            simulation.buffers.formationStates,
+            body.index * stride,
+            readback,
+            0,
+            stride
+        );
+        simulation.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const bytes = new Uint8Array(readback.getMappedRange()).slice();
+        const state = readGpuFormationBodyState(bytes.buffer, 0);
+        assert(state.entityId === handle.entityId
+            && state.incarnation === handle.incarnation,
+        `${label}: Formation exact identity mismatch ${JSON.stringify(state)}`);
+        return state;
+    } finally {
+        try { readback.unmap(); } catch { /* already unmapped */ }
+        readback.destroy();
+    }
+}
+
 async function readRouteStateAtSlot(endpoint, bodySlot, label) {
     const simulation = endpoint.getBackend().simulation;
     const stride = GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE;
@@ -285,6 +650,73 @@ async function readRouteStateAtSlot(endpoint, bodySlot, label) {
     }
 }
 
+async function readRouteAvailabilityGpuEvidence(endpoint, closureCount, label) {
+    const simulation = endpoint.getBackend().simulation;
+    const header = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER;
+    const record = GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_RECORD;
+    const byteLength = header.STRIDE + (closureCount * record.STRIDE);
+    const readback = simulation.device.createBuffer({
+        label: `cirvivor-nw-cork-route-availability-${label}`,
+        size: byteLength,
+        usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+    });
+    try {
+        const encoder = simulation.device.createCommandEncoder({
+            label: `cirvivor-nw-cork-route-availability-copy-${label}`
+        });
+        encoder.copyBufferToBuffer(
+            simulation.buffers.routeAvailability,
+            0,
+            readback,
+            0,
+            byteLength
+        );
+        simulation.device.queue.submit([encoder.finish()]);
+        await readback.mapAsync(GPUMapMode.READ);
+        const view = new DataView(readback.getMappedRange());
+        const records = Array.from({ length: closureCount }, (_, index) => {
+            const offset = header.STRIDE + (index * record.STRIDE);
+            return Object.freeze({
+                closureIndex: index,
+                state: view.getUint32(offset + record.STATE, true),
+                ownerSlot: view.getUint32(offset + record.OWNER_SLOT, true),
+                ownerEntityId: view.getUint32(
+                    offset + record.OWNER_ENTITY_ID,
+                    true
+                ),
+                ownerIncarnation: view.getUint32(
+                    offset + record.OWNER_INCARNATION,
+                    true
+                ),
+                leaseGeneration: view.getUint32(
+                    offset + record.LEASE_GENERATION,
+                    true
+                ),
+                changedAtFixedTick: view.getUint32(
+                    offset + record.CHANGED_AT_FIXED_TICK,
+                    true
+                )
+            });
+        });
+        return Object.freeze({
+            status: view.getUint32(header.STATUS, true),
+            availabilityVersion: view.getUint32(
+                header.AVAILABILITY_VERSION,
+                true
+            ),
+            sourceTick: view.getUint32(header.SOURCE_TICK, true),
+            completedThroughTick: view.getUint32(
+                header.COMPLETED_THROUGH_TICK,
+                true
+            ),
+            records: Object.freeze(records)
+        });
+    } finally {
+        try { readback.unmap(); } catch { /* already unmapped */ }
+        readback.destroy();
+    }
+}
+
 async function readRouteEvidence(endpoint, label) {
     const bodies = await readBodies(endpoint);
     const entries = [];
@@ -305,6 +737,212 @@ function routeEntryFor(evidence, handle) {
     return evidence.entries.find(
         ({ body }) => exactHandle(body.handle, handle)
     ) ?? null;
+}
+
+function seedGpuRouteActorPrecondition({
+    harness,
+    evidence,
+    handle,
+    pathIndex,
+    fieldIndex,
+    availabilityVersion,
+    selectedTargetProgram = false,
+    positionOffset = Object.freeze({ x: 0, y: 0 }),
+    label
+}) {
+    const entry = routeEntryFor(evidence, handle);
+    const stage = harness.atlas.stages[fieldIndex];
+    assert(entry?.routeState.role === GPU_ROUTE_RUNTIME_ROLE.ACTOR
+        && stage?.goalPosition
+        && Number.isSafeInteger(entry.routeState.routeSetIndex),
+    `${label}: route actor seed source missing ${JSON.stringify({
+        entry,
+        fieldIndex,
+        stage
+    })}`);
+    const simulation = harness.endpoint.getBackend().simulation;
+    const bodySlot = entry.body.index;
+    const seededPosition = Object.freeze({
+        x: stage.goalPosition.x + positionOffset.x,
+        y: stage.goalPosition.y + positionOffset.y
+    });
+    const routeAbi = GPU_ROUTE_RUNTIME_ABI.BODY_STATE;
+    const routeBytes = new ArrayBuffer(routeAbi.STRIDE);
+    writeGpuRouteRuntimeState(routeBytes, 1, 0, {
+        role: GPU_ROUTE_RUNTIME_ROLE.ACTOR,
+        phase: GPU_ROUTE_RUNTIME_PHASE.TRAVEL,
+        flags: GPU_ROUTE_RUNTIME_FLAG.GRAPH_ENABLED,
+        selfEntityId: handle.entityId,
+        selfIncarnation: handle.incarnation,
+        currentPathIndex: pathIndex,
+        routeSetIndex: entry.routeState.routeSetIndex,
+        closureIndex: 0xffffffff,
+        observedAvailabilityVersion: availabilityVersion,
+        phaseEnteredFixedTick: 0,
+        pendingFieldIndex: 0xffffffff,
+        leaseGeneration: 0,
+        profileCode: 0
+    });
+    simulation.device.queue.writeBuffer(
+        simulation.buffers.routeRuntimeStates,
+        bodySlot * routeAbi.STRIDE,
+        routeBytes
+    );
+
+    const physicsAbi = GPU_CIRCLE_BODY_ABI.PHYSICS;
+    const physicsBytes = new ArrayBuffer(28);
+    const physicsView = new DataView(physicsBytes);
+    physicsView.setFloat32(0, seededPosition.x, true);
+    physicsView.setFloat32(4, seededPosition.y, true);
+    physicsView.setFloat32(8, 0, true);
+    physicsView.setFloat32(12, 0, true);
+    physicsView.setFloat32(16, entry.body.radius, true);
+    physicsView.setFloat32(20, entry.body.inverseMass, true);
+    // Route/capability interaction is the fixture subject. Keep the actors at
+    // their exact transition goal without allowing the generic body solver to
+    // move the deliberately co-located cross-system probes before RouteRuntime
+    // consumes that precondition.
+    physicsView.setUint32(
+        24,
+        GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
+        true
+    );
+    simulation.device.queue.writeBuffer(
+        simulation.buffers.physics,
+        bodySlot * physicsAbi.STRIDE,
+        physicsBytes
+    );
+
+    const flowFieldBytes = new ArrayBuffer(4);
+    new DataView(flowFieldBytes).setUint32(0, fieldIndex, true);
+    simulation.device.queue.writeBuffer(
+        simulation.buffers.simulation,
+        bodySlot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+            + GPU_CIRCLE_BODY_ABI.SIMULATION.FLOW_FIELD_INDEX,
+        flowFieldBytes
+    );
+
+    const temporaryAbi = GPU_CIRCLE_BODY_ABI.TEMPORARY;
+    const temporaryBytes = new ArrayBuffer(temporaryAbi.STRIDE);
+    const temporaryView = new DataView(temporaryBytes);
+    temporaryView.setFloat32(
+        temporaryAbi.PREVIOUS_X,
+        seededPosition.x,
+        true
+    );
+    temporaryView.setFloat32(
+        temporaryAbi.PREVIOUS_Y,
+        seededPosition.y,
+        true
+    );
+    temporaryView.setFloat32(
+        temporaryAbi.PREDICTED_X,
+        seededPosition.x,
+        true
+    );
+    temporaryView.setFloat32(
+        temporaryAbi.PREDICTED_Y,
+        seededPosition.y,
+        true
+    );
+    temporaryView.setInt32(temporaryAbi.GRID_INDEX, -1, true);
+    temporaryView.setUint32(
+        temporaryAbi.PREVIOUS_FLOW_FIELD_INDEX,
+        fieldIndex,
+        true
+    );
+    simulation.device.queue.writeBuffer(
+        simulation.buffers.temporary,
+        bodySlot * temporaryAbi.STRIDE,
+        temporaryBytes
+    );
+
+    if (selectedTargetProgram) {
+        const behaviorAbi = GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI;
+        const behaviorBytes = new ArrayBuffer(behaviorAbi.STRIDE);
+        const behaviorView = new DataView(behaviorBytes);
+        behaviorView.setUint32(
+            behaviorAbi.PROGRAM_ID,
+            GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE,
+            true
+        );
+        behaviorView.setUint32(behaviorAbi.TARGET_SLOT, 0xffffffff, true);
+        behaviorView.setUint32(
+            behaviorAbi.TARGET_ENTITY_ID,
+            0xffffffff,
+            true
+        );
+        behaviorView.setUint32(
+            behaviorAbi.TARGET_INCARNATION,
+            0xffffffff,
+            true
+        );
+        behaviorView.setInt32(behaviorAbi.CORE_DAMAGE_FIXED_POINT, 100, true);
+        simulation.device.queue.writeBuffer(
+            simulation.buffers.enemyBehaviorStates,
+            bodySlot * behaviorAbi.STRIDE,
+            behaviorBytes
+        );
+    }
+}
+
+async function seedGpuRouteClosureCrossSystemPreconditions({
+    harness,
+    evidence,
+    trappedHandle,
+    activeHandle,
+    crossHandles,
+    upperPathIndex,
+    upperClosure,
+    availabilityVersion
+}) {
+    const waitingEntries = [
+        ['trapped', trappedHandle],
+        ...WAITING_BEHAVIOR_ACTORS.map(
+            ({ key }) => [key, crossHandles.get(key)]
+        )
+    ];
+    const exactGoalOffset = Object.freeze({ x: 0, y: 0 });
+    for (let index = 0; index < waitingEntries.length; index++) {
+        const [label, handle] = waitingEntries[index];
+        seedGpuRouteActorPrecondition({
+            harness,
+            evidence,
+            handle,
+            pathIndex: upperPathIndex,
+            fieldIndex: upperClosure.clearanceFieldIndex,
+            availabilityVersion,
+            selectedTargetProgram: label === 'rhom',
+            positionOffset: exactGoalOffset,
+            label: `${label} WAIT precondition`
+        });
+    }
+    const upperCompiledPath = harness.atlas.routes.find(
+        ({ pathId }) => pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+    );
+    assert(Number.isSafeInteger(upperCompiledPath?.firstFieldIndex),
+        'upper route first flow field missing');
+    const rerouteEntries = [
+        ['active', activeHandle],
+        ...REROUTE_OR_WAIT_ACTORS.map(
+            ({ key }) => [key, crossHandles.get(key)]
+        )
+    ];
+    for (let index = 0; index < rerouteEntries.length; index++) {
+        const [label, handle] = rerouteEntries[index];
+        seedGpuRouteActorPrecondition({
+            harness,
+            evidence,
+            handle,
+            pathIndex: upperPathIndex,
+            fieldIndex: upperCompiledPath.firstFieldIndex,
+            availabilityVersion,
+            positionOffset: exactGoalOffset,
+            label: `${label} reroute precondition`
+        });
+    }
+    await harness.endpoint.getBackend().simulation.device.queue
+        .onSubmittedWorkDone();
 }
 
 async function drainNormalBoundary(endpoint, director, tick, label) {
@@ -411,13 +1049,74 @@ function getCompiledUpperClosure(harness) {
     return closure;
 }
 
+function createPreSwitchArrivalPosition(
+    harness,
+    direction,
+    routeNormal,
+    laneOffset
+) {
+    const compiledPath = harness.atlas.routes.find(
+        ({ pathId }) => pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+    );
+    const firstStage = Number.isSafeInteger(compiledPath?.firstFieldIndex)
+        ? harness.atlas.stages[compiledPath.firstFieldIndex]
+        : null;
+    const cellSize = harness.atlas.cellSize;
+    const cellSizeX = typeof cellSize === 'number' ? cellSize : cellSize?.x;
+    const cellSizeY = typeof cellSize === 'number' ? cellSize : cellSize?.y;
+    const transitionRadius = firstStage?.transitionRadius
+        ?? harness.atlas.transitionRadius
+        ?? Math.min(cellSizeX, cellSizeY) * 0.75;
+    assert(firstStage?.goalPosition
+        && Number.isFinite(transitionRadius)
+        && transitionRadius > 0,
+    `upper switch transition geometry missing: ${JSON.stringify({
+        compiledPath,
+        firstStage,
+        cellSize,
+        transitionRadius
+    })}`);
+    // Spawn one small movement step outside the actual transition circle. The
+    // open T62 submit moves the actor into it without advancing the field; the
+    // closed T63 route pass therefore exercises the forward-switch reroute.
+    const outsideMargin = Math.min(transitionRadius * 0.05, 0.01);
+    return Object.freeze({
+        x: firstStage.goalPosition.x
+            - direction.x * (transitionRadius + outsideMargin)
+            + routeNormal.x * laneOffset,
+        y: firstStage.goalPosition.y
+            - direction.y * (transitionRadius + outsideMargin)
+            + routeNormal.y * laneOffset
+    });
+}
+
+function allWaitingActorsReachedClearance(
+    evidence,
+    trappedHandle,
+    crossHandles,
+    clearanceFieldIndex
+) {
+    const handles = [
+        trappedHandle,
+        ...WAITING_BEHAVIOR_ACTORS.map(({ key }) => crossHandles.get(key))
+    ];
+    return handles.every((handle) => {
+        const entry = routeEntryFor(evidence, handle);
+        return entry?.routeState.phase === GPU_ROUTE_RUNTIME_PHASE.WAITING
+            && entry.routeState.pendingFieldIndex === clearanceFieldIndex;
+    });
+}
+
 function validateFutureWaveSelection(harness, closedAvailability) {
     const wave = new WaveDirector({
         waveDefinition: CORK_DUAL_ROUTE_WAVE_01_DATA
     });
     wave.init(harness.tileMap);
     const requests = [];
-    const queued = wave.queueSpawnsForFixedTick(901, {
+    const futureQueueTick = 2 + Math.round(
+        CORK_DUAL_ROUTE_FOLLOWUP_WAIT_SECONDS / FIXED_DELTA
+    );
+    const queued = wave.queueSpawnsForFixedTick(futureQueueTick, {
         requestSpawnBatch(batch) {
             requests.push(...batch);
             return Object.freeze({
@@ -440,8 +1139,132 @@ function validateFutureWaveSelection(harness, closedAvailability) {
         );
 }
 
+function runFormationRouteClosurePolicy() {
+    const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
+    const graphContentKey = createRouteFlowFieldAtlas(tileMap).contentKey;
+    const wave = new WaveDirector({
+        waveDefinition: Object.freeze({
+            waveId: 'nw-cork-formation-mid-spawn-policy',
+            mapId: CORK_DUAL_ROUTE_MAP_DATA.id,
+            timeline: Object.freeze([Object.freeze({
+                timelineEntryId: 'sequential-two-row-formation',
+                type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_FORMATION,
+                formation: Object.freeze({
+                    groupId: 'cork-pinned-route-formation',
+                    memberCount: 4,
+                    coordinateSystem:
+                        AUTHORED_FORMATION_COORDINATE_SYSTEM.PATH_RELATIVE,
+                    spawnMode:
+                        AUTHORED_FORMATION_SPAWN_MODE.SEQUENTIAL_ROWS,
+                    rowDelayTicks: 1,
+                    keepFormation: false,
+                    layout: Object.freeze(['SS', 'SS']),
+                    symbolMap: Object.freeze({
+                        S: BASIC_SQUARE_ENEMY_DATA.id
+                    }),
+                    routeBinding: Object.freeze({
+                        routeSetId: CORK_DUAL_ROUTE_ROUTE_SET_ID
+                    }),
+                    policyId: 'corebound',
+                    rowSpacingTiles: 1,
+                    columnSpacingTiles: 1
+                })
+            })])
+        })
+    });
+    assert(wave.init(tileMap), 'formation route policy WaveDirector init failed');
+    const batches = [];
+    const sink = Object.freeze({
+        requestSpawnBatch(batch) {
+            batches.push(Object.freeze([...batch]));
+            return Object.freeze({
+                accepted: true,
+                requestedCount: batch.length,
+                queuedCount: batch.length
+            });
+        }
+    });
+    const availability = (availabilityVersion, closedPathIds) => Object.freeze({
+        graphContentKey,
+        availabilityVersion,
+        closedPathIds: Object.freeze([...closedPathIds])
+    });
+    try {
+        const firstQueued = wave.queueSpawnsForFixedTick(
+            1,
+            sink,
+            availability(1, [])
+        );
+        const closeSinkCountBefore = batches.length;
+        const closedQueued = wave.queueSpawnsForFixedTick(
+            2,
+            sink,
+            availability(2, [CORK_DUAL_ROUTE_UPPER_PATH_ID])
+        );
+        const closedStatus = wave.getStatus();
+        const closeSinkCallCount = batches.length - closeSinkCountBefore;
+        const reopenBatchCountBefore = batches.length;
+        const reopenedQueued = wave.queueSpawnsForFixedTick(
+            3,
+            sink,
+            availability(3, [])
+        );
+        const reopenedBatches = batches.slice(reopenBatchCountBefore);
+        const firstBatch = batches[0] ?? [];
+        const reopenedBatch = reopenedBatches[0] ?? [];
+        const firstCommandTails = firstBatch.map(({ commandId }) => (
+            commandId.slice(commandId.lastIndexOf(':') + 1)
+        ));
+        const reopenedCommandTails = reopenedBatch.map(({ commandId }) => (
+            commandId.slice(commandId.lastIndexOf(':') + 1)
+        ));
+        const originalRoutePreserved = firstBatch.every(
+            ({ intent }) => intent.pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+        ) && reopenedBatch.every(
+            ({ intent }) => intent.pathId === CORK_DUAL_ROUTE_UPPER_PATH_ID
+        );
+        const noArbitrarySplit = reopenedBatches.length === 1
+            && reopenedBatch.length === 2
+            && reopenedCommandTails.join(',') === 'member-1-0,member-1-1';
+        assert(firstQueued === 2
+            && firstCommandTails.join(',') === 'member-0-0,member-0-1'
+            && closedQueued === 0
+            && closeSinkCallCount === 0
+            && closedStatus.blockedSpawnCount === 2
+            && closedStatus.remainingSpawnCount === 2
+            && reopenedQueued === 2
+            && originalRoutePreserved
+            && noArbitrarySplit
+            && wave.getStatus().blockedSpawnCount === 0
+            && wave.getStatus().remainingSpawnCount === 0,
+        `formation route closure policy mismatch ${JSON.stringify({
+            firstQueued,
+            closedQueued,
+            closedStatus,
+            reopenedQueued,
+            batches
+        })}`);
+        return Object.freeze({
+            firstRowMemberCount: firstQueued,
+            originalPathId: CORK_DUAL_ROUTE_UPPER_PATH_ID,
+            closeQueuedMemberCount: closedQueued,
+            closeSinkCallCount,
+            backlogMemberCount: closedStatus.blockedSpawnCount,
+            backlogRetained: closedStatus.blockedSpawnCount === 2,
+            reopenBatchCount: reopenedBatches.length,
+            reopenedMemberCount: reopenedQueued,
+            reopenedOnOriginalPath: originalRoutePreserved,
+            partialRowCount: noArbitrarySplit ? 0 : 1,
+            arbitraryRowSplit: !noArbitrarySplit,
+            finalBacklogMemberCount: wave.getStatus().blockedSpawnCount
+        });
+    } finally {
+        wave.destroy();
+    }
+}
+
 async function runClosureRoutingAndInteraction(device, format) {
-    const harness = createRouteHarness(device, format, 12);
+    const harness = createRouteHarness(device, format, MAIN_HARNESS_CAPACITY);
     const {
         endpoint,
         director,
@@ -458,11 +1281,22 @@ async function runClosureRoutingAndInteraction(device, format) {
         y: (upperRoute.waypoints[1].y - upperRoute.waypoints[0].y)
             / directionLength
     });
+    const routeNormal = Object.freeze({ x: -direction.y, y: direction.x });
     const closurePosition = upperRoute.waypoints[4];
+    const upperClosure = getCompiledUpperClosure(harness);
+    const upperPathIndex = getCompiledPathIndex(
+        harness,
+        CORK_DUAL_ROUTE_UPPER_PATH_ID
+    );
+    const lowerPathIndex = getCompiledPathIndex(
+        harness,
+        CORK_DUAL_ROUTE_LOWER_PATH_ID
+    );
     let corkHandle;
     let trappedHandle;
     let activeHandle;
     let towerHandle;
+    let pentaHandle;
     let futureHandle;
     let projectileHandle;
     let assignmentCompletion = null;
@@ -472,9 +1306,17 @@ async function runClosureRoutingAndInteraction(device, format) {
     let tick62Evidence = null;
     let tick63Evidence = null;
     let tick64Evidence = null;
+    let precloseEvidence = null;
+    let precloseGpuAvailability = null;
+    let closeSubmitGpuAvailability = null;
+    let effectStage = null;
+    let effectCompletion = null;
+    let corkEffectSummary = null;
     let towerBeforeBlock = null;
     let futureSpawnSelectedAlternative = false;
     let registryCountAtClose = 0;
+    const crossHandles = new Map();
+    let crossSystemEvidence = null;
 
     try {
         assert(endpoint.requestSpawnBatch([{
@@ -508,30 +1350,44 @@ async function runClosureRoutingAndInteraction(device, format) {
                 label: `Cork expansion T${tick}`,
                 beforeCommit() {
                     const actorPlan = tick === 29
-                        ? {
+                        ? Object.freeze({
                             commandId: 'cork-main:trapped',
-                            spawnSequence: 29
-                        }
-                        : tick === 52
-                            ? {
-                                commandId: 'cork-main:active',
-                                spawnSequence: 52
-                            }
-                            : null;
+                            spawnSequence: 29,
+                            crossActors: WAITING_BEHAVIOR_ACTORS
+                        })
+                        : null;
                     if (!actorPlan) return;
-                    const intent = createDynamicRouteIntent({
-                        definition: ROUTE_ACTOR_DEFINITION,
-                        route: upperRoute,
-                        position: upperRoute.waypoints[0],
-                        spawnSequence: actorPlan.spawnSequence,
-                        availability: director.getAvailabilitySnapshot(),
-                        graphContentKey: initialRuntime.graphContentKey
-                    });
-                    assert(endpoint.requestSpawnBatch([{
-                        intent,
+                    const upperSwitchPosition = upperRoute.waypoints[1];
+                    const requests = [{
+                        intent: createDynamicRouteIntent({
+                            definition: ROUTE_ACTOR_DEFINITION,
+                            route: upperRoute,
+                            position: upperSwitchPosition,
+                            spawnSequence: actorPlan.spawnSequence,
+                            availability: director.getAvailabilitySnapshot(),
+                            graphContentKey: initialRuntime.graphContentKey
+                        }),
                         targetFixedTick: tick,
                         commandId: actorPlan.commandId
-                    }]).accepted, `${actorPlan.commandId} spawn rejected`);
+                    }, ...actorPlan.crossActors.map((actor, index) => ({
+                        intent: createCrossSystemRouteIntent({
+                            harness,
+                            definition: actor.definition,
+                            position: Object.freeze({
+                                x: upperSwitchPosition.x
+                                    + routeNormal.x
+                                        * CROSS_ACTOR_LANE_OFFSETS[index],
+                                y: upperSwitchPosition.y
+                                    + routeNormal.y
+                                        * CROSS_ACTOR_LANE_OFFSETS[index]
+                            }),
+                            spawnSequence: actorPlan.spawnSequence + index + 1
+                        }),
+                        targetFixedTick: tick,
+                        commandId: `cork-cross:${actor.key}`
+                    }))];
+                    assert(endpoint.requestSpawnBatch(requests).accepted,
+                        `${actorPlan.commandId} cross-system spawn rejected`);
                 },
                 afterCommit(lifecycle) {
                     if (tick === 29) {
@@ -539,21 +1395,61 @@ async function runClosureRoutingAndInteraction(device, format) {
                             lifecycle,
                             'cork-main:trapped'
                         );
-                    } else if (tick === 52) {
-                        activeHandle = requireSpawnHandle(
+                    }
+                    const actors = tick === 29
+                        ? WAITING_BEHAVIOR_ACTORS
+                        : [];
+                    for (const actor of actors) {
+                        crossHandles.set(actor.key, requireSpawnHandle(
                             lifecycle,
-                            'cork-main:active'
-                        );
+                            `cork-cross:${actor.key}`
+                        ));
                     }
                 }
             });
         }
 
-        await advanceTick({
+        const tick61 = await advanceTick({
             harness,
             tick: 61,
             label: 'Cork routed actors approach T61'
         });
+        precloseEvidence = tick61.evidence;
+        precloseGpuAvailability = await readRouteAvailabilityGpuEvidence(
+            endpoint,
+            harness.atlas.routeGraph.closures.length,
+            'preclose-t61'
+        );
+        const corkBeforeClose = routeEntryFor(precloseEvidence, corkHandle);
+        const preclosePhysics = corkBeforeClose
+            ? unpackGpuCirclePhysicsMeta(corkBeforeClose.body.physicsMeta)
+            : null;
+        const precloseInteraction = corkBeforeClose
+            ? unpackGpuCircleInteractionMeta(corkBeforeClose.body.interactionMeta)
+            : null;
+        assert(corkBeforeClose?.routeState.phase === GPU_ROUTE_RUNTIME_PHASE.EXPAND
+            && corkBeforeClose.body.radius < 3
+            && preclosePhysics?.bodyLayer
+                === GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            && preclosePhysics.collisionMask === 0
+            && precloseInteraction?.interactionLayer
+                === GPU_CIRCLE_BODY_INTERACTION_LAYER.ENEMY
+            && precloseGpuAvailability.status === 0
+            && precloseGpuAvailability.sourceTick === 61
+            && precloseGpuAvailability.completedThroughTick === 61
+            && precloseGpuAvailability.availabilityVersion
+                === director.getAvailabilitySnapshot().availabilityVersion
+            && !director.getAvailabilitySnapshot().closedPathIds.includes(
+                CORK_DUAL_ROUTE_UPPER_PATH_ID
+            )
+            && precloseGpuAvailability.records[upperClosure.closureIndex]
+                .state === GPU_ROUTE_AVAILABILITY_STATE.LEASED,
+        `Cork preclose EXPAND/open/nonblocking mismatch: ${JSON.stringify({
+            corkBeforeClose,
+            preclosePhysics,
+            precloseInteraction,
+            precloseGpuAvailability
+        })}`);
 
         const tick62 = await advanceTick({
             harness,
@@ -566,23 +1462,127 @@ async function runClosureRoutingAndInteraction(device, format) {
                     y: closurePosition.y
                         - direction.y * TOWER_BLOCKER_PROBE_START_DISTANCE
                 });
+                const pentaPosition = Object.freeze({
+                    x: closurePosition.x
+                        - direction.x * PENTA_BLOCKING_PROBE_DISTANCE
+                        + routeNormal.x * 1.5,
+                    y: closurePosition.y
+                        - direction.y * PENTA_BLOCKING_PROBE_DISTANCE
+                        + routeNormal.y * 1.5
+                });
+                const activePosition = createPreSwitchArrivalPosition(
+                    harness,
+                    direction,
+                    routeNormal,
+                    0
+                );
+                const rerouteRequests = REROUTE_OR_WAIT_ACTORS.map(
+                    (actor, index) => Object.freeze({
+                        intent: createCrossSystemRouteIntent({
+                            harness,
+                            definition: actor.definition,
+                            position: createPreSwitchArrivalPosition(
+                                harness,
+                                direction,
+                                routeNormal,
+                                CROSS_ACTOR_LANE_OFFSETS[index]
+                            ),
+                            spawnSequence: 63 + index
+                        }),
+                        targetFixedTick: 62,
+                        commandId: `cork-cross:${actor.key}`
+                    })
+                );
                 assert(endpoint.requestSpawnBatch([{
                     intent: createGpuTowerSpawnIntent({ position: towerPosition }),
                     targetFixedTick: 62,
                     commandId: 'cork-main:tower'
-                }]).accepted, 'active actor/Tower spawn rejected');
+                }, {
+                    intent: createPentaIntent(harness, 62, pentaPosition),
+                    targetFixedTick: 62,
+                    commandId: 'cork-main:penta'
+                }, {
+                    intent: createDynamicRouteIntent({
+                        definition: ROUTE_ACTOR_DEFINITION,
+                        route: upperRoute,
+                        position: activePosition,
+                        spawnSequence: 62,
+                        availability: director.getAvailabilitySnapshot(),
+                        graphContentKey: initialRuntime.graphContentKey
+                    }),
+                    targetFixedTick: 62,
+                    commandId: 'cork-main:active'
+                }, ...rerouteRequests]).accepted,
+                'Tower/P/reroute cross-system spawn rejected');
             },
             afterCommit(lifecycle) {
                 towerHandle = requireSpawnHandle(lifecycle, 'cork-main:tower');
+                pentaHandle = requireSpawnHandle(lifecycle, 'cork-main:penta');
+                activeHandle = requireSpawnHandle(
+                    lifecycle,
+                    'cork-main:active'
+                );
+                for (const actor of REROUTE_OR_WAIT_ACTORS) {
+                    crossHandles.set(actor.key, requireSpawnHandle(
+                        lifecycle,
+                        `cork-cross:${actor.key}`
+                    ));
+                }
             }
         });
         tick62Evidence = tick62.evidence;
+        closeSubmitGpuAvailability = await readRouteAvailabilityGpuEvidence(
+            endpoint,
+            harness.atlas.routeGraph.closures.length,
+            'close-submit-t62'
+        );
         registryCountAtClose = endpoint.getRegistry().getActiveCount();
         const corkAtClose = routeEntryFor(tick62Evidence, corkHandle);
         towerBeforeBlock = findBody(tick62Evidence.bodies, towerHandle);
+        const closePhysics = corkAtClose
+            ? unpackGpuCirclePhysicsMeta(corkAtClose.body.physicsMeta)
+            : null;
+        const closeInteraction = corkAtClose
+            ? unpackGpuCircleInteractionMeta(corkAtClose.body.interactionMeta)
+            : null;
         assert(corkAtClose?.routeState.phase === GPU_ROUTE_RUNTIME_PHASE.BLOCKING
-            && Math.abs(corkAtClose.body.radius - 3) <= 0.0001,
-        `Cork did not reach exact blocker state: ${JSON.stringify(corkAtClose)}`);
+            && Math.abs(corkAtClose.body.radius - 3) <= 0.0001
+            && closePhysics?.bodyLayer
+                === GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
+            && (closePhysics.collisionMask
+                & GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY) !== 0
+            && closeInteraction?.interactionLayer
+                === GPU_CIRCLE_BODY_INTERACTION_LAYER.ENEMY
+            && closeSubmitGpuAvailability.status === 0
+            && closeSubmitGpuAvailability.sourceTick
+                === CORK_EXPANSION_CLOSE_SUBMIT_TICK
+            && closeSubmitGpuAvailability.completedThroughTick
+                === CORK_EXPANSION_CLOSE_SUBMIT_TICK
+            && closeSubmitGpuAvailability.availabilityVersion
+                === precloseGpuAvailability.availabilityVersion + 1
+            && closeSubmitGpuAvailability.records[upperClosure.closureIndex]
+                .state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED
+            && closeSubmitGpuAvailability.records[upperClosure.closureIndex]
+                .ownerEntityId === corkHandle.entityId
+            && closeSubmitGpuAvailability.records[upperClosure.closureIndex]
+                .ownerIncarnation === corkHandle.incarnation,
+        `Cork did not atomically close as blocker: ${JSON.stringify({
+            corkAtClose,
+            closePhysics,
+            closeInteraction,
+            closeSubmitGpuAvailability
+        })}`);
+        await seedGpuRouteClosureCrossSystemPreconditions({
+            harness,
+            evidence: tick62Evidence,
+            trappedHandle,
+            activeHandle,
+            crossHandles,
+            upperPathIndex,
+            upperClosure,
+            availabilityVersion:
+                closeSubmitGpuAvailability.availabilityVersion
+        });
 
         const tick63 = await advanceTick({
             harness,
@@ -592,7 +1592,11 @@ async function runClosureRoutingAndInteraction(device, format) {
                 closeCompletion = boundary.route;
                 assert(closeCompletion.closures.some(
                     ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
-                ) && closeCompletion.closedPathIds.length === 1,
+                ) && closeCompletion.closedPathIds.length === 1
+                    && closeCompletion.sourceTick
+                        === CORK_EXPANSION_CLOSE_SUBMIT_TICK
+                    && closeCompletion.availabilityVersion
+                        === closeSubmitGpuAvailability.availabilityVersion,
                 `Cork close completion missing: ${JSON.stringify(closeCompletion)}`);
                 futureSpawnSelectedAlternative = validateFutureWaveSelection(
                     harness,
@@ -620,22 +1624,74 @@ async function runClosureRoutingAndInteraction(device, format) {
             },
             afterCommit(lifecycle) {
                 futureHandle = requireSpawnHandle(lifecycle, 'cork-main:future');
+                effectStage = endpoint.getBackend().stageEffectPulseProgramBatch({
+                    abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                    sourceTick: CORK_CLOSE_COMPLETION_TICK,
+                    batchIdFingerprint: 0x7c0c103f,
+                    records: [createBlockingCorkBoostPulse(
+                        pentaHandle,
+                        CORK_CLOSE_COMPLETION_TICK
+                    )]
+                });
+                assert(effectStage.accepted === true
+                    && effectStage.stagedCount === 1,
+                `P Effect pulse stage rejected: ${JSON.stringify(effectStage)}`);
             }
         });
         tick63Evidence = tick63.evidence;
+        effectCompletion = await waitForEffectCompletion(
+            endpoint,
+            'P Boost on BLOCKING Cork'
+        );
+        const blockingCorkBody = findBody(tick63Evidence.bodies, corkHandle);
+        assert(blockingCorkBody, 'P Effect target Cork body missing');
+        corkEffectSummary = await readEffectSummary(
+            endpoint,
+            blockingCorkBody,
+            corkHandle,
+            'blocking-cork'
+        );
+        const corkBoostEvent = effectCompletion.events.find((event) => (
+            event.type === GPU_EFFECT_EVENT_TYPE.INSTANCE_APPLIED
+            && event.sourceEntityId === pentaHandle.entityId
+            && event.sourceIncarnation === pentaHandle.incarnation
+            && event.targetEntityId === corkHandle.entityId
+            && event.targetIncarnation === corkHandle.incarnation
+            && event.effectDefinitionCode
+                === PENTA_BOOST_EFFECT_DEFINITION.effectDefinitionCode
+        ));
+        assert(effectCompletion.sourceTick === CORK_CLOSE_COMPLETION_TICK
+            && effectCompletion.appliedInstanceCount >= 1
+            && Boolean(corkBoostEvent)
+            && corkEffectSummary.boostStackCount === 1,
+        `P Boost did not target BLOCKING Cork: ${JSON.stringify({
+            effectCompletion,
+            corkEffectSummary
+        })}`);
 
-        const upperPathIndex = getCompiledPathIndex(
-            harness,
-            CORK_DUAL_ROUTE_UPPER_PATH_ID
-        );
-        const lowerPathIndex = getCompiledPathIndex(
-            harness,
-            CORK_DUAL_ROUTE_LOWER_PATH_ID
-        );
-        const upperClosure = getCompiledUpperClosure(harness);
+        const waitingEvidenceTick = CORK_CLOSE_COMPLETION_TICK;
+        const waitingEvidence = tick63Evidence;
+        assert(allWaitingActorsReachedClearance(
+            waitingEvidence,
+            trappedHandle,
+            crossHandles,
+            upperClosure.clearanceFieldIndex
+        ), `route-owned WAIT alignment did not settle: ${JSON.stringify({
+            waitingEvidenceTick,
+            actors: [
+                ['trapped', trappedHandle],
+                ...WAITING_BEHAVIOR_ACTORS.map(
+                    ({ key }) => [key, crossHandles.get(key)]
+                )
+            ].map(([key, handle]) => Object.freeze({
+                key,
+                entry: routeEntryFor(waitingEvidence, handle)
+            }))
+        })}`);
+
         const activeBefore = routeEntryFor(tick62Evidence, activeHandle);
         const activeAfter = routeEntryFor(tick63Evidence, activeHandle);
-        const trappedWaiting = routeEntryFor(tick63Evidence, trappedHandle);
+        const trappedWaiting = routeEntryFor(waitingEvidence, trappedHandle);
         const futureAfter = routeEntryFor(tick63Evidence, futureHandle);
         const towerAfterBlock = findBody(tick63Evidence.bodies, towerHandle);
         assert(activeBefore?.routeState.currentPathIndex === upperPathIndex,
@@ -649,10 +1705,132 @@ async function runClosureRoutingAndInteraction(device, format) {
         assert(futureAfter?.routeState.currentPathIndex === lowerPathIndex,
             `future actor did not select alternative: ${JSON.stringify(futureAfter)}`);
 
-        const tick64 = await advanceTick({
+        const waitingBehaviorEvidence = WAITING_BEHAVIOR_ACTORS.map((actor) => {
+            const handle = crossHandles.get(actor.key);
+            const before = routeEntryFor(tick62Evidence, handle);
+            const after = routeEntryFor(waitingEvidence, handle);
+            const velocityMagnitude = after
+                ? Math.hypot(after.body.velocity.x, after.body.velocity.y)
+                : Number.POSITIVE_INFINITY;
+            const programId = after?.body.enemyBehaviorState?.programId;
+            assert(before?.routeState.currentPathIndex === upperPathIndex
+                && after?.routeState.phase === GPU_ROUTE_RUNTIME_PHASE.WAITING
+                && after.routeState.pendingFieldIndex
+                    === upperClosure.clearanceFieldIndex
+                && programId === actor.programId
+                && velocityMagnitude <= 0.001,
+            `${actor.key} route-owned WAIT behavior mismatch ${JSON.stringify({
+                before,
+                after,
+                velocityMagnitude,
+                expectedProgramId: actor.programId
+            })}`);
+            return Object.freeze({
+                key: actor.key,
+                definitionId: actor.definition.id,
+                programId,
+                routePhase: after.routeState.phase,
+                pendingFieldIndex: after.routeState.pendingFieldIndex,
+                velocityMagnitude,
+                routeOwnedWait: true,
+                reachedAtFixedTick: waitingEvidenceTick,
+                recoveryRequired: false
+            });
+        });
+        const rerouteOrWaitEvidence = REROUTE_OR_WAIT_ACTORS.map((actor) => {
+            const handle = crossHandles.get(actor.key);
+            const before = routeEntryFor(tick62Evidence, handle);
+            const after = routeEntryFor(tick63Evidence, handle);
+            const rerouted = after?.routeState.currentPathIndex === lowerPathIndex;
+            const waited = after?.routeState.phase === GPU_ROUTE_RUNTIME_PHASE.WAITING;
+            assert(before?.routeState.currentPathIndex === upperPathIndex
+                && (rerouted || waited),
+            `${actor.key} did not reroute/wait ${JSON.stringify({ before, after })}`);
+            return Object.freeze({
+                key: actor.key,
+                definitionId: actor.definition.id,
+                routePhase: after.routeState.phase,
+                currentPathIndex: after.routeState.currentPathIndex,
+                rerouted,
+                waited,
+                recoveryRequired: false
+            });
+        });
+        const ringBody = routeEntryFor(
+            tick63Evidence,
+            crossHandles.get('ring')
+        )?.body;
+        const jorangBody = routeEntryFor(
+            tick63Evidence,
+            crossHandles.get('jorang')
+        )?.body;
+        const hexaBody = routeEntryFor(
+            tick63Evidence,
+            crossHandles.get('hexa')
+        )?.body;
+        assert(ringBody && jorangBody && hexaBody,
+            'cross-system R/J/H body evidence missing');
+        const hexaFormationState = await readFormationState(
+            endpoint,
+            hexaBody,
+            crossHandles.get('hexa'),
+            'route-closure-hexa'
+        );
+        const ringCaptureState = await readProjectileCaptureState(
+            endpoint,
+            ringBody,
+            crossHandles.get('ring'),
+            'route-closure-ring'
+        );
+        const ringCaptureStatePreserved
+            = ringCaptureState.role
+                === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+            && ringCaptureState.phase
+                === GPU_PROJECTILE_CAPTURE_PHASE.IDLE;
+        const jorangAtomicStatePreserved
+            = jorangBody.atomicTransformState.phase
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED;
+        const hexaFormationStateActive = (hexaFormationState.flags
+            & GPU_FORMATION_BODY_STATE_FLAG.ACTIVE) !== 0;
+        assert(ringCaptureStatePreserved
+            && jorangAtomicStatePreserved
+            && hexaFormationStateActive
+            && hexaFormationState.memberCount === 1
+            && !endpoint.requiresRecovery()
+            && !director.requiresRecovery(),
+        `cross-system side-plane state mismatch ${JSON.stringify({
+            ring: ringCaptureState,
+            jorang: jorangBody?.atomicTransformState,
+            hexaFormationState,
+            endpoint: endpoint.getStatus(),
+            director: director.getStatus()
+        })}`);
+        crossSystemEvidence = Object.freeze({
+            waitingBehaviorActors: Object.freeze(waitingBehaviorEvidence),
+            rerouteOrWaitActors: Object.freeze(rerouteOrWaitEvidence),
+            arrowRhomOctagonRouteOwnedWait:
+                waitingBehaviorEvidence.every((entry) => entry.routeOwnedWait),
+            ringCaptureRole: ringCaptureState.role,
+            ringCapturePhase: ringCaptureState.phase,
+            ringCaptureStatePreserved,
+            jorangAtomicPhase: jorangBody.atomicTransformState.phase,
+            jorangAtomicStatePreserved,
+            hexaFormationFlags: hexaFormationState.flags,
+            hexaFormationStateActive,
+            hexaFormationMemberCount: hexaFormationState.memberCount,
+            recoveryRequired: false
+        });
+
+        const projectileSubmitTick = waitingEvidenceTick + 1;
+        const deathCommitTick = projectileSubmitTick + 1;
+        const cleanupCommitTick = deathCommitTick + 1;
+        const replacementSpawnTick = cleanupCommitTick + 1;
+        const replacementLeaseTick = replacementSpawnTick + 1;
+        const staleProbeTick = replacementLeaseTick + 1;
+        const projectileSubmit = await advanceTick({
             harness,
-            tick: 64,
-            label: 'Cork projectile crossing T64',
+            tick: projectileSubmitTick,
+            label: `Cork projectile crossing T${projectileSubmitTick}`,
             beforeCommit() {
                 const projectilePosition = Object.freeze({
                     x: closurePosition.x - direction.x * 4,
@@ -662,16 +1840,16 @@ async function runClosureRoutingAndInteraction(device, format) {
                     intent: createProjectileIntent(
                         projectilePosition,
                         { x: direction.x * 360, y: direction.y * 360 },
-                        64
+                        projectileSubmitTick
                     ),
-                    targetFixedTick: 64,
+                    targetFixedTick: projectileSubmitTick,
                     commandId: 'cork-main:projectile'
                 }]).accepted, 'projectile spawn rejected');
                 const control = endpoint.requestBodyControl({
                     handle: towerHandle,
                     moveIntentX: direction.x,
                     moveIntentY: direction.y
-                }, 64, 'cork-main:tower-control-2');
+                }, projectileSubmitTick, 'cork-main:tower-control-2');
                 assert(control.accepted,
                     `Tower second control rejected: ${JSON.stringify(control)}`);
             },
@@ -682,29 +1860,37 @@ async function runClosureRoutingAndInteraction(device, format) {
                 );
             }
         });
-        tick64Evidence = tick64.evidence;
+        tick64Evidence = projectileSubmit.evidence;
+        const peakActiveCount = endpoint.getRegistry().getActiveCount();
+        assert(MAIN_HARNESS_CAPACITY >= MAIN_EXPECTED_PEAK_ACTIVE_COUNT
+            && peakActiveCount === MAIN_EXPECTED_PEAK_ACTIVE_COUNT,
+        `Cork main peak capacity mismatch ${JSON.stringify({
+            capacity: MAIN_HARNESS_CAPACITY,
+            expectedPeak: MAIN_EXPECTED_PEAK_ACTIVE_COUNT,
+            peakActiveCount
+        })}`);
         const projectileAfter = findBody(
             tick64Evidence.bodies,
             projectileHandle
         );
-        const tick65 = await advanceTick({
+        const deathCommit = await advanceTick({
             harness,
-            tick: 65,
-            label: 'Cork owner death/reopen T65',
+            tick: deathCommitTick,
+            label: `Cork owner death/reopen T${deathCommitTick}`,
             beforeCommit(boundary) {
                 reopenCompletion = boundary.route;
             }
         });
-        const tick66 = await advanceTick({
+        const cleanupCommit = await advanceTick({
             harness,
-            tick: 66,
-            label: 'Cork cleanup T66',
+            tick: cleanupCommitTick,
+            label: `Cork cleanup T${cleanupCommitTick}`,
             beforeCommit(boundary) {
                 cleanupCompletion = boundary.route;
             }
         });
 
-        const damageEvent = tick65.boundary.events.events.find((event) => (
+        const damageEvent = deathCommit.boundary.events.events.find((event) => (
             event.eventType === 'damage-applied'
                 && event.entityId === projectileHandle.entityId
                 && event.incarnation === projectileHandle.incarnation
@@ -712,10 +1898,10 @@ async function runClosureRoutingAndInteraction(device, format) {
                 && event.otherIncarnation === corkHandle.incarnation
                 && event.damageFixedPoint > 0
         ));
-        const deathEvent = tick65.boundary.events.deathEvents.find(
+        const deathEvent = deathCommit.boundary.events.deathEvents.find(
             (event) => exactHandle(event, corkHandle)
         );
-        const exactDeathDespawn = tick65.lifecycle.despawned.find(
+        const exactDeathDespawn = deathCommit.lifecycle.despawned.find(
             (entry) => exactHandle(entry.handle, corkHandle)
         );
         const reopened = reopenCompletion.reopens.find(
@@ -724,7 +1910,10 @@ async function runClosureRoutingAndInteraction(device, format) {
         const cleaned = cleanupCompletion.cleanups.find(
             ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
         );
-        const trappedResumed = routeEntryFor(tick65.evidence, trappedHandle);
+        const trappedResumed = routeEntryFor(
+            deathCommit.evidence,
+            trappedHandle
+        );
         const routeActorCountAtClose = tick62Evidence.entries.filter(
             ({ routeState }) => routeState.role !== GPU_ROUTE_RUNTIME_ROLE.NONE
         ).length;
@@ -748,15 +1937,19 @@ async function runClosureRoutingAndInteraction(device, format) {
             : Number.NEGATIVE_INFINITY;
         const oldCorkBodyAtClose = findBody(tick62Evidence.bodies, corkHandle);
         assert(endpoint.requestSpawnBatch([{
-            intent: createCorkIntent(harness, 67, upperRoute.waypoints[4]),
-            targetFixedTick: 67,
+            intent: createCorkIntent(
+                harness,
+                replacementSpawnTick,
+                upperRoute.waypoints[4]
+            ),
+            targetFixedTick: replacementSpawnTick,
             commandId: 'cork-main:aba-replacement'
         }]).accepted, 'ABA replacement spawn rejected');
         let replacementHandle;
-        const tick67 = await advanceTick({
+        const replacementSpawn = await advanceTick({
             harness,
-            tick: 67,
-            label: 'Cork exact-slot replacement T67',
+            tick: replacementSpawnTick,
+            label: `Cork exact-slot replacement T${replacementSpawnTick}`,
             afterCommit(lifecycle) {
                 replacementHandle = requireSpawnHandle(
                     lifecycle,
@@ -764,7 +1957,10 @@ async function runClosureRoutingAndInteraction(device, format) {
                 );
             }
         });
-        const replacementBody = findBody(tick67.evidence.bodies, replacementHandle);
+        const replacementBody = findBody(
+            replacementSpawn.evidence.bodies,
+            replacementHandle
+        );
         const exactSlotIncarnationReused = Boolean(
             oldCorkBodyAtClose
             && replacementBody
@@ -772,34 +1968,44 @@ async function runClosureRoutingAndInteraction(device, format) {
             && replacementHandle.entityId === corkHandle.entityId
             && replacementHandle.incarnation > corkHandle.incarnation
         );
-        const tick68 = await advanceTick({
+        const replacementLeaseCommit = await advanceTick({
             harness,
-            tick: 68,
-            label: 'Cork replacement lease T68'
+            tick: replacementLeaseTick,
+            label: `Cork replacement lease T${replacementLeaseTick}`
         });
-        const replacementLease = tick68.boundary.route.assignments.find(
+        const replacementLease = replacementLeaseCommit
+            .boundary.route.assignments.find(
             ({ ownerHandle }) => exactHandle(ownerHandle, replacementHandle)
+        );
+        const originalLease = assignmentCompletion.assignments.find(
+            ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
+        );
+        const leaseGenerationAdvanced = Boolean(
+            originalLease
+            && replacementLease
+            && replacementLease.leaseGeneration > originalLease.leaseGeneration
         );
         const staleBefore = director.getAvailabilitySnapshot();
         const rosterBeforeStale = director.getStatus();
         const staleRequest = endpoint.requestDespawn(
             corkHandle,
             'stale-route-owner',
-            69,
+            staleProbeTick,
             'cork-main:stale-owner'
         );
         assert(staleRequest.accepted === true,
             `stale ABA request queue failed: ${JSON.stringify(staleRequest)}`);
-        const tick69 = await advanceTick({
+        const staleProbeCommit = await advanceTick({
             harness,
-            tick: 69,
-            label: 'Cork stale owner ABA T69'
+            tick: staleProbeTick,
+            label: `Cork stale owner ABA T${staleProbeTick}`
         });
-        const staleLifecycle = tick69.lifecycle;
+        const staleLifecycle = staleProbeCommit.lifecycle;
         const staleAfter = director.getAvailabilitySnapshot();
         const rosterAfterStale = director.getStatus();
         const abaOldIncarnationDidNotReopen = exactSlotIncarnationReused
             && Boolean(replacementLease)
+            && leaseGenerationAdvanced
             && !endpoint.requiresRecovery()
             && staleAfter.availabilityVersion === staleBefore.availabilityVersion
             && JSON.stringify(staleAfter.closedPathIds)
@@ -839,6 +2045,25 @@ async function runClosureRoutingAndInteraction(device, format) {
                 expanded: corkAtClose.routeState.phase
                         === GPU_ROUTE_RUNTIME_PHASE.BLOCKING
                     && Math.abs(corkAtClose.body.radius - 3) <= 0.0001,
+                precloseExpandNonblockingOpen:
+                    routeEntryFor(precloseEvidence, corkHandle)?.routeState.phase
+                        === GPU_ROUTE_RUNTIME_PHASE.EXPAND
+                    && preclosePhysics.bodyLayer
+                        === GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+                    && preclosePhysics.collisionMask === 0
+                    && precloseGpuAvailability.records[
+                        upperClosure.closureIndex
+                    ].state === GPU_ROUTE_AVAILABILITY_STATE.LEASED,
+                atomicCloseBlockingAndClosed:
+                    corkAtClose.routeState.phase
+                        === GPU_ROUTE_RUNTIME_PHASE.BLOCKING
+                    && closePhysics.bodyLayer
+                        === GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
+                    && closeSubmitGpuAvailability.records[
+                        upperClosure.closureIndex
+                    ].state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED
+                    && closeSubmitGpuAvailability.availabilityVersion
+                        === closeCompletion.availabilityVersion,
                 closed: closeCompletion.closures.some(
                     ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
                 ),
@@ -864,9 +2089,38 @@ async function runClosureRoutingAndInteraction(device, format) {
                 waitingActorResumedAfterReopen:
                     trappedResumed?.routeState.phase
                         === GPU_ROUTE_RUNTIME_PHASE.TRAVEL,
+                closeSourceTick: closeCompletion.sourceTick,
+                closeAvailabilityVersion: closeCompletion.availabilityVersion,
+                closeCompletedVersionMatch:
+                    closeCompletion.availabilityVersion
+                        === closeSubmitGpuAvailability.availabilityVersion,
+                precloseGpuSourceTick: precloseGpuAvailability.sourceTick,
+                precloseGpuAvailabilityState:
+                    precloseGpuAvailability.records[
+                        upperClosure.closureIndex
+                    ].state,
+                closeSubmitGpuSourceTick:
+                    closeSubmitGpuAvailability.sourceTick,
+                closeSubmitGpuClosedState:
+                    closeSubmitGpuAvailability.records[
+                        upperClosure.closureIndex
+                    ].state,
                 closedPathCount: closeCompletion.closedPathIds.length,
                 finalClosedPathCount: cleanupCompletion.closedPathIds.length
             }),
+            effect: Object.freeze({
+                sourceDefinitionId: BASIC_PENTA_ENEMY_DATA.id,
+                blockingCorkBoostApplied: Boolean(corkBoostEvent),
+                exactTarget: Boolean(corkBoostEvent),
+                appliedInstanceCount: effectCompletion.appliedInstanceCount,
+                boostStackCount: corkEffectSummary.boostStackCount,
+                targetPhysicalLayer: closePhysics.bodyLayer,
+                targetInteractionLayer: closeInteraction.interactionLayer,
+                recoveryRequired: endpoint.requiresRecovery()
+                    || endpoint.getBackend().getEffectRuntimeStatus()
+                        .requiresRecovery === true
+            }),
+            crossSystem: crossSystemEvidence,
             interaction: Object.freeze({
                 towerBlocked: Boolean(
                     towerBeforeBlock
@@ -885,9 +2139,14 @@ async function runClosureRoutingAndInteraction(device, format) {
                     projectileAfter && projectileAfter.healthFixedPoint > 0
                 )
             }),
+            leaseGenerationAdvanced,
             abaOldIncarnationDidNotReopen,
             coexistence: Object.freeze({
                 bodyAbiVersion: simulationStatus.abiVersion,
+                mainHarnessCapacity: MAIN_HARNESS_CAPACITY,
+                peakActiveCount,
+                peakCapacityHeadroom:
+                    MAIN_HARNESS_CAPACITY - peakActiveCount,
                 previousDomainsPreserved: priorProfiles.every(
                     (value) => Number.isSafeInteger(value)
                         && value > 0 && value <= 9
@@ -1111,23 +2370,471 @@ async function runTerminalAndReplacement(device, format) {
     }
 }
 
+function createMixedChurnSpawnRequests(
+    harness,
+    cycle,
+    targetFixedTick,
+    includePersistentTower
+) {
+    const route = harness.upperRoute;
+    const start = route.waypoints[0];
+    const availability = harness.director.getAvailabilitySnapshot();
+    const enemyRequests = MIXED_CHURN_ENEMY_ACTORS.map(
+        ({ key, definition }, index) => Object.freeze({
+            intent: createDynamicRouteIntent({
+                definition,
+                route,
+                position: Object.freeze({
+                    x: start.x + 0.8 + (index * 0.7),
+                    y: start.y + ((index % 2 === 0 ? -1 : 1) * 1.25)
+                }),
+                spawnSequence: (cycle * 100) + index,
+                availability,
+                graphContentKey: harness.initialRuntime.graphContentKey
+            }),
+            targetFixedTick,
+            commandId: `mixed-churn:${cycle}:${key}`
+        })
+    );
+    return Object.freeze([
+        ...(includePersistentTower ? [Object.freeze({
+            intent: createGpuTowerSpawnIntent({
+                position: Object.freeze({
+                    x: start.x + 6,
+                    y: start.y + 4
+                })
+            }),
+            targetFixedTick,
+            commandId: 'mixed-churn:persistent-tower'
+        })] : []),
+        ...enemyRequests,
+        Object.freeze({
+            intent: createProjectileIntent(
+                Object.freeze({
+                    x: start.x + 0.8,
+                    y: start.y + 2.5
+                }),
+                Object.freeze({ x: 0, y: 0 }),
+                (cycle * 100) + MIXED_CHURN_ENEMY_ACTORS.length
+            ),
+            targetFixedTick,
+            commandId: `mixed-churn:${cycle}:projectile`
+        })
+    ]);
+}
+
+function collectMixedChurnHandles(lifecycle, cycle) {
+    return new Map(MIXED_CHURN_ROSTER.map((key) => [
+        key,
+        requireSpawnHandle(lifecycle, `mixed-churn:${cycle}:${key}`)
+    ]));
+}
+
+function mixedChurnRuntimeTuple(endpoint) {
+    const route = endpoint.getRouteAvailabilityRuntimeStatus();
+    const capture = endpoint.getProjectileCaptureRuntimeStatus();
+    return Object.freeze({
+        sessionGeneration: route.sessionGeneration,
+        deviceGeneration: route.deviceGeneration,
+        authoritativeEpoch: route.authoritativeEpoch,
+        captureSessionGeneration: capture.sessionGeneration,
+        captureDeviceGeneration: capture.deviceGeneration,
+        captureAuthoritativeEpoch: capture.authoritativeEpoch
+    });
+}
+
+function mixedChurnRuntimePending(endpoint) {
+    const backend = endpoint.getBackend();
+    const effect = backend.getEffectRuntimeStatus();
+    const formation = backend.getFormationRuntimeStatus();
+    const atomic = backend.getAtomicTransformRuntimeStatus();
+    const capture = backend.getProjectileCaptureRuntimeStatus();
+    const route = backend.getRouteAvailabilityRuntimeStatus();
+    const simulation = backend.simulation.getStatus();
+    return Object.freeze({
+        effect: Object.freeze({
+            staged: effect.stagedProgramCount,
+            pulse: effect.pendingPulseProgramCount,
+            readback: effect.pendingEffectReadbackCount
+        }),
+        formation: Object.freeze({
+            staged: formation.stagedPrepareProgramCount,
+            prepare: formation.pendingPrepareProgramCount,
+            prepareReadback: formation.pendingPrepareReadbackCount,
+            armed: formation.armedTransformCount,
+            transformReadback: formation.pendingTransformReadbackCount
+        }),
+        atomic: Object.freeze({
+            prepare: atomic.pendingPrepareCount,
+            transform: atomic.pendingTransformCount,
+            readback: atomic.pendingReadbackCount
+        }),
+        capture: Object.freeze({
+            captureReadback: capture.pendingCaptureReadbackCount,
+            releaseReadback: capture.pendingReleaseReadbackCount,
+            captureBatch: capture.pendingCaptureBatchCount,
+            releaseBatch: capture.pendingReleaseBatchCount,
+            prepared: capture.preparedBatchCount,
+            armed: capture.armedReleaseCount,
+            staged: capture.stagedReleaseCount
+        }),
+        route: Object.freeze({
+            lifecycleReservations: route.lifecycleReservationCount,
+            staged: route.stagedCount,
+            readback: route.pendingReadbackCount,
+            queued: route.queuedBatchCount
+        }),
+        events: Object.freeze({
+            readback: simulation.events.pendingReadbacks,
+            queued: simulation.events.queuedBatches
+        })
+    });
+}
+
+function mixedChurnPendingIsZero(pending) {
+    return Object.values(pending).every((domain) => (
+        Object.values(domain).every((value) => value === 0)
+    ));
+}
+
+async function runMixedSingleSessionChurn(device, format) {
+    const requestedCycles = readMixedChurnCycleCount();
+    const harness = createRouteHarness(
+        device,
+        format,
+        MIXED_CHURN_HARNESS_CAPACITY
+    );
+    const { endpoint, director } = harness;
+    const initialTuple = mixedChurnRuntimeTuple(endpoint);
+    assert(initialTuple.sessionGeneration
+            === initialTuple.captureSessionGeneration
+        && initialTuple.deviceGeneration
+            === initialTuple.captureDeviceGeneration,
+    `mixed churn initial runtime tuple mismatch ${JSON.stringify(initialTuple)}`);
+    const cycleEvidence = [];
+    let cycleTupleBaseline = null;
+    let previousHandles = null;
+    let persistentTowerHandle = null;
+    let previousCorkLeaseGeneration = 0;
+    let tick = 0;
+    let peakActiveCount = 0;
+    try {
+        for (let cycle = 1; cycle <= requestedCycles; cycle++) {
+            const spawnTick = ++tick;
+            const beforeSubmitCount = endpoint.getBackend().simulation
+                .getStatus().submittedTickCount;
+            const requests = createMixedChurnSpawnRequests(
+                harness,
+                cycle,
+                spawnTick,
+                cycle === 1
+            );
+            assert(endpoint.requestSpawnBatch(requests).accepted,
+                `mixed churn cycle ${cycle} spawn ingress rejected`);
+            const spawn = await advanceTick({
+                harness,
+                tick: spawnTick,
+                label: `Mixed churn C${cycle} spawn T${spawnTick}`
+            });
+            const handles = collectMixedChurnHandles(spawn.lifecycle, cycle);
+            if (cycle === 1) {
+                persistentTowerHandle = requireSpawnHandle(
+                    spawn.lifecycle,
+                    'mixed-churn:persistent-tower'
+                );
+            }
+            const bodies = spawn.evidence.bodies;
+            const registry = endpoint.getRegistry();
+            const activeCount = registry.getActiveCount();
+            peakActiveCount = Math.max(peakActiveCount, activeCount);
+            assert(activeCount === MIXED_CHURN_ROSTER.length + 1
+                && registry.getReservedCount() === 0,
+            `mixed churn cycle ${cycle} active roster mismatch ${JSON.stringify({
+                activeCount,
+                reservedCount: registry.getReservedCount()
+            })}`);
+            const incarnationEvidence = MIXED_CHURN_ROSTER.map((key) => {
+                const handle = handles.get(key);
+                const previous = previousHandles?.get(key) ?? null;
+                const reusedEntityId = previous === null
+                    ? null
+                    : handle.entityId === previous.entityId;
+                const incarnationAdvanced = previous === null
+                    ? null
+                    : handle.incarnation > previous.incarnation;
+                assert(previous === null
+                    || (reusedEntityId && incarnationAdvanced),
+                `mixed churn ${key} exact incarnation did not advance`);
+                return Object.freeze({
+                    key,
+                    handle: copyHandle(handle),
+                    reusedEntityId,
+                    incarnationAdvanced
+                });
+            });
+            const byKey = new Map(incarnationEvidence.map((entry) => [
+                entry.key,
+                entry
+            ]));
+            const pentaBody = findBody(bodies, handles.get('penta'));
+            const hexaBody = findBody(bodies, handles.get('hexa'));
+            const ringBody = findBody(bodies, handles.get('ring'));
+            const jorangBody = findBody(bodies, handles.get('jorang'));
+            const octagonBody = findBody(bodies, handles.get('octagon'));
+            const corkBody = findBody(bodies, handles.get('cork'));
+            const corkEntry = routeEntryFor(
+                spawn.evidence,
+                handles.get('cork')
+            );
+            const projectileBody = findBody(bodies, handles.get('projectile'));
+            const octagonOrbitSlotIndex = registry.copyEntityView(
+                handles.get('octagon'),
+                {}
+            )?.metadata?.orbitSlotIndex;
+            assert(pentaBody && hexaBody && ringBody && jorangBody
+                && octagonBody && corkBody && projectileBody,
+            `mixed churn cycle ${cycle} GPU body set incomplete`);
+            const [pentaEmitter, hexaFormation, ringCapture] = await Promise.all([
+                readEffectEmitterState(
+                    endpoint,
+                    pentaBody,
+                    handles.get('penta'),
+                    `mixed-churn-${cycle}-penta`
+                ),
+                readFormationState(
+                    endpoint,
+                    hexaBody,
+                    handles.get('hexa'),
+                    `mixed-churn-${cycle}-hexa`
+                ),
+                readProjectileCaptureState(
+                    endpoint,
+                    ringBody,
+                    handles.get('ring'),
+                    `mixed-churn-${cycle}-ring`
+                )
+            ]);
+            const sidePlanesValid = pentaEmitter.emitterDefinitionCode
+                    === PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE
+                        .emitterDefinitionCode
+                && pentaEmitter.effectDefinitionCode
+                    === PENTA_BOOST_EFFECT_DEFINITION.effectDefinitionCode
+                && (hexaFormation.flags
+                    & GPU_FORMATION_BODY_STATE_FLAG.ACTIVE) !== 0
+                && hexaFormation.memberCount === 1
+                && ringCapture.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+                && ringCapture.phase === GPU_PROJECTILE_CAPTURE_PHASE.IDLE
+                && jorangBody.atomicTransformState.phase
+                    === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED
+                && octagonBody.enemyBehaviorState.programId
+                    === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
+                && octagonOrbitSlotIndex === 0
+                && corkEntry?.routeState.role
+                    === GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                && corkEntry.routeState.leaseGeneration
+                    > previousCorkLeaseGeneration
+                && projectileBody.handle.entityId
+                    === handles.get('projectile').entityId;
+            assert(sidePlanesValid,
+                `mixed churn cycle ${cycle} side-plane initialization drift`);
+
+            const cleanupTick = ++tick;
+            for (const key of [...MIXED_CHURN_ROSTER].reverse()) {
+                const accepted = endpoint.requestDespawn(
+                    handles.get(key),
+                    'r2-mixed-churn-cycle-cleanup',
+                    cleanupTick,
+                    `mixed-churn:${cycle}:cleanup:${key}`
+                );
+                assert(accepted.accepted === true,
+                    `mixed churn ${key} cleanup ingress rejected`);
+            }
+            const cleanup = await advanceTick({
+                harness,
+                tick: cleanupTick,
+                label: `Mixed churn C${cycle} cleanup T${cleanupTick}`
+            });
+            assert(cleanup.lifecycle.despawned.length
+                === MIXED_CHURN_ROSTER.length,
+            `mixed churn cycle ${cycle} exact cleanup incomplete`);
+            const cleanupBodies = cleanup.evidence.bodies;
+            await drainNormalBoundary(
+                endpoint,
+                director,
+                cleanupTick + 1,
+                `Mixed churn C${cycle} settle boundary`
+            );
+            const pending = mixedChurnRuntimePending(endpoint);
+            const route = endpoint.getRouteAvailabilityRuntimeStatus();
+            const submittedTickCount = endpoint.getBackend().simulation
+                .getStatus().submittedTickCount;
+            const tuple = mixedChurnRuntimeTuple(endpoint);
+            if (cycleTupleBaseline === null) {
+                cycleTupleBaseline = tuple;
+            }
+            const tupleStable = tuple.sessionGeneration
+                    === cycleTupleBaseline.sessionGeneration
+                && tuple.deviceGeneration === cycleTupleBaseline.deviceGeneration
+                && tuple.authoritativeEpoch
+                    === cycleTupleBaseline.authoritativeEpoch
+                && tuple.captureSessionGeneration
+                    === cycleTupleBaseline.captureSessionGeneration
+                && tuple.captureDeviceGeneration
+                    === cycleTupleBaseline.captureDeviceGeneration
+                && tuple.captureAuthoritativeEpoch
+                    === cycleTupleBaseline.captureAuthoritativeEpoch
+                && tuple.sessionGeneration === initialTuple.sessionGeneration
+                && tuple.deviceGeneration === initialTuple.deviceGeneration;
+            assert(tupleStable
+                && registry.getActiveCount() === 1
+                && registry.getReservedCount() === 0
+                && cleanupBodies.length === 1
+                && registry.has(persistentTowerHandle)
+                && route.closedPathIds.length === 0
+                && route.rosterCount === 0
+                && route.leaseCount === 0
+                && route.requiresRecovery === false
+                && mixedChurnPendingIsZero(pending)
+                && submittedTickCount - beforeSubmitCount === 2
+                && !endpoint.requiresRecovery()
+                && !director.requiresRecovery(),
+            `mixed churn cycle ${cycle} did not settle ${JSON.stringify({
+                tuple,
+                initialTuple,
+                registry: registry.getStatus(),
+                route,
+                pending,
+                submittedTickCount,
+                beforeSubmitCount,
+                endpoint: endpoint.getStatus(),
+                director: director.getStatus()
+            })}`);
+            cycleEvidence.push(Object.freeze({
+                cycle,
+                spawnTick,
+                cleanupTick,
+                tuple,
+                tupleStable,
+                roster: Object.freeze(incarnationEvidence),
+                reusedEntityIds: cycle === 1
+                    ? true
+                    : incarnationEvidence.every(
+                        ({ reusedEntityId }) => reusedEntityId === true
+                    ),
+                incarnationAdvanced: cycle === 1
+                    ? true
+                    : incarnationEvidence.every(
+                        ({ incarnationAdvanced }) => incarnationAdvanced === true
+                    ),
+                activeCountAtPeak: activeCount,
+                activeCountAfterCleanup: registry.getActiveCount(),
+                reservedCountAfterCleanup: registry.getReservedCount(),
+                gpuBodyCountAfterCleanup: cleanupBodies.length,
+                sidePlanesValid,
+                pentaEmitterDefinitionCode: pentaEmitter.emitterDefinitionCode,
+                hexaFormationMemberCount: hexaFormation.memberCount,
+                ringCaptureRole: ringCapture.role,
+                ringCapturePhase: ringCapture.phase,
+                jorangAtomicPhase: jorangBody.atomicTransformState.phase,
+                octagonProgramId: octagonBody.enemyBehaviorState.programId,
+                octagonOrbitSlotIndex,
+                corkRouteRole: corkEntry.routeState.role,
+                corkLeaseGeneration: corkEntry.routeState.leaseGeneration,
+                projectileEntityId: byKey.get('projectile').handle.entityId,
+                routeAllOpen: route.closedPathIds.length === 0,
+                routeRosterCount: route.rosterCount,
+                routeLeaseCount: route.leaseCount,
+                pending,
+                pendingAllZero: mixedChurnPendingIsZero(pending),
+                fixedTickDelta: cleanupTick - spawnTick + 1,
+                submittedTickDelta: submittedTickCount - beforeSubmitCount,
+                recoveryRequired: false
+            }));
+            previousCorkLeaseGeneration = corkEntry.routeState.leaseGeneration;
+            previousHandles = handles;
+        }
+        const simulationStatus = endpoint.getBackend().simulation.getStatus();
+        const finalRoute = endpoint.getRouteAvailabilityRuntimeStatus();
+        const finalPending = mixedChurnRuntimePending(endpoint);
+        const storageValues = [
+            ...Object.values(simulationStatus.fixedPrimitives.storageProfile),
+            simulationStatus.effects.storageBuffersPerStage,
+            simulationStatus.formations.maximumStorageBuffersPerStage,
+            GPU_ROUTE_RUNTIME_STORAGE_PROFILE.maximum,
+            GPU_ROUTE_RUNTIME_STORAGE_PROFILE.render
+        ].filter(Number.isFinite);
+        return Object.freeze({
+            contractVersion: MIXED_CHURN_CONTRACT_VERSION,
+            scenario: 'single-device-single-session-mixed-o-j-r-z-h-p-projectile-churn',
+            requestedCycles,
+            completedCycles: cycleEvidence.length,
+            oneEndpoint: true,
+            initialTuple,
+            cycleTuple: cycleTupleBaseline,
+            stableTuple: cycleEvidence.every(({ tupleStable }) => tupleStable),
+            exactIncarnationChurn: cycleEvidence.every(
+                ({ reusedEntityIds, incarnationAdvanced }) => (
+                    reusedEntityIds && incarnationAdvanced
+                )
+            ),
+            roster: MIXED_CHURN_ROSTER,
+            capacity: MIXED_CHURN_HARNESS_CAPACITY,
+            peakActiveCount,
+            boundedHighWater: peakActiveCount === MIXED_CHURN_ROSTER.length + 1
+                && peakActiveCount <= MIXED_CHURN_HARNESS_CAPACITY,
+            lifetimeSentinelActive: endpoint.getRegistry().has(
+                persistentTowerHandle
+            ),
+            finalActiveCount: endpoint.getRegistry().getActiveCount(),
+            finalChurnActiveCount: endpoint.getRegistry().getActiveCount() - 1,
+            finalReservedCount: endpoint.getRegistry().getReservedCount(),
+            finalGpuBodyCount: simulationStatus.activeBodyCount,
+            finalChurnGpuBodyCount: simulationStatus.activeBodyCount - 1,
+            finalRouteAllOpen: finalRoute.closedPathIds.length === 0,
+            finalRouteRosterCount: finalRoute.rosterCount,
+            finalRouteLeaseCount: finalRoute.leaseCount,
+            finalPending,
+            finalPendingAllZero: mixedChurnPendingIsZero(finalPending),
+            submittedTickCount: simulationStatus.submittedTickCount,
+            expectedSubmittedTickCount: requestedCycles * 2,
+            storageMaximum: Math.max(...storageValues),
+            recoveryRequired: endpoint.requiresRecovery()
+                || director.requiresRecovery(),
+            cycles: Object.freeze(cycleEvidence)
+        });
+    } finally {
+        director.destroy();
+        endpoint.destroy();
+    }
+}
+
 async function runFixture(device, format) {
+    const formation = runFormationRouteClosurePolicy();
     const main = await runClosureRoutingAndInteraction(device, format);
     const capacity = await runCapacity(device, format);
     const terminalReplacement = await runTerminalAndReplacement(device, format);
+    const mixedChurn = await runMixedSingleSessionChurn(device, format);
     return Object.freeze({
         scenario: 'cork-dynamic-route-closure',
         lifecycle: main.lifecycle,
         route: main.route,
+        effect: main.effect,
+        formation,
+        crossSystem: main.crossSystem,
         interaction: main.interaction,
         capacity: Object.freeze({
             ...capacity,
+            leaseGenerationAdvanced: main.leaseGenerationAdvanced,
             abaOldIncarnationDidNotReopen: main.abaOldIncarnationDidNotReopen
         }),
         terminal: terminalReplacement.terminal,
         replacement: terminalReplacement.replacement,
+        mixedChurn,
         coexistence: Object.freeze({
             bodyAbiVersion: GPU_CIRCLE_BODY_ABI_VERSION,
+            mainHarnessCapacity: main.coexistence.mainHarnessCapacity,
+            peakActiveCount: main.coexistence.peakActiveCount,
+            peakCapacityHeadroom: main.coexistence.peakCapacityHeadroom,
             previousDomainsPreserved:
                 main.coexistence.bodyAbiVersion === GPU_CIRCLE_BODY_ABI_VERSION
                 && main.coexistence.previousDomainsPreserved

@@ -97,12 +97,19 @@ export class EnemySimulationBackend {
         this.effectInstanceCapacity = options.effectInstanceCapacity;
         this.effectCandidateCapacity = options.effectCandidateCapacity;
         this.effectEventCapacity = options.effectEventCapacity;
+        this.eventCapacity = options.eventCapacity;
         this.formationPrepareCapacity = options.formationPrepareCapacity
             ?? options.formationCommandCapacity;
         this.formationTransformCapacity = options.formationTransformCapacity;
         this.atomicTransformPrepareCapacity
             = options.atomicTransformPrepareCapacity ?? this.capacity;
         this.atomicTransformCapacity = options.atomicTransformCapacity;
+        this.projectileCaptureCompletionCapacity
+            = options.projectileCaptureCompletionCapacity;
+        this.projectileCaptureReleasePreparationCapacity
+            = options.projectileCaptureReleasePreparationCapacity;
+        this.projectileCaptureCleanupCapacity
+            = options.projectileCaptureCleanupCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -171,11 +178,18 @@ export class EnemySimulationBackend {
             effectInstanceCapacity: this.effectInstanceCapacity,
             effectCandidateCapacity: this.effectCandidateCapacity,
             effectEventCapacity: this.effectEventCapacity,
+            eventCapacity: this.eventCapacity,
             formationPrepareCapacity: this.formationPrepareCapacity,
             formationTransformCapacity: this.formationTransformCapacity,
             atomicTransformPrepareCapacity:
                 this.atomicTransformPrepareCapacity,
             atomicTransformCapacity: this.atomicTransformCapacity,
+            projectileCaptureCompletionCapacity:
+                this.projectileCaptureCompletionCapacity,
+            projectileCaptureReleasePreparationCapacity:
+                this.projectileCaptureReleasePreparationCapacity,
+            projectileCaptureCleanupCapacity:
+                this.projectileCaptureCleanupCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -713,6 +727,12 @@ export class EnemySimulationBackend {
                 lastReleaseCommittedTick: 0,
                 runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET,
                 errorFlags: 0,
+                capacityRejected: false,
+                retryableCapacityRejected: false,
+                capacityRejectionFlags: 0,
+                retryMode: false,
+                retryOriginTick: 0,
+                retryBacklogRemaining: false,
                 storageProfile: GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE,
                 requiresRecovery: false,
                 failure: null,

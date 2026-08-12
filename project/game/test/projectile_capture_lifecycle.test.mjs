@@ -16,6 +16,9 @@ const {
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
 );
+const { GpuCircleBodySimulation } = await loadGameModule(
+    'ingame/physics/gpu/gpu_circle_body_simulation.js'
+);
 
 function key(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -263,4 +266,41 @@ test('CORE release cannot enter lifecycle without exact numeric CORE base proof 
     assert.equal(fixture.transactionLog.length, 0);
     assert.equal(fixture.registry.copyEntityView(fixture.projectile, {}).metadata,
         before.metadata);
+});
+
+test('direct release arm capacity exhaustion is retryable and leaves the batch unarmed', () => {
+    const platform = Object.freeze({
+        getState: () => Object.freeze({ ready: false }),
+        getDevice: () => null,
+        getCanvasFormat: () => null,
+        getDeviceGeneration: () => 0,
+        acquireFrameTarget: () => null,
+        clearCanvas: () => false,
+        markCanvasDrawn() {},
+        markCanvasCleared() {}
+    });
+    const simulation = new GpuCircleBodySimulation(platform, {
+        capacity: 2,
+        worldSize: { x: 8, y: 8 },
+        gridCellSize: { x: 1, y: 1 },
+        projectileCaptureCompletionCapacity: 2,
+        projectileCaptureReleasePreparationCapacity: 1,
+        projectileCaptureCleanupCapacity: 2
+    });
+    const rejected = simulation.armPreparedProjectileCaptureReleaseBatch({
+        records: Object.freeze([Object.freeze({}), Object.freeze({})])
+    });
+    assert.deepEqual({ ...rejected }, {
+        abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+        accepted: false,
+        reason: 'projectile-capture-release-capacity',
+        requiresRecovery: false,
+        retryable: true,
+        receipt: null
+    });
+    const status = simulation.getProjectileCaptureRuntimeStatus();
+    assert.equal(status.armedReleaseCount, 0);
+    assert.equal(status.commitRequested, false);
+    assert.equal(status.requiresRecovery, false);
+    simulation.destroy();
 });

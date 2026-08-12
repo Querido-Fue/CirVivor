@@ -50,6 +50,86 @@ function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
+function createIdleProjectileCaptureDirector(options) {
+    let destroyed = false;
+    return {
+        observeLifecycle() {},
+        observeCompletedEvents() {},
+        observeCompletedCapturePrograms() {},
+        observeCompletedReleasePrograms() {},
+        stageForFixedTick() {
+            return Object.freeze({ recoveryRequired: false });
+        },
+        observeFixedCommit() {},
+        requiresRecovery() {
+            return false;
+        },
+        getStatus() {
+            return Object.freeze({
+                destroyed,
+                recoveryRequired: false,
+                failure: null,
+                terminal: null,
+                sessionGeneration: options.sessionGeneration,
+                deviceGeneration: options.deviceGeneration,
+                authoritativeEpoch: options.authoritativeEpoch,
+                capturedProjectileCount: 0,
+                heldCount: 0,
+                releasePendingCount: 0,
+                pendingBatchCount: 0,
+                terminalCleanupPendingCount: 0,
+                pendingReadbackCount: 0,
+                pendingStaleCompletionCount: 0
+            });
+        },
+        resetGpuBinding() {
+            return true;
+        },
+        closeForTerminal() {
+            return Object.freeze({ accepted: true });
+        },
+        destroy() {
+            destroyed = true;
+        }
+    };
+}
+
+function createIdleJorangSplitLineageDirector() {
+    let destroyed = false;
+    return {
+        observeLifecycle() {},
+        observeCompletedEvents() {},
+        observeCompletedPreparations() {},
+        stageForFixedTick() {
+            return Object.freeze({ recoveryRequired: false });
+        },
+        observeFixedCommit() {},
+        requiresRecovery() {
+            return false;
+        },
+        getStatus() {
+            return Object.freeze({
+                destroyed,
+                recoveryRequired: false,
+                failure: null,
+                terminal: null,
+                pendingTransformBatchCount: 0,
+                pendingFirstHitCount: 0,
+                circlePrimeDueCount: 0
+            });
+        },
+        resetGpuBinding() {
+            return true;
+        },
+        closeForTerminal() {
+            return Object.freeze({ accepted: true });
+        },
+        destroy() {
+            destroyed = true;
+        }
+    };
+}
+
 class FakeEnemySimulationBackend {
     constructor(capacity = 64) {
         this.capacity = capacity;
@@ -97,6 +177,17 @@ class FakeEnemySimulationBackend {
                 capacity: this.capacity,
                 handles: [],
                 reason: 'unavailable'
+            };
+        }
+        if (this.spawnMode === 'reject-once-recovery') {
+            this.spawnMode = 'accept';
+            return {
+                accepted: 0,
+                rejected: bodies.length,
+                capacity: this.capacity,
+                handles: [],
+                reason: 'unavailable',
+                requiresRecovery: true
             };
         }
         for (const body of bodies) {
@@ -590,6 +681,10 @@ function createGameSceneDependencies(backend) {
             }
         },
         enemySimulationBackend: backend,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector,
         legacyWorldPort: {
             clear() {}
         }
@@ -608,7 +703,11 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
         worldRenderPort: {
             drawCircle() {},
             drawSquareInstances() {}
-        }
+        },
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
     }, {
         coreIntegrity: new CoreIntegrity({ maxIntegrity: 100 })
     });
@@ -699,6 +798,7 @@ test('신규 게임 적은 next-fixed 경계에서 실제 wave 데이터로 GPU 
         body.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
     );
     assert.equal(body.interactionLayer, GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY);
@@ -830,7 +930,11 @@ test('일시 unavailable인 첫 spawn은 wave cursor를 잃지 않고 같은 fix
         worldRenderPort: {
             drawCircle() {},
             drawSquareInstances() {}
-        }
+        },
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
     }, {
         coreIntegrity: new CoreIntegrity({ maxIntegrity: 100 })
     });
@@ -856,6 +960,40 @@ test('일시 unavailable인 첫 spawn은 wave cursor를 잃지 않고 같은 fix
     assert.equal(
         backend.calls.filter(({ type }) => type === 'spawnBodies').length,
         2
+    );
+
+    objectSystem.destroy();
+});
+
+test('recovery-required zero spawn rejection은 same-tick retry로 오인하지 않는다', () => {
+    const backend = new FakeEnemySimulationBackend();
+    backend.spawnMode = 'reject-once-recovery';
+    const objectSystem = new GameObjectSystem({
+        enemySimulationBackend: backend,
+        webGpuPlatformPort: {
+            getState() {
+                return { ready: true };
+            }
+        },
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        },
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
+    }, {
+        coreIntegrity: new CoreIntegrity({ maxIntegrity: 100 })
+    });
+    objectSystem.init({ ww: 1920, wh: 1080 });
+
+    assert.equal(objectSystem.fixedUpdate(1 / 60, 1), false);
+    assert.equal(objectSystem.isEnemySimulationRecoveryRequired(), true);
+    assert.equal(objectSystem.getLastCompletedEnemyFixedTick(), 0);
+    assert.equal(
+        backend.calls.filter(({ type }) => type === 'spawnBodies').length,
+        1
     );
 
     objectSystem.destroy();

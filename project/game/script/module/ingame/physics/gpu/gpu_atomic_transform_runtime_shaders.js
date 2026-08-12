@@ -20,8 +20,47 @@ import {
     MAIN_GPU_ENEMY_COMBAT_PROFILE_ID
 } from '../../../../data/object/enemy/enemy_profile_catalog_data.js';
 import {
+    GPU_EFFECT_RUNTIME_ABI,
     GPU_EFFECT_RUNTIME_ABI_VERSION
 } from './gpu_effect_runtime_abi.js';
+import {
+    ENEMY_EFFECT_CATALOG
+} from '../../../../data/object/enemy/enemy_effect_catalog_data.js';
+import {
+    ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY
+} from '../../contract/enemy_effect_contract.js';
+
+const GPU_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY_CODE = Object.freeze({
+    STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT: 1
+});
+
+const EFFECT_INSTANCE_STRIDE_WORDS = GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE / 4;
+const EFFECT_INSTANCE_ID_WORD = (
+    GPU_EFFECT_RUNTIME_ABI.INSTANCE.EFFECT_INSTANCE_ID / 4
+);
+const EFFECT_INSTANCE_INCARNATION_WORD = (
+    GPU_EFFECT_RUNTIME_ABI.INSTANCE.INSTANCE_INCARNATION / 4
+);
+const EFFECT_DEFINITION_CODE_WORD = (
+    GPU_EFFECT_RUNTIME_ABI.INSTANCE.EFFECT_DEFINITION_CODE / 4
+);
+
+const effectTransferPolicyCode = (policy) => {
+    if (policy === ENEMY_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY
+        .STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT) {
+        return GPU_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY_CODE
+            .STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT;
+    }
+    throw new RangeError(`지원하지 않는 Effect transform transfer policy입니다: ${policy}`);
+};
+
+const EFFECT_TRANSFER_POLICY_CASES_WGSL = ENEMY_EFFECT_CATALOG.effectDefinitions
+    .map((definition) => `    if (effect_definition_code == ${
+        definition.effectDefinitionCode
+    }u) { return ${effectTransferPolicyCode(
+        definition.atomicTransformTransferPolicy
+    )}u; }`)
+    .join('\n');
 
 const CIRCLE_PRIME_FRESH_HEALTH_FIXED_POINT = encodeGpuCircleBodyFixedPoint(
     ENEMY_COMBAT_PROFILE_BY_ID[MAIN_GPU_ENEMY_COMBAT_PROFILE_ID].maxHealth
@@ -39,6 +78,14 @@ const INVALID_U32: u32 = 0xffffffffu;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_USE_FLOW: u32 = 2u;
 const EFFECT_RUNTIME_ABI_VERSION: u32 = ${GPU_EFFECT_RUNTIME_ABI_VERSION}u;
+const EFFECT_INSTANCE_STRIDE_WORDS: u32 = ${EFFECT_INSTANCE_STRIDE_WORDS}u;
+const EFFECT_INSTANCE_ID_WORD: u32 = ${EFFECT_INSTANCE_ID_WORD}u;
+const EFFECT_INSTANCE_INCARNATION_WORD: u32 = ${EFFECT_INSTANCE_INCARNATION_WORD}u;
+const EFFECT_DEFINITION_CODE_WORD: u32 = ${EFFECT_DEFINITION_CODE_WORD}u;
+const EFFECT_TRANSFER_POLICY_STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT: u32 = ${
+    GPU_EFFECT_ATOMIC_TRANSFORM_TRANSFER_POLICY_CODE
+        .STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT
+}u;
 const PROGRAM_J_SPLIT: u32 = ${GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT}u;
 const PROGRAM_C_PRIME_RETURN: u32 = ${GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.C_PRIME_DELAYED_RECOMBINE}u;
 const PHASE_SPLIT_PENDING: u32 = ${GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING}u;
@@ -95,7 +142,7 @@ struct AtomicTransformState {
     command_generation: atomic<u32>,
 }
 struct RouteRuntimeState {
-    meta: u32, self_entity_id: u32, self_incarnation: u32,
+    packed_meta: u32, self_entity_id: u32, self_incarnation: u32,
     current_path_index: u32, route_set_index: u32, closure_index: u32,
     observed_availability_version: u32, phase_entered_fixed_tick: u32,
     travel_radius: f32, blocker_radius: f32,
@@ -342,7 +389,7 @@ fn prepare_atomic_transforms(@builtin(global_invocation_id) id: vec3u) {
         &atomic_transform_states.values[slot].trigger_sequence
     );
     var topology = 0u;
-    var record_due = stored_due;
+    let record_due = stored_due;
     let split_candidate
         = program_id == PROGRAM_J_SPLIT && phase == PHASE_SPLIT_PENDING;
     let delayed_candidate = program_id == PROGRAM_C_PRIME_RETURN
@@ -353,7 +400,6 @@ fn prepare_atomic_transforms(@builtin(global_invocation_id) id: vec3u) {
     if ((flags & BODY_FLAG_ALIVE) == 0u || health <= 0) { return; }
     if (program_id == PROGRAM_J_SPLIT && phase == PHASE_SPLIT_PENDING) {
         topology = TOPOLOGY_ONE_TO_MANY;
-        record_due = prepare_program.header.target_fixed_tick;
     } else if (stored_due > 0u && stored_due != INVALID_U32
         && stored_due <= prepare_program.header.target_fixed_tick) {
         topology = TOPOLOGY_ONE_TO_ONE_DELAYED;
@@ -424,13 +470,13 @@ fn inactive_identity_pair(entity_id: u32, incarnation: u32) -> bool {
     return (entity_id == 0u && incarnation == 0u)
         || (entity_id == INVALID_U32 && incarnation == INVALID_U32);
 }
-fn route_role(meta: u32) -> u32 { return meta & 255u; }
+fn route_role(packed_meta: u32) -> u32 { return packed_meta & 255u; }
 fn source_route_state_is_transformable(record: TransformRecord) -> bool {
     let source_route_state = route_states.values[record.source_slot];
-    let role = route_role(source_route_state.meta);
+    let role = route_role(source_route_state.packed_meta);
     return role != ROUTE_ROLE_CLOSER
         && ((role == ROUTE_ROLE_NONE
-                && source_route_state.meta == 0u
+                && source_route_state.packed_meta == 0u
                 && source_route_state.self_entity_id == 0u
                 && source_route_state.self_incarnation == 0u
                 && source_route_state.current_path_index == 0u
@@ -669,11 +715,8 @@ fn preflight_atomic_transform_records(@builtin(global_invocation_id) id: vec3u) 
     let source_phase = atomicLoad(
         &atomic_transform_states.values[record.source_slot].phase
     );
-    let source_due = select(
-        atomic_transform_states.values[record.source_slot].due_fixed_tick,
-        transform_program.header.target_fixed_tick,
-        split
-    );
+    let source_due
+        = atomic_transform_states.values[record.source_slot].due_fixed_tick;
     var proof = PrepareRecord(
         record.topology_code,
         record.source_slot,
@@ -747,6 +790,47 @@ fn seal_atomic_transform_program() {
     }
 }
 
+fn effect_atomic_transform_transfer_policy(
+    effect_definition_code: u32
+) -> u32 {
+${EFFECT_TRANSFER_POLICY_CASES_WGSL}
+    return 0u;
+}
+
+/**
+ * EffectDefinition-owned stable instance identity selects exactly one child.
+ * No instance is cloned; ONE_TO_ONE naturally resolves to destination 0.
+ */
+fn effect_atomic_transform_destination_index(
+    record: TransformRecord,
+    instance_base: u32
+) -> u32 {
+    if (record.destination_count == 0u) {
+        return INVALID_U32;
+    }
+    let effect_instance_id = effect_instance_words.values[
+        instance_base + EFFECT_INSTANCE_ID_WORD
+    ];
+    let instance_incarnation = effect_instance_words.values[
+        instance_base + EFFECT_INSTANCE_INCARNATION_WORD
+    ];
+    let effect_definition_code = effect_instance_words.values[
+        instance_base + EFFECT_DEFINITION_CODE_WORD
+    ];
+    let transfer_policy = effect_atomic_transform_transfer_policy(
+        effect_definition_code
+    );
+    if (effect_instance_id == 0u
+        || effect_instance_id == INVALID_U32
+        || instance_incarnation == 0u
+        || instance_incarnation == INVALID_U32
+        || transfer_policy
+            != EFFECT_TRANSFER_POLICY_STABLE_INSTANCE_ID_MODULO_DESTINATION_COUNT) {
+        return INVALID_U32;
+    }
+    return effect_instance_id % record.destination_count;
+}
+
 @compute @workgroup_size(1)
 fn preflight_atomic_transform_effect_rekeys() {
     if (atomicLoad(&transform_program.header.status) != 0u) { return; }
@@ -766,7 +850,8 @@ fn preflight_atomic_transform_effect_rekeys() {
         return;
     }
     let input_count = atomicLoad(&effect_pool_words.values[1]);
-    if (input_count > arrayLength(&effect_instance_words.values) / 16u) {
+    if (input_count > arrayLength(&effect_instance_words.values)
+            / EFFECT_INSTANCE_STRIDE_WORDS) {
         atomicOr(
             &transform_program.header.status,
             STATUS_EFFECT_REKEY_MISMATCH
@@ -775,7 +860,7 @@ fn preflight_atomic_transform_effect_rekeys() {
     }
     for (var instance_index = 0u; instance_index < input_count;
         instance_index += 1u) {
-        let base = instance_index * 16u;
+        let base = instance_index * EFFECT_INSTANCE_STRIDE_WORDS;
         if ((effect_instance_words.values[base + 4u] & 1u) == 0u) {
             continue;
         }
@@ -798,6 +883,20 @@ fn preflight_atomic_transform_effect_rekeys() {
                     == target_incarnation) {
                 if (target_slot
                         != transform_program.records[record_index].source_slot) {
+                    atomicOr(
+                        &transform_program.header.status,
+                        STATUS_EFFECT_REKEY_MISMATCH
+                    );
+                    return;
+                }
+                let destination_index
+                    = effect_atomic_transform_destination_index(
+                        transform_program.records[record_index],
+                        base
+                    );
+                if (destination_index
+                        >= transform_program.records[record_index]
+                            .destination_count) {
                     atomicOr(
                         &transform_program.header.status,
                         STATUS_EFFECT_REKEY_MISMATCH
@@ -934,11 +1033,12 @@ fn commit_atomic_transform_state(@builtin(global_invocation_id) id: vec3u) {
 
 fn copy_words(destination_slot: u32, template_slot: u32, stride_words: u32,
     destination: ptr<storage, array<u32>, read_write>,
-    template: ptr<storage, array<u32>, read>) {
+    template_words: ptr<storage, array<u32>, read>) {
     let destination_base = destination_slot * stride_words;
     let template_base = template_slot * stride_words;
     for (var word = 0u; word < stride_words; word += 1u) {
-        (*destination)[destination_base + word] = (*template)[template_base + word];
+        (*destination)[destination_base + word]
+            = (*template_words)[template_base + word];
     }
 }
 
@@ -979,7 +1079,7 @@ fn write_route_state_destination(
     source_route_state: RouteRuntimeState
 ) {
     route_states.values[destination_slot] = source_route_state;
-    if (route_role(source_route_state.meta) == ROUTE_ROLE_NONE) {
+    if (route_role(source_route_state.packed_meta) == ROUTE_ROLE_NONE) {
         route_states.values[destination_slot].self_entity_id = 0u;
         route_states.values[destination_slot].self_incarnation = 0u;
         return;
@@ -1041,7 +1141,8 @@ fn rekey_atomic_transform_effect_instances() {
         return;
     }
     let input_count = atomicLoad(&effect_pool_words.values[1]);
-    if (input_count > arrayLength(&effect_instance_words.values) / 16u) {
+    if (input_count > arrayLength(&effect_instance_words.values)
+            / EFFECT_INSTANCE_STRIDE_WORDS) {
         atomicOr(
             &transform_program.header.status,
             STATUS_EFFECT_REKEY_MISMATCH
@@ -1051,7 +1152,7 @@ fn rekey_atomic_transform_effect_instances() {
     var actual = 0u;
     for (var instance_index = 0u; instance_index < input_count;
         instance_index += 1u) {
-        let base = instance_index * 16u;
+        let base = instance_index * EFFECT_INSTANCE_STRIDE_WORDS;
         if ((effect_instance_words.values[base + 4u] & 1u) == 0u) {
             continue;
         }
@@ -1078,12 +1179,40 @@ fn rekey_atomic_transform_effect_instances() {
                     );
                     return;
                 }
+                let destination_index
+                    = effect_atomic_transform_destination_index(
+                        transform_program.records[index],
+                        base
+                    );
+                if (destination_index
+                        >= transform_program.records[index].destination_count) {
+                    atomicOr(
+                        &transform_program.header.status,
+                        STATUS_EFFECT_REKEY_MISMATCH
+                    );
+                    return;
+                }
+                let destination_slot = select(
+                    transform_program.records[index].destination_0_slot,
+                    transform_program.records[index].destination_1_slot,
+                    destination_index == 1u
+                );
+                let destination_entity_id = select(
+                    transform_program.records[index].destination_0_entity_id,
+                    transform_program.records[index].destination_1_entity_id,
+                    destination_index == 1u
+                );
+                let destination_incarnation = select(
+                    transform_program.records[index].destination_0_incarnation,
+                    transform_program.records[index].destination_1_incarnation,
+                    destination_index == 1u
+                );
                 effect_instance_words.values[base + 8u]
-                    = transform_program.records[index].destination_0_slot;
+                    = destination_slot;
                 effect_instance_words.values[base + 9u]
-                    = transform_program.records[index].destination_0_entity_id;
+                    = destination_entity_id;
                 effect_instance_words.values[base + 10u]
-                    = transform_program.records[index].destination_0_incarnation;
+                    = destination_incarnation;
                 transform_program.records[index].effect_rekey_count += 1u;
                 actual += 1u;
                 break;

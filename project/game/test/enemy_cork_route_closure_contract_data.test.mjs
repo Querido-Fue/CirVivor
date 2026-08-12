@@ -207,7 +207,7 @@ test('basic_cork_01은 common-C 수치와 ROUTE_CLOSURE profile/capability를 �
     // 신규 GPU-only content는 CPU legacy pool shape roster를 확장하지 않습니다.
     assert.deepEqual(ENEMY_SHAPE_TYPES, [
         'square', 'triangle', 'arrow', 'hexa',
-        'penta', 'rhom', 'octa', 'gen'
+        'penta', 'rhom', 'octa', 'gen', 'jorang'
     ]);
     assert.equal(ENEMY_SHAPE_TYPES.includes('cork'), false);
 });

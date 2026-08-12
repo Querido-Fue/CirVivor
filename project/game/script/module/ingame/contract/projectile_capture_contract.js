@@ -23,6 +23,11 @@ export const PROJECTILE_CAPTURE_FUNNEL_FACING_POLICY = Object.freeze({
     LAST_NONZERO_ROUTE_VELOCITY: 'last-nonzero-route-velocity'
 });
 
+export const PROJECTILE_CAPTURE_FUNNEL_APPROACH_POLICY = Object.freeze({
+    RELATIVE_VELOCITY_STRICTLY_CLOSING:
+        'relative-velocity-strictly-closing'
+});
+
 export const PROJECTILE_CAPTURE_VISIBILITY_POLICY = Object.freeze({
     HIDDEN: 'hidden'
 });
@@ -92,6 +97,7 @@ const CAPTURE_PROFILE_KEYS = Object.freeze([
     'funnelHalfAngleRadians',
     'funnelBoundaryPolicy',
     'funnelFacingPolicy',
+    'funnelApproachPolicy',
     'capturedVisibilityPolicy',
     'capturedLifetimePolicy',
     'releaseTeamId',
@@ -112,6 +118,9 @@ const POLICY_VALUE_BY_FIELD = Object.freeze({
     )),
     funnelFacingPolicy: new Set(Object.values(
         PROJECTILE_CAPTURE_FUNNEL_FACING_POLICY
+    )),
+    funnelApproachPolicy: new Set(Object.values(
+        PROJECTILE_CAPTURE_FUNNEL_APPROACH_POLICY
     )),
     capturedVisibilityPolicy: new Set(Object.values(
         PROJECTILE_CAPTURE_VISIBILITY_POLICY
@@ -433,6 +442,11 @@ export function normalizeEnemyProjectileCaptureProfile(
         funnelFacingPolicy: requirePolicy(
             profile.funnelFacingPolicy,
             'funnelFacingPolicy',
+            label
+        ),
+        funnelApproachPolicy: requirePolicy(
+            profile.funnelApproachPolicy,
+            'funnelApproachPolicy',
             label
         ),
         capturedVisibilityPolicy: requirePolicy(

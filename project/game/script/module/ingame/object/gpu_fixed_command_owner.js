@@ -500,7 +500,7 @@ function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
             'targeted destination metadata는 actual targetHandle과 정확히 일치해야 합니다.'
         );
     }
-    const destinationSpawn = normalizeGpuSpawnIntent({
+    const destinationSpawn = Object.freeze({
         ...suppliedDestinationSpawn,
         sourceEntityId: sourceHandle.entityId,
         sourceIncarnation: sourceHandle.incarnation,
@@ -508,7 +508,7 @@ function normalizeSourceRelativeIntent(source, subjectTeamId, exact = {}) {
             targetEntityId: targetHandle.entityId,
             targetIncarnation: targetHandle.incarnation
         } : {})
-    }, { subjectTeamId });
+    });
     const requestFlags = normalizeSourceRelativeRequestFlags(source, {
         ...exact,
         modeFlags,

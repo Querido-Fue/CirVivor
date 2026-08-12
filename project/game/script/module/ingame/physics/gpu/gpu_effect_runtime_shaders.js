@@ -1,7 +1,7 @@
 import {
     GPU_CIRCLE_BODY_ABI_VERSION,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
-    GPU_CIRCLE_BODY_LAYER,
+    GPU_CIRCLE_BODY_INTERACTION_LAYER,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
 import {
@@ -81,7 +81,7 @@ const EFFECT_PULSE_PROGRAM_ABI_VERSION: u32 = ${GPU_EFFECT_PULSE_PROGRAM_ABI_VER
 const INVALID_IDENTITY_COMPONENT: u32 = 0xffffffffu;
 const BODY_FLAG_ALIVE: u32 = 1u;
 const BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
-const BODY_LAYER_ENEMY: u32 = ${GPU_CIRCLE_BODY_LAYER.ENEMY}u;
+const INTERACTION_LAYER_ENEMY: u32 = ${GPU_CIRCLE_BODY_INTERACTION_LAYER.ENEMY}u;
 const GAMEPLAY_TEAM_HOSTILE: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
 const GAMEPLAY_META_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
 const GAMEPLAY_META_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
@@ -410,8 +410,8 @@ struct SdfBuffer { values: array<f32> }
 @group(1) @binding(6) var world_flow_integration: texture_2d_array<f32>;
 @group(2) @binding(0) var<uniform> params: SimulationParams;
 
-fn body_layer(physical_meta: u32) -> u32 {
-    return physical_meta & 65535u;
+fn body_interaction_layer(interaction_meta: u32) -> u32 {
+    return interaction_meta & 65535u;
 }
 
 fn gameplay_team_id(gameplay_meta: u32) -> u32 {
@@ -513,12 +513,16 @@ fn effect_target_is_valid(record: EffectPulseRecord, body_id: u32) -> bool {
             && (record.flags & EFFECT_PULSE_FLAG_SELF_TARGET_ALLOWED) == 0u)) {
         return false;
     }
-    let physical_layer = body_layer(physics.values[body_id].physical_meta);
-    if ((physical_layer & record.target_layer_mask) == 0u
+    let interaction_layer = body_interaction_layer(
+        physics.values[body_id].interaction_meta
+    );
+    if ((interaction_layer & record.target_layer_mask) == 0u
         || record.target_policy != EFFECT_TARGET_POLICY_HOSTILE_ENEMY) {
         return false;
     }
-    if (physical_layer != BODY_LAYER_ENEMY
+    // Physical layer는 route BLOCKING 등 solver 역할이고 Enemy noun이 아닙니다.
+    // Hostile Team + explicit Enemy interaction layer가 Effect 대상 권위입니다.
+    if (interaction_layer != INTERACTION_LAYER_ENEMY
         || gameplay_team_id(simulations.values[body_id].gameplay_meta)
             != GAMEPLAY_TEAM_HOSTILE) {
         return false;
@@ -1179,8 +1183,9 @@ fn cluster_member_count(center: vec2i, flow_field_index: u32) -> u32 {
                     let member_delta = physics.values[body_id].position - center_position;
                     if (dot(member_delta, member_delta)
                             <= PENTA_CLUSTER_RADIUS_TILES * PENTA_CLUSTER_RADIUS_TILES
-                        && body_layer(physics.values[body_id].physical_meta)
-                            == BODY_LAYER_ENEMY
+                        && body_interaction_layer(
+                            physics.values[body_id].interaction_meta
+                        ) == INTERACTION_LAYER_ENEMY
                         && gameplay_team_id(simulations.values[body_id].gameplay_meta)
                             == GAMEPLAY_TEAM_HOSTILE
                         && temporaries.values[body_id].previous_flow_field_index

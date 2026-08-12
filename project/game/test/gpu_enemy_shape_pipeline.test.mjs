@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
@@ -53,6 +54,10 @@ const {
     GPU_COLLISION_COMPUTE_WGSL,
     GPU_COLLISION_RENDER_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
+const NW_WEBGPU_CAPABILITY_RUNNER_SOURCE = await readFile(
+    new URL('./nw_webgpu_capability/runner.js', import.meta.url),
+    'utf8'
+);
 
 const EXPECTED_ARCHETYPES = Object.freeze([
     Object.freeze({
@@ -82,8 +87,8 @@ const EXPECTED_ARCHETYPES = Object.freeze([
     }),
     Object.freeze({
         definition: BASIC_GEN_ENEMY_DATA,
-        shapeType: 'gen',
-        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+        shapeType: 'jorang',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
     }),
     Object.freeze({
         definition: BASIC_RHOM_ENEMY_DATA,
@@ -151,6 +156,11 @@ const FIXTURE_ROUTE = Object.freeze({
         Object.freeze({ x: 10, y: 20 }),
         Object.freeze({ x: 11, y: 20 })
     ])
+});
+const FIXTURE_DYNAMIC_ROUTE_SNAPSHOT = Object.freeze({
+    routeSetId: 'shape-route-set',
+    routeAvailabilityVersion: 1,
+    routeGraphContentKey: 'shape-route-graph-v1'
 });
 
 const assertClose = (actual, expected, epsilon = 1e-12) => {
@@ -250,6 +260,7 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(ENEMY_ASPECT_RATIO.rhom, 0.81);
     assert.equal(ENEMY_HEIGHT_SCALE.arrow, 0.9);
     assert.equal(ENEMY_ASPECT_RATIO.gen, 1.05);
+    assert.equal(ENEMY_ASPECT_RATIO.jorang, 1);
     assert.equal(Object.isFrozen(ENEMY_SHAPE_GEOMETRY), true);
     assert.equal(Object.isFrozen(ENEMY_NORMALIZED_RENDER_GEOMETRY), true);
 
@@ -273,6 +284,16 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(generatorPaths[0].paths[0].kind, ENEMY_SHAPE_PATH_KIND.RECT);
     assert.equal(ENEMY_SVG_SHAPES.enemy_gen[0].fillRule, 'evenodd');
 
+    const jorangPaths = ENEMY_SHAPE_GEOMETRY.jorang.paths;
+    assert.equal(jorangPaths.length, 4);
+    assert.equal(jorangPaths.every((path) => (
+        path.kind === ENEMY_SHAPE_PATH_KIND.RECT
+    )), true);
+    assert.equal(
+        ENEMY_SVG_SHAPES.enemy_jorang[0],
+        'M -0.4 -0.46 H 0.4 V -0.28 H -0.4 Z'
+    );
+
     const normalized = ENEMY_NORMALIZED_RENDER_GEOMETRY;
     assertClose(normalized.square.box.halfSize.x, 0.6363961030678927);
     assertClose(normalized.square.box.halfSize.y, 0.6363961030678927);
@@ -293,7 +314,7 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assertClose(Math.hypot(
         normalized.octa.points[0].x,
         normalized.octa.points[0].y
-    ), 0.598212336883819);
+    ), 0.7121575439093085);
     assertClose(normalized.gen.outerBox.halfSize.x, 0.47729707730091964);
     assertClose(normalized.gen.outerBox.halfSize.y, 0.45456864504849487);
     assertClose(normalized.gen.innerBox.halfSize.x, 0.35001785668734103);
@@ -301,6 +322,10 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(normalized.gen.terminalBoxes.length, 4);
     assertClose(normalized.gen.terminalBoxes[0].center.x, -0.6204862004911955);
     assertClose(normalized.gen.terminalBoxes[0].center.y, -0.5909392385620433);
+    assert.equal(normalized.jorang.boxes.length, 4);
+    assert.ok(normalized.jorang.boxes.every(({ halfSize }) => (
+        halfSize.x > 0 && halfSize.y > 0
+    )));
     assert.ok(normalized.ring.outerRadius > normalized.ring.innerRadius);
     assert.ok(normalized.ring.innerRadius > 0);
 });
@@ -312,7 +337,10 @@ test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달�
             definition,
             route: FIXTURE_ROUTE,
             spawnSequence: index,
-            laneOffsetTiles: 0
+            laneOffsetTiles: 0,
+            ...(definition === BASIC_CORK_ENEMY_DATA
+                ? FIXTURE_DYNAMIC_ROUTE_SNAPSHOT
+                : null)
         });
         assert.equal(Object.isFrozen(intent), true);
         assert.equal(Object.isFrozen(intent.renderStyle), true);
@@ -498,6 +526,7 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.match(GPU_COLLISION_RENDER_WGSL, /fn polygon_distance/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /fn arrow_distance/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /fn generator_distance/);
+    assert.match(GPU_COLLISION_RENDER_WGSL, /fn jorang_distance/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /fn shape_distance/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /fwidth\(distance\)/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /discard/);
@@ -508,11 +537,11 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.ok(GPU_COLLISION_RENDER_WGSL.includes(
         `const SQUARE_HALF_SIZE: vec2f = ${toWgslVec2(normalized.square.box.halfSize)};`
     ));
-    assert.ok(GPU_COLLISION_RENDER_WGSL.includes('const ARROW_POINTS = array<vec2f, 6>('));
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes('const ARROW_POINTS = array<vec2f, 8>('));
     for (const point of normalized.arrow.points) {
         assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(point)));
     }
-    assert.ok(GPU_COLLISION_RENDER_WGSL.includes('const RHOM_POINTS = array<vec2f, 6>('));
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes('const RHOM_POINTS = array<vec2f, 8>('));
     for (const point of normalized.rhom.points) {
         assert.ok(GPU_COLLISION_RENDER_WGSL.includes(toWgslVec2(point)));
     }
@@ -545,6 +574,13 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     ));
     assert.match(GPU_COLLISION_RENDER_WGSL, /var distance = max\(outer, -inner\)/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /index < 4u/);
+    assert.match(GPU_COLLISION_RENDER_WGSL,
+        /shape_code == RENDER_SHAPE_JORANG[\s\S]*return jorang_distance\(point\)/);
+    assert.equal(BASIC_GEN_ENEMY_DATA.shapeDefinitionId, 'jorang');
+    assert.notEqual(
+        GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG,
+        GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
+    );
 
     for (const [name, code] of Object.entries(GPU_CIRCLE_BODY_RENDER_SHAPE)) {
         assert.match(
@@ -556,6 +592,27 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.doesNotMatch(GPU_COLLISION_COMPUTE_WGSL, /shape_code/);
     assert.doesNotMatch(GPU_COLLISION_COMPUTE_WGSL, /BodyRenderStyle/);
     assert.doesNotMatch(GPU_COLLISION_COMPUTE_WGSL, /RENDER_SHAPE_/);
+});
+
+test('default actual shape smoke는 J geometry 권위의 네 획과 내부 공백을 샘플한다', () => {
+    assert.match(
+        NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
+        /ENEMY_NORMALIZED_RENDER_GEOMETRY\.jorang\.boxes/
+    );
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangStrokeOffsets/);
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangGapOffsets/);
+    assert.match(
+        NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
+        /jorangStrokeAlphas\.every\(\(alpha\) => alpha >= 192\)/
+    );
+    assert.match(
+        NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
+        /jorangGapAlphas\.every\(\(alpha\) => alpha < 16\)/
+    );
+    assert.doesNotMatch(
+        NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
+        /generator square hole\/ring\/terminal topology/
+    );
 });
 
 console.log('gpu enemy shape pipeline contract: ok');

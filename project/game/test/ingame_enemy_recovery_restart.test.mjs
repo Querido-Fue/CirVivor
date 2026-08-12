@@ -337,6 +337,13 @@ class CombatRecoveryBackend extends RecoveryBackend {
             sourceTick,
             submittedTick: sourceTick,
             completedThroughTick: sourceTick,
+            atomicTransformFirstHitCapacityRejected: false,
+            retryableAtomicTransformFirstHitCapacityRejected: false,
+            atomicTransformFirstHitRejectionReason: null,
+            atomicTransformFirstHitCandidateCount: 0,
+            atomicTransformFirstHitCommittedCount: 0,
+            atomicTransformFirstHitEventBase: 0,
+            atomicTransformFirstHitEventCapacity: 1,
             events: Object.freeze(Array.from(events, (event) => (
                 Object.freeze({ ...event })
             )))
@@ -472,6 +479,92 @@ function createTrackingHostileAttackDirectorFactory(options = {}) {
             return director;
         }
     });
+}
+
+function createIdleProjectileCaptureDirector(options) {
+    let destroyed = false;
+    let sessionGeneration = options.sessionGeneration;
+    let deviceGeneration = options.deviceGeneration;
+    let authoritativeEpoch = options.authoritativeEpoch;
+    return {
+        observeLifecycle() {},
+        observeCompletedEvents() {},
+        observeCompletedCapturePrograms() {},
+        observeCompletedReleasePrograms() {},
+        stageForFixedTick() {
+            return Object.freeze({ recoveryRequired: false });
+        },
+        observeFixedCommit() {},
+        requiresRecovery() {
+            return false;
+        },
+        getStatus() {
+            return Object.freeze({
+                destroyed,
+                recoveryRequired: false,
+                failure: null,
+                terminal: null,
+                sessionGeneration,
+                deviceGeneration,
+                authoritativeEpoch,
+                capturedProjectileCount: 0,
+                heldCount: 0,
+                releasePendingCount: 0,
+                pendingBatchCount: 0,
+                terminalCleanupPendingCount: 0,
+                pendingReadbackCount: 0,
+                pendingStaleCompletionCount: 0
+            });
+        },
+        resetGpuBinding(_registry, _commandPort, session, device, epoch) {
+            sessionGeneration = session;
+            deviceGeneration = device;
+            authoritativeEpoch = epoch;
+            return true;
+        },
+        closeForTerminal() {
+            return Object.freeze({ accepted: true });
+        },
+        destroy() {
+            destroyed = true;
+        }
+    };
+}
+
+function createIdleJorangSplitLineageDirector() {
+    let destroyed = false;
+    return {
+        observeLifecycle() {},
+        observeCompletedEvents() {},
+        observeCompletedPreparations() {},
+        stageForFixedTick() {
+            return Object.freeze({ recoveryRequired: false });
+        },
+        observeFixedCommit() {},
+        requiresRecovery() {
+            return false;
+        },
+        getStatus() {
+            return Object.freeze({
+                destroyed,
+                recoveryRequired: false,
+                failure: null,
+                terminal: null,
+                pendingTransformBatchCount: 0,
+                pendingFirstHitCount: 0,
+                circlePrimeDueCount: 0
+            });
+        },
+        resetGpuBinding() {
+            return true;
+        },
+        closeForTerminal() {
+            return Object.freeze({ accepted: true });
+        },
+        destroy() {
+            destroyed = true;
+        }
+    };
 }
 
 function createTowerDamageEvents(sourceHandle, towerHandle, damage, died = false) {
@@ -699,6 +792,10 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
             return backend;
         },
         hostileAttackDirectorFactory: hostileDirectors.factory,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector,
         legacyWorldPort: {
             clear() {
                 legacyClearCount++;
@@ -1016,7 +1113,11 @@ test('replacement gpu-unavailable/예외와 Director factory 예외는 기존 GP
             backends.push(backend);
             return backend;
         },
-        hostileAttackDirectorFactory: hostileDirectors.factory
+        hostileAttackDirectorFactory: hostileDirectors.factory,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
     };
     const gameSystem = new GameSystem(dependencies);
     assert.equal(gameSystem.enter(), true);
@@ -1225,7 +1326,11 @@ test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-
             backends.push(backend);
             return backend;
         },
-        hostileAttackDirectorFactory: hostileDirectors.factory
+        hostileAttackDirectorFactory: hostileDirectors.factory,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
     };
     const gameSystem = new GameSystem(dependencies, {
         enemyWaveEnabled: false

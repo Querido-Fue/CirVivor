@@ -4,6 +4,7 @@ import { ArrowEnemy } from './_arrow_enemy.js';
 import { GenEnemy } from './_gen_enemy.js';
 import { HexaEnemy } from './_hexa_enemy.js';
 import { HexaHiveEnemy } from './_hexa_hive_enemy.js';
+import { JorangEnemy } from './_jorang_enemy.js';
 import { OctaEnemy } from './_octa_enemy.js';
 import { PentaEnemy } from './_penta_enemy.js';
 import { RhomEnemy } from './_rhom_enemy.js';
@@ -23,7 +24,8 @@ const ENEMY_CLASS_BY_TYPE = Object.freeze({
     penta: PentaEnemy,
     rhom: RhomEnemy,
     octa: OctaEnemy,
-    gen: GenEnemy
+    gen: GenEnemy,
+    jorang: JorangEnemy
 });
 const ENEMY_POOL_TYPES = Object.freeze([
     ...ENEMY_SHAPE_TYPES,

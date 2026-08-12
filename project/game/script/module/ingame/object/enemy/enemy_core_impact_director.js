@@ -282,7 +282,8 @@ function isAdmissibleCommittedProtocol(eventProtocol, previousBinding, currentBi
 
 function createSemanticImpactKey(binding, coreHandle, enemyHandle) {
     // Core impact는 Enemy incarnation당 one-shot이다. readback append sequence나
-    // body orientation은 semantic identity가 아니므로 deliberately 제외한다.
+    // body orientation/contact event type은 semantic identity가 아니므로
+    // deliberately 제외한다. 아래 legacy token은 enter/continuous가 공유한다.
     return [
         binding.sessionGeneration,
         binding.deviceGeneration,
@@ -386,7 +387,7 @@ function isExactCommittedCoreImpactCleanup(entry, cleanup, fixedTick) {
 }
 
 /**
- * committed Core-proxy enter fact를 CPU CoreIntegrity와 exact enemy cleanup으로 변환합니다.
+ * committed Core-proxy contact fact를 CPU CoreIntegrity와 exact enemy cleanup으로 변환합니다.
  * GPU endpoint lifecycle/fixed/draw ownership은 절대로 가져가지 않습니다.
  */
 export class EnemyCoreImpactDirector {
@@ -928,7 +929,8 @@ export class EnemyCoreImpactDirector {
 
     #normalizeImpactCandidate(event, registry, currentBinding) {
         if (event?.type !== 'contact'
-            || event?.eventType !== 'interaction-enter'
+            || (event?.eventType !== 'interaction-enter'
+                && event?.eventType !== 'interaction-continuous')
             || event?.disposition !== 'applied') {
             return null;
         }

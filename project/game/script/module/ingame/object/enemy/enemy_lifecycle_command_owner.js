@@ -417,7 +417,8 @@ function assertProjectileCaptureCoreImpactReceipt(
         || !Object.isFrozen(receipt)
         || !Object.isFrozen(receipt.other)
         || receipt.type !== 'contact'
-        || receipt.eventType !== 'interaction-enter'
+        || (receipt.eventType !== 'interaction-enter'
+            && receipt.eventType !== 'interaction-continuous')
         || receipt.disposition !== 'applied'
         || receipt.sourceTick !== prepareSourceTick
         || !Number.isSafeInteger(receipt.sessionGeneration)
@@ -2021,7 +2022,8 @@ export class EnemyLifecycleCommandOwner {
             if (baseResult.state !== 'stalled') {
                 baseResult.state = 'failed';
             }
-        } else if (baseResult.rejected.length > 0) {
+        } else if (baseResult.state !== 'stalled'
+            && baseResult.rejected.length > 0) {
             baseResult.state = 'committed-with-rejections';
         }
         return this.#saveResult(baseResult);
@@ -3894,12 +3896,11 @@ export class EnemyLifecycleCommandOwner {
             });
         }
         if (cleanZeroAcceptance) {
-            result.state = !responseContractFailed
+            const retryableRejection = !responseContractFailed
                 && !backendRecoveryRequired
-                && isRetryableSpawnRejection(backendResult?.reason)
-                ? 'stalled'
-                : 'failed';
-            result.recoveryRequired = true;
+                && isRetryableSpawnRejection(backendResult?.reason);
+            result.state = retryableRejection ? 'stalled' : 'failed';
+            result.recoveryRequired = !retryableRejection;
             this.#finalizeRouteSpawnTransaction(
                 routeTransaction,
                 reservations,

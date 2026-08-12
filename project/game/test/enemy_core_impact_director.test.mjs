@@ -194,11 +194,12 @@ function coreEnter({
     otherEntityId,
     otherIncarnation,
     sequence,
+    eventType = 'interaction-enter',
     protocol = PROTOCOL
 }) {
     return Object.freeze({
         type: 'contact',
-        eventType: 'interaction-enter',
+        eventType,
         disposition: 'applied',
         ...protocol,
         sourceTick: 17,
@@ -209,6 +210,13 @@ function coreEnter({
             entityId: otherEntityId,
             incarnation: otherIncarnation
         })
+    });
+}
+
+function coreContinuous(options) {
+    return coreEnter({
+        ...options,
+        eventType: 'interaction-continuous'
     });
 }
 
@@ -328,6 +336,72 @@ test('Core impact는 semantic exact handle로 한 번만 damage하고 모든 같
     ]), registry);
     assert.equal(core.getCurrentIntegrity(), 0);
     assert.equal(endpoint.requests.length, 2);
+});
+
+test('인증된 Core continuous contact를 수락하고 enter와 Enemy incarnation one-shot으로 dedupe한다', () => {
+    const core = new CoreIntegrity({ maxIntegrity: 10 });
+    const endpoint = createEndpoint();
+    const registry = createRegistry([
+        { entityId: 1, incarnation: 1, kindId: 'core-proxy' },
+        {
+            entityId: 2,
+            incarnation: 7,
+            kindId: 'enemy',
+            metadata: { coreImpactDamage: 4, bountyBudget: 3 }
+        }
+    ]);
+    const director = new EnemyCoreImpactDirector({ coreIntegrity: core, endpoint });
+
+    const observed = director.observeCompletedEvents(snapshot([
+        coreContinuous({
+            entityId: 2,
+            incarnation: 7,
+            otherEntityId: 1,
+            otherIncarnation: 1,
+            sequence: 0
+        }),
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 7,
+            sequence: 1
+        })
+    ]), registry);
+
+    assert.equal(observed.facts.filter(({ type }) => type === 'CoreImpact').length, 1);
+    assert.equal(observed.facts.filter(({ type }) => type === 'CoreDamaged').length, 1);
+    assert.equal(core.getCurrentIntegrity(), 6);
+    assert.equal(observed.pendingCleanupCount, 1);
+    assert.equal(director.getStatus().dedupedCount, 1);
+
+    const replayedContinuous = director.observeCompletedEvents(snapshot([
+        coreContinuous({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 7,
+            sequence: 2
+        })
+    ]), registry);
+    assert.equal(replayedContinuous.facts.length, 0);
+    assert.equal(core.getCurrentIntegrity(), 6);
+    assert.equal(replayedContinuous.pendingCleanupCount, 1);
+    assert.equal(director.getStatus().dedupedCount, 2);
+
+    const unsupported = director.observeCompletedEvents(snapshot([
+        coreEnter({
+            entityId: 1,
+            incarnation: 1,
+            otherEntityId: 2,
+            otherIncarnation: 7,
+            sequence: 3,
+            eventType: 'interaction-exit'
+        })
+    ]), registry);
+    assert.equal(unsupported.facts.length, 0);
+    assert.equal(core.getCurrentIntegrity(), 6);
+    assert.equal(director.getStatus().ignoredCount, 1);
 });
 
 test('Core impact fact publication은 configured capacity로 bounded되고 terminal fact를 보존한다', () => {
@@ -963,6 +1037,13 @@ test('endpoint가 same-tick GPU death despawn을 먼저 queue해도 Core arrival
         sourceTick: 1,
         submittedTick: 1,
         completedThroughTick: 1,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 8,
         events: Object.freeze([
             Object.freeze({
                 type: 'contact',

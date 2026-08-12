@@ -433,7 +433,10 @@ test('control marker는 controlled body의 FLOW_FIELD overwrite를 막고 ballis
 
     assert.match(validateControl, /BODY_FLAG_USE_FLOW/);
     assert.match(validateControl, /FIXED_PROGRAM_STATUS_RECORD_INVALID/);
-    assert.match(clearControl, /atomicAnd[\s\S]*~BODY_FLAG_CONTROLLED_THIS_TICK/);
+    assert.match(
+        clearControl,
+        /atomicAnd[\s\S]*~\(BODY_FLAG_CONTROLLED_THIS_TICK[\s\S]*BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK\)/
+    );
     assert.match(applyControl, /atomicOr[\s\S]*BODY_FLAG_CONTROLLED_THIS_TICK/);
     assert.match(
         prepareBodies,
@@ -477,7 +480,7 @@ test('async death readback 전 exact dead body control은 hard protocol failure 
         'FIXED_PROGRAM_STATUS_RECORD_INVALID'
     );
     const deadNoOpIndex = validateControl.indexOf(
-        'if (!body_id_is_alive(command.destination_slot))'
+        'if (!body_id_is_simulation_active(command.destination_slot))'
     );
     const identityValidationIndex = validateControl.indexOf(
         'command.destination_slot >= counts.body_count'
@@ -534,7 +537,7 @@ test('async death readback 전 exact dead body control은 hard protocol failure 
     );
     assert.match(
         validateControl.slice(deadNoOpIndex),
-        /^if \(!body_id_is_alive\(command\.destination_slot\)\) \{\s*return;\s*\}/
+        /^if \(!body_id_is_simulation_active\(command\.destination_slot\)\) \{\s*return;\s*\}/
     );
 
     const applyExactLivingGuardIndex = applyControl.indexOf(

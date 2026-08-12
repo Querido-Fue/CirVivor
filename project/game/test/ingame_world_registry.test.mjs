@@ -9,6 +9,39 @@ const { WorldRegistry } = await loadGameModule(
 const { createGpuRegistryMetadata } = await loadGameModule(
     'ingame/object/gpu_spawn_intent.js'
 );
+const {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} = await loadGameModule('ingame/contract/projectile_capture_contract.js');
+
+function createProjectileOriginProvenance({
+    definitionId,
+    sourceEntityId = null,
+    sourceIncarnation = null,
+    targetEntityId = null,
+    targetIncarnation = null,
+    producerId = null,
+    sourceAbilityId = null
+}) {
+    return {
+        projectileCapturePolicyId:
+            PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: definitionId,
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: producerId,
+        originSourceAbilityId: sourceAbilityId,
+        originOwnerEntityId: sourceEntityId,
+        originOwnerIncarnation: sourceIncarnation,
+        originSourceEntityId: sourceEntityId,
+        originSourceIncarnation: sourceIncarnation,
+        originTargetEntityId: targetEntityId,
+        originTargetIncarnation: targetIncarnation
+    };
+}
 
 function reserveEnemy(registry, createdAtTick = 1) {
     return registry.reserveEntity({
@@ -22,6 +55,12 @@ function createTeamMetadata(teamId, allegiancePolicy, sourceEntityId, sourceInca
     return createGpuRegistryMetadata({
         kindId: 'projectile',
         definitionId: 'registry-team-fixture',
+        ...createProjectileOriginProvenance({
+            definitionId: 'registry-team-fixture',
+            sourceEntityId,
+            sourceIncarnation,
+            producerId
+        }),
         teamId,
         damagePolicyId: 0,
         allegiancePolicy,
@@ -131,6 +170,15 @@ test('exact target provenance metadata를 보존하고 incarnation reuse에 누�
     const targetedMetadata = createGpuRegistryMetadata({
         kindId: 'projectile',
         definitionId: 'targeted-registry-fixture',
+        ...createProjectileOriginProvenance({
+            definitionId: 'targeted-registry-fixture',
+            sourceEntityId: 71,
+            sourceIncarnation: 4,
+            targetEntityId: 81,
+            targetIncarnation: 6,
+            producerId: 'targeted-registry-producer',
+            sourceAbilityId: 'exact-target-aim'
+        }),
         teamId: 2,
         damagePolicyId: 0,
         allegiancePolicy: 'inherit-subject',
@@ -155,6 +203,11 @@ test('exact target provenance metadata를 보존하고 incarnation reuse에 누�
     const untargetedMetadata = createGpuRegistryMetadata({
         kindId: 'projectile',
         definitionId: 'untargeted-registry-fixture',
+        ...createProjectileOriginProvenance({
+            definitionId: 'untargeted-registry-fixture',
+            sourceEntityId: 91,
+            sourceIncarnation: 8
+        }),
         teamId: 1,
         damagePolicyId: 0,
         allegiancePolicy: 'fixed-player',

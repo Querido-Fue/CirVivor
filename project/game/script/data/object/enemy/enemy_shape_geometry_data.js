@@ -23,6 +23,7 @@ export const ENEMY_ASPECT_RATIO = Object.freeze({
     penta: 1.0,
     rhom: 0.81,
     octa: 1.0,
+    jorang: 1.0,
     gen: 1.05
 });
 
@@ -35,6 +36,7 @@ export const ENEMY_HEIGHT_SCALE = Object.freeze({
     penta: 1.0,
     rhom: 1.0,
     octa: 1.0,
+    jorang: 1.0,
     gen: 1.0
 });
 
@@ -120,6 +122,14 @@ export const ENEMY_SHAPE_GEOMETRY = Object.freeze({
     octa: createShapeGeometry([
         createRegularPolygonPath(8, 0.47, Math.PI / 8)
     ]),
+    // Final J presentation: solid top bar, right stem, and lower hook.
+    // Legacy SVG와 GPU analytic SDF가 같은 네 직사각형의 union을 사용합니다.
+    jorang: createShapeGeometry([
+        createRectPath(-0.40, -0.46, 0.80, 0.18),
+        createRectPath(0.18, -0.30, 0.20, 0.58),
+        createRectPath(-0.20, 0.22, 0.58, 0.20),
+        createRectPath(-0.38, 0.10, 0.20, 0.22)
+    ]),
     gen: createShapeGeometry([
         createCompoundPath([
             createRectPath(-0.30, -0.30, 0.60, 0.60),
@@ -197,6 +207,7 @@ const normalizeRect = (shapeType, path) => {
 
 const generatorPaths = ENEMY_SHAPE_GEOMETRY.gen.paths;
 const generatorRingPaths = generatorPaths[0].paths;
+const jorangPaths = ENEMY_SHAPE_GEOMETRY.jorang.paths;
 const normalizedRingOuterPoint = normalizePoint(
     'ring',
     freezePoint(RING_ENEMY_OUTER_RADIUS, 0)
@@ -231,6 +242,11 @@ export const ENEMY_NORMALIZED_RENDER_GEOMETRY = Object.freeze({
     }),
     octa: Object.freeze({
         points: normalizePolygon('octa', ENEMY_SHAPE_GEOMETRY.octa.paths[0], true)
+    }),
+    jorang: Object.freeze({
+        boxes: Object.freeze(
+            jorangPaths.map((path) => normalizeRect('jorang', path))
+        )
     }),
     gen: Object.freeze({
         outerBox: normalizeRect('gen', generatorRingPaths[0]),

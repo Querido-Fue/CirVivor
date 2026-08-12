@@ -18,7 +18,8 @@ const {
 } = await loadGameModule('ingame/object/gpu_spawn_intent.js');
 const {
     GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
-    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM
+    GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM,
+    GPU_CIRCLE_BODY_RENDER_SHAPE
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
 const FIXTURE_ROUTE = Object.freeze({
@@ -37,11 +38,12 @@ test('J spawn boundary preserves canonical uint32 bounty 12', () => {
         spawnSequence: 0
     });
     assert.equal(intent.bountyBudget, 12);
+    assert.equal(intent.renderStyle.shapeCode, GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG);
     assert.equal(intent.atomicTransformState, undefined);
-    assert.equal(intent.lineageRootEntityId, 0xffffffff);
-    assert.equal(intent.lineageRootIncarnation, 0xffffffff);
-    assert.equal(intent.atomicTransformTriggerSourceEntityId, 0xffffffff);
-    assert.equal(intent.atomicTransformTriggerSourceIncarnation, 0xffffffff);
+    assert.equal(intent.lineageRootEntityId, undefined);
+    assert.equal(intent.lineageRootIncarnation, undefined);
+    assert.equal(intent.atomicTransformTriggerSourceEntityId, undefined);
+    assert.equal(intent.atomicTransformTriggerSourceIncarnation, undefined);
     assert.throws(() => createGpuRegistryMetadata(intent),
         /atomic transform|activation|lineage/i);
     const activated = materializeNaturalJorangAtomicTransformActivation(

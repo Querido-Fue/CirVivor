@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
@@ -23,6 +24,10 @@ const {
 const {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
 } = await loadGameModule('ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js');
+const gameObjectSystemSource = await readFile(
+    new URL('../script/module/ingame/object/game_object_system.js', import.meta.url),
+    'utf8'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -543,6 +548,65 @@ function createTrackingProjectileCaptureDirectorFactory() {
     });
 }
 
+function createIdleJorangSplitLineageDirector() {
+    let destroyed = false;
+    let terminal = null;
+    return {
+        observeLifecycle() {
+            if (terminal) {
+                terminal = Object.freeze({
+                    ...terminal,
+                    lifecycleObserved: true,
+                    rosterSealed: true
+                });
+            }
+            return this.getStatus();
+        },
+        observeCompletedEvents() { return this.getStatus(); },
+        observeCompletedPreparations() { return this.getStatus(); },
+        stageForFixedTick({ targetFixedTick } = {}) {
+            return Object.freeze({
+                accepted: true,
+                targetFixedTick,
+                stagedCount: 0,
+                recoveryRequired: false
+            });
+        },
+        observeFixedCommit() {
+            if (terminal) {
+                terminal = Object.freeze({
+                    ...terminal,
+                    fixedCommitObserved: true
+                });
+            }
+            return this.getStatus();
+        },
+        requiresRecovery() { return false; },
+        getStatus() {
+            return Object.freeze({
+                destroyed,
+                recoveryRequired: false,
+                failure: null,
+                terminal,
+                pendingTransformBatchCount: 0,
+                pendingFirstHitCount: 0,
+                circlePrimeDueCount: 0
+            });
+        },
+        resetGpuBinding() { return true; },
+        closeForTerminal(finalFixedTick) {
+            terminal = Object.freeze({
+                finalFixedTick,
+                fixedCommitObserved: false,
+                lifecycleObserved: false,
+                rosterSealed: false
+            });
+            return terminal;
+        },
+        destroy() { destroyed = true; }
+    };
+}
+
 function installProjectileCaptureRuntimeStatus(endpoint, overrides = {}) {
     const sessionGeneration = endpoint.getStatus().sessionGeneration;
     const status = Object.freeze({
@@ -587,6 +651,8 @@ function createGameSystem({
     gameplayWorldActorsEnabled = false,
     backendFactory = null,
     pentagonEffectDirectorFactory = null,
+    jorangSplitLineageDirectorFactory
+        = createIdleJorangSplitLineageDirector,
     projectileCaptureDirectorFactory = null,
     useRealCoreImpactDirector = false,
     initialCameraZoom = undefined
@@ -650,6 +716,7 @@ function createGameSystem({
         ...(pentagonEffectDirectorFactory
             ? { pentagonEffectDirectorFactory }
             : {}),
+        jorangSplitLineageDirectorFactory,
         ...(projectileCaptureDirectorFactory
             ? { projectileCaptureDirectorFactory }
             : {})
@@ -670,6 +737,10 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     const rawLifecycleOwner = endpoint.getLifecycleCommandOwner();
     const rawFixedOwner = endpoint.fixedCommandOwner;
     const cleanupPort = directorFactory.state.coreImpactCleanupPort;
+    installProjectileCaptureRuntimeStatus(endpoint, {
+        authoritativeEpoch: 0,
+        completedThroughTick: 1
+    });
     assert.equal(endpoint.requestSpawn(createGpuEnemySpawnIntent({
         definition: {
             id: 'terminal-pending-enemy',
@@ -773,6 +844,71 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
     assert.equal(outcome.getRunFailedFact().type, 'RunFailed');
 });
 
+test('Capture terminal success gate는 owner/backend/runtime의 exact final tuple만 허용한다', () => {
+    const gateStart = gameObjectSystemSource.indexOf(
+        'const projectileCaptureSettlementSubmitted'
+    );
+    const gateEnd = gameObjectSystemSource.indexOf(
+        'const projectileCaptureRosterSealed',
+        gateStart
+    );
+    assert.ok(gateStart >= 0 && gateEnd > gateStart);
+    const gateSource = gameObjectSystemSource.slice(gateStart, gateEnd);
+
+    for (const exactGate of [
+        /projectileCaptureOwnerEvidence\.abiVersion[\s\S]*?=== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION/,
+        /projectileCaptureOwnerEvidence\.submittedTick === fixedTick/,
+        /projectileCaptureOwnerEvidence\.completedThroughTick === fixedTick/,
+        /projectileCaptureBackendEvidence\.submittedTick === fixedTick/,
+        /projectileCaptureBackendEvidence\.completedThroughTick === fixedTick/,
+        /projectileCaptureOwnerEvidence\.sessionGeneration[\s\S]*?=== projectileCaptureBackendEvidence\.sessionGeneration/,
+        /projectileCaptureOwnerEvidence\.deviceGeneration[\s\S]*?=== projectileCaptureBackendEvidence\.deviceGeneration/,
+        /projectileCaptureOwnerEvidence\.authoritativeEpoch[\s\S]*?=== projectileCaptureBackendEvidence\.authoritativeEpoch/,
+        /projectileCaptureRuntimeEvidence\.sessionGeneration[\s\S]*?=== projectileCaptureBackendEvidence\.sessionGeneration/,
+        /projectileCaptureRuntimeEvidence\.deviceGeneration[\s\S]*?=== projectileCaptureBackendEvidence\.deviceGeneration/,
+        /projectileCaptureRuntimeEvidence\.authoritativeEpoch[\s\S]*?=== projectileCaptureBackendEvidence\.authoritativeEpoch/,
+        /projectileCaptureRuntimeEvidence\.completedThroughTick === fixedTick/
+    ]) {
+        assert.match(gateSource, exactGate);
+    }
+    assert.doesNotMatch(gateSource, /completedThroughTick\s*>=\s*fixedTick/);
+});
+
+test('Capture terminal owner/backend tuple mismatch는 success seal 없이 one-shot fail-closed한다', () => {
+    const { gameSystem } = createGameSystem();
+    const endpoint = gameSystem.getGpuSimulationEndpoint();
+    installProjectileCaptureRuntimeStatus(endpoint, {
+        authoritativeEpoch: 0,
+        completedThroughTick: 1
+    });
+    const readTerminalEvidence = endpoint
+        .getTerminalProjectileCaptureProgramCancelStatus.bind(endpoint);
+    endpoint.getTerminalProjectileCaptureProgramCancelStatus = () => {
+        const evidence = readTerminalEvidence();
+        if (!evidence?.owner) {
+            return evidence;
+        }
+        return Object.freeze({
+            ...evidence,
+            owner: Object.freeze({
+                ...evidence.owner,
+                authoritativeEpoch: evidence.owner.authoritativeEpoch + 1
+            })
+        });
+    };
+
+    assert.equal(gameSystem.fixedUpdate(), false);
+    const terminal = gameSystem.getGameplayStatus().terminal;
+    assert.equal(terminal.state, 'SEALED_FAILED');
+    assert.equal(
+        terminal.diagnostic.stage,
+        'terminal-projectile-capture-settlement'
+    );
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    gameSystem.destroy();
+});
+
 test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cleanup과 함께 terminal final submit으로 닫는다', () => {
     const { backend, gameSystem } = createGameSystem({
         gameplayWorldActorsEnabled: true,
@@ -841,6 +977,13 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
         sourceTick: 2,
         submittedTick: 2,
         completedThroughTick: 2,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 1,
         events: Object.freeze([Object.freeze({
             type: 'contact',
             eventType: 'interaction-enter',
@@ -852,6 +995,10 @@ test('실제 Core director는 actor-spawn 뒤 committed Core arrival을 exact cl
             valueFixedPoint: 0
         })])
     }));
+    installProjectileCaptureRuntimeStatus(endpoint, {
+        authoritativeEpoch: 0,
+        completedThroughTick: terminalFixedTick
+    });
 
     const fixedCallsBeforeTerminal = backend.calls.filter((call) => call === 'fixed').length;
     assert.equal(gameSystem.fixedUpdate(), true);
@@ -978,6 +1125,13 @@ test('Tower death clear 실패와 같은 completed batch의 Core depletion도 �
         sourceTick: 1,
         submittedTick: 1,
         completedThroughTick: 1,
+        atomicTransformFirstHitCapacityRejected: false,
+        retryableAtomicTransformFirstHitCapacityRejected: false,
+        atomicTransformFirstHitRejectionReason: null,
+        atomicTransformFirstHitCandidateCount: 0,
+        atomicTransformFirstHitCommittedCount: 0,
+        atomicTransformFirstHitEventBase: 0,
+        atomicTransformFirstHitEventCapacity: 1,
         events: Object.freeze([
             Object.freeze({
                 type: 'contact',
@@ -1368,7 +1522,9 @@ test('RUNNING recovery는 CoreIntegrity/RunOutcome identity를 보존하고 Core
             backends.push(backend);
             return backend;
         },
-        enemyCoreImpactDirectorFactory: directors.factory
+        enemyCoreImpactDirectorFactory: directors.factory,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector
     }, {
         enemyWaveEnabled: false,
         gameplayWorldActorsEnabled: false

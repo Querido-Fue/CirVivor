@@ -17,6 +17,13 @@ const BASE_SHAPE_ATLAS_ORDER = Object.freeze([
 ]);
 
 /**
+ * 기존 WebGL 도형의 UV ABI를 보존하는 고정 atlas page 슬롯 수입니다.
+ * R2 Turn 8까지의 base/enemy 16개 도형은 page 0의 같은 열에 남고,
+ * 이후 도형은 동일 규격의 overflow page에 append됩니다.
+ */
+const SHAPE_ATLAS_PAGE_CAPACITY = 16;
+
+/**
  * @class ShapeTextureCache
  * @description 도형 아틀라스 텍스처를 캐시합니다.
  */
@@ -32,8 +39,11 @@ export class ShapeTextureCache {
             ...ENEMY_WEBGL_SHAPES
         ];
         this.shapeDrawer = new ShapeDrawer();
-        this.atlasCanvas = document.createElement('canvas');
-        this.atlasContext = this.atlasCanvas.getContext('2d');
+        this.atlasCanvases = [];
+        this.atlasContexts = [];
+        this.atlasTextures = [];
+        this.atlasCanvas = null;
+        this.atlasContext = null;
         this.textureInfoCache = new Map();
         this.defaultTextureInfo = null;
 
@@ -55,36 +65,55 @@ export class ShapeTextureCache {
      */
     #initAtlas() {
         const size = this.textureSize;
-        const atlasWidth = size * this.shapeOrder.length;
+        const atlasWidth = size * SHAPE_ATLAS_PAGE_CAPACITY;
         const atlasHeight = size;
-        const context = this.atlasContext;
         const halfTexelU = 0.5 / atlasWidth;
         const halfTexelV = 0.5 / atlasHeight;
+        const pageCount = Math.ceil(this.shapeOrder.length / SHAPE_ATLAS_PAGE_CAPACITY);
 
-        this.atlasCanvas.width = atlasWidth;
-        this.atlasCanvas.height = atlasHeight;
-        context.clearRect(0, 0, atlasWidth, atlasHeight);
-        context.fillStyle = '#FFFFFF';
+        for (let pageIndex = 0; pageIndex < pageCount; pageIndex++) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            const firstShapeIndex = pageIndex * SHAPE_ATLAS_PAGE_CAPACITY;
+            const lastShapeIndex = Math.min(
+                firstShapeIndex + SHAPE_ATLAS_PAGE_CAPACITY,
+                this.shapeOrder.length
+            );
+            const pageTextureInfos = [];
 
-        for (let index = 0; index < this.shapeOrder.length; index++) {
-            const shape = this.shapeOrder[index];
-            const offsetX = index * size;
+            canvas.width = atlasWidth;
+            canvas.height = atlasHeight;
+            context.clearRect(0, 0, atlasWidth, atlasHeight);
+            context.fillStyle = '#FFFFFF';
 
-            this.shapeDrawer.drawShape(context, shape, offsetX, 0, size);
-            this.textureInfoCache.set(shape, {
-                texture: null,
-                u0: (offsetX / atlasWidth) + halfTexelU,
-                v0: halfTexelV,
-                u1: ((offsetX + size) / atlasWidth) - halfTexelU,
-                v1: 1 - halfTexelV
-            });
+            for (let shapeIndex = firstShapeIndex; shapeIndex < lastShapeIndex; shapeIndex++) {
+                const shape = this.shapeOrder[shapeIndex];
+                const columnIndex = shapeIndex - firstShapeIndex;
+                const offsetX = columnIndex * size;
+                const textureInfo = {
+                    texture: null,
+                    u0: (offsetX / atlasWidth) + halfTexelU,
+                    v0: halfTexelV,
+                    u1: ((offsetX + size) / atlasWidth) - halfTexelU,
+                    v1: 1 - halfTexelV
+                };
+
+                this.shapeDrawer.drawShape(context, shape, offsetX, 0, size);
+                this.textureInfoCache.set(shape, textureInfo);
+                pageTextureInfos.push(textureInfo);
+            }
+
+            const texture = this.#createTextureFromCanvas(canvas);
+            for (const textureInfo of pageTextureInfos) {
+                textureInfo.texture = texture;
+            }
+            this.atlasCanvases.push(canvas);
+            this.atlasContexts.push(context);
+            this.atlasTextures.push(texture);
         }
 
-        const atlasTexture = this.#createTextureFromCanvas(this.atlasCanvas);
-        for (const textureInfo of this.textureInfoCache.values()) {
-            textureInfo.texture = atlasTexture;
-        }
-
+        this.atlasCanvas = this.atlasCanvases[0] ?? null;
+        this.atlasContext = this.atlasContexts[0] ?? null;
         this.defaultTextureInfo = this.textureInfoCache.get('rect');
     }
 

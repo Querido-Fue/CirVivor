@@ -307,9 +307,10 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
         tower.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
     );
     assert.equal(tower.bodyLayer, 64);
-    assert.equal(tower.collisionMask, 129);
+    assert.equal(tower.collisionMask, 1153);
     assert.equal(
         tower.interactionLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE

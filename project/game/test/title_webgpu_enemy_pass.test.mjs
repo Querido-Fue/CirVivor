@@ -272,7 +272,8 @@ function createPacket(recordCount, styleCodes = []) {
         packet.records[offset + 4] = 1;
         packet.records[offset + 5] = 0;
         packet.records[offset + 6] = 0.5;
-        packet.records[offset + 7] = styleCodes[index] ?? (index % 7);
+        packet.records[offset + 7] = styleCodes[index]
+            ?? (index % TITLE_WEBGPU_ENEMY_SHAPE_ATLAS_CONSTANTS.SHAPE_COUNT);
     }
     return packet;
 }
@@ -294,7 +295,7 @@ function createPass(atlasOptions) {
     return new TitleWebGpuEnemyPass({ atlasOptions });
 }
 
-test('enemy atlas는 packet shape code와 같은 7개 ShapeDrawer mask를 세대당 한 번 업로드한다', () => {
+test('enemy atlas는 packet shape code와 같은 8개 ShapeDrawer mask를 세대당 한 번 업로드한다', () => {
     const raster = createRasterHarness();
     const firstGpu = createFakeGpu('first');
     const secondGpu = createFakeGpu('second');
@@ -307,7 +308,8 @@ test('enemy atlas는 packet shape code와 같은 7개 ShapeDrawer mask를 세대
         'enemy_hexa',
         'enemy_penta',
         'enemy_rhom',
-        'enemy_octa'
+        'enemy_octa',
+        'enemy_jorang'
     ]);
     const first = atlas.ensure(firstGpu.device, 3);
     assert.strictEqual(atlas.ensure(firstGpu.device, 3), first);
@@ -334,7 +336,7 @@ test('enemy atlas는 packet shape code와 같은 7개 ShapeDrawer mask를 세대
     assert.equal(firstGpu.records.textures[0].destroyCount, 1);
     assert.equal(secondGpu.records.textures.length, 1);
     assert.equal(secondGpu.records.copies.length, 1);
-    assert.equal(raster.records.shapeCalls.length, 7, 'CPU mask raster는 generation 사이에도 재사용합니다.');
+    assert.equal(raster.records.shapeCalls.length, 8, 'CPU mask raster는 generation 사이에도 재사용합니다.');
     assert.throws(() => atlas.ensure(firstGpu.device, 3), /stale/u);
     assert.equal(atlas.destroy(), true);
     assert.equal(atlas.destroy(), false);
@@ -576,7 +578,7 @@ test('warm frame과 resize는 GPU resource를 만들지 않고 format/generation
     assert.equal(secondGpu.records.buffers.length, 2);
     assert.equal(secondGpu.records.textures.length, 1);
     assert.equal(secondGpu.records.copies.length, 1);
-    assert.equal(raster.records.shapeCalls.length, 7);
+    assert.equal(raster.records.shapeCalls.length, 8);
     assert.throws(() => pass.encode(
         createContext(firstGpu.device, 105, 9, createFakeEncoder().encoder),
         input

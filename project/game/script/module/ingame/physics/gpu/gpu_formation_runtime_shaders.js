@@ -581,7 +581,7 @@ struct TransformProgram {
 }
 
 struct RouteRuntimeState {
-    meta: u32, self_entity_id: u32, self_incarnation: u32,
+    packed_meta: u32, self_entity_id: u32, self_incarnation: u32,
     current_path_index: u32, route_set_index: u32, closure_index: u32,
     observed_availability_version: u32, phase_entered_fixed_tick: u32,
     travel_radius: f32, blocker_radius: f32,
@@ -1594,7 +1594,7 @@ fn fail_transform(status: u32, record_index: u32) {
 }
 
 fn formation_route_role(state: RouteRuntimeState) -> u32 {
-    return state.meta & 255u;
+    return state.packed_meta & 255u;
 }
 
 fn formation_route_source_is_transformable(
@@ -1605,7 +1605,7 @@ fn formation_route_source_is_transformable(
     let role = formation_route_role(state);
     return role != ROUTE_ROLE_CLOSER
         && ((role == ROUTE_ROLE_NONE
-                && state.meta == 0u
+                && state.packed_meta == 0u
                 && state.self_entity_id == 0u
                 && state.self_incarnation == 0u
                 && state.current_path_index == 0u

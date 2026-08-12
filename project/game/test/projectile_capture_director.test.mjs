@@ -182,7 +182,9 @@ function publishCoreRelease(batchIdFingerprint = 644) {
     }).accepted, true);
     const coreReceipt = Object.freeze({
         type: 'contact',
-        eventType: 'interaction-enter',
+        // Natural R uses the common continuous-contact policy; the receipt is
+        // still exact because identity/Core kind/tuple/source tick are bound.
+        eventType: 'interaction-continuous',
         disposition: 'applied',
         sessionGeneration: SESSION,
         deviceGeneration: DEVICE,
@@ -318,7 +320,7 @@ test('coherent core receipt authenticates an exact GPU CORE prepare and terminal
 
     const coreReceipt = Object.freeze({
         type: 'contact',
-        eventType: 'interaction-enter',
+        eventType: 'interaction-continuous',
         disposition: 'applied',
         sessionGeneration: SESSION,
         deviceGeneration: DEVICE,

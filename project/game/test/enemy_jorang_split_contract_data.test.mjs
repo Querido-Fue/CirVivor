@@ -17,6 +17,7 @@ const {
     JORANG_SPLIT_KINEMATICS_POLICY,
     JORANG_SPLIT_LINEAGE_POLICY,
     JORANG_SPLIT_PENDING_HIT_POLICY,
+    JORANG_SPLIT_POSITIVE_DAMAGE_PRODUCER_KIND,
     JORANG_SPLIT_TRIGGER_POLICY,
     normalizeJorangLineageBranchState,
     normalizeJorangLineageRootHandle,
@@ -99,7 +100,7 @@ test('J/C′ immutable definitions preserve adopted IDs, policies, and authored 
     assert.equal(BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID, 'basic_circle_prime_01');
     assert.equal(BASIC_JORANG_ENEMY_DATA, BASIC_GEN_ENEMY_DATA);
     assert.equal(BASIC_JORANG_ENEMY_DATA.spawnPolicy, ENEMY_SPAWN_POLICY.NATURAL);
-    assert.equal(BASIC_JORANG_ENEMY_DATA.shapeDefinitionId, 'gen');
+    assert.equal(BASIC_JORANG_ENEMY_DATA.shapeDefinitionId, 'jorang');
     assert.equal(BASIC_JORANG_ENEMY_DATA.atomicTransformProfileId,
         JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID);
     assert.equal(BASIC_JORANG_ENEMY_DATA.combatProfileId,
@@ -159,11 +160,16 @@ test('J split catalog freezes exact topology and transfer policies', () => {
     assert.equal(returned.destinationDefinitionId,
         BASIC_JORANG_ENEMY_DEFINITION_ID);
     assert.equal(split.triggerPolicy,
-        JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_PROJECTILE_HIT);
-    assert.equal(JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_PROJECTILE_HIT,
-        'first-valid-projectile-hit');
-    assert.equal(JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_DAMAGING_HIT,
-        undefined);
+        JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_POSITIVE_DAMAGE_HIT);
+    assert.equal(JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_POSITIVE_DAMAGE_HIT,
+        'first-valid-positive-damage-hit');
+    assert.deepEqual({ ...JORANG_SPLIT_POSITIVE_DAMAGE_PRODUCER_KIND }, {
+        PROJECTILE: 1,
+        EXPLOSION: 2,
+        EFFECT: 3,
+        DIRECT: 4,
+        MELEE: 5
+    });
     assert.equal(returned.triggerPolicy,
         JORANG_SPLIT_TRIGGER_POLICY.DELAYED_EXACT_HANDLE);
     assert.equal(split.kinematicsPolicy,
@@ -178,7 +184,8 @@ test('J split catalog freezes exact topology and transfer policies', () => {
         JORANG_SPLIT_BOUNTY_POLICY.UINT32_CHILD_ZERO_REMAINDER);
     assert.equal(returned.bountyPolicy, JORANG_SPLIT_BOUNTY_POLICY.PRESERVE_BRANCH);
     assert.equal(split.effectPolicy,
-        JORANG_SPLIT_EFFECT_POLICY.EXACT_INSTANCES_TO_CHILD_ZERO_ONLY);
+        JORANG_SPLIT_EFFECT_POLICY
+            .EFFECT_DEFINITION_OWNED_NON_DUPLICATING_DISTRIBUTION);
     assert.equal(returned.effectPolicy,
         JORANG_SPLIT_EFFECT_POLICY.PRESERVE_EXACT_INSTANCES);
     assert.equal(split.lineagePolicy,
@@ -435,7 +442,7 @@ test('profile-discriminated capability authoring accepts only H, J, and private 
     );
     assert.equal(atomicImplementation.implementationId,
         'profile-discriminated-atomic-transform');
-    assert.equal('rosterPort' in atomicImplementation, false);
+    assert.equal(atomicImplementation.rosterPort, null);
     assert.strictEqual(
         GPU_ENEMY_JORANG_ATOMIC_TRANSFORM_ROSTER_PORT.observeLifecycle,
         JorangSplitLineageDirector.prototype.observeLifecycle

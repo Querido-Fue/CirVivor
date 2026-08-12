@@ -304,7 +304,7 @@ test('ShapeEnemy draw와 writePresentationState가 최종 transform 컨테이너
     assert.equal(legacyDrawCalls.length, 1);
 });
 
-test('7개 타이틀 도형은 legacy core draw와 같은 geometry/회전/alpha 및 안정된 style 순서를 기록한다', () => {
+test('8개 타이틀 도형은 legacy core draw와 같은 geometry/회전/alpha 및 안정된 style 순서를 기록한다', () => {
     objectOffsetY = 41.5;
     objectHeight = 1080;
     legacyDrawCalls.length = 0;
@@ -325,10 +325,11 @@ test('7개 타이틀 도형은 legacy core draw와 같은 geometry/회전/alpha 
         'hexa',
         'penta',
         'rhom',
-        'octa'
+        'octa',
+        'jorang'
     ]);
-    assert.equal(packet.recordCount, 7);
-    assert.equal(packet.usedByteLength, 7 * TITLE_CPU_ENEMY_PRESENTATION_RECORD_BYTES);
+    assert.equal(packet.recordCount, 8);
+    assert.equal(packet.usedByteLength, 8 * TITLE_CPU_ENEMY_PRESENTATION_RECORD_BYTES);
 
     for (let index = 0; index < enemies.length; index++) {
         assertRecordMatchesLegacy(packet, index, legacyDrawCalls[index]);

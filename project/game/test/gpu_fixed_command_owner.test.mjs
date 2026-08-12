@@ -24,7 +24,14 @@ const {
 const { PROJECTILE_TARGET_POLICY_ID } = await loadGameModule(
     'ingame/contract/projectile_target_policy_contract.js'
 );
-const { GPU_CIRCLE_BODY_COLLISION_LAYER } = await loadGameModule(
+const {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} = await loadGameModule('ingame/contract/projectile_capture_contract.js');
+const {
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_PROJECTILE_CAPTURE_ROLE
+} = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_abi.js'
 );
 const { createGpuRegistryMetadata } = await loadGameModule(
@@ -35,10 +42,34 @@ function handleKey(handle) {
     return handle.entityId + ':' + handle.incarnation;
 }
 
+function createProjectileCaptureIngress(archetypeId) {
+    return {
+        projectileCapturePolicyId: PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId,
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: null,
+        originSourceAbilityId: null,
+        originOwnerEntityId: null,
+        originOwnerIncarnation: null,
+        originSourceEntityId: null,
+        originSourceIncarnation: null,
+        originTargetEntityId: null,
+        originTargetIncarnation: null
+    };
+}
+
 function createProjectileIntent(overrides = {}) {
     return {
         kindId: 'projectile',
         definitionId: 'phase3_fixture_projectile',
+        ...createProjectileCaptureIngress('phase3_fixture_projectile'),
+        projectileCaptureState: Object.freeze({
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+        }),
         spawnSequence: 7,
         position: { x: 99, y: 98 },
         velocity: { x: 97, y: 96 },
@@ -198,15 +229,17 @@ function createFakeBackend(options = {}) {
 }
 
 function activateBody(registry, backend, descriptor = {}) {
+    const definitionId = descriptor.definitionId ?? 'phase3_controlled_body';
     const handle = registry.reserveEntity({
         kindId: descriptor.kindId ?? 'tower-proxy-fixture',
-        definitionId: descriptor.definitionId ?? 'phase3_controlled_body',
+        definitionId,
         createdAtTick: descriptor.createdAtTick ?? 0
     });
     assert.ok(handle);
     assert.equal(registry.activateReserved(handle, createGpuRegistryMetadata({
         kindId: descriptor.kindId ?? 'tower-proxy-fixture',
-        definitionId: descriptor.definitionId ?? 'phase3_controlled_body',
+        definitionId,
+        ...createProjectileCaptureIngress(definitionId),
         teamId: descriptor.teamId ?? GAMEPLAY_TEAM_ID.PLAYER,
         damagePolicyId: descriptor.damagePolicyId
             ?? GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,

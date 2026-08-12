@@ -42,6 +42,24 @@ const LEGACY_BEGIN_CALL_NAMES = Object.freeze([
     'enableVertexAttribArray',
     'vertexAttribPointer'
 ]);
+const LEGACY_SHAPE_ATLAS_PAGE_ZERO_ORDER = Object.freeze([
+    'rect',
+    'square',
+    'circle',
+    'triangle',
+    'pentagon',
+    'hexagon',
+    'octagon',
+    'arrow',
+    'enemy_square',
+    'enemy_triangle',
+    'enemy_arrow',
+    'enemy_hexa',
+    'enemy_penta',
+    'enemy_rhom',
+    'enemy_octa',
+    'enemy_gen'
+]);
 
 /**
  * ShapeTextureCache가 atlas를 만들 때 사용할 최소 DOM 대역을 생성합니다.
@@ -526,6 +544,85 @@ function createTraceGl() {
 
     return gl;
 }
+
+/**
+ * 숫자를 WebGL vertex buffer가 사용하는 Float32 bit pattern으로 변환합니다.
+ * @param {number} value - 변환할 숫자입니다.
+ * @returns {number} uint32 bit pattern입니다.
+ */
+function getFloat32Bits(value) {
+    const buffer = new ArrayBuffer(Float32Array.BYTES_PER_ELEMENT);
+    new Float32Array(buffer)[0] = value;
+    return new Uint32Array(buffer)[0];
+}
+
+test('shape atlas는 legacy 16칸 UV를 page 0에 보존하고 J를 overflow page에 둔다', () => {
+    const gl = createTraceGl();
+    const batch = new WebGLBatch(gl);
+    const cache = batch.shapeCache;
+    const size = 96;
+    const pageWidth = size * 16;
+    const halfTexelU = 0.5 / pageWidth;
+    const halfTexelV = 0.5 / size;
+
+    assert.deepEqual(Array.from(cache.shapeOrder.slice(0, 16)), LEGACY_SHAPE_ATLAS_PAGE_ZERO_ORDER);
+    assert.equal(cache.shapeOrder[16], 'enemy_jorang');
+    assert.equal(cache.atlasCanvases.length, 2);
+    assert.ok(cache.atlasCanvases.every((canvas) => canvas.width === pageWidth));
+    assert.ok(cache.atlasCanvases.every((canvas) => canvas.height === size));
+    assert.equal(cache.atlasCanvas, cache.atlasCanvases[0]);
+    assert.equal(cache.atlasContext, cache.atlasContexts[0]);
+
+    const legacyTexture = cache.getTextureInfo('rect').texture;
+    for (let index = 0; index < LEGACY_SHAPE_ATLAS_PAGE_ZERO_ORDER.length; index++) {
+        const shape = LEGACY_SHAPE_ATLAS_PAGE_ZERO_ORDER[index];
+        const textureInfo = cache.getTextureInfo(shape);
+        const offsetX = index * size;
+        assert.equal(textureInfo.texture, legacyTexture, `${shape} texture page가 달라졌습니다.`);
+        assert.equal(
+            getFloat32Bits(textureInfo.u0),
+            getFloat32Bits((offsetX / pageWidth) + halfTexelU),
+            `${shape} u0 Float32 ABI가 달라졌습니다.`
+        );
+        assert.equal(
+            getFloat32Bits(textureInfo.u1),
+            getFloat32Bits(((offsetX + size) / pageWidth) - halfTexelU),
+            `${shape} u1 Float32 ABI가 달라졌습니다.`
+        );
+        assert.equal(getFloat32Bits(textureInfo.v0), getFloat32Bits(halfTexelV));
+        assert.equal(getFloat32Bits(textureInfo.v1), getFloat32Bits(1 - halfTexelV));
+    }
+
+    const jorangTextureInfo = cache.getTextureInfo('enemy_jorang');
+    assert.notEqual(jorangTextureInfo.texture, legacyTexture);
+    assert.equal(getFloat32Bits(jorangTextureInfo.u0), getFloat32Bits(halfTexelU));
+    assert.equal(
+        getFloat32Bits(jorangTextureInfo.u1),
+        getFloat32Bits((size / pageWidth) - halfTexelU)
+    );
+    assert.equal(cache.getTextureInfo('unknown-shape'), cache.getTextureInfo('rect'));
+});
+
+test('legacy→overflow→legacy shape 전환은 texture page마다 정확히 flush한다', () => {
+    const gl = createTraceGl();
+    const batch = new WebGLBatch(gl);
+    const legacyTexture = formatHandle(batch.shapeCache.getTextureInfo('rect').texture);
+    const overflowTexture = formatHandle(batch.shapeCache.getTextureInfo('enemy_jorang').texture);
+    gl.__resetTrace();
+
+    batch.begin(320, 180);
+    batch.render({ shape: 'rect', x: 20, y: 20, w: 10, h: 10 });
+    batch.render({ shape: 'enemy_jorang', x: 40, y: 20, w: 10, h: 10 });
+    batch.render({ shape: 'circle', x: 60, y: 20, w: 10, h: 10 });
+    batch.flush();
+
+    const trace = gl.__getTrace();
+    assert.deepEqual(getCalls(trace, 'drawElements').map((call) => call.count), [6, 6, 6]);
+    assert.deepEqual(
+        getCalls(trace, 'bindTexture').map((call) => call.texture),
+        [legacyTexture, overflowTexture, legacyTexture]
+    );
+});
 
 /**
  * 변경 전 begin()이 수행하던 13개 GL 상태 호출을 oracle로 재현합니다.

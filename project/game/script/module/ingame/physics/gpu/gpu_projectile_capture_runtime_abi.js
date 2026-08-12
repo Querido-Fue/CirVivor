@@ -25,6 +25,8 @@ export const GPU_PROJECTILE_CAPTURE_RUNTIME_ABI = Object.freeze({
         CLEANUP_COUNT: 48,
         OVERFLOW_FLAGS: 52,
         BATCH_FINGERPRINT: 56,
+        RETRY_STATE_FLAGS: 60,
+        /** @deprecated RETRY_STATE_FLAGS의 ABI-compatible alias입니다. */
         RESERVED: 60
     }),
     COMPLETION: Object.freeze({
@@ -160,6 +162,23 @@ export const GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG = Object.freeze({
     CAPTURE_SEQUENCE_EXHAUSTED: 1 << 8
 });
 
+/**
+ * Capacity-only rejection에서 어떤 completion partition의 demand가 한도를
+ * 넘었는지 나타냅니다. ABI header의 OVERFLOW_FLAGS를 재사용하므로 크기는
+ * 바뀌지 않으며, 각 bit는 append-only입니다.
+ */
+export const GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG = Object.freeze({
+    CAPTURE: 1 << 0,
+    RELEASE_PREPARATION: 1 << 1,
+    CLEANUP: 1 << 2
+});
+
+/** Header word 15와 retry uniform이 공유하는 append-only 상태입니다. */
+export const GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG = Object.freeze({
+    ACTIVE: 1 << 0,
+    BACKLOG_REMAINS: 1 << 1
+});
+
 export const GPU_PROJECTILE_CAPTURE_RELEASE_PROGRAM_FLAG = Object.freeze({
     COMMIT_REQUESTED: 1 << 0
 });
@@ -174,8 +193,12 @@ export const GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT = Object.freeze({
     SELECT_RING_DISTANCES: 'select_ring_capture_distances',
     SELECT_PROJECTILES: 'select_ring_capture_projectiles',
     PREFLIGHT_CAPTURE: 'preflight_projectile_capture_batch',
+    PREFLIGHT_RETRY: 'preflight_projectile_capture_retry_batch',
+    SELECT_RETRY_PREFIX: 'select_projectile_capture_retry_prefix',
+    SHIELD_CAPTURE_CONTACTS: 'shield_projectile_capture_contacts',
     SEAL_CAPTURE: 'seal_projectile_capture_batch',
     COMMIT_CAPTURE: 'commit_projectile_capture_batch',
+    COMMIT_RETRY_CAPTURE: 'commit_projectile_capture_retry_batch',
     FINALIZE_CAPTURE: 'finalize_projectile_capture_batch',
     MARK_CORE_IMPACTS: 'mark_projectile_capture_core_impacts',
     ATTACH_HELD: 'attach_projectile_capture_holds',
@@ -222,8 +245,13 @@ function writeF32(view, base, offset, value, label) {
     view.setFloat32(base + offset, requireFloat32(value, label), LITTLE_ENDIAN);
 }
 
+function isDataView(value) {
+    return ArrayBuffer.isView(value)
+        && Object.prototype.toString.call(value) === '[object DataView]';
+}
+
 function requireDataViewCapacity(view, byteLength, label) {
-    if (!(view instanceof DataView) || view.byteLength < byteLength) {
+    if (!isDataView(view) || view.byteLength < byteLength) {
         throw new RangeError(`${label} DataView capacity가 부족합니다.`);
     }
     return view;
@@ -298,6 +326,7 @@ export function readGpuProjectileCaptureTickHeader(view, offset = 0) {
         cleanupCount: u(a.CLEANUP_COUNT),
         overflowFlags: u(a.OVERFLOW_FLAGS),
         batchIdFingerprint: u(a.BATCH_FINGERPRINT),
+        retryStateFlags: u(a.RETRY_STATE_FLAGS),
         reserved: u(a.RESERVED)
     });
 }
@@ -425,7 +454,7 @@ export function writeGpuProjectileCaptureReleaseRecord(view, index, source) {
 }
 
 export function writeGpuProjectileCaptureProfile(view, index, profile) {
-    if (!(view instanceof DataView) || !profile || typeof profile !== 'object') {
+    if (!isDataView(view) || !profile || typeof profile !== 'object') {
         throw new TypeError('capture profile DataView/object가 필요합니다.');
     }
     const abi = GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.PROFILE;
@@ -475,7 +504,7 @@ export function writeGpuProjectileCaptureProfile(view, index, profile) {
 }
 
 export function writeGpuProjectileCaptureTargetConfig(view, config = null) {
-    if (!(view instanceof DataView)
+    if (!isDataView(view)
         || view.byteLength < GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.TARGET_CONFIG.STRIDE) {
         throw new TypeError('capture target config DataView가 필요합니다.');
     }
@@ -503,7 +532,7 @@ export function writeGpuProjectileCaptureTargetConfig(view, config = null) {
 }
 
 export function decodeGpuProjectileCaptureCompletion(view, offset = 0) {
-    if (!(view instanceof DataView)) {
+    if (!isDataView(view)) {
         throw new TypeError('capture completion DataView가 필요합니다.');
     }
     const a = GPU_PROJECTILE_CAPTURE_RUNTIME_ABI.COMPLETION;

@@ -23,6 +23,10 @@ import {
     GAMEPLAY_TEAM_ID
 } from './production/script/module/ingame/contract/gameplay_team_contract.js';
 import {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} from './production/script/module/ingame/contract/projectile_capture_contract.js';
+import {
     EnemySimulationBackend
 } from './production/script/module/ingame/object/enemy/enemy_simulation_backend.js';
 import {
@@ -50,7 +54,8 @@ import {
     GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE,
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
-    GPU_CIRCLE_BODY_RENDER_SHAPE
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
+    GPU_PROJECTILE_CAPTURE_ROLE
 } from './production/script/module/ingame/physics/gpu/gpu_circle_body_abi.js';
 import {
     GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS,
@@ -128,7 +133,7 @@ function createProbe(handle, position, { closestOnly = true } = {}) {
         entityId: handle.entityId,
         incarnation: handle.incarnation,
         position: Object.freeze({ ...position }),
-        velocity: Object.freeze({ x: 0, y: 0 }),
+        velocity: Object.freeze({ x: -18, y: 0 }),
         radius: 0.4,
         inverseMass: 1,
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
@@ -169,8 +174,27 @@ function createProbeIntent(position, {
     return Object.freeze({
         kindId: 'projectile',
         definitionId: `nw-jorang-${commandTag}`,
-        position: Object.freeze({ ...position }),
-        velocity: Object.freeze({ x: 0, y: 0 }),
+        projectileCapturePolicyId:
+            PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: `nw-jorang-${commandTag}`,
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: null,
+        originSourceAbilityId: null,
+        originOwnerEntityId: null,
+        originOwnerIncarnation: null,
+        originSourceEntityId: null,
+        originSourceIncarnation: null,
+        originTargetEntityId: null,
+        originTargetIncarnation: null,
+        projectileCaptureState: Object.freeze({
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE
+        }),
+        position: Object.freeze({ x: position.x + 0.9, y: position.y }),
+        velocity: Object.freeze({ x: -18, y: 0 }),
         radius: 0.4,
         inverseMass: 1,
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE,
@@ -225,12 +249,15 @@ function createPentaIntent(route, spawnSequence, position) {
         }),
         position: Object.freeze({ ...position }),
         velocity: Object.freeze({ x: 0, y: 0 }),
-        flowSpeed: 0,
         contactHandler: null
     });
 }
 
-function createEffectPulseRecord(sourceHandle, sourceTick) {
+function createEffectPulseRecord(
+    sourceHandle,
+    sourceTick,
+    pulseSequence = 0
+) {
     return Object.freeze({
         sourceEntityId: sourceHandle.entityId,
         sourceIncarnation: sourceHandle.incarnation,
@@ -238,11 +265,13 @@ function createEffectPulseRecord(sourceHandle, sourceTick) {
         emitterDefinitionCode:
             PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.emitterDefinitionCode,
         sourceTick,
-        pulseSequence: 0,
+        pulseSequence,
         radiusTiles: PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.pulseRadiusTiles,
         targetLayerMask: GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         targetPolicy: GPU_EFFECT_TARGET_POLICY.HOSTILE_ENEMY,
-        fingerprint: (0x6a0000 + sourceTick) >>> 0,
+        fingerprint: (
+            0x6a0000 + sourceTick + (pulseSequence * 0x100)
+        ) >>> 0,
         flags: GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
             | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
             | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE,
@@ -283,7 +312,13 @@ function findRequiredBody(bodies, handle, label) {
     return body;
 }
 
-function createActualEndpoint(device, format, capacity, corePortReceiver = null) {
+function createActualEndpoint(
+    device,
+    format,
+    capacity,
+    corePortReceiver = null,
+    endpointOptions = {}
+) {
     const dependencies = {
         webGpuPlatformPort: createPlatformPort(device, format),
         enemySimulationBackendFactory: (backendDependencies, backendOptions) => (
@@ -293,7 +328,28 @@ function createActualEndpoint(device, format, capacity, corePortReceiver = null)
     if (corePortReceiver) {
         dependencies.coreImpactCleanupPortReceiver = corePortReceiver;
     }
-    return new GpuEnemySimulationEndpoint(dependencies, { capacity });
+    return new GpuEnemySimulationEndpoint(dependencies, {
+        capacity,
+        ...endpointOptions
+    });
+}
+
+function initializeActualEndpoint(endpoint, tileMap, label) {
+    const ready = endpoint.init(tileMap);
+    const backend = endpoint.getBackend();
+    const runtimeState = backend.getRuntimeState();
+    assert(backend.simulation
+        && ((ready === true && runtimeState === 'gpu-ready')
+            || (ready === false && runtimeState === 'gpu-deferred')),
+    `${label}: endpoint init state mismatch ${JSON.stringify({
+        ready,
+        runtimeState
+    })}`);
+    if (runtimeState === 'gpu-deferred') {
+        assert(backend.simulation.init() === true
+            && backend.getRuntimeState() === 'gpu-ready',
+        `${label}: deferred GPU bootstrap failed`);
+    }
 }
 
 function createActualJorangDirector(endpoint) {
@@ -474,6 +530,18 @@ function assertHealthyBoundary(value, label) {
 }
 
 function drainActualBoundary(endpoint, director, targetFixedTick, coreDirector = null) {
+    const capture = endpoint
+        .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(capture.pending !== true && capture.protocolFailure === null,
+        `T${targetFixedTick}: capture protocol ${JSON.stringify(capture)}`);
+    const releases = endpoint
+        .commitCompletedProjectileCaptureReleaseProgramsAtFixedBoundary(
+            targetFixedTick
+        );
+    assert(releases.pending !== true && releases.protocolFailure === null,
+        `T${targetFixedTick}: release protocol ${JSON.stringify(releases)}`);
     const prepare = endpoint
         .commitCompletedAtomicTransformProgramsAtFixedBoundary(targetFixedTick);
     assert(prepare.pending !== true,
@@ -497,6 +565,8 @@ function drainActualBoundary(endpoint, director, targetFixedTick, coreDirector =
     assert(coreObservation?.recoveryRequired !== true,
         `T${targetFixedTick}: Core observe ${JSON.stringify(coreObservation)}`);
     return Object.freeze({
+        capture,
+        releases,
         prepare,
         preparationObservation,
         events,
@@ -563,7 +633,7 @@ function createOutwardCorePosition(first, second, coreRadius) {
         x /= length;
         y /= length;
     }
-    const distance = (second.radius + coreRadius) * 0.99;
+    const distance = (second.radius + coreRadius) * 0.5;
     return Object.freeze({
         x: second.position.x + (x * distance),
         y: second.position.y + (y * distance)
@@ -585,7 +655,15 @@ function createActivatedJ(route, handle, position, phase) {
         flowSpeed: 0,
         atomicTransformState: Object.freeze({
             ...activated.atomicTransformState,
-            phase
+            phase,
+            triggerSourceTick: phase
+                    === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING
+                ? 1
+                : 0,
+            triggerSequence: phase
+                    === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING
+                ? 1
+                : 0
         })
     });
 }
@@ -625,7 +703,7 @@ async function runFirstHitBatch(device, format, mode = 'admit') {
             ));
             bodies.push(createProbe(
                 probeHandles[index],
-                { x: center.x + 0.2, y: center.y },
+                { x: center.x + 0.9, y: center.y },
                 { closestOnly: !nonClosest }
             ));
         }
@@ -708,7 +786,7 @@ async function runFirstHitBatch(device, format, mode = 'admit') {
             pendingCount,
             unchangedJHealthCount,
             consumedSourceBudgetCount,
-            storageProfile: status.physics.storageProfile
+            storageProfile: status.fixedPrimitives.storageProfile
         });
     } finally {
         backend.destroy();
@@ -747,6 +825,51 @@ function copyView(endpoint, handle, label) {
     return view;
 }
 
+function copyFirstHitMutationBody(body) {
+    return Object.freeze({
+        handle: body.handle,
+        healthFixedPoint: body.healthFixedPoint,
+        alive: body.alive,
+        lifetime: body.lifetime,
+        position: body.position,
+        velocity: body.velocity,
+        flowFieldIndex: body.flowFieldIndex,
+        flowSpeed: body.flowSpeed,
+        atomicTransformState: body.atomicTransformState
+    });
+}
+
+function stableEffectRecords(records) {
+    return [...records].sort((left, right) => (
+        left.effectInstanceId - right.effectInstanceId
+    ));
+}
+
+function stableRegistryView(view) {
+    const metadata = view.metadata ?? {};
+    return Object.freeze({
+        kindId: view.kindId,
+        definitionId: view.definitionId,
+        metadata: Object.freeze({
+            teamId: metadata.teamId,
+            damagePolicyId: metadata.damagePolicyId,
+            allegiancePolicy: metadata.allegiancePolicy,
+            gateId: metadata.gateId,
+            pathId: metadata.pathId,
+            initialWaypointIndex: metadata.initialWaypointIndex,
+            spawnSequence: metadata.spawnSequence,
+            waveId: metadata.waveId,
+            policyId: metadata.policyId,
+            atomicTransformProfileId: metadata.atomicTransformProfileId,
+            lineageRootEntityId: metadata.lineageRootEntityId,
+            lineageRootIncarnation: metadata.lineageRootIncarnation,
+            branchIndex: metadata.branchIndex,
+            bountyBudget: metadata.bountyBudget,
+            transformAtTick: metadata.transformAtTick
+        })
+    });
+}
+
 async function runActualLineageRoundTrip(device, format) {
     const tileMap = new TileMap(OPEN_MAP_DATA);
     const route = tileMap.getSpawnRoutes()[0];
@@ -762,7 +885,7 @@ async function runActualLineageRoundTrip(device, format) {
     let coreDirector = null;
     const coreIntegrity = new CoreIntegrity({ maxIntegrity: 100 });
     try {
-        assert(endpoint.init(tileMap), 'actual lineage endpoint init failed');
+        initializeActualEndpoint(endpoint, tileMap, 'actual lineage');
         director = createActualJorangDirector(endpoint);
         assert(coreCleanupBinding?.port,
             'actual lineage Core cleanup binding missing');
@@ -784,7 +907,12 @@ async function runActualLineageRoundTrip(device, format) {
                 commandId: 'actual-lineage:penta:spawn'
             },
             {
-                intent: createProbeIntent({ x: 4.2, y: 4 }, {
+                intent: createPentaIntent(route, 3, { x: 4, y: 9 }),
+                targetFixedTick: 1,
+                commandId: 'actual-lineage:second-penta:spawn'
+            },
+            {
+                intent: createProbeIntent({ x: 4, y: 4 }, {
                     closestOnly: false,
                     damageOther: 0.4,
                     commandTag: 'generic-pre-damage'
@@ -810,6 +938,11 @@ async function runActualLineageRoundTrip(device, format) {
             'actual-lineage:penta:spawn',
             'actual lineage'
         );
+        const secondPentaHandle = findSpawnHandle(
+            tick1.lifecycle,
+            'actual-lineage:second-penta:spawn',
+            'actual lineage'
+        );
         const sourceAfterPreDamage = findRequiredBody(
             tick1.bodies,
             sourceHandle,
@@ -818,13 +951,6 @@ async function runActualLineageRoundTrip(device, format) {
         assert(sourceAfterPreDamage.healthFixedPoint === 60,
             'actual lineage generic pre-damage must leave 60 centi HP');
 
-        requireAccepted(endpoint.requestSpawn(
-            createProbeIntent(sourceAfterPreDamage.position, {
-                commandTag: 'first-hit'
-            }),
-            2,
-            'actual-lineage:first-hit:spawn'
-        ), 'actual lineage first-hit probe');
         let effectStage = null;
         await advanceActualTick({
             endpoint,
@@ -837,7 +963,10 @@ async function runActualLineageRoundTrip(device, format) {
                     abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
                     sourceTick: 2,
                     batchIdFingerprint: 0x6a0002,
-                    records: [createEffectPulseRecord(pentaHandle, 2)]
+                    records: [
+                        createEffectPulseRecord(pentaHandle, 2),
+                        createEffectPulseRecord(secondPentaHandle, 2, 1)
+                    ]
                 });
                 requireAccepted(effectStage, 'actual lineage Effect pulse stage');
             }
@@ -846,17 +975,35 @@ async function runActualLineageRoundTrip(device, format) {
             endpoint,
             'actual lineage Effect pulse'
         );
-        assert(effectCompletion.appliedInstanceCount === 1
-            && effectCompletion.pulseResults?.[0]?.appliedCount === 1,
-        'actual lineage Effect pulse must apply exactly once');
+        assert(effectCompletion.appliedInstanceCount === 2
+            && effectCompletion.pulseResults?.length === 2
+            && effectCompletion.pulseResults.every(
+                (result) => result.appliedCount === 1
+            ),
+        'actual lineage two Penta pulses must apply exactly once each');
         const sourceEffects = (await readActiveEffectInstances(endpoint, device))
             .filter((entry) => (
                 entry.targetEntityId === sourceHandle.entityId
                 && entry.targetIncarnation === sourceHandle.incarnation
+            ))
+            .sort((left, right) => (
+                left.effectInstanceId - right.effectInstanceId
             ));
-        assert(sourceEffects.length === 1,
-            'actual lineage J must own one GPU Effect instance');
-
+        assert(sourceEffects.length === 2
+            && new Set(sourceEffects.map(
+                (entry) => entry.effectInstanceId
+            )).size === 2
+            && new Set(sourceEffects.map(
+                (entry) => entry.effectInstanceId % 2
+            )).size === 2,
+        'actual lineage J must own two opposite-parity stable Effect instances');
+        requireAccepted(endpoint.requestSpawn(
+            createProbeIntent(sourceAfterPreDamage.position, {
+                commandTag: 'first-hit'
+            }),
+            3,
+            'actual-lineage:first-hit:spawn'
+        ), 'actual lineage first-hit probe');
         const tick3 = await advanceActualTick({
             endpoint,
             director,
@@ -864,9 +1011,6 @@ async function runActualLineageRoundTrip(device, format) {
             tick: 3,
             label: 'actual lineage T3'
         });
-        assert(tick3.boundary.triggerObservation.triggerCount === 1
-            && tick3.atomicStage.candidateCount === 1,
-        'actual lineage first-hit must stage one prepare');
         const preSplitBody = findRequiredBody(
             tick3.bodies,
             sourceHandle,
@@ -880,7 +1024,9 @@ async function runActualLineageRoundTrip(device, format) {
             tick: 4,
             label: 'actual lineage T4'
         });
-        assert(tick4.boundary.preparationObservation.transformCount === 1
+        assert(tick4.boundary.triggerObservation.triggerCount === 1
+            && tick4.atomicStage.candidateCount === 1
+            && tick4.boundary.preparationObservation.transformCount === 1
             && tick4.lifecycle.atomicTransforms.length === 1,
         'actual lineage split must publish one transform');
         const splitTransform = tick4.lifecycle.atomicTransforms[0];
@@ -941,14 +1087,52 @@ async function runActualLineageRoundTrip(device, format) {
             entry.targetEntityId === children[1].entityId
             && entry.targetIncarnation === children[1].incarnation
         ));
-        assert(child0Effects.length === 1
-            && child1Effects.length === 0
-            && child0Effects[0].targetSlot === childBodies[0].index
-            && exactEffectPayloadEqual(sourceEffects[0], child0Effects[0])
+        const distributedEffects = [child0Effects, child1Effects];
+        const effectDestinationIndex = sourceEffects[0].effectInstanceId
+            % children.length;
+        const transferredEffect = distributedEffects[effectDestinationIndex]
+            .find((entry) => (
+                entry.effectInstanceId === sourceEffects[0].effectInstanceId
+            ));
+        const survivingHandle = children[effectDestinationIndex];
+        const survivingBody = childBodies[effectDestinationIndex];
+        const forfeitedIndex = 1 - effectDestinationIndex;
+        const forfeitedHandle = children[forfeitedIndex];
+        const forfeitedBody = childBodies[forfeitedIndex];
+        const distributedEffectIds = distributedEffects
+            .flat()
+            .map((entry) => entry.effectInstanceId)
+            .sort((left, right) => left - right);
+        const sourceEffectIds = sourceEffects
+            .map((entry) => entry.effectInstanceId)
+            .sort((left, right) => left - right);
+        const everyEffectRekeyedExactlyOnce = sourceEffects.every(
+            (sourceEffect) => {
+                const destinationIndex = sourceEffect.effectInstanceId
+                    % children.length;
+                const matches = distributedEffects.flat().filter((entry) => (
+                    entry.effectInstanceId === sourceEffect.effectInstanceId
+                ));
+                return matches.length === 1
+                    && matches[0].targetSlot
+                        === childBodies[destinationIndex].index
+                    && matches[0].targetEntityId
+                        === children[destinationIndex].entityId
+                    && matches[0].targetIncarnation
+                        === children[destinationIndex].incarnation
+                    && exactEffectPayloadEqual(sourceEffect, matches[0]);
+            }
+        );
+        assert(distributedEffects[0].length === 1
+            && distributedEffects[1].length === 1
+            && distributedEffectIds.join(',') === sourceEffectIds.join(',')
+            && everyEffectRekeyedExactlyOnce
+            && transferredEffect.targetSlot === survivingBody.index
+            && exactEffectPayloadEqual(sourceEffects[0], transferredEffect)
             && tick4.runtime.atomic.runtimeStatus
                 === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
             && tick4.runtime.atomic.lastCommittedTransformCount === 1
-            && tick4.runtime.atomic.lastEffectRekeyCount === 1,
+            && tick4.runtime.atomic.lastEffectRekeyCount === 2,
         'actual lineage split Effect/GPU completion mismatch');
 
         requireAccepted(endpoint.requestDespawn(
@@ -957,12 +1141,18 @@ async function runActualLineageRoundTrip(device, format) {
             5,
             'actual-lineage:penta:despawn'
         ), 'actual lineage Penta retire');
+        requireAccepted(endpoint.requestDespawn(
+            secondPentaHandle,
+            'fixture-retire-effect-source',
+            5,
+            'actual-lineage:second-penta:despawn'
+        ), 'actual lineage second Penta retire');
         const coreTemplate = createGpuCoreProxySpawnIntent({
             position: { x: 0, y: 0 }
         });
         const corePosition = createOutwardCorePosition(
-            childBodies[0],
-            childBodies[1],
+            survivingBody,
+            forfeitedBody,
             coreTemplate.radius
         );
         requireAccepted(endpoint.requestSpawn(
@@ -991,17 +1181,27 @@ async function runActualLineageRoundTrip(device, format) {
         });
         const coreImpact = tick6.boundary.coreObservation.facts.find((fact) => (
             fact.type === CORE_IMPACT_FACT_TYPE.IMPACT
-            && exactHandle(fact.enemyHandle, children[1])
+            && exactHandle(fact.enemyHandle, forfeitedHandle)
         ));
         assert(coreImpact
             && coreImpact.bountyBudget === 6
             && coreImpact.bountyEligible === false
             && coreIntegrity.getCurrentIntegrity() === 99
             && tick6.lifecycle.despawned.some(
-                (entry) => exactHandle(entry.handle, children[1])
+                (entry) => exactHandle(entry.handle, forfeitedHandle)
             )
             && coreDirector.getStatus().cleanupCommittedCount === 1,
-        'actual lineage Core forfeiture mismatch');
+        `actual lineage Core forfeiture mismatch: ${JSON.stringify({
+            coreImpact,
+            coreObservation: tick6.boundary.coreObservation,
+            events: tick6.boundary.events,
+            coreIntegrity: coreIntegrity.getCurrentIntegrity(),
+            despawned: tick6.lifecycle.despawned,
+            corePosition,
+            tick5Bodies: tick5.bodies,
+            tick6Bodies: tick6.bodies,
+            coreStatus: coreDirector.getStatus()
+        })}`);
         requireAccepted(endpoint.requestDespawn(
             coreHandle,
             'fixture-retire-core-proxy',
@@ -1038,7 +1238,7 @@ async function runActualLineageRoundTrip(device, format) {
         'actual lineage return became eligible before T-1');
         const returnSourceBeforeDamage = findRequiredBody(
             tick62.bodies,
-            children[0],
+            survivingHandle,
             'actual lineage surviving child'
         );
         requireAccepted(endpoint.requestSpawn(
@@ -1058,7 +1258,7 @@ async function runActualLineageRoundTrip(device, format) {
         });
         const damagedSource = findRequiredBody(
             tick63.bodies,
-            children[0],
+            survivingHandle,
             'actual lineage damaged return source'
         );
         assert(tick63.atomicStage.candidateCount === 1
@@ -1073,7 +1273,7 @@ async function runActualLineageRoundTrip(device, format) {
             label: 'actual lineage T64'
         });
         const returnPrepare = tick64.boundary.prepare.records.find(
-            (record) => exactHandle(record.sourceHandle, children[0])
+            (record) => exactHandle(record.sourceHandle, survivingHandle)
         );
         assert(returnPrepare
             && returnPrepare.currentHealthFixedPoint
@@ -1086,8 +1286,8 @@ async function runActualLineageRoundTrip(device, format) {
         assert(returnTransform.topologyId
                 === ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.ONE_TO_ONE_DELAYED
             && returnTransform.destinationHandles.length === 1
-            && returnedHandle.entityId === children[0].entityId
-            && returnedHandle.incarnation === children[0].incarnation + 1,
+            && returnedHandle.entityId === survivingHandle.entityId
+            && returnedHandle.incarnation === survivingHandle.incarnation + 1,
         'actual lineage delayed return identity mismatch');
         const returnedBody = findRequiredBody(
             tick64.bodies,
@@ -1130,7 +1330,7 @@ async function runActualLineageRoundTrip(device, format) {
             && returnedView.metadata?.lineageRootEntityId === sourceHandle.entityId
             && returnedView.metadata?.lineageRootIncarnation
                 === sourceHandle.incarnation
-            && returnedView.metadata?.branchIndex === 0
+            && returnedView.metadata?.branchIndex === effectDestinationIndex
             && returnedView.metadata?.bountyBudget === 6
             && returnedView.metadata?.transformAtTick === 0
             && countDefinition(endpoint, circlePrime.id) === 0
@@ -1165,10 +1365,30 @@ async function runActualLineageRoundTrip(device, format) {
                 ),
                 effectTransferDestinationIndex:
                     splitTransform.effectTransferDestinationIndex,
+                effectDefinitionTransferDestinationIndex:
+                    effectDestinationIndex,
+                effectDistributionPolicy:
+                    PENTA_BOOST_EFFECT_DEFINITION
+                        .atomicTransformTransferPolicy,
                 child0EffectInstanceCount: child0Effects.length,
                 child1EffectInstanceCount: child1Effects.length,
+                sourceEffectInstanceCount: sourceEffects.length,
+                sourceEffectInstanceIds: Object.freeze(sourceEffectIds),
+                sourceEffectDestinationParity: Object.freeze(
+                    sourceEffects.map((entry) => (
+                        entry.effectInstanceId % children.length
+                    ))
+                ),
+                distributedEffectInstanceCount:
+                    distributedEffects[0].length
+                        + distributedEffects[1].length,
+                distributedEffectInstanceIds:
+                    Object.freeze(distributedEffectIds),
+                everyEffectRekeyedExactlyOnce,
+                effectCloneCount: 0,
+                effectDropCount: 0,
                 effectTargetSlotMatchesBody:
-                    child0Effects[0].targetSlot === childBodies[0].index,
+                    transferredEffect.targetSlot === survivingBody.index,
                 exactEffectPayloadPreserved: true,
                 gpuCommittedCount:
                     tick4.runtime.atomic.lastCommittedTransformCount,
@@ -1223,18 +1443,18 @@ async function runActualFiveToFourPlusOne(device, format) {
     const endpoint = createActualEndpoint(device, format, 16);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'actual 5-to-4+1 endpoint init failed');
+        initializeActualEndpoint(endpoint, tileMap, 'actual 5-to-4+1');
         director = createActualJorangDirector(endpoint);
         const requests = [];
         for (let index = 0; index < 5; index++) {
-            const center = { x: 3 + (index * 2), y: 4 };
+            const center = { x: 3 + (index * 4), y: 4 };
             requests.push({
                 intent: createNaturalJorangIntent(route, index + 1, center),
                 targetFixedTick: 1,
                 commandId: 'actual-burst:j:' + index
             }, {
                 intent: createProbeIntent(
-                    { x: center.x + 0.2, y: center.y },
+                    center,
                     {
                         health: 2,
                         commandTag: 'burst-first-hit-' + index
@@ -1278,56 +1498,68 @@ async function runActualFiveToFourPlusOne(device, format) {
             tick: 3,
             label: 'actual 5-to-4+1 T3'
         });
-        const firstStartedSources = tick3.lifecycle.atomicTransforms.map(
+        const firstStartedSources = tick2.lifecycle.atomicTransforms.map(
             (entry) => entry.sourceHandles[0].entityId
         );
-        assert(tick3.boundary.prepare.records.length === 5
-            && tick3.boundary.preparationObservation.transformCount
+        assert(tick2.boundary.prepare.records.length === 5
+            && tick2.boundary.preparationObservation.transformCount
                 === JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
-            && tick3.lifecycle.atomicTransforms.length === 4
+            && tick2.atomicStage.candidateCount === 5
+            && tick2.lifecycle.atomicTransforms.length === 4
             && firstStartedSources.join(',')
                 === sources.slice(0, 4).map((handle) => handle.entityId).join(',')
+            && tick2.runtime.atomic.runtimeStatus
+                === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
+            && tick2.runtime.atomic.lastCommittedTransformCount === 4
+            && tick3.boundary.prepare.records.length === 1
+            && tick3.boundary.preparationObservation.transformCount === 1
+            && tick3.lifecycle.atomicTransforms.length === 1
+            && exactHandle(
+                tick3.lifecycle.atomicTransforms[0].sourceHandles[0],
+                sources[4]
+            )
             && tick3.runtime.atomic.runtimeStatus
                 === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
-            && tick3.runtime.atomic.lastCommittedTransformCount === 4,
-        'actual 5-to-4+1 first publication mismatch');
+            && tick3.runtime.atomic.lastCommittedTransformCount === 1,
+        `actual 5-to-4+1 publication cadence mismatch: ${JSON.stringify({
+            firstPrepareRecordCount: tick2.boundary.prepare.records.length,
+            firstPreparationObservation:
+                tick2.boundary.preparationObservation,
+            firstStageCandidateCount: tick2.atomicStage.candidateCount,
+            firstLifecycleTransformCount:
+                tick2.lifecycle.atomicTransforms.length,
+            firstStartedSources,
+            expectedSources: sources.slice(0, 4).map(
+                (handle) => handle.entityId
+            ),
+            firstGpuCommittedCount:
+                tick2.runtime.atomic.lastCommittedTransformCount,
+            secondPrepareRecordCount: tick3.boundary.prepare.records.length,
+            secondPreparationObservation:
+                tick3.boundary.preparationObservation,
+            secondLifecycleTransformCount:
+                tick3.lifecycle.atomicTransforms.length,
+            secondGpuCommittedCount:
+                tick3.runtime.atomic.lastCommittedTransformCount,
+            directorStatus: director.getStatus()
+        })}`);
 
-        const tick4 = await advanceActualTick({
-            endpoint,
-            director,
-            tick: 4,
-            label: 'actual 5-to-4+1 T4'
-        });
-        assert(tick4.boundary.prepare.records.length === 1
-            && exactHandle(
-                tick4.boundary.prepare.records[0].sourceHandle,
-                sources[4]
-            )
-            && tick4.boundary.preparationObservation.transformCount === 1
-            && tick4.lifecycle.atomicTransforms.length === 1
-            && exactHandle(
-                tick4.lifecycle.atomicTransforms[0].sourceHandles[0],
-                sources[4]
-            )
-            && tick4.runtime.atomic.runtimeStatus
-                === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
-            && tick4.runtime.atomic.lastCommittedTransformCount === 1
-            && countDefinition(endpoint, circlePrime.id) === 10
+        assert(countDefinition(endpoint, circlePrime.id) === 10
             && countDefinition(endpoint, BASIC_JORANG_ENEMY_DATA.id) === 0
             && director.getStatus().pendingFirstHitCount === 0,
-        'actual 5-to-4+1 backlog publication mismatch');
+        'actual 5-to-4+1 final roster mismatch');
         return Object.freeze({
             admittedFirstHitCount: tick2.boundary.triggerObservation.triggerCount,
-            firstPrepareCandidateCount: tick3.boundary.prepare.records.length,
+            firstPrepareCandidateCount: tick2.boundary.prepare.records.length,
             firstLifecycleTransformCount:
-                tick3.lifecycle.atomicTransforms.length,
+                tick2.lifecycle.atomicTransforms.length,
             firstGpuCommittedCount:
-                tick3.runtime.atomic.lastCommittedTransformCount,
-            secondPrepareCandidateCount: tick4.boundary.prepare.records.length,
+                tick2.runtime.atomic.lastCommittedTransformCount,
+            secondPrepareCandidateCount: tick3.boundary.prepare.records.length,
             secondLifecycleTransformCount:
-                tick4.lifecycle.atomicTransforms.length,
+                tick3.lifecycle.atomicTransforms.length,
             secondGpuCommittedCount:
-                tick4.runtime.atomic.lastCommittedTransformCount,
+                tick3.runtime.atomic.lastCommittedTransformCount,
             sourceOrderExact: true,
             hostStartsByTick: Object.freeze([4, 1]),
             finalCirclePrimeCount: countDefinition(endpoint, circlePrime.id),
@@ -1348,7 +1580,7 @@ async function runActualCapacityRestage(device, format) {
     const endpoint = createActualEndpoint(device, format, 2);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'actual capacity endpoint init failed');
+        initializeActualEndpoint(endpoint, tileMap, 'actual capacity');
         director = createActualJorangDirector(endpoint);
         requireAccepted(endpoint.requestSpawnBatch([
             {
@@ -1357,7 +1589,7 @@ async function runActualCapacityRestage(device, format) {
                 commandId: 'actual-capacity:j:spawn'
             },
             {
-                intent: createProbeIntent({ x: 4.2, y: 4 }, {
+                intent: createProbeIntent({ x: 4, y: 4 }, {
                     health: 2,
                     commandTag: 'capacity-first-hit'
                 }),
@@ -1481,6 +1713,344 @@ async function runActualCapacityRestage(device, format) {
     }
 }
 
+async function runActualFirstHitEventCapacityBackoff(device, format) {
+    const tileMap = new TileMap(OPEN_MAP_DATA);
+    const route = tileMap.getSpawnRoutes()[0];
+    const circlePrime = resolveBasicCirclePrimeTransformPrivateDefinition();
+    const endpoint = createActualEndpoint(
+        device,
+        format,
+        8,
+        null,
+        { eventCapacity: 1 }
+    );
+    let director = null;
+    try {
+        initializeActualEndpoint(
+            endpoint,
+            tileMap,
+            'actual first-hit event-capacity'
+        );
+        director = createActualJorangDirector(endpoint);
+        const staticJ = (spawnSequence, position) => Object.freeze({
+            ...createNaturalJorangIntent(route, spawnSequence, position),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            // The capacity probe isolates the producer-neutral first-hit
+            // reservation. Reciprocal generic Enemy contact events would
+            // consume the same public event array before the atomic seal.
+            contactHandler: null
+        });
+        requireAccepted(endpoint.requestSpawnBatch([
+            {
+                intent: staticJ(1, { x: 4, y: 4 }),
+                targetFixedTick: 1,
+                commandId: 'actual-event-capacity:j:0'
+            },
+            {
+                intent: staticJ(2, { x: 10, y: 4 }),
+                targetFixedTick: 1,
+                commandId: 'actual-event-capacity:j:1'
+            },
+            {
+                intent: createPentaIntent(route, 3, { x: 7, y: 4 }),
+                targetFixedTick: 1,
+                commandId: 'actual-event-capacity:penta'
+            }
+        ]), 'actual first-hit event-capacity seed batch');
+        const tick1 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 1,
+            label: 'actual first-hit event-capacity T1'
+        });
+        const jHandles = [0, 1].map((index) => findSpawnHandle(
+            tick1.lifecycle,
+            `actual-event-capacity:j:${index}`,
+            'actual first-hit event-capacity'
+        ));
+        const pentaHandle = findSpawnHandle(
+            tick1.lifecycle,
+            'actual-event-capacity:penta',
+            'actual first-hit event-capacity'
+        );
+
+        await advanceActualTick({
+            endpoint,
+            director,
+            tick: 2,
+            label: 'actual first-hit event-capacity T2',
+            beforeSubmit: () => requireAccepted(
+                endpoint.getBackend().stageEffectPulseProgramBatch({
+                    abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+                    sourceTick: 2,
+                    batchIdFingerprint: 0x6b0002,
+                    records: [createEffectPulseRecord(pentaHandle, 2)]
+                }),
+                'actual first-hit event-capacity Effect stage'
+            )
+        });
+        const effectCompletion = await waitForDirectEffectCompletion(
+            endpoint,
+            'actual first-hit event-capacity Effect pulse'
+        );
+        assert(effectCompletion.appliedInstanceCount === 2
+            && effectCompletion.pulseResults?.[0]?.appliedCount === 2,
+        'actual first-hit event-capacity must seed two Effect instances');
+        const baselineBodies = await readBodies(endpoint.getBackend());
+        const baselineJ = jHandles.map((handle, index) => (
+            copyFirstHitMutationBody(findRequiredBody(
+                baselineBodies,
+                handle,
+                `actual first-hit event-capacity baseline J${index}`
+            ))
+        ));
+        const baselineViews = jHandles.map((handle, index) => (
+            stableRegistryView(copyView(
+                endpoint,
+                handle,
+                `actual first-hit event-capacity baseline view J${index}`
+            ))
+        ));
+        const baselineEffects = stableEffectRecords(
+            await readActiveEffectInstances(endpoint, device)
+        );
+        assert(baselineEffects.length === 2
+            && jHandles.every((handle) => baselineEffects.some((entry) => (
+                entry.targetEntityId === handle.entityId
+                && entry.targetIncarnation === handle.incarnation
+            ))),
+        'actual first-hit event-capacity Effect baseline mismatch');
+
+        const probeCommands = jHandles.map((_, index) => (
+            `actual-event-capacity:probe:${index}`
+        ));
+        requireAccepted(endpoint.requestSpawnBatch(jHandles.map(
+            (handle, index) => ({
+                intent: createProbeIntent(baselineJ[index].position, {
+                    health: 2,
+                    commandTag: `event-capacity-${index}`
+                }),
+                targetFixedTick: 3,
+                commandId: probeCommands[index]
+            })
+        )), 'actual first-hit event-capacity probe batch');
+        const tick3 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 3,
+            label: 'actual first-hit event-capacity T3'
+        });
+        const probeHandles = probeCommands.map((commandId) => findSpawnHandle(
+            tick3.lifecycle,
+            commandId,
+            'actual first-hit event-capacity'
+        ));
+        const rejectedJ = jHandles.map((handle, index) => (
+            copyFirstHitMutationBody(findRequiredBody(
+                tick3.bodies,
+                handle,
+                `actual first-hit event-capacity rejected J${index}`
+            ))
+        ));
+        const rejectedProbes = probeHandles.map((handle, index) => (
+            copyFirstHitMutationBody(findRequiredBody(
+                tick3.bodies,
+                handle,
+                `actual first-hit event-capacity rejected probe${index}`
+            ))
+        ));
+        const rejectedViews = jHandles.map((handle, index) => (
+            stableRegistryView(copyView(
+                endpoint,
+                handle,
+                `actual first-hit event-capacity rejected view J${index}`
+            ))
+        ));
+        const rejectedEffects = stableEffectRecords(
+            await readActiveEffectInstances(endpoint, device)
+        );
+        const exactFirstHitStatePreserved = rejectedJ.every((body, index) => (
+            body.healthFixedPoint === baselineJ[index].healthFixedPoint
+            && body.alive === baselineJ[index].alive
+            && body.lifetime === baselineJ[index].lifetime
+            && body.flowFieldIndex === baselineJ[index].flowFieldIndex
+            && body.flowSpeed === baselineJ[index].flowSpeed
+            && JSON.stringify(body.atomicTransformState)
+                === JSON.stringify(baselineJ[index].atomicTransformState)
+        ));
+        assert(exactFirstHitStatePreserved
+            && rejectedProbes.every((body) => body.healthFixedPoint === 200)
+            && JSON.stringify(rejectedViews) === JSON.stringify(baselineViews)
+            && JSON.stringify(rejectedEffects)
+                === JSON.stringify(baselineEffects)
+            && jHandles.every((handle) => findRequiredBody(
+                tick3.bodies,
+                handle,
+                'actual first-hit event-capacity armed source'
+            ).atomicTransformState?.phase
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED)
+            && director.getStatus().pendingFirstHitCount === 0
+            && !endpoint.requiresRecovery()
+            && !director.requiresRecovery(),
+        `actual first-hit event-capacity rejection mutated bilateral state: ${JSON.stringify({
+            baselineJ,
+            rejectedJ,
+            rejectedProbes,
+            baselineViews,
+            rejectedViews,
+            baselineEffects,
+            rejectedEffects,
+            pendingFirstHitCount: director.getStatus().pendingFirstHitCount,
+            endpointRecovery: endpoint.requiresRecovery(),
+            directorStatus: director.getStatus()
+        })}`);
+
+        let capacityBoundary = null;
+        const tick4 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 4,
+            label: 'actual first-hit event-capacity T4',
+            beforeStage: (boundary) => {
+                capacityBoundary = boundary;
+                const snapshot = boundary.events;
+                assert(snapshot.atomicTransformFirstHitCapacityRejected === true
+                    && snapshot
+                        .retryableAtomicTransformFirstHitCapacityRejected
+                        === true
+                    && snapshot.atomicTransformFirstHitRejectionReason
+                        === 'atomic-transform-first-hit-event-capacity'
+                    && snapshot.atomicTransformFirstHitCandidateCount === 2
+                    && snapshot.atomicTransformFirstHitCommittedCount === 0
+                    && snapshot.atomicTransformFirstHitEventBase === 0
+                    && snapshot.atomicTransformFirstHitEventCapacity === 1
+                    && snapshot.events.length === 0
+                    && snapshot.protocolFailure === null
+                    && boundary.triggerObservation.accepted === true
+                    && boundary.triggerObservation.retryable === true
+                    && boundary.triggerObservation.capacityRejectionCount === 1
+                    && boundary.triggerObservation.triggerCount === 0,
+                'actual first-hit event-capacity public evidence mismatch');
+                for (let index = 0; index < probeHandles.length; index++) {
+                    requireAccepted(endpoint.requestDespawn(
+                        probeHandles[index],
+                        'fixture-retry-after-event-capacity',
+                        4,
+                        `actual-event-capacity:probe-retire:${index}`
+                    ), 'actual first-hit event-capacity probe retire');
+                }
+                requireAccepted(endpoint.requestSpawn(
+                    createProbeIntent(rejectedJ[0].position, {
+                        health: 2,
+                        commandTag: 'event-capacity-retry'
+                    }),
+                    4,
+                    'actual-event-capacity:retry-probe'
+                ), 'actual first-hit event-capacity retry probe');
+            }
+        });
+        assert(capacityBoundary
+            && director.getStatus().retryableFirstHitEventCapacityCount === 1
+            && findRequiredBody(
+                tick4.bodies,
+                jHandles[0],
+                'actual first-hit event-capacity retry target'
+            ).atomicTransformState?.phase
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING
+            && findRequiredBody(
+                tick4.bodies,
+                jHandles[1],
+                'actual first-hit event-capacity untouched peer'
+            ).atomicTransformState?.phase
+                === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.ARMED,
+        'actual first-hit event-capacity later-tick retry did not commit once');
+        const retryProbeHandle = findSpawnHandle(
+            tick4.lifecycle,
+            'actual-event-capacity:retry-probe',
+            'actual first-hit event-capacity retry'
+        );
+        const tick5 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 5,
+            label: 'actual first-hit event-capacity T5',
+            beforeStage: () => requireAccepted(endpoint.requestDespawn(
+                retryProbeHandle,
+                'fixture-retire-event-capacity-retry',
+                5,
+                'actual-event-capacity:retry-probe-retire'
+            ), 'actual first-hit event-capacity retry probe retire')
+        });
+        assert(tick5.boundary.triggerObservation.triggerCount === 1
+            && tick5.boundary.triggerObservation.capacityRejectionCount === 0
+            && tick5.atomicStage.candidateCount === 1
+            && tick5.boundary.preparationObservation.transformCount === 1
+            && tick5.lifecycle.atomicTransforms.length === 1
+            && tick5.runtime.atomic.lastCommittedTransformCount === 1
+            && countDefinition(endpoint, circlePrime.id) === 2
+            && countDefinition(endpoint, BASIC_JORANG_ENEMY_DATA.id) === 1
+            && !endpoint.requiresRecovery()
+            && !director.requiresRecovery(),
+        `actual first-hit event-capacity retry split did not succeed: ${JSON.stringify({
+            prepare: tick5.boundary.prepare,
+            preparationObservation:
+                tick5.boundary.preparationObservation,
+            lifecycle: tick5.lifecycle,
+            runtimeAtomic: tick5.runtime.atomic,
+            circlePrimeCount: countDefinition(endpoint, circlePrime.id),
+            jorangCount: countDefinition(
+                endpoint,
+                BASIC_JORANG_ENEMY_DATA.id
+            ),
+            endpointRecovery: endpoint.requiresRecovery(),
+            directorStatus: director.getStatus()
+        })}`);
+
+        return Object.freeze({
+            rejectionReason:
+                capacityBoundary.events
+                    .atomicTransformFirstHitRejectionReason,
+            retryable: capacityBoundary.events
+                .retryableAtomicTransformFirstHitCapacityRejected,
+            candidateCount: capacityBoundary.events
+                .atomicTransformFirstHitCandidateCount,
+            committedCount: capacityBoundary.events
+                .atomicTransformFirstHitCommittedCount,
+            eventBase: capacityBoundary.events
+                .atomicTransformFirstHitEventBase,
+            eventCapacity: capacityBoundary.events
+                .atomicTransformFirstHitEventCapacity,
+            triggerEventCountAtRejection:
+                capacityBoundary.events.events.length,
+            sourcePhaseUnchanged: true,
+            sourceHealthUnchanged: true,
+            sourcePoseFlowVelocityUnchanged: true,
+            sourceMetadataUnchanged: true,
+            sourceBudgetUnchanged: rejectedProbes.every(
+                (body) => body.healthFixedPoint === 200
+            ),
+            effectInstancesUnchanged:
+                JSON.stringify(rejectedEffects)
+                    === JSON.stringify(baselineEffects),
+            recoveryRequiredAtRejection: false,
+            directorRetryableCapacityCount:
+                director.getStatus().retryableFirstHitEventCapacityCount,
+            retryTriggerCount: tick5.boundary.triggerObservation.triggerCount,
+            retryPrepareCandidateCount: tick5.atomicStage.candidateCount,
+            retryLifecycleTransformCount:
+                tick5.lifecycle.atomicTransforms.length,
+            retryGpuCommittedCount:
+                tick5.runtime.atomic.lastCommittedTransformCount,
+            finalCirclePrimeCount: countDefinition(endpoint, circlePrime.id),
+            requiresRecovery: endpoint.requiresRecovery()
+                || director.requiresRecovery()
+        });
+    } finally {
+        director?.destroy();
+        endpoint.destroy();
+    }
+}
+
 async function seedActualPrepare(endpoint, director, route, prefix) {
     requireAccepted(endpoint.requestSpawnBatch([
         {
@@ -1489,7 +2059,7 @@ async function seedActualPrepare(endpoint, director, route, prefix) {
             commandId: prefix + ':j:spawn'
         },
         {
-            intent: createProbeIntent({ x: 4.2, y: 4 }, {
+            intent: createProbeIntent({ x: 4, y: 4 }, {
                 health: 2,
                 commandTag: prefix + '-first-hit'
             }),
@@ -1508,16 +2078,15 @@ async function seedActualPrepare(endpoint, director, route, prefix) {
         prefix + ':j:spawn',
         prefix
     );
-    const tick2 = await advanceActualTick({
-        endpoint,
-        director,
-        tick: 2,
-        label: prefix + ' T2'
-    });
-    assert(tick2.boundary.triggerObservation.triggerCount === 1
-        && tick2.atomicStage.candidateCount === 1,
-    prefix + ' did not stage an authentic prepare');
-    return Object.freeze({ sourceHandle, tick1, tick2 });
+    const pendingBody = findRequiredBody(
+        tick1.bodies,
+        sourceHandle,
+        prefix + ' pending J'
+    );
+    assert(pendingBody.atomicTransformState?.phase
+            === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING,
+    prefix + ' did not author an authentic pending first hit');
+    return Object.freeze({ sourceHandle, tick1 });
 }
 
 async function runActualUnpublishedTerminal(device, format) {
@@ -1527,7 +2096,7 @@ async function runActualUnpublishedTerminal(device, format) {
     const endpoint = createActualEndpoint(device, format, 4);
     let director = null;
     try {
-        assert(endpoint.init(tileMap), 'unpublished terminal endpoint init failed');
+        initializeActualEndpoint(endpoint, tileMap, 'unpublished terminal');
         director = createActualJorangDirector(endpoint);
         const seeded = await seedActualPrepare(
             endpoint,
@@ -1535,15 +2104,19 @@ async function runActualUnpublishedTerminal(device, format) {
             route,
             'actual-terminal-unpublished'
         );
-        director.closeForTerminal(3, 'run-defeated');
-        endpoint.closeGameplayIngress('run-defeated', 3);
+        const boundary = drainActualBoundary(endpoint, director, 2);
+        assert(boundary.preparationObservation.transformCount === 1
+            && boundary.triggerObservation.triggerCount === 1,
+        'unpublished terminal authentic prepare missing');
+        director.closeForTerminal(2, 'run-defeated');
+        endpoint.closeGameplayIngress('run-defeated', 2);
         const lifecycle = assertHealthyBoundary(
-            endpoint.commitAtFixedBoundary(3),
+            endpoint.commitAtFixedBoundary(2),
             'unpublished terminal lifecycle'
         );
-        director.observeFixedCommit(lifecycle, 3);
-        director.observeLifecycle(lifecycle, 3);
-        assert(endpoint.fixedUpdate(FIXED_DELTA, 3),
+        director.observeFixedCommit(lifecycle, 2);
+        director.observeLifecycle(lifecycle, 2);
+        assert(endpoint.fixedUpdate(FIXED_DELTA, 2),
             'unpublished terminal final submit failed');
         const runtime = await waitForActualRuntime(
             endpoint,
@@ -1575,7 +2148,7 @@ async function runActualUnpublishedTerminal(device, format) {
             && directorTerminal?.fixedCommitObserved === true
             && directorTerminal?.lifecycleObserved === true
             && directorTerminal?.rosterSealed === true
-            && director.getStatus().lastFixedCommitTick === 3
+            && director.getStatus().lastFixedCommitTick === 2
             && !endpoint.requiresRecovery()
             && !director.requiresRecovery(),
         'unpublished terminal did not cancel before host publication');
@@ -1616,9 +2189,9 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
     let oldSessionGeneration = 0;
     let published = null;
     try {
-        assert(endpoint.init(tileMap), 'published terminal endpoint init failed');
+        initializeActualEndpoint(endpoint, tileMap, 'published terminal');
         director = createActualJorangDirector(endpoint);
-        await seedActualPrepare(
+        const seeded = await seedActualPrepare(
             endpoint,
             director,
             route,
@@ -1627,33 +2200,33 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
         oldPort = endpoint.getAtomicTransformCommandPort();
         oldSessionGeneration = endpoint.getStatus().sessionGeneration;
 
-        const boundary = drainActualBoundary(endpoint, director, 3);
+        const boundary = drainActualBoundary(endpoint, director, 2);
         assert(boundary.preparationObservation.transformCount === 1,
             'published terminal authentic prepare missing');
-        const stage = director.stageForFixedTick({ targetFixedTick: 3 });
-        requireAccepted(stage, 'published terminal T3 restage');
+        const stage = director.stageForFixedTick({ targetFixedTick: 2 });
+        requireAccepted(stage, 'published terminal T2 restage');
         const lifecycle = assertHealthyBoundary(
-            endpoint.commitAtFixedBoundary(3),
+            endpoint.commitAtFixedBoundary(2),
             'published terminal lifecycle'
         );
-        director.observeFixedCommit(lifecycle, 3);
-        director.observeLifecycle(lifecycle, 3);
+        director.observeFixedCommit(lifecycle, 2);
+        director.observeLifecycle(lifecycle, 2);
         const beforeCloseAtomic = endpoint.getBackend()
             .getAtomicTransformRuntimeStatus();
         assert(lifecycle.atomicTransforms.length === 1
             && countDefinition(endpoint, circlePrime.id) === 2
             && beforeCloseAtomic.pendingTransformCount === 1
-            && director.getStatus().lastFixedCommitTick === 3,
+            && director.getStatus().lastFixedCommitTick === 2,
         'published terminal host publication was not complete before close');
 
-        director.closeForTerminal(3, 'run-defeated');
+        director.closeForTerminal(2, 'run-defeated');
         const directorTerminal = director.getStatus().terminal;
         assert(directorTerminal?.fixedCommitObserved === true
             && directorTerminal?.lifecycleObserved === true
             && directorTerminal?.rosterSealed === true,
         'published terminal prior observations were not preserved at close');
-        endpoint.closeGameplayIngress('run-defeated', 3);
-        assert(endpoint.fixedUpdate(FIXED_DELTA, 3),
+        endpoint.closeGameplayIngress('run-defeated', 2);
+        assert(endpoint.fixedUpdate(FIXED_DELTA, 2),
             'published terminal final submit failed');
         const runtime = await waitForActualRuntime(endpoint, 'published terminal');
         const bodies = await readBodies(endpoint.getBackend());
@@ -1676,7 +2249,7 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
             && terminal.owner?.pendingTransformCount === 0
             && terminal.owner?.pendingReadbackCount === 0
             && terminal.backend?.state === 'submitted'
-            && terminal.backend?.submittedTick === 3
+            && terminal.backend?.submittedTick === 2
             && terminal.backend?.pendingPrepareCount === 0
             && terminal.backend?.pendingTransformCount === 0
             && terminal.backend?.pendingReadbackCount === 0
@@ -1733,8 +2306,11 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
     const replacementEndpoint = createActualEndpoint(device, format, 4);
     let replacementDirector = null;
     try {
-        assert(replacementEndpoint.init(tileMap),
-            'replacement endpoint init failed');
+        initializeActualEndpoint(
+            replacementEndpoint,
+            tileMap,
+            'replacement endpoint'
+        );
         replacementDirector = createActualJorangDirector(replacementEndpoint);
         requireAccepted(replacementEndpoint.requestSpawn(
             createNaturalJorangIntent(route, 1, { x: 4, y: 4 }),
@@ -1828,6 +2404,10 @@ async function runFixture(device, format) {
     const lineageRoundTrip = await runActualLineageRoundTrip(device, format);
     const fiveToFourPlusOne = await runActualFiveToFourPlusOne(device, format);
     const capacityRestage = await runActualCapacityRestage(device, format);
+    const firstHitEventCapacity = await runActualFirstHitEventCapacityBackoff(
+        device,
+        format
+    );
     const terminalReplacement = await runActualPublishedTerminalAndReplacement(
         device,
         format
@@ -1857,6 +2437,17 @@ async function runFixture(device, format) {
                 admitted.consumedSourceBudgetCount
         }),
         triggerScope: Object.freeze({
+            contract: 'first-valid-positive-damage-hit',
+            commonProducerKinds: Object.freeze([
+                'projectile',
+                'explosion',
+                'effect',
+                'direct',
+                'melee'
+            ]),
+            actualTriggerProducer: 'projectile',
+            projectileHitPolicyValidatedBeforeCommonSeam: true,
+            futureProducerExecutionClaimed: false,
             nonClosestTriggerEventCount: nonClosest.triggerEventCount,
             nonClosestPendingCount: nonClosest.pendingCount,
             nonClosestUnchangedJHealthCount:
@@ -1868,12 +2459,21 @@ async function runFixture(device, format) {
             lineageRoundTrip,
             fiveToFourPlusOne,
             capacityRestage,
+            firstHitEventCapacity,
             terminalReplacement
         }),
         storageProfile: Object.freeze({
             atomicTransformFirstHit:
                 admitted.storageProfile.atomicTransformFirstHit,
             requiredMaximum: admitted.storageProfile.requiredMaximum
+        }),
+        presentation: Object.freeze({
+            definitionShape: BASIC_JORANG_ENEMY_DATA.shapeDefinitionId,
+            gpuShapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG,
+            dedicatedJorangShape:
+                BASIC_JORANG_ENEMY_DATA.shapeDefinitionId === 'jorang'
+                && GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
+                    !== GPU_CIRCLE_BODY_RENDER_SHAPE.GEN
         })
     });
 }

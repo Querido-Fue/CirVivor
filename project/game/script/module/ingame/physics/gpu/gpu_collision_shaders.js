@@ -59,6 +59,9 @@ import {
 import {
     GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE
 } from '../../../../data/object/enemy/enemy_projectile_capture_catalog_data.js';
+import {
+    GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL
+} from './gpu_atomic_transform_positive_damage_hit_shaders.js';
 
 const WGSL_POLYGON_POINT_CAPACITY = 8;
 
@@ -226,6 +229,7 @@ const ATOMIC_TRANSFORM_CANDIDATE_STATUS_SOURCE_BUDGET_RESERVATION_FAILED: u32 = 
 const ATOMIC_TRANSFORM_CANDIDATE_STATUS_PHASE_COMPARE_EXCHANGE_FAILED: u32 = ${GPU_CIRCLE_ATOMIC_TRANSFORM_CANDIDATE_STATUS.PHASE_COMPARE_EXCHANGE_FAILED}u;
 const ATOMIC_TRANSFORM_FIRST_HIT_MARKER_WINNER: u32 = 0x7fc00050u;
 const ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD: u32 = 0x7fc00051u;
+const PROJECTILE_CAPTURE_PREPARED_SHIELD: u32 = 0x7fc00052u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE}u;
 const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
@@ -779,6 +783,8 @@ fn body_id_is_simulation_active(body_id: u32) -> bool {
     return body_is_alive(flags)
         && !body_has_flag(flags, BODY_FLAG_PROJECTILE_CAPTURED);
 }
+
+${GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL}
 
 fn snapshot_tower_attack_damage(source_slot: u32, destination_slot: u32) {
     let source_identity_matches = effect_summaries.values[source_slot].entity_id
@@ -2743,6 +2749,13 @@ fn directional_defense_flat_reduction(contact: Contact) -> i32 {
     return max(bitcast<i32>(contact.normal.x), 0);
 }
 
+fn directional_defense_marker_payload() -> f32 {
+    // NaN payload는 WGSL constant expression에서 representable f32가 아닙니다.
+    // Runtime local을 거쳐 bit pattern을 보존합니다.
+    var marker_bits: u32 = DIRECTIONAL_DEFENSE_MARKER_MAGIC;
+    return bitcast<f32>(marker_bits);
+}
+
 fn selected_target_tower_marker_for_policy(policy_event_flag: u32) -> u32 {
     if (policy_event_flag == APPLIED_EVENT_FLAG_ENTER_POLICY) {
         return SELECTED_TARGET_TOWER_MARKER_MAGIC
@@ -3249,7 +3262,7 @@ fn classify_directional_defense_contacts(
     );
     contacts.values[contact_index].normal = vec2f(
         bitcast<f32>(flat_reduction),
-        bitcast<f32>(DIRECTIONAL_DEFENSE_MARKER_MAGIC)
+        directional_defense_marker_payload()
     );
 }
 
@@ -3702,52 +3715,33 @@ fn resolve_maximum_damage_window(
     ));
 }
 
-/** Current production validity: positive CLOSEST_ONLY projectile hit + positive budget. */
-fn atomic_transform_projectile_hit_is_valid_for_phase(
+/** Projectile producer adapter: own policy validation precedes the common seam. */
+fn atomic_transform_projectile_positive_damage_after_hit_policy(
     contact: Contact,
     expected_phase: u32
-) -> bool {
-    // Turn 6 trigger scope is intentionally narrow: a positive-damage
-    // CLOSEST_ONLY projectile with a positive self-hit budget. Other positive
-    // handlers remain on the established generic contact path and do not
-    // consume J immunity.
+) -> i32 {
     if (contact.other_body_id < 0) {
-        return false;
+        return 0;
     }
     let source_body_id = contact.self_body_id;
     let target_body_id = u32(contact.other_body_id);
     if (source_body_id >= counts.body_count
         || target_body_id >= counts.body_count
         || source_body_id == target_body_id) {
-        return false;
+        return 0;
     }
     let source_entity_id = simulations.values[source_body_id].entity_id;
     let source_incarnation = simulations.values[source_body_id].incarnation;
-    let target_entity_id = simulations.values[target_body_id].entity_id;
     let target_incarnation = simulations.values[target_body_id].incarnation;
     if (source_entity_id == 0u
         || source_entity_id == INVALID_IDENTITY_COMPONENT
         || source_incarnation == 0u
         || source_incarnation == INVALID_IDENTITY_COMPONENT
-        || target_entity_id == 0u
-        || target_entity_id == INVALID_IDENTITY_COMPONENT
-        || target_incarnation == 0u
-        || target_incarnation == INVALID_IDENTITY_COMPONENT
         || source_incarnation != contact.self_incarnation
         || target_incarnation != contact.other_incarnation
         || !body_id_is_simulation_active(source_body_id)
         || !body_id_is_simulation_active(target_body_id)) {
-        return false;
-    }
-    if (atomic_transform_states.values[target_body_id].program_id
-            != ATOMIC_TRANSFORM_PROGRAM_J_SPLIT_FIRST_HIT
-        || atomicLoad(&atomic_transform_states.values[target_body_id].phase)
-            != expected_phase
-        || atomic_transform_states.values[target_body_id].entity_id
-            != simulations.values[target_body_id].entity_id
-        || atomic_transform_states.values[target_body_id].incarnation
-            != contact.other_incarnation) {
-        return false;
+        return 0;
     }
     let handler = contact_handlers.values[source_body_id];
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
@@ -3760,27 +3754,47 @@ fn atomic_transform_projectile_hit_is_valid_for_phase(
         )
         || damage_self <= 0
         || atomicLoad(&simulations.values[source_body_id].health) < damage_self
-        || !contact_handler_accepts_target(source_body_id, target_body_id)
+        || (body_interaction_mask(
+                physics.values[source_body_id].interaction_meta
+            ) & body_interaction_layer(
+                physics.values[target_body_id].interaction_meta
+            )) == 0u
+        || (body_interaction_mask(
+                physics.values[target_body_id].interaction_meta
+            ) & body_interaction_layer(
+                physics.values[source_body_id].interaction_meta
+            )) == 0u
         || !gameplay_damage_is_allowed(
             simulations.values[source_body_id].gameplay_meta,
             simulations.values[target_body_id].gameplay_meta
         )) {
-        return false;
+        return 0;
     }
     let source_damage = resolve_contact_source_modified_damage(
         source_body_id,
         contact,
         handler
     );
-    return source_damage > 0
-        && resolve_contact_target_mitigation(contact, source_damage) > 0;
+    let final_damage = resolve_contact_target_mitigation(contact, source_damage);
+    if (!atomic_transform_positive_damage_hit_is_valid_for_phase(
+        source_body_id,
+        target_body_id,
+        contact.other_incarnation,
+        final_damage,
+        POSITIVE_DAMAGE_PRODUCER_PROJECTILE,
+        true,
+        expected_phase
+    )) {
+        return 0;
+    }
+    return final_damage;
 }
 
 fn atomic_transform_first_hit_candidate_is_valid(contact: Contact) -> bool {
-    return atomic_transform_projectile_hit_is_valid_for_phase(
+    return atomic_transform_projectile_positive_damage_after_hit_policy(
         contact,
         ATOMIC_TRANSFORM_PHASE_ARMED
-    );
+    ) > 0;
 }
 
 @compute @workgroup_size(256)
@@ -3906,6 +3920,10 @@ fn seal_atomic_transform_first_hits() {
         }
     }
     let event_base = atomicLoad(&contact_state.event_count);
+    // Retryable capacity rejection도 host가 exact whole-batch evidence를
+    // decode할 수 있도록 mutation-free diagnostics를 먼저 고정합니다.
+    atomicStore(&contact_state.atomic_transform_candidate_count, selected_count);
+    atomicStore(&contact_state.atomic_transform_event_base, event_base);
     if (event_base > params.max_events
         || selected_count > params.max_events - event_base) {
         // Capacity rejection precedes event_count/budget/phase mutation and is
@@ -3924,8 +3942,6 @@ fn seal_atomic_transform_first_hits() {
             );
         }
     }
-    atomicStore(&contact_state.atomic_transform_candidate_count, selected_count);
-    atomicStore(&contact_state.atomic_transform_event_base, event_base);
     atomicStore(&contact_state.event_count, event_base + selected_count);
 }
 
@@ -3961,34 +3977,15 @@ fn commit_atomic_transform_first_hits(
     let source_body_id = contact.self_body_id;
     let handler = contact_handlers.values[source_body_id];
     let damage_self = max(i32(handler.damage_self * 100.0), 0);
+    let validated_positive_damage
+        = atomic_transform_projectile_positive_damage_after_hit_policy(
+            contact,
+            ATOMIC_TRANSFORM_PHASE_ARMED
+        );
     if (!reserve_self_hit_budget(source_body_id, damage_self)) {
         atomicOr(
             &contact_state.atomic_transform_protocol_status,
             ATOMIC_TRANSFORM_CANDIDATE_STATUS_SOURCE_BUDGET_RESERVATION_FAILED
-        );
-        return;
-    }
-    var phase_changed = false;
-    loop {
-        if (atomicLoad(&atomic_transform_states.values[target_body_id].phase)
-            != ATOMIC_TRANSFORM_PHASE_ARMED) {
-            break;
-        }
-        let phase_change = atomicCompareExchangeWeak(
-            &atomic_transform_states.values[target_body_id].phase,
-            ATOMIC_TRANSFORM_PHASE_ARMED,
-            ATOMIC_TRANSFORM_PHASE_SPLIT_PENDING
-        );
-        if (phase_change.exchanged) {
-            phase_changed = true;
-            break;
-        }
-    }
-    if (!phase_changed) {
-        atomicAdd(&simulations.values[source_body_id].health, damage_self);
-        atomicOr(
-            &contact_state.atomic_transform_protocol_status,
-            ATOMIC_TRANSFORM_CANDIDATE_STATUS_PHASE_COMPARE_EXCHANGE_FAILED
         );
         return;
     }
@@ -3997,14 +3994,23 @@ fn commit_atomic_transform_first_hits(
         1u
     );
     let event_index = atomicLoad(&contact_state.atomic_transform_event_base) + rank;
-    atomicStore(
-        &atomic_transform_states.values[target_body_id].trigger_source_tick,
-        params.fixed_tick
-    );
-    atomicStore(
-        &atomic_transform_states.values[target_body_id].trigger_sequence,
+    if (!try_commit_atomic_transform_first_valid_positive_damage_hit(
+        source_body_id,
+        target_body_id,
+        contact.other_incarnation,
+        validated_positive_damage,
+        POSITIVE_DAMAGE_PRODUCER_PROJECTILE,
+        true,
+        params.fixed_tick,
         event_index
-    );
+    )) {
+        atomicAdd(&simulations.values[source_body_id].health, damage_self);
+        atomicOr(
+            &contact_state.atomic_transform_protocol_status,
+            ATOMIC_TRANSFORM_CANDIDATE_STATUS_PHASE_COMPARE_EXCHANGE_FAILED
+        );
+        return;
+    }
     // Dawn은 NaN payload 상수의 직접 bitcast를 constant expression으로
     // 평가하려 할 수 있으므로 runtime local을 거쳐 marker를 기록합니다.
     var winner_marker_bits: u32 = ATOMIC_TRANSFORM_FIRST_HIT_MARKER_WINNER;
@@ -4026,6 +4032,12 @@ fn commit_atomic_transform_first_hits(
 @compute @workgroup_size(1)
 fn finalize_atomic_transform_first_hits() {
     if (!abi_is_current()) {
+        return;
+    }
+    // EVENT_CAPACITY_EXCEEDED 단독 상태는 seal이 확정한 정상 whole-batch
+    // rejection입니다. mixed/후속 status는 이 exact equality를 통과하지 않습니다.
+    if (atomicLoad(&contact_state.atomic_transform_protocol_status)
+        == ATOMIC_TRANSFORM_CANDIDATE_STATUS_EVENT_CAPACITY_EXCEEDED) {
         return;
     }
     let selected = atomicLoad(&contact_state.atomic_transform_candidate_count);
@@ -4075,16 +4087,16 @@ fn shield_atomic_transform_first_hit_contacts(
         &contact_state.atomic_transform_protocol_status
     ) != 0u;
     let valid_pending = phase == ATOMIC_TRANSFORM_PHASE_SPLIT_PENDING
-        && atomic_transform_projectile_hit_is_valid_for_phase(
+        && atomic_transform_projectile_positive_damage_after_hit_policy(
             contact,
             ATOMIC_TRANSFORM_PHASE_SPLIT_PENDING
-        );
+        ) > 0;
     let valid_failed_armed = protocol_failed
         && phase == ATOMIC_TRANSFORM_PHASE_ARMED
-        && atomic_transform_projectile_hit_is_valid_for_phase(
+        && atomic_transform_projectile_positive_damage_after_hit_policy(
             contact,
             ATOMIC_TRANSFORM_PHASE_ARMED
-        );
+        ) > 0;
     if (valid_pending || valid_failed_armed) {
         var shield_marker_bits: u32 = ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD;
         contacts.values[contact_index].normal.y
@@ -4111,7 +4123,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     let contact = contacts.values[contact_index];
     let atomic_transform_marker = bitcast<u32>(contact.normal.y);
     if (atomic_transform_marker == ATOMIC_TRANSFORM_FIRST_HIT_MARKER_WINNER
-        || atomic_transform_marker == ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD) {
+        || atomic_transform_marker == ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD
+        || atomic_transform_marker == PROJECTILE_CAPTURE_PREPARED_SHIELD) {
         return;
     }
     let self_body_id = contact.self_body_id;
@@ -5240,6 +5253,20 @@ struct FormationState {
     reserved_1: u32,
 }
 
+struct ProjectileCaptureState {
+    role_phase_profile_policy: u32,
+    self_entity_id: u32,
+    self_incarnation: u32,
+    peer_body_slot: u32,
+    peer_entity_id: u32,
+    peer_incarnation: u32,
+    captured_at_fixed_tick: u32,
+    release_due_fixed_tick: u32,
+    capture_sequence: u32,
+    captured_speed: f32,
+    facing: vec2f,
+}
+
 struct BodyTemporary {
     previous_position: vec2f,
     predicted_position: vec2f,
@@ -5263,6 +5290,7 @@ struct SimulationBuffer { values: array<BodySimulation> }
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
 struct EffectSummaryBuffer { values: array<EffectSummary> }
 struct FormationStateBuffer { values: array<FormationState> }
+struct ProjectileCaptureStateBuffer { values: array<ProjectileCaptureState> }
 
 struct RenderParams {
     viewport_origin: vec2f,
@@ -5311,6 +5339,7 @@ const RENDER_SHAPE_GEN: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.GEN}u;
 const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
 const RENDER_SHAPE_OCTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA}u;
 const RENDER_SHAPE_RING: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RING}u;
+const RENDER_SHAPE_JORANG: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG}u;
 const PROJECTILE_CAPTURE_ROLE_CAPTOR: u32 = ${GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR}u;
 const PROJECTILE_CAPTURE_ROLE_MASK: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_MASK}u;
 const PROJECTILE_CAPTURE_ROLE_SHIFT: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_SHIFT}u;
@@ -5365,6 +5394,14 @@ const GENERATOR_TERMINAL_CENTERS = ${toWgslPointArray(
 )};
 const GENERATOR_TERMINAL_HALF_SIZES = ${toWgslPointArray(
     ENEMY_RENDER_GEOMETRY.gen.terminalBoxes.map(({ halfSize }) => halfSize),
+    4
+)};
+const JORANG_BOX_CENTERS = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.jorang.boxes.map(({ center }) => center),
+    4
+)};
+const JORANG_BOX_HALF_SIZES = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.jorang.boxes.map(({ halfSize }) => halfSize),
     4
 )};
 
@@ -5445,6 +5482,22 @@ fn generator_distance(point: vec2f) -> f32 {
     return distance;
 }
 
+fn jorang_distance(point: vec2f) -> f32 {
+    var distance = box_distance(
+        point,
+        JORANG_BOX_CENTERS[0u],
+        JORANG_BOX_HALF_SIZES[0u]
+    );
+    for (var index = 1u; index < 4u; index += 1u) {
+        distance = min(distance, box_distance(
+            point,
+            JORANG_BOX_CENTERS[index],
+            JORANG_BOX_HALF_SIZES[index]
+        ));
+    }
+    return distance;
+}
+
 fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     if (shape_code == RENDER_SHAPE_SQUARE) {
         return box_distance(point, SQUARE_CENTER, SQUARE_HALF_SIZE);
@@ -5477,6 +5530,9 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
     }
     if (shape_code == RENDER_SHAPE_GEN) {
         return generator_distance(point);
+    }
+    if (shape_code == RENDER_SHAPE_JORANG) {
+        return jorang_distance(point);
     }
     if (shape_code == RENDER_SHAPE_RING) {
         let local = directional_local_position(point, velocity);
@@ -5558,6 +5614,15 @@ fn unpack_rgba8(packed: u32) -> vec4f {
         f32((packed >> 16u) & 255u),
         f32((packed >> 24u) & 255u)
     ) / 255.0;
+}
+
+fn render_f32_is_finite(value: f32) -> bool {
+    return value == value && abs(value) <= 3.402823466e+38;
+}
+
+fn render_vec2_is_finite(value: vec2f) -> bool {
+    return all(value == value)
+        && all(abs(value) <= vec2f(3.402823466e+38));
 }
 
 @vertex
@@ -5684,8 +5749,8 @@ fn vertex_main(
             == simulations.values[instance_index].incarnation
         && projectile_capture_role == PROJECTILE_CAPTURE_ROLE_CAPTOR
         && projectile_capture_profile == PROJECTILE_CAPTURE_PROFILE_RING
-        && all(isFinite(projectile_capture.facing))
-        && isFinite(projectile_capture_facing_length_squared)
+        && render_vec2_is_finite(projectile_capture.facing)
+        && render_f32_is_finite(projectile_capture_facing_length_squared)
         && projectile_capture_facing_length_squared > 0.0) {
         presentation_velocity = projectile_capture.facing;
     }

@@ -17,10 +17,19 @@ export const CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID = (
 );
 
 export const JORANG_SPLIT_TRIGGER_POLICY = Object.freeze({
-    // Current production: positive-damage CLOSEST_ONLY projectile contact와
-    // positive self-hit budget을 모두 증명한 exact hit만 포함합니다.
-    FIRST_VALID_PROJECTILE_HIT: 'first-valid-projectile-hit',
+    // Producer가 자기 hit-policy를 먼저 통과하고 최종 피해가 양수임을
+    // 증명한 뒤 같은 one-shot atomic split seam을 호출합니다.
+    FIRST_VALID_POSITIVE_DAMAGE_HIT: 'first-valid-positive-damage-hit',
     DELAYED_EXACT_HANDLE: 'delayed-exact-handle'
+});
+
+/** Producer-neutral positive-damage seam에 전달하는 append-only GPU kind code입니다. */
+export const JORANG_SPLIT_POSITIVE_DAMAGE_PRODUCER_KIND = Object.freeze({
+    PROJECTILE: 1,
+    EXPLOSION: 2,
+    EFFECT: 3,
+    DIRECT: 4,
+    MELEE: 5
 });
 
 export const JORANG_SPLIT_KINEMATICS_POLICY = Object.freeze({
@@ -39,7 +48,8 @@ export const JORANG_SPLIT_BOUNTY_POLICY = Object.freeze({
 });
 
 export const JORANG_SPLIT_EFFECT_POLICY = Object.freeze({
-    EXACT_INSTANCES_TO_CHILD_ZERO_ONLY: 'exact-instances-to-child-zero-only',
+    EFFECT_DEFINITION_OWNED_NON_DUPLICATING_DISTRIBUTION:
+        'effect-definition-owned-non-duplicating-distribution',
     PRESERVE_EXACT_INSTANCES: 'preserve-exact-instances'
 });
 
@@ -315,14 +325,16 @@ export function normalizeJorangSplitProfile(source, label = 'jorangSplitProfile'
             id: JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID,
             sourceDefinitionId: BASIC_JORANG_ENEMY_DEFINITION_ID,
             destinationDefinitionId: BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
-            triggerPolicy: JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_PROJECTILE_HIT,
+            triggerPolicy:
+                JORANG_SPLIT_TRIGGER_POLICY.FIRST_VALID_POSITIVE_DAMAGE_HIT,
             kinematicsPolicy:
                 JORANG_SPLIT_KINEMATICS_POLICY.COPY_EXACT_GPU_POSE_VELOCITY_FLOW,
             healthPolicy: JORANG_SPLIT_HEALTH_POLICY.FRESH_FULL_COMMON_CIRCLE,
             bountyPolicy:
                 JORANG_SPLIT_BOUNTY_POLICY.UINT32_CHILD_ZERO_REMAINDER,
             effectPolicy:
-                JORANG_SPLIT_EFFECT_POLICY.EXACT_INSTANCES_TO_CHILD_ZERO_ONLY,
+                JORANG_SPLIT_EFFECT_POLICY
+                    .EFFECT_DEFINITION_OWNED_NON_DUPLICATING_DISTRIBUTION,
             lineagePolicy: JORANG_SPLIT_LINEAGE_POLICY.EXACT_ROOT_HANDLE_PAIR,
             pendingHitPolicy:
                 JORANG_SPLIT_PENDING_HIT_POLICY.ZERO_DAMAGE_NO_SOURCE_BUDGET_OR_EVENT,

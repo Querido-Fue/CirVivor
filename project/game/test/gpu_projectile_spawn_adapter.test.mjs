@@ -21,6 +21,8 @@ const {
 );
 const {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
+    GPU_PROJECTILE_CAPTURE_POLICY_CODE,
+    GPU_PROJECTILE_CAPTURE_ROLE,
     createGpuCircleBodyAbiStorage,
     readGpuCircleBody,
     readGpuCircleContactHandler,
@@ -39,6 +41,10 @@ const { ARCHER_ATTACK_DATA } = await loadGameModule(
 const { HOSTILE_BASIC_BULLET_DATA } = await loadGameModule(
     'data/object/projectile/hostile_basic_bullet_data.js'
 );
+const {
+    PROJECTILE_CAPTURE_POLICY_ID,
+    PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION
+} = await loadGameModule('ingame/contract/projectile_capture_contract.js');
 
 const EXPLICIT_PLAYER_ALLEGIANCE = Object.freeze({
     teamId: GAMEPLAY_TEAM_ID.PLAYER,
@@ -104,6 +110,22 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
         damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         targetPolicyId: PROJECTILE_TARGET_POLICY_ID.ENEMY_AND_TERRAIN,
+        projectileCapturePolicyId:
+            PROJECTILE_CAPTURE_POLICY_ID.NOT_CAPTURABLE,
+        schemaVersion: PROJECTILE_ORIGIN_PROVENANCE_SCHEMA_VERSION,
+        archetypeId: 'benchmark_round_01',
+        wordTagMask: 0,
+        modifierSetId: null,
+        sourceExecutionId: null,
+        projectileGeneration: 1,
+        originProducerId: null,
+        originSourceAbilityId: null,
+        originOwnerEntityId: 11,
+        originOwnerIncarnation: 3,
+        originSourceEntityId: 11,
+        originSourceIncarnation: 3,
+        originTargetEntityId: null,
+        originTargetIncarnation: null,
         spawnSequence: 9,
         sourceEntityId: 11,
         sourceIncarnation: 3,
@@ -124,6 +146,10 @@ test('data definition을 guide-compatible mixed-body projectile intent로 변환
             damageOther: 2.5,
             flags: GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.KILL_IF_OTHER_TERRAIN
                 | GPU_PROJECTILE_CONTACT_HANDLER_FLAGS.INTERACTION_ENTER_ONLY
+        },
+        projectileCaptureState: {
+            role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE,
+            policyCode: GPU_PROJECTILE_CAPTURE_POLICY_CODE.NOT_CAPTURABLE
         },
         alive: true,
         renderStyle: {
