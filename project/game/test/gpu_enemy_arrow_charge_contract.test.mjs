@@ -28,6 +28,10 @@ const SIMULATION_SOURCE = await readFile(new URL(
     '../script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
     import.meta.url
 ), 'utf8');
+const ABI_SOURCE = await readFile(new URL(
+    '../script/module/ingame/physics/gpu/gpu_circle_body_abi.js',
+    import.meta.url
+), 'utf8');
 
 const CHARGE_CONFIG = Object.freeze({
     programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
@@ -42,6 +46,34 @@ const CHARGE_CONFIG = Object.freeze({
     telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
     telegraphRadiusScale: 1.35
 });
+
+const EXPO_OUT_LAMBDA = 0.5;
+
+function normalizedBoundedExpoOut(progress) {
+    const boundedProgress = Math.min(Math.max(progress, 0), 1);
+    if (boundedProgress <= 0) return 0;
+    if (boundedProgress >= 1) return 1;
+    return (1 - (2 ** (-EXPO_OUT_LAMBDA * boundedProgress)))
+        / (1 - (2 ** -EXPO_OUT_LAMBDA));
+}
+
+function expoOutFixedTickDisplacements({ speed, durationTicks, fixedDelta }) {
+    const safeDurationTicks = Math.max(durationTicks, 1);
+    const totalDistance = speed * safeDurationTicks * fixedDelta;
+    return Object.freeze(Array.from({ length: safeDurationTicks }, (_, elapsed) => (
+        totalDistance * (
+            normalizedBoundedExpoOut((elapsed + 1) / safeDurationTicks)
+            - normalizedBoundedExpoOut(elapsed / safeDurationTicks)
+        )
+    )));
+}
+
+function assertNear(actual, expected, tolerance, label) {
+    assert.ok(
+        Math.abs(actual - expected) <= tolerance,
+        `${label}: actual=${actual}, expected=${expected}, tolerance=${tolerance}`
+    );
+}
 
 test('Body ABI v8은 기존 charge/atomic offset을 유지하고 capture side-plane을 append한다', () => {
     assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 8);
@@ -160,6 +192,118 @@ test('charge state/event vocabulary와 exact [entered, expires) 경계를 고정
     );
 });
 
+test('Arrow SDF 가시성은 route ownership/WINDUP/terrain CHARGE 회복을 분리한다', () => {
+    assert.equal(GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.ARROW_ROUTE_FALLBACK, undefined);
+    assert.doesNotMatch(ABI_SOURCE, /ARROW_ROUTE_FALLBACK/u);
+    const arrowAllowedKeysStart = ABI_SOURCE.indexOf('const allowedArrowKeys = new Set([');
+    const arrowAllowedKeysEnd = ABI_SOURCE.indexOf(']);', arrowAllowedKeysStart);
+    assert.ok(arrowAllowedKeysStart >= 0 && arrowAllowedKeysEnd > arrowAllowedKeysStart);
+    assert.doesNotMatch(
+        ABI_SOURCE.slice(arrowAllowedKeysStart, arrowAllowedKeysEnd),
+        /['"]flags['"]/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /const ENEMY_CHARGE_VISIBILITY_MAX_STEPS: u32 = 48u;[\s\S]*?fn enemy_charge_segment_is_visible\(body_id: u32, segment_end: vec2f\) -> bool[\s\S]*?params\.sdf_enabled == 0u[\s\S]*?for \(var step_index = 0u;[\s\S]*?return false;/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /const ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK: u32 = 128u;[\s\S]*?fn enter_enemy_charge_route_fallback[\s\S]*?ENEMY_BEHAVIOR_FLAG_TARGET_VALID[\s\S]*?ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER[\s\S]*?enemy_charge_segment_is_visible\(body_id, target_position\)[\s\S]*?behavior_flags[\s\S]*?ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK[\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?restore_enemy_route_flow\(body_id\)[\s\S]*?enter_enemy_charge_route_fallback\(body_id\)/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /enemy_charge_segment_is_visible\(body_id, target_position\)[\s\S]*?clear_enemy_charge_route_fallback_latch\(body_id\)[\s\S]*?disable_enemy_flow\(body_id\)/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_WINDUP[\s\S]*?enemy_charge_segment_is_visible\([\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?restore_enemy_route_flow\(body_id\)[\s\S]*?enter_enemy_charge_route_fallback\(body_id\)[\s\S]*?ENEMY_BEHAVIOR_STATE_SEEK_TOWER/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_CHARGE[\s\S]*?let charge_velocity = enemy_charge_expo_out_velocity\([\s\S]*?let charge_segment_end = physics\.values\[body_id\]\.position[\s\S]*?charge_velocity \* max\(params\.dt, 0\.0\)[\s\S]*?enemy_charge_segment_is_visible\([\s\S]*?charge_segment_end[\s\S]*?ENEMY_BEHAVIOR_STATE_RECOVER/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /if \(!tower_gameplay_target_is_valid\(\)\) \{[\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?enter_enemy_core_fallback\(body_id\)/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK[\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?clear_enemy_charge_route_fallback_latch\(body_id\)[\s\S]*?restore_enemy_route_flow\(body_id\)/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /state == ENEMY_BEHAVIOR_STATE_RECOVER[\s\S]*?clear_enemy_charge_route_fallback_latch\(body_id\)[\s\S]*?ENEMY_BEHAVIOR_STATE_SEEK_TOWER/u
+    );
+    const chargeStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'if (state == ENEMY_BEHAVIOR_STATE_CHARGE)'
+    );
+    const recoilResolverStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'fn resolve_enemy_charge_contacts'
+    );
+    assert.ok(chargeStart >= 0 && recoilResolverStart > chargeStart);
+    assert.doesNotMatch(
+        GPU_COLLISION_COMPUTE_WGSL.slice(chargeStart, recoilResolverStart),
+        /APPLIED_EVENT_TYPE_ENEMY_CHARGE_CONTACT_RECOIL_STARTED/u
+    );
+});
+
+test('Arrow charge/recoil Expo-out은 fixed tick endpoint와 first-last monotonic을 고정한다', () => {
+    assert.equal(normalizedBoundedExpoOut(0), 0);
+    assert.equal(normalizedBoundedExpoOut(1), 1);
+    const fixedDelta = 1 / 60;
+    const charge = expoOutFixedTickDisplacements({
+        speed: CHARGE_CONFIG.chargeSpeedTilesPerSecond,
+        durationTicks: CHARGE_CONFIG.chargeMaxTicks,
+        fixedDelta
+    });
+    const recoil = expoOutFixedTickDisplacements({
+        speed: CHARGE_CONFIG.recoilImpulseTilesPerSecond,
+        durationTicks: CHARGE_CONFIG.recoilTicks - 1,
+        fixedDelta
+    });
+    assert.ok(
+        charge[0] < (1 / 8),
+        `charge first fixed-tick displacement must stay below 1/8: ${charge[0]}`
+    );
+    assertNear(
+        charge.reduce((sum, displacement) => sum + displacement, 0),
+        CHARGE_CONFIG.chargeSpeedTilesPerSecond
+            * CHARGE_CONFIG.chargeMaxTicks
+            * fixedDelta,
+        0.000000001,
+        'charge normalized endpoint'
+    );
+    assertNear(
+        recoil.reduce((sum, displacement) => sum + displacement, 0),
+        CHARGE_CONFIG.recoilImpulseTilesPerSecond
+            * (CHARGE_CONFIG.recoilTicks - 1)
+            * fixedDelta,
+        0.000000001,
+        'recoil normalized endpoint'
+    );
+    for (const [label, displacements] of Object.entries({ charge, recoil })) {
+        assert.ok(displacements[0] > displacements.at(-1), `${label} first > last`);
+        for (let index = 1; index < displacements.length; index++) {
+            assert.ok(
+                displacements[index - 1] >= displacements[index],
+                `${label} Expo-out displacement must be monotonic at ${index}`
+            );
+        }
+    }
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 0\.5;[\s\S]*?fn normalized_bounded_expo_out[\s\S]*?exp2\(-ENEMY_CHARGE_EXPO_OUT_LAMBDA \* bounded_progress\)/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /fn enemy_charge_expo_out_velocity[\s\S]*?normalized_bounded_expo_out\(end_progress\)[\s\S]*?normalized_bounded_expo_out\(start_progress\)/u
+    );
+});
+
 test('exact gameplay Tower config는 tracked pose와 독립이고 single-submit pass order를 유지한다', () => {
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
@@ -193,7 +337,7 @@ test('exact gameplay Tower config는 tracked pose와 독립이고 single-submit 
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /physics\.values\[body_id\]\.velocity[\s\S]*?= -enemy_behavior_states\.values\[body_id\]\.charge_direction[\s\S]*?recoil_impulse/u
+        /fn apply_enemy_charge_recoil[\s\S]*?enemy_charge_expo_out_velocity\([\s\S]*?-enemy_behavior_states\.values\[body_id\]\.charge_direction[\s\S]*?recoil_impulse/u
     );
 
     const advance = SIMULATION_SOURCE.indexOf("'advance_enemy_charge'");
@@ -205,10 +349,18 @@ test('exact gameplay Tower config는 tracked pose와 독립이고 single-submit 
     assert.ok(advance >= 0 && handle > advance);
     assert.ok(recoilContact > handle && window > recoilContact);
     assert.ok(rebuild > window && recoil > rebuild);
-    assert.match(SIMULATION_SOURCE, /enemyBehavior: 8/u);
+    assert.match(SIMULATION_SOURCE, /enemyBehavior: 9/u);
     assert.match(
         SIMULATION_SOURCE,
         /compute-enemy-behavior-bodies-layout[\s\S]*?storageLayoutEntry\(0\)[\s\S]*?storageLayoutEntry\(1\)[\s\S]*?storageLayoutEntry\(2\)[\s\S]*?storageLayoutEntry\(11\)[\s\S]*?storageLayoutEntry\(13, 'read-only-storage'\)/u
+    );
+    assert.match(
+        SIMULATION_SOURCE,
+        /\[COMPUTE_PIPELINE_PROFILE\.ENEMY_BEHAVIOR\]: \[[\s\S]*?computeEnemyBehaviorBodiesLayout,[\s\S]*?computeWorldSdfLayout,[\s\S]*?computeParamsLayout,[\s\S]*?computeEnemyBehaviorEventsLayout/u
+    );
+    assert.match(
+        SIMULATION_SOURCE,
+        /\[COMPUTE_PIPELINE_PROFILE\.ENEMY_BEHAVIOR\]: \[[\s\S]*?computeEnemyBehaviorBodies,[\s\S]*?computeWorldSdf,[\s\S]*?computeParams,[\s\S]*?computeEnemyBehaviorEvents/u
     );
     assert.match(
         SIMULATION_SOURCE,

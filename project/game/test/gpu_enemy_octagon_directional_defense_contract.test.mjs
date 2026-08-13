@@ -255,7 +255,7 @@ test('simulation ordering/storage와 dedicated author fixture routing을 exact �
     assert.match(SIMULATION_SOURCE,
         /computeDirectionalDefenseEventsLayout[\s\S]*entries:\s*\[0, 1\]/);
     assert.match(SIMULATION_SOURCE,
-        /enemyBehavior:\s*8/);
+        /enemyBehavior:\s*9/);
     assert.match(SIMULATION_SOURCE,
         /contactHandling:\s*9/);
     assert.match(SIMULATION_SOURCE,

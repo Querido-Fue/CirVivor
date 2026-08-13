@@ -7689,9 +7689,10 @@ export class GpuCircleBodySimulation {
                         this.contactCapacity / BODY_WORKGROUP_SIZE
                     ));
                 } else if (needsProjectileCaptureReadback) {
-                    // Persistent Candidate16 backlog is immutable across the
-                    // rejected tick and shields its reciprocal contacts while
-                    // no new capture candidate is admitted.
+                    // Rejected exact-pair/fairness tokens persist, but this
+                    // contact pass rebuilds capture authority from current
+                    // exact contact/geometry before shielding. HELD retry
+                    // tokens remain an independent release/cleanup authority.
                     this.#setProjectileCaptureEntry(
                         pass,
                         GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
@@ -9130,7 +9131,9 @@ export class GpuCircleBodySimulation {
                     }),
                     stateStride:
                         GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
-                    storageBuffersPerStage: 8
+                    // Arrow Tower charge는 route authority를 끊기 전에 terrain SDF
+                    // 가시성을 확인한다. bodies 5 + SDF 1 + events 3 = negotiated 9.
+                    storageBuffersPerStage: 9
                 }),
                 coreDamageRequest: Object.freeze({
                     storageBuffersPerStage: 9
@@ -9165,7 +9168,7 @@ export class GpuCircleBodySimulation {
                     maximumDamageWindow: 9,
                     fixedControl: 5,
                     sourceResolve: 9,
-                    enemyBehavior: 8,
+                    enemyBehavior: 9,
                     directionalDefenseClassifier: 8,
                     coreDamageRequest: 9,
                     atomicTransformFirstHit: 9,
@@ -14371,7 +14374,7 @@ export class GpuCircleBodySimulation {
             ],
             [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                 computeEnemyBehaviorBodiesLayout,
-                computeEmptyLayout,
+                computeWorldSdfLayout,
                 computeParamsLayout,
                 computeEnemyBehaviorEventsLayout
             ],
@@ -15492,7 +15495,7 @@ export class GpuCircleBodySimulation {
                 ],
                 [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                     computeEnemyBehaviorBodies,
-                    computeEmpty,
+                    computeWorldSdf,
                     computeParams,
                     computeEnemyBehaviorEvents
                 ],

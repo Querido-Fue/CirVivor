@@ -1372,7 +1372,7 @@ test('Tower status가 없어도 Core가 남아 있으면 outcome은 RUNNING으�
     assert.equal(gameSystem.getGameplayStatus().outcome.defeated, false);
 });
 
-test('ProjectileCapture idle tuple drift는 exact-zero roster에서만 GPU binding을 한 번 갱신한다', () => {
+test('ProjectileCapture ready tuple drift는 capture-domain exact-zero에서 GPU binding만 한 번 갱신한다', () => {
     const captureDirectors = createTrackingProjectileCaptureDirectorFactory();
     const { gameSystem } = createGameSystem({
         depleteOnFirstObserve: false,
@@ -1382,7 +1382,11 @@ test('ProjectileCapture idle tuple drift는 exact-zero roster에서만 GPU bindi
     const endpoint = gameSystem.getGpuSimulationEndpoint();
     const director = captureDirectors.instances[0];
     const resetCountBeforeDrift = director.resetCalls.length;
-    const runtime = installProjectileCaptureRuntimeStatus(endpoint);
+    // 첫 non-capture C/Tower/Core spawn이 lazy GPU init을 끝내면 simulation의
+    // 전역 state는 ready지만 ProjectileCapture domain은 여전히 exact idle입니다.
+    const runtime = installProjectileCaptureRuntimeStatus(endpoint, {
+        state: 'ready'
+    });
 
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(director.resetCalls.length, resetCountBeforeDrift + 1);
@@ -1397,6 +1401,7 @@ test('ProjectileCapture idle tuple drift는 exact-zero roster에서만 GPU bindi
     });
     assert.equal(objectSystem.enemySimulationPaused, false);
     assert.equal(objectSystem.enemySimulationRecoveryRequired, false);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), false);
     gameSystem.destroy();
 });
 
@@ -1432,7 +1437,34 @@ test('ProjectileCapture active/pending/terminal/recovery tuple drift는 rebind �
         }),
         Object.freeze({
             label: 'backend-active-domain',
-            runtime: Object.freeze({ activeDomainBodyCount: 1 })
+            runtime: Object.freeze({
+                state: 'ready',
+                activeDomainBodyCount: 1
+            })
+        }),
+        Object.freeze({
+            label: 'backend-pending-capture-readback',
+            runtime: Object.freeze({
+                state: 'ready',
+                pendingCaptureReadbackCount: 1
+            })
+        }),
+        Object.freeze({
+            label: 'backend-pending-release-batch',
+            runtime: Object.freeze({
+                state: 'ready',
+                pendingReleaseBatchCount: 1
+            })
+        }),
+        Object.freeze({
+            label: 'backend-prepared-armed-staged-commit',
+            runtime: Object.freeze({
+                state: 'ready',
+                preparedBatchCount: 1,
+                armedReleaseCount: 1,
+                stagedReleaseCount: 1,
+                commitRequested: true
+            })
         }),
         Object.freeze({
             label: 'backend-terminal',

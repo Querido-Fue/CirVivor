@@ -1,0 +1,19 @@
+{
+    "name": "cirvivor-r2-showcase-manual",
+    "version": "1.0.0",
+    "private": true,
+    "main": "game/test/nw_r2_showcase_manual/index.html",
+    "chromium-args": "--force-device-scale-factor=1",
+    "window": {
+        "title": "CirVivor Post-R2 S1 Manual Showcase",
+        "toolbar": false,
+        "frame": true,
+        "resizable": true,
+        "show": true,
+        "width": 1600,
+        "height": 900,
+        "min_width": 1280,
+        "min_height": 720,
+        "position": "center"
+    }
+}

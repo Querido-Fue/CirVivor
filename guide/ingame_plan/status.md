@@ -94,9 +94,11 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - Turn 8 adds `basic_cork_01` Z with common-C stats, analytic circle, helper count 0, exact route lease, anchored
   60-tick expansion to radius 3, Enemy/Tower-only physical blocking, and projectile damage/penetration pass-through.
   Optional routeGraph v1 compiles over immutable flow/SDF; the dedicated dual-route map/wave is injection-only.
-- Turn 9 authors a separate dual-route/open-ring showcase in three stages (C/T/A/M/P + rows; H→HX/O/J/R;
-  Z + route-availability formation). It is injection-only and does not modify the default 32-spawn corridor.
-  Showcase uses 4 simultaneous O actors, below fixed capacity 8.
+- Turn 9 authored a separate dual-route/open-ring showcase in three stages (C/T/A/M/P + rows; H→HX/O/J/R;
+  Z + route-availability formation). Its original checkpoint placement was injection-only and did not modify
+  the default 32-spawn corridor data. Post-R2 product routing now opens this showcase Wave 1 from the first
+  title map card while preserving that card's corridor preview/selection identity. Showcase uses 4 simultaneous
+  O actors, below fixed capacity 8.
 
 ## Pre-R2 Stabilization COMPLETE (2026-08-09)
 
@@ -261,8 +263,9 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - Turn 5 itself kept Body ABI v6/80-byte behavior stride and `CombatState` reserved fields unchanged; current
   production advanced to v7 for Turn 6's independent Atomic Transform planes and v8 for Turn 7's independent
   Projectile Capture planes. Orbit still uses the
-  8-storage enemy-behavior profile and the classifier uses a separate exact 8-storage profile; contact handling
-  and the global maximum remain 9.
+  shared enemy-behavior profile. Post-R2 Arrow terrain visibility binds the existing world-SDF group to that
+  profile, so its storage count is now 9; the classifier remains a separate exact 8-storage profile, and the
+  global maximum remains 9. O's behavior ABI and orbit semantics are unchanged.
 - The selected `enemy-octagon-directional-defense` actual hardware stage, full Node suite, and mixed churn passed
   at Turn 9. Manual visual play was not executed.
 
@@ -273,7 +276,7 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 
 ## R2 Enemy Ecosystem Turn 6 implemented and accepted
 
-- Natural J keeps `basic_gen_01` as compatibility identity but renders dedicated analytic/legacy `jorang`, with common-C HP/speed/weight/Tower/Core values
+- Natural J keeps `basic_gen_01` as compatibility identity but renders the analytic/legacy joraengi-rice-cake silhouette from two regular-octagon lobes and one narrow connector, with common-C HP/speed/weight/Tower/Core values
   `1/2.5/1/0.1/1`, exact uint32 bounty `12`, and profile `jorang-one-to-many-01`. C′ is transform-private
   `basic_circle_prime_01` (`circle`) with profile `circle-prime-return-delayed-01`; it is absent from the public
   definition catalog and production corridor wave.
@@ -358,7 +361,7 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - Optional normalized routeGraph v1 adds route sets, shared forward switches, clearance/closure nodes, and
   downstream merge topology over the existing immutable Flow Field atlas. Graph-null legacy maps stay all-open;
   runtime never rebuilds TileMap blocked cells, SDF, directions, stage goals, or field links.
-- Natural `basic_cork_01` Z is an analytic `circle` with common-C `1/2.5/1/0.1/1` values, stable
+- Natural `basic_cork_01` Z currently uses the technical expanding-circle Cork presentation, not dedicated Cork/trapezoid geometry, with common-C `1/2.5/1/0.1/1` values, stable
   `enemy-route-closure`, exact `cork-route-closure-01`, one logical body, and helper count 0.
 - GPU RouteRuntime owns `SELECT_ROUTE/TRAVEL/EXPAND/READY_TO_CLOSE/BLOCKING/WAITING/DEAD` and availability
   `OPEN/LEASED/CLOSED`. One exact `(entityId, incarnation, leaseGeneration)` owns a closure; duplicate Z waits,
@@ -400,6 +403,20 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
   active was 8, and final churn/reserved/pending counts were zero with all routes open, recovery false, storage 9.
 - Manual evidence is `automatedResult:false`; the non-interactive final run did not include a human showcase
   visual/pause-resume session. It is not claimed as manual PASS. Progress is exactly `r2 완료.`.
+
+## Post-R2 Stabilization S1 current product routing and combat corrections
+
+- The first title map card keeps the corridor preview/selection ID, but selecting that card constructs the R2
+  showcase map with authored Wave 1 in the real `GameScene`. Other explicit map IDs, including an omitted
+  direct-start map ID, continue through the ordinary resolver path.
+- Arrow direct Tower steering is admitted only after a bounded terrain-SDF segment check. Wall-occluded SEEK
+  retains immutable route flow; blocked WINDUP/CHARGE cannot synthesize Tower recoil or damage. CHARGE and
+  CONTACT_RECOIL use an endpoint-normalized bounded Expo-out finite difference at the authoritative 60 Hz
+  fixed tick, preserving total authored distance and phase deadlines.
+- A resolved Tower-selected M projectile owns its exact target, self-hit budget, and snapshotted attack damage
+  independently of later source-M death. Source cleanup cancels unresolved source work only; a live projectile
+  still reaches the ordinary Tower Maximum Damage Window and HP path.
+- This stabilization section does not start R3 Word/Sentence, economy, Tower Share, or multi-Tower work.
 
 ## Post-R2 locked target not yet implemented
 

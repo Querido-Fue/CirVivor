@@ -70,6 +70,10 @@ class RegistryFixture {
         return this.active.has(key(handle));
     }
 
+    remove(handle) {
+        return this.active.delete(key(handle));
+    }
+
     copyEntityView(handle, out = {}) {
         const value = this.active.get(key(handle));
         if (!value) {
@@ -482,6 +486,139 @@ test('fixed owner는 priority control을 shot budget과 분리하고 selected sp
     assert.equal(noTargetCompleted.completed.at(-1).outcome, 'no-target');
     assert.equal(registry.copyEntityView(noTargetDestination, {}), null);
     assert.equal(owner.getStatus().pendingSelectionBindingCount, 0);
+});
+
+test('resolved Tower projectile authority는 launch 뒤 source exact death와 독립적으로 유지된다', () => {
+    const registry = new RegistryFixture();
+    const backend = new BackendFixture();
+    registry.add(SOURCE, {
+        kindId: 'enemy',
+        definitionId: 'basic_rhom_01',
+        createdAtTick: 1,
+        metadata: Object.freeze({ teamId: GAMEPLAY_TEAM_ID.HOSTILE })
+    });
+    registry.add(CORE, {
+        kindId: 'core-proxy',
+        definitionId: 'the-core-interaction-proxy',
+        createdAtTick: 1,
+        metadata: Object.freeze({})
+    });
+    registry.add(TOWER, {
+        kindId: 'tower',
+        definitionId: 'the-tower',
+        createdAtTick: 1,
+        metadata: Object.freeze({})
+    });
+    backend.add(SOURCE);
+    backend.add(CORE);
+    backend.add(TOWER);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    const control = owner.requestPriorityTargetControl({
+        sourceHandle: SOURCE,
+        coreTargetHandle: CORE,
+        towerTargetHandle: TOWER,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId:
+            BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        selectionSequence: 9,
+        attackDefinitionId: BASIC_RHOM_ATTACK_DATA.id,
+        projectileDefinitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId
+    }, 51, 'rhom-tower-control:51');
+    assert.equal(control.accepted, true);
+    assert.equal(owner.requestSelectedTargetSpawn(
+        createSelectedIntent(9),
+        51,
+        'rhom-tower-shot:51:9'
+    ).accepted, true);
+
+    const committed = owner.commitAtFixedBoundary(51);
+    const destinationHandle = committed.selectedTargetSpawns[0].handle;
+    const stagedControl = backend.plans[0].controls[0];
+    backend.add(destinationHandle);
+    backend.bodyControlCompletionBatches.push(Object.freeze({
+        ...PROTOCOL,
+        sourceTick: 51,
+        outcomes: Object.freeze([Object.freeze({
+            sourceHandle: SOURCE,
+            coreTargetHandle: CORE,
+            towerTargetHandle: TOWER,
+            sourceTick: 51,
+            selectionSequence: 9,
+            attackFingerprint: stagedControl.attackFingerprint,
+            attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+            result: GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED,
+            outcome: 'tower',
+            selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER,
+            stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED,
+            selectedTargetHandle: TOWER
+        })])
+    }));
+    backend.completionBatches.push(Object.freeze({
+        ...PROTOCOL,
+        sourceTick: 51,
+        outcomes: Object.freeze([Object.freeze({
+            destinationHandle,
+            sourceHandle: SOURCE,
+            targetHandle: TOWER,
+            selectedTargetKind: 'tower',
+            reason: 'resolved'
+        })])
+    }));
+
+    const resolved = owner.commitCompletedAtFixedBoundary(52);
+    assert.equal(resolved.protocolFailure, null);
+    assert.deepEqual(resolved.completed, [Object.freeze({
+        commandId: 'rhom-tower-shot:51:9',
+        handle: destinationHandle,
+        outcome: 'resolved',
+        selectedTargetKind: 'tower',
+        targetHandle: TOWER
+    })]);
+    const beforeSourceDeath = registry.copyEntityView(destinationHandle, {});
+    const authorityBeforeSourceDeath = Object.freeze({
+        selectedTargetKind: beforeSourceDeath.metadata.selectedTargetKind,
+        selectedTargetEntityId:
+            beforeSourceDeath.metadata.selectedTargetEntityId,
+        selectedTargetIncarnation:
+            beforeSourceDeath.metadata.selectedTargetIncarnation,
+        selectedTargetPolicyId:
+            beforeSourceDeath.metadata.selectedTargetPolicyId,
+        selectionSourceTick: beforeSourceDeath.metadata.selectionSourceTick,
+        selectionSequence: beforeSourceDeath.metadata.selectionSequence,
+        attackFingerprint: beforeSourceDeath.metadata.attackFingerprint
+    });
+    assert.deepEqual(authorityBeforeSourceDeath, {
+        selectedTargetKind: 'tower',
+        selectedTargetEntityId: TOWER.entityId,
+        selectedTargetIncarnation: TOWER.incarnation,
+        selectedTargetPolicyId: HOSTILE_RHOM_PROJECTILE_DATA.towerTargetPolicyId,
+        selectionSourceTick: 51,
+        selectionSequence: 9,
+        attackFingerprint: stagedControl.attackFingerprint
+    });
+
+    assert.equal(registry.remove(SOURCE), true);
+    assert.equal(backend.active.delete(key(SOURCE)), true);
+    assert.equal(registry.has(SOURCE), false);
+    assert.equal(backend.hasBody(SOURCE), false);
+    assert.equal(registry.has(destinationHandle), true);
+    assert.equal(backend.hasBody(destinationHandle), true);
+    const afterSourceDeath = registry.copyEntityView(destinationHandle, {});
+    assert.deepEqual({
+        selectedTargetKind: afterSourceDeath.metadata.selectedTargetKind,
+        selectedTargetEntityId: afterSourceDeath.metadata.selectedTargetEntityId,
+        selectedTargetIncarnation: afterSourceDeath.metadata.selectedTargetIncarnation,
+        selectedTargetPolicyId: afterSourceDeath.metadata.selectedTargetPolicyId,
+        selectionSourceTick: afterSourceDeath.metadata.selectionSourceTick,
+        selectionSequence: afterSourceDeath.metadata.selectionSequence,
+        attackFingerprint: afterSourceDeath.metadata.attackFingerprint
+    }, authorityBeforeSourceDeath);
+    assert.equal(owner.commitCompletedAtFixedBoundary(53).protocolFailure, null);
 });
 
 test('completion activation metadata는 whole-batch preflight 뒤에만 registry와 history를 변경한다', () => {

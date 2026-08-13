@@ -311,6 +311,14 @@ const dependencyModules = new Map([
         this.setExport('GAME_SCENE_MODES', { PLAY: 'play', BENCHMARK: 'benchmark' });
         this.setExport('GameScene', GameSceneStub);
     }, { context })],
+    ['./game/production_game_start_route.js', new vm.SyntheticModule([
+        'createProductionGameStartOptions'
+    ], function init() {
+        this.setExport('createProductionGameStartOptions', (mapId) => ({
+            mapId,
+            routeReceipt: 'production-game-start-options'
+        }));
+    }, { context })],
     ['./benchmark/_benchmark_scene.js', new vm.SyntheticModule(['BenchmarkScene'], function init() {
         this.setExport('BenchmarkScene', BenchmarkSceneStub);
     }, { context })],
@@ -355,6 +363,8 @@ sceneSystem.gameStart('map-test');
 assert.ok(sceneSystem.scene instanceof GameSceneStub);
 assert.equal(sceneSystem.scene.options.mode, 'play');
 assert.equal(sceneSystem.scene.options.mapId, 'map-test');
+assert.equal(sceneSystem.scene.options.routeReceipt,
+    'production-game-start-options');
 assert.equal(clearSimulationCommandCount, 1);
 const playScene = sceneSystem.scene;
 

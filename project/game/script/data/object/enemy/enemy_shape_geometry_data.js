@@ -50,15 +50,17 @@ const createPolygonPath = (points) => Object.freeze({
 const createRegularPolygonPath = (
     sides,
     radius,
-    rotation = UPRIGHT_POLYGON_ANGLE_OFFSET
+    rotation = UPRIGHT_POLYGON_ANGLE_OFFSET,
+    centerX = 0,
+    centerY = 0
 ) => {
     const points = [];
     const step = FULL_CIRCLE_RADIANS / sides;
     for (let index = 0; index < sides; index++) {
         const angle = rotation + (index * step);
         points.push(freezePoint(
-            Math.cos(angle) * radius,
-            Math.sin(angle) * radius
+            centerX + (Math.cos(angle) * radius),
+            centerY + (Math.sin(angle) * radius)
         ));
     }
     return createPolygonPath(points);
@@ -122,13 +124,12 @@ export const ENEMY_SHAPE_GEOMETRY = Object.freeze({
     octa: createShapeGeometry([
         createRegularPolygonPath(8, 0.47, Math.PI / 8)
     ]),
-    // Final J presentation: solid top bar, right stem, and lower hook.
-    // Legacy SVG와 GPU analytic SDF가 같은 네 직사각형의 union을 사용합니다.
+    // 두 둥근 떡 덩이를 좁은 허리가 잇는 조랭이떡 실루엣입니다.
+    // Legacy SVG와 GPU analytic SDF는 이 두 8각 lobe와 connector를 함께 사용합니다.
     jorang: createShapeGeometry([
-        createRectPath(-0.40, -0.46, 0.80, 0.18),
-        createRectPath(0.18, -0.30, 0.20, 0.58),
-        createRectPath(-0.20, 0.22, 0.58, 0.20),
-        createRectPath(-0.38, 0.10, 0.20, 0.22)
+        createRegularPolygonPath(8, 0.27, Math.PI / 8, -0.25, 0),
+        createRegularPolygonPath(8, 0.27, Math.PI / 8, 0.25, 0),
+        createRectPath(-0.12, -0.08, 0.24, 0.16)
     ]),
     gen: createShapeGeometry([
         createCompoundPath([
@@ -244,9 +245,12 @@ export const ENEMY_NORMALIZED_RENDER_GEOMETRY = Object.freeze({
         points: normalizePolygon('octa', ENEMY_SHAPE_GEOMETRY.octa.paths[0], true)
     }),
     jorang: Object.freeze({
-        boxes: Object.freeze(
-            jorangPaths.map((path) => normalizeRect('jorang', path))
-        )
+        lobes: Object.freeze(
+            jorangPaths.slice(0, 2).map((path) => (
+                normalizePolygon('jorang', path)
+            ))
+        ),
+        connector: normalizeRect('jorang', jorangPaths[2])
     }),
     gen: Object.freeze({
         outerBox: normalizeRect('gen', generatorRingPaths[0]),

@@ -35,6 +35,9 @@ const {
 const { ENEMY_SVG_SHAPES } = await loadGameModule(
     'object/enemy/_enemy_shape_assets.js'
 );
+const { TITLE_WEBGPU_ENEMY_SHAPE_KEYS } = await loadGameModule(
+    'scene/title/webgpu/_title_webgpu_enemy_shape_atlas.js'
+);
 const { CORRIDOR_EIGHT_WAVE_01_DATA } = await loadGameModule(
     'data/scene/game/corridor_eight_wave_01_data.js'
 );
@@ -56,6 +59,17 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
 const NW_WEBGPU_CAPABILITY_RUNNER_SOURCE = await readFile(
     new URL('./nw_webgpu_capability/runner.js', import.meta.url),
+    'utf8'
+);
+const TITLE_WEBGPU_ENEMY_SHAPE_ATLAS_SOURCE = await readFile(
+    new URL(
+        '../script/module/scene/title/webgpu/_title_webgpu_enemy_shape_atlas.js',
+        import.meta.url
+    ),
+    'utf8'
+);
+const ENEMY_SHAPE_ASSETS_SOURCE = await readFile(
+    new URL('../script/module/object/enemy/_enemy_shape_assets.js', import.meta.url),
     'utf8'
 );
 
@@ -185,6 +199,54 @@ const toWgslVec2 = ({ x, y }) => (
     `vec2f(${toWgslFloat(x)}, ${toWgslFloat(y)})`
 );
 
+const getPolygonCenter = (points) => points.reduce((center, point) => ({
+    x: center.x + (point.x / points.length),
+    y: center.y + (point.y / points.length)
+}), { x: 0, y: 0 });
+
+const getPointBounds = (points) => Object.freeze({
+    minimumX: Math.min(...points.map(({ x }) => x)),
+    maximumX: Math.max(...points.map(({ x }) => x)),
+    minimumY: Math.min(...points.map(({ y }) => y)),
+    maximumY: Math.max(...points.map(({ y }) => y))
+});
+
+const isPointInsidePolygon = (point, points) => {
+    let inside = false;
+    let previous = points.at(-1);
+    for (const current of points) {
+        if ((current.y > point.y) !== (previous.y > point.y)) {
+            const crossingX = current.x
+                + ((point.y - current.y) * (previous.x - current.x)
+                    / (previous.y - current.y));
+            if (point.x < crossingX) inside = !inside;
+        }
+        previous = current;
+    }
+    return inside;
+};
+
+const assertPointSetMatches = (actual, expected, epsilon = 1e-12) => {
+    assert.equal(actual.length, expected.length);
+    for (const point of actual) {
+        assert.ok(expected.some((candidate) => (
+            Math.abs(point.x - candidate.x) <= epsilon
+                && Math.abs(point.y - candidate.y) <= epsilon
+        )), `대칭 대응점이 없습니다: ${JSON.stringify(point)}`);
+    }
+};
+
+const polygonPathToSvg = ({ points }) => {
+    const [first, ...rest] = points;
+    return `M ${first.x} ${first.y} ${rest.map(
+        ({ x, y }) => `L ${x} ${y}`
+    ).join(' ')} Z`;
+};
+
+const rectPathToSvg = ({ x, y, width, height }) => (
+    `M ${x} ${y} H ${x + width} V ${y + height} H ${x} Z`
+);
+
 test('main GPU enemy catalog과 단일 wave timeline은 65% radius·shape cycle·lane 순서를 고정한다', () => {
     assert.equal(
         MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES,
@@ -285,14 +347,17 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(ENEMY_SVG_SHAPES.enemy_gen[0].fillRule, 'evenodd');
 
     const jorangPaths = ENEMY_SHAPE_GEOMETRY.jorang.paths;
-    assert.equal(jorangPaths.length, 4);
-    assert.equal(jorangPaths.every((path) => (
-        path.kind === ENEMY_SHAPE_PATH_KIND.RECT
-    )), true);
-    assert.equal(
-        ENEMY_SVG_SHAPES.enemy_jorang[0],
-        'M -0.4 -0.46 H 0.4 V -0.28 H -0.4 Z'
-    );
+    assert.equal(jorangPaths.length, 3);
+    assert.deepEqual(jorangPaths.map(({ kind }) => kind), [
+        ENEMY_SHAPE_PATH_KIND.POLYGON,
+        ENEMY_SHAPE_PATH_KIND.POLYGON,
+        ENEMY_SHAPE_PATH_KIND.RECT
+    ]);
+    assert.deepEqual(Array.from(ENEMY_SVG_SHAPES.enemy_jorang), [
+        polygonPathToSvg(jorangPaths[0]),
+        polygonPathToSvg(jorangPaths[1]),
+        rectPathToSvg(jorangPaths[2])
+    ]);
 
     const normalized = ENEMY_NORMALIZED_RENDER_GEOMETRY;
     assertClose(normalized.square.box.halfSize.x, 0.6363961030678927);
@@ -322,12 +387,223 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(normalized.gen.terminalBoxes.length, 4);
     assertClose(normalized.gen.terminalBoxes[0].center.x, -0.6204862004911955);
     assertClose(normalized.gen.terminalBoxes[0].center.y, -0.5909392385620433);
-    assert.equal(normalized.jorang.boxes.length, 4);
-    assert.ok(normalized.jorang.boxes.every(({ halfSize }) => (
-        halfSize.x > 0 && halfSize.y > 0
-    )));
+    assert.equal(normalized.jorang.lobes.length, 2);
+    assert.equal(normalized.jorang.lobes.every((points) => (
+        points.length === 8
+    )), true);
+    assert.ok(normalized.jorang.connector.halfSize.x > 0);
+    assert.ok(normalized.jorang.connector.halfSize.y > 0);
     assert.ok(normalized.ring.outerRadius > normalized.ring.innerRadius);
     assert.ok(normalized.ring.innerRadius > 0);
+});
+
+test('J geometry는 두 둥근 lobe를 좁은 허리로 잇는 대칭·무공 단일 실루엣이다', () => {
+    const paths = ENEMY_SHAPE_GEOMETRY.jorang.paths;
+    const lobes = paths.filter(({ kind }) => (
+        kind === ENEMY_SHAPE_PATH_KIND.POLYGON
+    ));
+    const connectors = paths.filter(({ kind }) => (
+        kind === ENEMY_SHAPE_PATH_KIND.RECT
+    ));
+    assert.equal(lobes.length, 2, 'rounded lobe authority는 정확히 둘이어야 합니다.');
+    assert.equal(connectors.length, 1, 'waist connector authority는 정확히 하나여야 합니다.');
+    const connector = connectors[0];
+    const lobeCenters = lobes.map(({ points }) => getPolygonCenter(points));
+    const lobeBounds = lobes.map(({ points }) => getPointBounds(points));
+
+    for (let index = 0; index < lobes.length; index++) {
+        const { points } = lobes[index];
+        const center = lobeCenters[index];
+        assert.equal(points.length, 8);
+        const radii = points.map(({ x, y }) => Math.hypot(
+            x - center.x,
+            y - center.y
+        ));
+        const edgeLengths = points.map((point, pointIndex) => {
+            const next = points[(pointIndex + 1) % points.length];
+            return Math.hypot(next.x - point.x, next.y - point.y);
+        });
+        assert.ok(radii.every((radius) => (
+            Math.abs(radius - radii[0]) <= 1e-12
+        )), '각 lobe는 같은 반경의 regular octagon이어야 합니다.');
+        assert.ok(edgeLengths.every((length) => (
+            Math.abs(length - edgeLengths[0]) <= 1e-12
+        )), '각 lobe edge 길이는 같아야 합니다.');
+        const crossProducts = points.map((point, pointIndex) => {
+            const next = points[(pointIndex + 1) % points.length];
+            const after = points[(pointIndex + 2) % points.length];
+            return ((next.x - point.x) * (after.y - next.y))
+                - ((next.y - point.y) * (after.x - next.x));
+        });
+        assert.ok(
+            crossProducts.every((cross) => cross > 0)
+                || crossProducts.every((cross) => cross < 0),
+            '각 lobe authority는 convex여야 합니다.'
+        );
+    }
+
+    assertClose(lobeCenters[0].x, -lobeCenters[1].x);
+    assertClose(lobeCenters[0].y, 0);
+    assertClose(lobeCenters[1].y, 0);
+    assertClose(connector.x, -(connector.x + connector.width));
+    assertClose(connector.y, -(connector.y + connector.height));
+    assertPointSetMatches(
+        lobes[0].points.map(({ x, y }) => ({ x, y: -y })),
+        lobes[0].points
+    );
+    assertPointSetMatches(
+        lobes[0].points.map(({ x, y }) => ({ x: -x, y })),
+        lobes[1].points
+    );
+    assertPointSetMatches(
+        lobes[1].points.map(({ x, y }) => ({ x, y: -y })),
+        lobes[1].points
+    );
+
+    const lobeMaximumWidth = Math.max(...lobeBounds.map((bounds) => (
+        bounds.maximumX - bounds.minimumX
+    )));
+    const lobeMaximumHeight = Math.max(...lobeBounds.map((bounds) => (
+        bounds.maximumY - bounds.minimumY
+    )));
+    assert.ok(connector.width < lobeMaximumWidth);
+    assert.ok(connector.height < lobeMaximumHeight);
+    assert.ok(
+        connector.height <= lobeMaximumHeight * 0.4,
+        '중앙 waist의 횡단 폭은 lobe 최대 폭보다 명확히 좁아야 합니다.'
+    );
+
+    assert.ok(
+        lobeBounds[0].maximumX < lobeBounds[1].minimumX,
+        '두 lobe는 connector와 별개의 authority여야 합니다.'
+    );
+    const connectorCenterY = connector.y + (connector.height * 0.5);
+    const overlapWitnesses = [
+        {
+            x: connector.x + (connector.width * 0.05),
+            y: connectorCenterY
+        },
+        {
+            x: connector.x + (connector.width * 0.95),
+            y: connectorCenterY
+        }
+    ];
+    assert.ok(isPointInsidePolygon(overlapWitnesses[0], lobes[0].points));
+    assert.ok(isPointInsidePolygon(overlapWitnesses[1], lobes[1].points));
+    assert.ok(overlapWitnesses.every(({ x, y }) => (
+        x > connector.x
+            && x < connector.x + connector.width
+            && y > connector.y
+            && y < connector.y + connector.height
+    )));
+
+    // 세 convex authority의 교차 graph는 L-C-R tree입니다. 따라서 모든 path가
+    // 하나로 연결되고, cycle이나 열린 hole을 만들 수 없습니다.
+    const adjacency = [[2], [2], [0, 1]];
+    const visited = new Set([0]);
+    const pending = [0];
+    while (pending.length > 0) {
+        const current = pending.shift();
+        for (const next of adjacency[current]) {
+            if (visited.has(next)) continue;
+            visited.add(next);
+            pending.push(next);
+        }
+    }
+    const intersectionEdgeCount = adjacency.reduce(
+        (count, neighbors) => count + neighbors.length,
+        0
+    ) / 2;
+    assert.equal(visited.size, paths.length, 'detached path가 없어야 합니다.');
+    assert.equal(intersectionEdgeCount, paths.length - 1, 'convex cover에 hole cycle이 없어야 합니다.');
+
+    const allRawPoints = lobes.flatMap(({ points }) => points);
+    const rawBounds = getPointBounds(allRawPoints);
+    assertClose(rawBounds.minimumX, -rawBounds.maximumX);
+    assertClose(rawBounds.minimumY, -rawBounds.maximumY);
+    assert.ok(Math.hypot(rawBounds.maximumX, rawBounds.maximumY) < 0.60);
+    assert.notDeepEqual(paths.map(({ kind }) => kind), [
+        ENEMY_SHAPE_PATH_KIND.RECT,
+        ENEMY_SHAPE_PATH_KIND.RECT,
+        ENEMY_SHAPE_PATH_KIND.RECT,
+        ENEMY_SHAPE_PATH_KIND.RECT
+    ]);
+    assert.doesNotMatch(
+        ENEMY_SVG_SHAPES.enemy_jorang.join(' '),
+        /M -0\.4 -0\.46 H 0\.4|right stem|lower hook/
+    );
+});
+
+test('J legacy·title·ingame GPU는 같은 raw geometry와 normalized bounds를 소비한다', () => {
+    const raw = ENEMY_SHAPE_GEOMETRY.jorang;
+    const normalized = ENEMY_NORMALIZED_RENDER_GEOMETRY.jorang;
+    const scale = ENEMY_SVG_DRAW_SIZE_RATIO
+        / LEGACY_SQUARE_ENEMY_COLLISION_RADIUS_TILES;
+    for (let lobeIndex = 0; lobeIndex < normalized.lobes.length; lobeIndex++) {
+        const rawPoints = raw.paths[lobeIndex].points;
+        const normalizedPoints = normalized.lobes[lobeIndex];
+        assert.equal(normalizedPoints.length, rawPoints.length);
+        for (let pointIndex = 0; pointIndex < rawPoints.length; pointIndex++) {
+            assertClose(normalizedPoints[pointIndex].x, rawPoints[pointIndex].x * scale);
+            assertClose(normalizedPoints[pointIndex].y, rawPoints[pointIndex].y * scale);
+        }
+    }
+    const rawConnector = raw.paths[2];
+    assertClose(
+        normalized.connector.center.x,
+        (rawConnector.x + (rawConnector.width * 0.5)) * scale
+    );
+    assertClose(
+        normalized.connector.center.y,
+        (rawConnector.y + (rawConnector.height * 0.5)) * scale
+    );
+    assertClose(normalized.connector.halfSize.x, rawConnector.width * scale * 0.5);
+    assertClose(normalized.connector.halfSize.y, rawConnector.height * scale * 0.5);
+
+    const rawBounds = getPointBounds(raw.paths.slice(0, 2).flatMap(({ points }) => points));
+    const normalizedBounds = getPointBounds(normalized.lobes.flat());
+    assertClose(normalizedBounds.minimumX, rawBounds.minimumX * scale);
+    assertClose(normalizedBounds.maximumX, rawBounds.maximumX * scale);
+    assertClose(normalizedBounds.minimumY, rawBounds.minimumY * scale);
+    assertClose(normalizedBounds.maximumY, rawBounds.maximumY * scale);
+
+    assert.ok(TITLE_WEBGPU_ENEMY_SHAPE_KEYS.includes('enemy_jorang'));
+    assert.match(
+        TITLE_WEBGPU_ENEMY_SHAPE_ATLAS_SOURCE,
+        /import \{ ShapeDrawer \} from 'display\/_shape_drawer\.js'/
+    );
+    assert.match(
+        TITLE_WEBGPU_ENEMY_SHAPE_ATLAS_SOURCE,
+        /TITLE_WEBGPU_ENEMY_SHAPE_KEYS\[index\]/
+    );
+    assert.match(ENEMY_SHAPE_ASSETS_SOURCE, /ENEMY_SHAPE_GEOMETRY/);
+    assert.match(ENEMY_SHAPE_ASSETS_SOURCE, /ENEMY_SVG_SHAPES/);
+
+    for (const [name, points] of [
+        ['JORANG_LEFT_LOBE_POINTS', normalized.lobes[0]],
+        ['JORANG_RIGHT_LOBE_POINTS', normalized.lobes[1]]
+    ]) {
+        const block = GPU_COLLISION_RENDER_WGSL.match(
+            new RegExp(`const ${name} = array<vec2f, 8>\\([\\s\\S]*?\\n    \\);`)
+        )?.[0] ?? '';
+        assert.ok(block.length > 0, `${name} WGSL array가 없습니다.`);
+        assert.deepEqual(
+            block.match(/vec2f\([^\n]+\)/g),
+            points.map(toWgslVec2)
+        );
+    }
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes(
+        `const JORANG_CONNECTOR_CENTER: vec2f = ${toWgslVec2(normalized.connector.center)};`
+    ));
+    assert.ok(GPU_COLLISION_RENDER_WGSL.includes(
+        `const JORANG_CONNECTOR_HALF_SIZE: vec2f = ${toWgslVec2(normalized.connector.halfSize)};`
+    ));
+    assert.equal(BASIC_GEN_ENEMY_DATA.id, 'basic_gen_01');
+    assert.equal(BASIC_GEN_ENEMY_DATA.shapeDefinitionId, 'jorang');
+    assert.equal(
+        BASIC_GEN_ENEMY_DATA.collisionRadiusTiles,
+        MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES
+    );
 });
 
 test('enemy spawn adapter는 지원 shape만 숫자 render style code로 전달한다', () => {
@@ -574,6 +850,11 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     ));
     assert.match(GPU_COLLISION_RENDER_WGSL, /var distance = max\(outer, -inner\)/);
     assert.match(GPU_COLLISION_RENDER_WGSL, /index < 4u/);
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /fn jorang_distance[\s\S]*polygon_distance\([\s\S]*JORANG_LEFT_LOBE_POINTS,[\s\S]*8u[\s\S]*JORANG_RIGHT_LOBE_POINTS,[\s\S]*8u[\s\S]*box_distance\([\s\S]*JORANG_CONNECTOR_CENTER,[\s\S]*JORANG_CONNECTOR_HALF_SIZE[\s\S]*return min\(min\(left_lobe, right_lobe\), connector\)/
+    );
+    assert.doesNotMatch(GPU_COLLISION_RENDER_WGSL, /JORANG_BOX_/);
     assert.match(GPU_COLLISION_RENDER_WGSL,
         /shape_code == RENDER_SHAPE_JORANG[\s\S]*return jorang_distance\(point\)/);
     assert.equal(BASIC_GEN_ENEMY_DATA.shapeDefinitionId, 'jorang');
@@ -594,21 +875,26 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.doesNotMatch(GPU_COLLISION_COMPUTE_WGSL, /RENDER_SHAPE_/);
 });
 
-test('default actual shape smoke는 J geometry 권위의 네 획과 내부 공백을 샘플한다', () => {
+test('default actual shape smoke는 J 두 lobe·연결 허리·대칭 notch를 샘플한다', () => {
     assert.match(
         NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
-        /ENEMY_NORMALIZED_RENDER_GEOMETRY\.jorang\.boxes/
+        /const jorangGeometry = ENEMY_NORMALIZED_RENDER_GEOMETRY\.jorang/
     );
-    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangStrokeOffsets/);
-    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangGapOffsets/);
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangGeometry\.lobes/);
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangGeometry\.connector/);
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangConnectedOffsets/);
+    assert.match(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangWaistGapOffsets/);
     assert.match(
         NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
-        /jorangStrokeAlphas\.every\(\(alpha\) => alpha >= 192\)/
+        /jorangConnectedAlphas\.every\(\(alpha\) => alpha >= 192\)/
     );
     assert.match(
         NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
-        /jorangGapAlphas\.every\(\(alpha\) => alpha < 16\)/
+        /jorangWaistGapAlphas\.every\(\(alpha\) => alpha < 16\)/
     );
+    assert.doesNotMatch(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangStrokeOffsets/);
+    assert.doesNotMatch(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /jorangGapOffsets/);
+    assert.doesNotMatch(NW_WEBGPU_CAPABILITY_RUNNER_SOURCE, /four-stroke\/gap/);
     assert.doesNotMatch(
         NW_WEBGPU_CAPABILITY_RUNNER_SOURCE,
         /generator square hole\/ring\/terminal topology/

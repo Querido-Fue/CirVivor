@@ -121,6 +121,22 @@ Static tests must fail if production guides/contracts silently reintroduce:
 These tests/fixtures were authored in Turn 2 and received their routed cumulative behavior/hardware acceptance
 at the 2026-08-10 Turn 4 checkpoint.
 
+### Post-R2 Stage 1 combat and product-route regression
+
+- Arrow direct Tower ownership requires a bounded current terrain-SDF segment. A wall-occluded SEEK must retain
+  route flow and make bounded route progress; occluded WINDUP cannot lock a charge, and terrain-blocked CHARGE
+  must enter recovery without a Tower recoil event, damage candidate, or GPU-world recovery.
+- Arrow CHARGE and CONTACT_RECOIL use the endpoint-normalized bounded Expo-out finite difference with lambda
+  `0.5` at fixed 60 Hz. Actual GPU samples must match charge `k=0/1`, recoil contact preload and physical
+  `S+1 k=0`, and `S+2 k=1`; the first charge displacement remains below the `1/8`-tile SDF texel.
+- A Tower-selected M projectile is sampled after canonical T+1 completion publication. After its source M alone
+  is despawned, exact target identity, launch damage snapshot, self-hit budget, and live registry/GPU body remain
+  unchanged. Its later exact contact must reduce the selected Tower from `30` to `25`, leave the wrong Tower and
+  Core unchanged, then clean the projectile once without recovery.
+- The first title map card preserves the corridor preview ID but creates the R2 showcase map and authored Wave 1
+  in the production `GameScene`. The map-select overlay must release its title overlay session before routing;
+  other explicit map IDs and omitted direct-start IDs keep the legacy resolver path.
+
 ### R2 Turn 3 coverage (validated by the Turn 4 checkpoint)
 
 - Effect contract/catalog has stable definition/emitter IDs and codes; P alone has
@@ -217,7 +233,8 @@ at Turn 9, including the explicit compatible-map boundary above. The default cor
 
 ### R2 Turn 6 coverage (accepted at Turn 9)
 
-- natural compatibility identity `basic_gen_01` J renders dedicated analytic/legacy `jorang`; transform-private
+- natural compatibility identity `basic_gen_01` J renders the analytic/legacy joraengi-rice-cake silhouette from
+  two regular-octagon lobes and one narrow connector; transform-private
   `basic_circle_prime_01` C′ preserves its exact circle identity,
   spawn policies, canonical profiles/capabilities, common-C `1/2.5/1/0.1/1` stats, J bounty `12`, delay `60`,
   and J-lineage host start cap `4`; C′ is absent from public catalog/wave ingress;
@@ -287,6 +304,10 @@ only connected producer; future producer kinds are not reported as executed.
 - capture-completion and release capacity exhaustion reject the whole batch with no bilateral or metadata
   mutation and `recovery=false`, then retry/backoff later. ABI/identity/fingerprint/bilateral corruption remains
   recovery, and the transient prepared shield prevents generic damage before late seal;
+- capture retry treats retained exact pairs as bounded fairness metadata, not current gameplay authority. Every
+  retry reauthenticates current contact, live identities, predicted geometry, captor facing, relative velocity,
+  inclusive funnel, and strict closing; invalid/no-contact/outbound/dead/ABA pairs contribute zero demand and
+  the next normal tick clears their Candidate16 state without recovery;
 - logical projectile/origin provenance remains exact across capture/release for a future GPU Subject/Sentence
   Fireball relationship, but no end-to-end Subject/Sentence execution is claimed;
 - capture completion is authenticated before generic death/Core events from the same source tick. Expiry/

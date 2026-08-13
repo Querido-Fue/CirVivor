@@ -1,0 +1,105 @@
+#r2-showcase-manual-root {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 2147483647;
+    width: min(470px, calc(100vw - 24px));
+    max-height: calc(100vh - 24px);
+    overflow: auto;
+    box-sizing: border-box;
+    padding: 12px;
+    color: #f4f8ff;
+    background: rgba(8, 14, 26, 0.92);
+    border: 1px solid rgba(121, 190, 255, 0.8);
+    border-radius: 10px;
+    box-shadow: 0 10px 32px rgba(0, 0, 0, 0.52);
+    font: 14px/1.42 Consolas, "Noto Sans KR", sans-serif;
+    cursor: auto !important;
+    user-select: text;
+}
+
+#r2-showcase-manual-root[data-collapsed="true"] {
+    width: auto;
+    padding: 8px;
+}
+
+#r2-showcase-manual-root[data-collapsed="true"] .r2-manual-collapsible {
+    display: none;
+}
+
+.r2-manual-title-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.r2-manual-title-row strong {
+    color: #89d4ff;
+    letter-spacing: 0.02em;
+}
+
+.r2-manual-controls {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+    margin-top: 9px;
+}
+
+#r2-showcase-manual-root button {
+    min-height: 32px;
+    padding: 5px 7px;
+    color: #f7fbff;
+    background: #183451;
+    border: 1px solid #4a89b7;
+    border-radius: 6px;
+    font: inherit;
+    cursor: pointer !important;
+}
+
+#r2-showcase-manual-root button:hover,
+#r2-showcase-manual-root button:focus-visible {
+    background: #24547d;
+    outline: 2px solid #a8dcff;
+    outline-offset: 1px;
+}
+
+#r2-showcase-manual-root button[data-danger="true"] {
+    background: #5e2631;
+    border-color: #c96a79;
+}
+
+.r2-manual-note,
+#r2-manual-last-error {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+}
+
+.r2-manual-note {
+    color: #c4d6e6;
+}
+
+#r2-manual-status,
+#r2-manual-action-log {
+    margin: 8px 0 0;
+    padding: 8px;
+    overflow-wrap: anywhere;
+    white-space: pre-wrap;
+    background: rgba(0, 0, 0, 0.27);
+    border-radius: 6px;
+}
+
+#r2-manual-last-error {
+    color: #ffacb8;
+}
+
+#r2-manual-bootstrap-failure {
+    position: fixed;
+    inset: 12px;
+    z-index: 2147483647;
+    overflow: auto;
+    padding: 16px;
+    color: #fff;
+    background: #5c1018;
+    white-space: pre-wrap;
+}

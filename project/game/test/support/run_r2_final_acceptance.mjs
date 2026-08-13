@@ -35,6 +35,7 @@ export const R2_FINAL_FOCUSED_NODE_TEST_FILES = Object.freeze([
     'game/test/projectile_capture_director.test.mjs',
     'game/test/projectile_capture_lifecycle.test.mjs',
     'game/test/r2_enemy_showcase_content_data.test.mjs',
+    'game/test/r2_showcase_manual_launcher_contract.test.mjs',
     'game/test/route_availability_host_contract.test.mjs',
     'game/test/webgl_batch_lazy_state_binding.test.mjs'
 ]);

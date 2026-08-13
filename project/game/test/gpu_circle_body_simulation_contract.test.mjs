@@ -1796,8 +1796,8 @@ test('target-entity SpawnProgram은 private exact slot을 pack하고 target ABA�
         );
         assert.equal(status.fixedPrimitives.windowStorageBuffersPerStage, 9);
         assert.equal(status.fixedPrimitives.storageProfile.maximumDamageWindow, 9);
-        assert.equal(status.fixedPrimitives.enemyBehavior.storageBuffersPerStage, 8);
-        assert.equal(status.fixedPrimitives.storageProfile.enemyBehavior, 8);
+        assert.equal(status.fixedPrimitives.enemyBehavior.storageBuffersPerStage, 9);
+        assert.equal(status.fixedPrimitives.storageProfile.enemyBehavior, 9);
         assert.equal(
             status.fixedPrimitives.enemyBehavior.octagonTowerOrbitProgramId,
             GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
@@ -2843,7 +2843,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'core-damage-request': 9,
             'fixed-control': 5,
             'source-resolve': 9,
-            'enemy-behavior': 8,
+            'enemy-behavior': 9,
             'directional-defense-classifier': 8,
             'tracked-pose': 6
         });
@@ -2943,7 +2943,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         ]);
         assert.deepEqual(contactOperations[6].bindGroups, [
             'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
-            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-enemy-behavior-events'
         ]);

@@ -1,6 +1,9 @@
 import { TitleScene } from './title/_title_scene.js';
 import { LoadingScene } from './loading/_loading_scene.js';
 import { GAME_SCENE_MODES, GameScene } from './game/_game_scene.js';
+import {
+    createProductionGameStartOptions
+} from './game/production_game_start_route.js';
 import { BenchmarkScene } from './benchmark/_benchmark_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 
@@ -148,7 +151,7 @@ export class SceneSystem {
         this.#destroyActiveScene();
         this.#setScene(new GameScene(this, {
             mode: GAME_SCENE_MODES.PLAY,
-            mapId
+            ...createProductionGameStartOptions(mapId)
         }), SCENE_STATES.IN_GAME);
     }
 

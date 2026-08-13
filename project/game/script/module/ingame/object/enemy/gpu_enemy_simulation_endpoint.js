@@ -760,6 +760,9 @@ export class GpuEnemySimulationEndpoint {
     #projectileCaptureCommandPort;
     #authenticProjectileCaptureCoreImpactReceipts;
     #authenticProjectileCapturePrepareEvidence;
+    #acceptedProjectileCaptureProtocols;
+    #acceptedProjectileCaptureProtocolKeys;
+    #acceptedProjectileCaptureProtocolKeyHead;
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
@@ -908,6 +911,9 @@ export class GpuEnemySimulationEndpoint {
         });
         this.projectileCaptureTerminalCleanupCommandIds = new Map();
         this.lastAcceptedProjectileCaptureProtocol = null;
+        this.#acceptedProjectileCaptureProtocols = new Map();
+        this.#acceptedProjectileCaptureProtocolKeys = [];
+        this.#acceptedProjectileCaptureProtocolKeyHead = 0;
         this.lastAcceptedProjectileCaptureSnapshot = null;
         this.lastAcceptedProjectileCaptureReleaseSnapshot = null;
         this.projectileCaptureDeferredDeathReceipts = new Map();
@@ -1840,7 +1846,7 @@ export class GpuEnemySimulationEndpoint {
             }
             if (!this.#hasProjectileCaptureRegistryDomain()) {
                 const sourceTick = unsupportedSourceTick;
-                this.lastAcceptedProjectileCaptureProtocol = Object.freeze({
+                this.#rememberAcceptedProjectileCaptureProtocol({
                     sessionGeneration: this.sessionGeneration,
                     deviceGeneration: 0,
                     authoritativeEpoch: 0,
@@ -2067,12 +2073,16 @@ export class GpuEnemySimulationEndpoint {
                     preparation.prepareEvidence
                 );
             }
-            this.lastAcceptedProjectileCaptureProtocol = Object.freeze({
+            this.#rememberAcceptedProjectileCaptureProtocol({
                 sessionGeneration: batch.sessionGeneration,
                 deviceGeneration: batch.deviceGeneration,
                 authoritativeEpoch: batch.authoritativeEpoch,
                 sourceTick: batch.sourceTick,
-                completedThroughTick: batch.completedThroughTick
+                completedThroughTick: batch.completedThroughTick,
+                capacityRejected: exactCapacityRejected,
+                capacityRejectionFlags: exactCapacityRejected
+                    ? capacityRejectionFlags
+                    : 0
             });
             const snapshot = Object.freeze({
                 ...batch,
@@ -2098,7 +2108,7 @@ export class GpuEnemySimulationEndpoint {
             && status.pendingCaptureReadbackCount === 0
             && status.pendingCaptureBatchCount === 0;
         if (idleBoundary) {
-            this.lastAcceptedProjectileCaptureProtocol = Object.freeze({
+            this.#rememberAcceptedProjectileCaptureProtocol({
                 sessionGeneration: status.sessionGeneration,
                 deviceGeneration: status.deviceGeneration,
                 authoritativeEpoch: status.authoritativeEpoch,
@@ -3585,19 +3595,23 @@ export class GpuEnemySimulationEndpoint {
             );
         }
         if (this.projectileCaptureBackendSupported) {
-            const captureProof = this.lastAcceptedProjectileCaptureProtocol;
-            const incoherentBatch = prepared.acceptedBatches.some((batch) => (
-                batch.sessionGeneration !== captureProof?.sessionGeneration
-                || batch.deviceGeneration !== captureProof?.deviceGeneration
-                || batch.authoritativeEpoch !== captureProof?.authoritativeEpoch
-                || batch.sourceTick !== captureProof?.sourceTick
-            ));
-            const incoherentEvent = prepared.events.some((event) => (
-                event.sessionGeneration !== captureProof?.sessionGeneration
-                || event.deviceGeneration !== captureProof?.deviceGeneration
-                || event.authoritativeEpoch !== captureProof?.authoritativeEpoch
-                || event.sourceTick !== captureProof?.sourceTick
-            ));
+            const incoherentWithCaptureProof = (envelope) => {
+                const captureProof = this
+                    .#getAcceptedProjectileCaptureProtocol(envelope);
+                return envelope.sessionGeneration
+                        !== captureProof?.sessionGeneration
+                    || envelope.deviceGeneration
+                        !== captureProof?.deviceGeneration
+                    || envelope.authoritativeEpoch
+                        !== captureProof?.authoritativeEpoch
+                    || envelope.sourceTick !== captureProof?.sourceTick;
+            };
+            const incoherentBatch = prepared.acceptedBatches.some(
+                incoherentWithCaptureProof
+            );
+            const incoherentEvent = prepared.events.some(
+                incoherentWithCaptureProof
+            );
             if (incoherentBatch || incoherentEvent) {
                 return this.#failCompletedEventProtocol(
                     tick,
@@ -3641,9 +3655,8 @@ export class GpuEnemySimulationEndpoint {
                         incarnation: normalized.incarnation
                     };
                     const capacityBackoff = this
-                        .lastAcceptedProjectileCaptureSnapshot?.snapshot;
+                        .#getAcceptedProjectileCaptureProtocol(normalized);
                     const captureBody = capacityBackoff?.capacityRejected === true
-                        && capacityBackoff.sourceTick === normalized.sourceTick
                         ? this.backend.getProjectileCaptureBodyState(handle)
                         : null;
                     const heldCaptureIdentity = captureBody?.state?.phase
@@ -4153,6 +4166,9 @@ export class GpuEnemySimulationEndpoint {
         this.knownCompletedEventKeys.clear();
         this.completedEventKeys.length = 0;
         this.completedEventKeyHead = 0;
+        this.#acceptedProjectileCaptureProtocols.clear();
+        this.#acceptedProjectileCaptureProtocolKeys.length = 0;
+        this.#acceptedProjectileCaptureProtocolKeyHead = 0;
         this.#authenticEffectLifecycleCommits = new WeakSet();
         this.#authenticProjectileCapturePrepareEvidence = new WeakSet();
         this.projectileCaptureDeferredDeathReceipts.clear();
@@ -5195,6 +5211,58 @@ export class GpuEnemySimulationEndpoint {
             );
             this.completedBatchKeyHead = 0;
         }
+    }
+
+    #getAcceptedProjectileCaptureProtocol(envelope) {
+        if (!envelope || typeof envelope !== 'object') {
+            return null;
+        }
+        return this.#acceptedProjectileCaptureProtocols.get([
+            envelope.sessionGeneration,
+            envelope.deviceGeneration,
+            envelope.authoritativeEpoch,
+            envelope.sourceTick
+        ].join(':')) ?? null;
+    }
+
+    #rememberAcceptedProjectileCaptureProtocol(source) {
+        const capacityRejected = source?.capacityRejected === true;
+        const protocol = Object.freeze({
+            ...source,
+            capacityRejected,
+            capacityRejectionFlags: capacityRejected
+                ? Number(source.capacityRejectionFlags) >>> 0
+                : 0
+        });
+        const key = [
+            protocol.sessionGeneration,
+            protocol.deviceGeneration,
+            protocol.authoritativeEpoch,
+            protocol.sourceTick
+        ].join(':');
+        if (!this.#acceptedProjectileCaptureProtocols.has(key)) {
+            this.#acceptedProjectileCaptureProtocolKeys.push(key);
+        }
+        this.#acceptedProjectileCaptureProtocols.set(key, protocol);
+        this.lastAcceptedProjectileCaptureProtocol = protocol;
+        while ((this.#acceptedProjectileCaptureProtocolKeys.length
+                - this.#acceptedProjectileCaptureProtocolKeyHead)
+            > this.completedEventKeyHistoryCapacity) {
+            this.#acceptedProjectileCaptureProtocols.delete(
+                this.#acceptedProjectileCaptureProtocolKeys[
+                    this.#acceptedProjectileCaptureProtocolKeyHead++
+                ]
+            );
+        }
+        if (this.#acceptedProjectileCaptureProtocolKeyHead
+            >= this.completedEventKeyHistoryCapacity) {
+            this.#acceptedProjectileCaptureProtocolKeys
+                = this.#acceptedProjectileCaptureProtocolKeys.slice(
+                    this.#acceptedProjectileCaptureProtocolKeyHead
+                );
+            this.#acceptedProjectileCaptureProtocolKeyHead = 0;
+        }
+        return protocol;
     }
 
     #rememberCompletedEventKey(key, fingerprint) {

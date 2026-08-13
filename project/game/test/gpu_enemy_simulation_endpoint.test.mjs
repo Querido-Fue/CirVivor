@@ -14,8 +14,17 @@ const {
     'ingame/gpu_simulation_endpoint.js'
 );
 const {
-    GPU_CIRCLE_APPLIED_EVENT_FLAG
+    GPU_CIRCLE_APPLIED_EVENT_FLAG,
+    GPU_PROJECTILE_CAPTURE_PHASE,
+    GPU_PROJECTILE_CAPTURE_ROLE
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
+    GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG,
+    GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG,
+    GPU_PROJECTILE_CAPTURE_TICK_STATUS
+} = await loadGameModule(
+    'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
+);
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -165,6 +174,81 @@ function createFakeBackend(options = {}) {
     };
 }
 
+function installIdleProjectileCaptureBackend(backend, getSessionGeneration) {
+    const completedCaptureBatches = [];
+    const captureBodyStates = new Map();
+    let runtimeStatusOverrides = {};
+    Object.assign(backend, {
+        armPreparedProjectileCaptureReleaseBatch() {
+            return Object.freeze({ accepted: false });
+        },
+        commitArmedProjectileCaptureReleaseBatch() {
+            return Object.freeze({ accepted: false });
+        },
+        cancelArmedProjectileCaptureReleaseBatch() {
+            return Object.freeze({ accepted: false });
+        },
+        drainCompletedProjectileCaptureBatches(out = []) {
+            out.push(...completedCaptureBatches.splice(0));
+            return out;
+        },
+        drainCompletedProjectileCaptureReleaseBatches(out = []) { return out; },
+        discardPreparedProjectileCaptureBatch() { return true; },
+        cancelPendingProjectileCaptureProgramsForTerminal() {
+            return Object.freeze({ accepted: false });
+        },
+        getTerminalProjectileCaptureProgramCancelStatus() { return null; },
+        getProjectileCaptureRuntimeStatus() {
+            return Object.freeze({
+                abiVersion: 1,
+                state: 'ready',
+                sessionGeneration: getSessionGeneration(),
+                deviceGeneration: 1,
+                authoritativeEpoch: 1,
+                ingressOpen: true,
+                captureCapacity: 4,
+                releasePreparationCapacity: 4,
+                cleanupCapacity: 4,
+                activeDomainBodyCount: 0,
+                pendingCaptureReadbackCount: 0,
+                pendingReleaseReadbackCount: 0,
+                pendingCaptureBatchCount: 0,
+                pendingReleaseBatchCount: 0,
+                preparedBatchCount: 0,
+                armedReleaseCount: 0,
+                stagedReleaseCount: 0,
+                commitRequested: false,
+                sourceTick: 0,
+                completedThroughTick: 0,
+                lastReleaseCommittedTick: 0,
+                runtimeStatus: 0,
+                errorFlags: 0,
+                capacityRejected: false,
+                retryableCapacityRejected: false,
+                capacityRejectionFlags: 0,
+                retryMode: false,
+                retryOriginTick: 0,
+                retryBacklogRemaining: false,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null,
+                ...runtimeStatusOverrides
+            });
+        },
+        registerProjectileCaptureCoreImpactReceipt() { return true; },
+        getProjectileCaptureBodyState(handle) {
+            return captureBodyStates.get(handleKey(handle)) ?? null;
+        }
+    });
+    return {
+        completedCaptureBatches,
+        captureBodyStates,
+        setRuntimeStatus(overrides = {}) {
+            runtimeStatusOverrides = { ...overrides };
+        }
+    };
+}
+
 function setCurrentEventProtocol(endpoint, backend, overrides = {}) {
     const protocol = Object.freeze({
         sessionGeneration: endpoint.getStatus().sessionGeneration,
@@ -194,6 +278,39 @@ function createCompletedBatch(protocol, overrides = {}) {
         atomicTransformFirstHitEventBase: 0,
         atomicTransformFirstHitEventCapacity: 1,
         events: overrides.events ?? [],
+        ...overrides
+    };
+}
+
+function createCompletedProjectileCaptureBatch(protocol, overrides = {}) {
+    const sourceTick = overrides.sourceTick ?? 1;
+    return {
+        abiVersion: 1,
+        sessionGeneration: protocol.sessionGeneration,
+        deviceGeneration: protocol.deviceGeneration,
+        authoritativeEpoch: protocol.authoritativeEpoch,
+        sourceTick,
+        completedThroughTick: sourceTick,
+        status: GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE,
+        errorFlags: 0,
+        batchIdFingerprint: 0,
+        capacityRejected: false,
+        retryable: false,
+        rejectionReason: null,
+        capacityRejectionFlags: 0,
+        retryBatch: false,
+        retryBacklogRemaining: false,
+        retryOriginTick: 0,
+        captureDemandCount: 0,
+        releasePreparationDemandCount: 0,
+        cleanupDemandCount: 0,
+        captureCapacity: 4,
+        releasePreparationCapacity: 4,
+        cleanupCapacity: 4,
+        failure: null,
+        captures: [],
+        releasePreparations: [],
+        cleanups: [],
         ...overrides
     };
 }
@@ -642,6 +759,221 @@ test('event가 없는 completion도 완전한 envelope에서만 watermark를 전
     assert.equal(endpoint.getStatus().events.completedThroughTick, 8);
     assert.equal(endpoint.requiresRecovery(), false);
     endpoint.destroy();
+});
+
+test('지연된 generic event batch는 같은 source tick의 bounded capture proof로 검증한다', () => {
+    const createFixture = () => {
+        const backend = createFakeBackend({ capacity: 4 });
+        let endpoint = null;
+        installIdleProjectileCaptureBackend(
+            backend,
+            () => endpoint.sessionGeneration
+        );
+        endpoint = createGpuEnemySimulationEndpoint({
+            enemySimulationBackend: backend
+        });
+        endpoint.init({ id: 'lagged-event-capture-proof-map' });
+        const protocol = setCurrentEventProtocol(endpoint, backend);
+        return { backend, endpoint, protocol };
+    };
+
+    const valid = createFixture();
+    for (const targetFixedTick of [2, 3, 4]) {
+        const capture = valid.endpoint
+            .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+                targetFixedTick
+            );
+        assert.equal(capture.sourceTick, targetFixedTick - 1);
+        assert.equal(capture.pending, false);
+    }
+    valid.backend.completedEventBatches.push(createCompletedBatch(
+        valid.protocol,
+        { sourceTick: 1, submittedTick: 1 }
+    ));
+    const lagged = valid.endpoint.commitCompletedEventsAtFixedBoundary(4);
+    assert.equal(lagged.protocolFailure, null);
+    assert.equal(lagged.sourceTick, 1);
+    assert.equal(lagged.completedThroughTick, 1);
+    assert.equal(valid.endpoint.requiresRecovery(), false);
+    valid.endpoint.destroy();
+
+    const missing = createFixture();
+    missing.endpoint.commitCompletedProjectileCaptureProgramsAtFixedBoundary(4);
+    missing.backend.completedEventBatches.push(createCompletedBatch(
+        missing.protocol,
+        { sourceTick: 1, submittedTick: 1 }
+    ));
+    const rejected = missing.endpoint.commitCompletedEventsAtFixedBoundary(4);
+    assert.equal(
+        rejected.protocolFailure?.code,
+        'projectile-capture-event-batch-incoherent'
+    );
+    assert.equal(rejected.completedThroughTick, 0);
+    assert.equal(missing.endpoint.requiresRecovery(), true);
+    missing.endpoint.destroy();
+});
+
+test('지연된 capacity-rejected death는 exact source proof로 defer하고 proof 누락은 fail-close 한다', () => {
+    const capacityRejectionFlags
+        = GPU_PROJECTILE_CAPTURE_CAPACITY_REJECTION_FLAG.CLEANUP;
+    const createFixture = (label, endpointOptions = {}) => {
+        const backend = createFakeBackend({ capacity: 4 });
+        let endpoint = null;
+        const capture = installIdleProjectileCaptureBackend(
+            backend,
+            () => endpoint.sessionGeneration
+        );
+        endpoint = createGpuEnemySimulationEndpoint({
+            enemySimulationBackend: backend
+        }, endpointOptions);
+        endpoint.init({ id: `lagged-capacity-death-${label}` });
+        const protocol = setCurrentEventProtocol(endpoint, backend);
+        endpoint.requestSpawn(createSpawnIntent(0), 1, `${label}:spawn:0`);
+        endpoint.requestSpawn(createSpawnIntent(1), 1, `${label}:spawn:1`);
+        const [subject, peer] = endpoint.commitAtFixedBoundary(1)
+            .spawned.map(({ handle }) => handle);
+        capture.captureBodyStates.set(handleKey(subject), {
+            bodySlot: 0,
+            capturedMirror: false,
+            state: {
+                role: GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR,
+                phase: GPU_PROJECTILE_CAPTURE_PHASE.HELD,
+                selfEntityId: subject.entityId,
+                selfIncarnation: subject.incarnation,
+                peerBodySlot: 1,
+                peerEntityId: peer.entityId,
+                peerIncarnation: peer.incarnation,
+                captureSequence: 1
+            }
+        });
+        capture.captureBodyStates.set(handleKey(peer), {
+            bodySlot: 1,
+            capturedMirror: true,
+            state: {
+                role: GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE,
+                phase: GPU_PROJECTILE_CAPTURE_PHASE.HELD,
+                selfEntityId: peer.entityId,
+                selfIncarnation: peer.incarnation,
+                peerBodySlot: 0,
+                peerEntityId: subject.entityId,
+                peerIncarnation: subject.incarnation,
+                captureSequence: 1
+            }
+        });
+        return { backend, endpoint, capture, protocol, subject };
+    };
+    const publishCapture = (fixture, batch) => {
+        fixture.capture.setRuntimeStatus({
+            activeDomainBodyCount: 2,
+            sourceTick: batch.sourceTick,
+            completedThroughTick: batch.completedThroughTick,
+            runtimeStatus: batch.status,
+            errorFlags: batch.errorFlags,
+            capacityRejected: batch.capacityRejected === true,
+            retryableCapacityRejected: batch.retryable === true,
+            capacityRejectionFlags: batch.capacityRejectionFlags,
+            retryMode: batch.retryBatch === true,
+            retryOriginTick: batch.retryOriginTick,
+            retryBacklogRemaining: batch.retryBacklogRemaining,
+            requiresRecovery: false
+        });
+        fixture.capture.completedCaptureBatches.push(batch);
+        const snapshot = fixture.endpoint
+            .commitCompletedProjectileCaptureProgramsAtFixedBoundary(
+                batch.sourceTick + 1
+            );
+        assert.equal(snapshot.protocolFailure, null);
+        assert.equal(snapshot.sourceTick, batch.sourceTick);
+        return snapshot;
+    };
+    const publishThreeSources = (fixture) => {
+        const capacityRejected = createCompletedProjectileCaptureBatch(
+            fixture.protocol,
+            {
+                sourceTick: 1,
+                status: GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED,
+                errorFlags:
+                    GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
+                        .COMPLETION_CAPACITY,
+                capacityRejected: true,
+                retryable: true,
+                rejectionReason: 'projectile-capture-completion-capacity',
+                capacityRejectionFlags,
+                cleanupDemandCount: 5
+            }
+        );
+        assert.equal(
+            publishCapture(fixture, capacityRejected).capacityRejected,
+            true
+        );
+        publishCapture(
+            fixture,
+            createCompletedProjectileCaptureBatch(fixture.protocol, {
+                sourceTick: 2
+            })
+        );
+        publishCapture(
+            fixture,
+            createCompletedProjectileCaptureBatch(fixture.protocol, {
+                sourceTick: 3
+            })
+        );
+    };
+    const queueSourceOneDeath = (fixture) => {
+        fixture.backend.completedEventBatches.push(createCompletedBatch(
+            fixture.protocol,
+            {
+                sourceTick: 1,
+                submittedTick: 1,
+                events: [{
+                    type: 'death',
+                    eventType: 'death',
+                    sequence: 0,
+                    entityId: fixture.subject.entityId,
+                    incarnation: fixture.subject.incarnation,
+                    bodyId: 0,
+                    reasonFlags: 1
+                }]
+            }
+        ));
+    };
+
+    const valid = createFixture('valid');
+    publishThreeSources(valid);
+    queueSourceOneDeath(valid);
+    const deferred = valid.endpoint.commitCompletedEventsAtFixedBoundary(4);
+    assert.equal(deferred.protocolFailure, null);
+    assert.equal(deferred.deathEvents.length, 1);
+    assert.equal(
+        deferred.deathEvents[0].disposition,
+        'projectile-capture-capacity-deferred'
+    );
+    assert.equal(
+        deferred.deathEvents[0].projectileCaptureDeferredDeath
+            .capacityRejectionFlags,
+        capacityRejectionFlags
+    );
+    assert.equal(valid.endpoint.getPendingCommandCount(), 0);
+    assert.equal(valid.endpoint.commitAtFixedBoundary(4).despawned.length, 0);
+    assert.equal(valid.endpoint.hasBody(valid.subject), true);
+    assert.equal(valid.endpoint.requiresRecovery(), false);
+    valid.endpoint.destroy();
+
+    const missing = createFixture('missing', {
+        completedEventKeyHistoryCapacity: 2
+    });
+    publishThreeSources(missing);
+    queueSourceOneDeath(missing);
+    const rejected = missing.endpoint.commitCompletedEventsAtFixedBoundary(4);
+    assert.equal(
+        rejected.protocolFailure?.code,
+        'projectile-capture-event-batch-incoherent'
+    );
+    assert.equal(rejected.completedThroughTick, 0);
+    assert.equal(missing.endpoint.getPendingCommandCount(), 0);
+    assert.equal(missing.endpoint.hasBody(missing.subject), true);
+    assert.equal(missing.endpoint.requiresRecovery(), true);
+    missing.endpoint.destroy();
 });
 
 test('typed interaction event 방향과 exact duplicate key는 body 배열 순서와 독립적이다', () => {

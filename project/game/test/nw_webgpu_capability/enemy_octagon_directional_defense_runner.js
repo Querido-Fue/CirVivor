@@ -913,7 +913,7 @@ async function runLifecycleOrbitTowerLoss(device, format) {
         const gpuStatus = endpoint.getStatus().backend.gpu;
         const storage = gpuStatus.fixedPrimitives.storageProfile;
         assert(storage.directionalDefenseClassifier === 8
-            && storage.enemyBehavior === 8
+            && storage.enemyBehavior === 9
             && gpuStatus.formations.storageProfile.render === 9
             && storage.contactHandling === 9
             && storage.requiredMaximum === 9,

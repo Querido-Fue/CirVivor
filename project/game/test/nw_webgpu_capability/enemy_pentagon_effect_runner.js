@@ -156,6 +156,87 @@ function countOpaquePixels(frame, center, halfSize) {
     return count;
 }
 
+function renderPixelsEqual(left, right) {
+    return left.length === right.length
+        && left.every((value, index) => value === right[index]);
+}
+
+function decodeRenderPixel(pixel, format) {
+    const bgra = format.startsWith('bgra');
+    return Object.freeze({
+        r: pixel[bgra ? 2 : 0],
+        g: pixel[1],
+        b: pixel[bgra ? 0 : 2],
+        a: pixel[3]
+    });
+}
+
+function summarizeRenderDifference(
+    baseline,
+    effected,
+    center,
+    halfSize,
+    format
+) {
+    let changedPixelCount = 0;
+    let saturatedCyanPixelCount = 0;
+    let minimumChangedRadiusPixels = Number.POSITIVE_INFINITY;
+    let maximumChangedRadiusPixels = 0;
+    let premultiplied = true;
+    for (let y = center.y - halfSize; y <= center.y + halfSize; y++) {
+        for (let x = center.x - halfSize; x <= center.x + halfSize; x++) {
+            const baselinePixel = readRenderPixel(baseline, x, y);
+            const effectedPixel = readRenderPixel(effected, x, y);
+            const rgba = decodeRenderPixel(effectedPixel, format);
+            premultiplied = premultiplied
+                && rgba.r <= rgba.a + 1
+                && rgba.g <= rgba.a + 1
+                && rgba.b <= rgba.a + 1;
+            if (renderPixelsEqual(baselinePixel, effectedPixel)) {
+                continue;
+            }
+            changedPixelCount++;
+            const radiusPixels = Math.hypot(x - center.x, y - center.y);
+            minimumChangedRadiusPixels = Math.min(
+                minimumChangedRadiusPixels,
+                radiusPixels
+            );
+            maximumChangedRadiusPixels = Math.max(
+                maximumChangedRadiusPixels,
+                radiusPixels
+            );
+            if (rgba.a >= 32
+                && rgba.g >= rgba.r + 24
+                && rgba.b >= rgba.r + 24) {
+                saturatedCyanPixelCount++;
+            }
+        }
+    }
+    return Object.freeze({
+        changedPixelCount,
+        saturatedCyanPixelCount,
+        minimumChangedRadiusPixels: Number.isFinite(minimumChangedRadiusPixels)
+            ? minimumChangedRadiusPixels
+            : null,
+        maximumChangedRadiusPixels,
+        premultiplied
+    });
+}
+
+function renderRegionsEqual(left, right, center, halfSize) {
+    for (let y = center.y - halfSize; y <= center.y + halfSize; y++) {
+        for (let x = center.x - halfSize; x <= center.x + halfSize; x++) {
+            if (!renderPixelsEqual(
+                readRenderPixel(left, x, y),
+                readRenderPixel(right, x, y)
+            )) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 async function readEffectBodyPlanes(backend, device, bodyCount) {
     const summaryBytes = await readGpuBufferBytes(
         device,
@@ -1294,6 +1375,11 @@ async function runEffectPresentationPixelFixture(device, format) {
 
     const baseline = await render();
     const baselineSourcePixels = countOpaquePixels(baseline, sourceCenter, 14);
+    const sourceCenterPixel = readRenderPixel(
+        baseline,
+        sourceCenter.x,
+        sourceCenter.y
+    );
     const baselineTargetPixel = readRenderPixel(
         baseline,
         targetCenter.x,
@@ -1316,15 +1402,49 @@ async function runEffectPresentationPixelFixture(device, format) {
     await waitForEffectCompletion(backend, device);
     const pulsed = await render();
     const pulsedSourcePixels = countOpaquePixels(pulsed, sourceCenter, 14);
+    const pulsedSourceCenterPixel = readRenderPixel(
+        pulsed,
+        sourceCenter.x,
+        sourceCenter.y
+    );
     const boostedTargetPixel = readRenderPixel(
         pulsed,
         targetCenter.x,
         targetCenter.y
     );
+    const pulseDifference = summarizeRenderDifference(
+        baseline,
+        pulsed,
+        sourceCenter,
+        14,
+        format
+    );
+    const boostDifference = summarizeRenderDifference(
+        baseline,
+        pulsed,
+        targetCenter,
+        14,
+        format
+    );
     assert(pulsedSourcePixels > baselineSourcePixels,
         'Effect PULSE tag did not expand rendered source pixels');
-    assert(JSON.stringify(boostedTargetPixel) !== JSON.stringify(baselineTargetPixel),
-        'Effect BOOST tag did not change rendered target color');
+    assert(renderPixelsEqual(pulsedSourceCenterPixel, sourceCenterPixel),
+        'Effect PULSE changed authored source center fill');
+    assert(pulseDifference.changedPixelCount > 0
+        && pulseDifference.minimumChangedRadiusPixels >= 3
+        && pulseDifference.saturatedCyanPixelCount > 0,
+    `Effect PULSE radius/halo accent missing: ${JSON.stringify(pulseDifference)}`);
+    assert(pulseDifference.premultiplied === true,
+        'Effect PULSE output broke premultiplied alpha');
+    assert(renderPixelsEqual(boostedTargetPixel, baselineTargetPixel),
+        'Effect BOOST changed authored target center fill');
+    assert(boostDifference.changedPixelCount > 0
+        && boostDifference.changedPixelCount < 250
+        && boostDifference.minimumChangedRadiusPixels >= 3
+        && boostDifference.saturatedCyanPixelCount > 0,
+    `Effect BOOST saturated rim/halo accent missing: ${JSON.stringify(boostDifference)}`);
+    assert(boostDifference.premultiplied === true,
+        'Effect BOOST output broke premultiplied alpha');
 
     assert(backend.fixedUpdate(1 / 60, 2),
         'Effect offscreen pulse-clear submit failed');
@@ -1332,12 +1452,10 @@ async function runEffectPresentationPixelFixture(device, format) {
     const pulseCleared = await render();
     assert(countOpaquePixels(pulseCleared, sourceCenter, 14) === baselineSourcePixels,
         'Effect PULSE visual survived its tick-local presentation interval');
-    assert(JSON.stringify(readRenderPixel(
-        pulseCleared,
-        targetCenter.x,
-        targetCenter.y
-    )) === JSON.stringify(boostedTargetPixel),
-    'Effect BOOST visual disappeared before expiry');
+    assert(renderRegionsEqual(pulseCleared, baseline, sourceCenter, 14),
+        'Effect PULSE rim/halo survived its tick-local presentation interval');
+    assert(renderRegionsEqual(pulseCleared, pulsed, targetCenter, 14),
+        'Effect BOOST rim/halo changed before expiry');
 
     await advanceFixedTicksWithReadbackYields(
         backend,
@@ -1377,9 +1495,13 @@ async function runEffectPresentationPixelFixture(device, format) {
     ));
     assert(expiredTargetBody, 'Effect offscreen expired target body missing');
     const expiryPixelEvidence = Object.freeze({
+        sourceCenterPixel,
+        pulsedSourceCenterPixel,
         baselineTargetPixel,
         boostedTargetPixel,
         expiredTargetPixel,
+        pulseDifference,
+        boostDifference,
         sampledTargetCenter: targetCenter,
         authoredTargetPosition: target.position,
         targetRenderStyle: target.renderStyle,
@@ -1395,17 +1517,21 @@ async function runEffectPresentationPixelFixture(device, format) {
             simulationMeta: expiredTargetBody.simulationMeta
         })
     });
-    assert(JSON.stringify(expiredTargetPixel) === JSON.stringify(baselineTargetPixel),
-        `Effect BOOST visual did not disappear at half-open expiry: ${JSON.stringify(expiryPixelEvidence)}`);
+    assert(renderRegionsEqual(expired, baseline, targetCenter, 14),
+        `Effect BOOST rim/halo did not disappear at half-open expiry: ${JSON.stringify(expiryPixelEvidence)}`);
 
     backend.destroy();
     renderTexture.destroy();
     return Object.freeze({
         baselineSourcePixels,
         pulsedSourcePixels,
+        sourceCenterPixel,
+        pulsedSourceCenterPixel,
         baselineTargetPixel,
         boostedTargetPixel,
         expiredTargetPixel,
+        pulseDifference,
+        boostDifference,
         beforeExpirySummary,
         expiredSummary,
         expiryPixelEvidence

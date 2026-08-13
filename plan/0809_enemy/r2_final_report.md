@@ -37,7 +37,7 @@ state domain을 확장했다.
 | R | inbound/strictly-closing same-identity projectile capture/release and metadata CAS |
 | Z | optional routeGraph/RouteRuntime exact lease, expansion, atomic close/blocker, reroute/wait |
 | Showcase | injection-only dual-route/open-ring map과 세 단계 wave; default corridor는 그대로 유지 |
-| 표현 | analytic/legacy J/R/Z shapes; legacy 16-cell page-0 atlas UV ABI + overflow pages |
+| 표현 | J analytic/legacy joraengi-rice-cake silhouette; R analytic/legacy hollow ring + funnel; Z current technical expanding-circle Cork presentation (dedicated Cork/trapezoid geometry는 아직 없음); legacy 16-cell page-0 atlas UV ABI + overflow pages |
 | 종료/교체 | versioned cancellation, published transform/release completion, all-open route reset, stale-port revoke |
 
 현재 Body ABI는 v8이다. 기존 primary plane, 40-byte `CombatState`, 80-byte

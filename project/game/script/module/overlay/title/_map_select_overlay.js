@@ -60,6 +60,7 @@ export class MapSelectOverlay extends TitleOverlay {
             ?? GAME_MAP_DATA.MAPS[0]?.id
             ?? null;
         this.startRequested = false;
+        this.pendingStartMapId = null;
         this.previewItem = null;
     }
 
@@ -267,7 +268,26 @@ export class MapSelectOverlay extends TitleOverlay {
         }
 
         this.startRequested = true;
-        this.titleScene.gameStart(selectedMap.id);
+        this.pendingStartMapId = selectedMap.id;
+        this.close();
+    }
+
+    /**
+     * @override
+     * 닫기 완료 뒤 OverlayManager가 현재 session을 먼저 회수할 수 있도록
+     * 실제 scene 전환을 다음 microtask에 예약합니다.
+     */
+    onCloseComplete() {
+        const mapId = this.pendingStartMapId;
+        this.pendingStartMapId = null;
+        if (typeof mapId !== 'string' || mapId.length === 0) {
+            return;
+        }
+
+        const titleScene = this.titleScene;
+        queueMicrotask(() => {
+            titleScene?.gameStart?.(mapId);
+        });
     }
 
 }

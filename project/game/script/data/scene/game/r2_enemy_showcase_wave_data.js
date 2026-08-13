@@ -257,7 +257,7 @@ export const R2_ENEMY_SHOWCASE_WAVES = Object.freeze([
     R2_ENEMY_SHOWCASE_WAVE_03_DATA
 ]);
 
-/** Default corridor remains unchanged; advanced R2 content is showcase-only in this checkpoint. */
+/** 첫 production 카드의 preview ID와 실제 R2 showcase runtime 배치를 함께 기록합니다. */
 export const R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT = Object.freeze({
     defaultProduction: Object.freeze({
         mapId: CORRIDOR_EIGHT_MAP_DATA.id,
@@ -285,7 +285,12 @@ export const R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT = Object.freeze({
             BASIC_RING_ENEMY_DATA.id,
             BASIC_CORK_ENEMY_DATA.id
         ]),
-        accessPolicyId: 'showcase-injection-only'
+        accessPolicyId: 'production-stage-one-and-manual-injection'
+    }),
+    productionStageOne: Object.freeze({
+        selectionMapId: CORRIDOR_EIGHT_MAP_DATA.id,
+        runtimeMapId: R2_ENEMY_SHOWCASE_MAP_DATA.id,
+        waveId: R2_ENEMY_SHOWCASE_WAVE_01_DATA.waveId
     })
 });
 

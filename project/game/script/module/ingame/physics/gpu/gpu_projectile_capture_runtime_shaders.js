@@ -114,6 +114,7 @@ const CANDIDATE_RETRY_HELD: u32 = 1u << 2u;
 const CANDIDATE_RETRY_SELECTED_CAPTURE: u32 = 1u << 3u;
 const CANDIDATE_RETRY_SELECTED_RELEASE: u32 = 1u << 4u;
 const CANDIDATE_RETRY_SELECTED_CLEANUP: u32 = 1u << 5u;
+const CANDIDATE_RETRY_CURRENT_CAPTURE: u32 = 1u << 6u;
 const RETRY_STATE_ACTIVE: u32 = ${w(
     GPU_PROJECTILE_CAPTURE_RETRY_STATE_FLAG.ACTIVE
 )};
@@ -292,21 +293,23 @@ fn finite_scalar(value: f32) -> bool {
 fn finite_vec2(value: vec2f) -> bool {
     return all(value == value) && all(value - value == vec2f(0.0));
 }
-fn candidate_is_exact(contact: Contact) -> bool {
-    if (contact.other_body_id < 0) { return false; }
-    let captor_slot = contact.self_body_id;
-    let projectile_slot = u32(contact.other_body_id);
+fn capture_pair_is_current(
+    captor_slot: u32,
+    captor_incarnation: u32,
+    projectile_slot: u32,
+    projectile_incarnation: u32
+) -> bool {
     if (captor_slot >= counts.body_count || projectile_slot >= counts.body_count
         || captor_slot == projectile_slot
         || !identity_matches(
             captor_slot,
             simulations.values[captor_slot].entity_id,
-            contact.self_incarnation
+            captor_incarnation
         )
         || !identity_matches(
             projectile_slot,
             simulations.values[projectile_slot].entity_id,
-            contact.other_incarnation
+            projectile_incarnation
         )
         || !alive(captor_slot) || !alive(projectile_slot) || captured(projectile_slot)
         || atomicLoad(&simulations.values[projectile_slot].health) <= 0
@@ -365,6 +368,40 @@ fn candidate_is_exact(contact: Contact) -> bool {
             facing * inverseSqrt(facing_length_squared)
         )
             >= params.funnel_cos_half_angle;
+}
+fn candidate_is_exact(contact: Contact) -> bool {
+    if (contact.other_body_id < 0) { return false; }
+    return capture_pair_is_current(
+        contact.self_body_id,
+        contact.self_incarnation,
+        u32(contact.other_body_id),
+        contact.other_incarnation
+    );
+}
+fn contact_authenticates_capture_pair(
+    contact: Contact,
+    captor_slot: u32,
+    projectile_slot: u32
+) -> bool {
+    if (contact.other_body_id < 0) { return false; }
+    let other_slot = u32(contact.other_body_id);
+    if (contact.self_body_id == captor_slot && other_slot == projectile_slot) {
+        return capture_pair_is_current(
+            captor_slot,
+            contact.self_incarnation,
+            projectile_slot,
+            contact.other_incarnation
+        );
+    }
+    if (contact.self_body_id == projectile_slot && other_slot == captor_slot) {
+        return capture_pair_is_current(
+            captor_slot,
+            contact.other_incarnation,
+            projectile_slot,
+            contact.self_incarnation
+        );
+    }
+    return false;
 }
 fn mutually_selected(contact: Contact) -> bool {
     if (!candidate_is_exact(contact)) { return false; }
@@ -532,11 +569,17 @@ fn find_exact_body_slot(entity_id: u32, incarnation: u32) -> u32 {
     return INVALID;
 }
 
-fn retry_capture_projectile_slot(captor_slot: u32) -> u32 {
-    if (captor_slot >= counts.body_count
+fn retry_capture_pair_is_retained(
+    captor_slot: u32,
+    projectile_slot: u32
+) -> bool {
+    if (captor_slot >= counts.body_count || projectile_slot >= counts.body_count
+        || captor_slot == projectile_slot
         || (atomicLoad(&candidates.values[captor_slot].status)
-            & CANDIDATE_RETRY_CAPTURE_CAPTOR) == 0u) {
-        return INVALID;
+            & CANDIDATE_RETRY_CAPTURE_CAPTOR) == 0u
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u) {
+        return false;
     }
     let captor_meta = atomicLoad(&capture_states.values[captor_slot].packed_meta);
     if (role(captor_meta) != ROLE_CAPTOR || phase(captor_meta) != PHASE_IDLE
@@ -545,23 +588,25 @@ fn retry_capture_projectile_slot(captor_slot: u32) -> u32 {
             simulations.values[captor_slot].entity_id,
             simulations.values[captor_slot].incarnation
         ) || !alive(captor_slot)) {
-        return INVALID;
+        return false;
     }
-    let projectile_slot = find_exact_body_slot(
-        atomicLoad(&candidates.values[captor_slot].peer_entity_id),
-        candidates.values[captor_slot].peer_incarnation
-    );
-    if (projectile_slot == INVALID || projectile_slot == captor_slot
-        || (atomicLoad(&candidates.values[projectile_slot].status)
-            & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u
+    if (atomicLoad(&candidates.values[captor_slot].peer_entity_id)
+            != simulations.values[projectile_slot].entity_id
+        || candidates.values[captor_slot].peer_incarnation
+            != simulations.values[projectile_slot].incarnation
         || atomicLoad(&candidates.values[projectile_slot].peer_entity_id)
             != simulations.values[captor_slot].entity_id
         || candidates.values[projectile_slot].peer_incarnation
             != simulations.values[captor_slot].incarnation
+        || !identity_matches(
+            projectile_slot,
+            simulations.values[projectile_slot].entity_id,
+            simulations.values[projectile_slot].incarnation
+        )
         || !alive(projectile_slot) || captured(projectile_slot)
         || atomicLoad(&simulations.values[projectile_slot].health) <= 0
         || simulations.values[projectile_slot].lifetime == 0.0) {
-        return INVALID;
+        return false;
     }
     let projectile_meta = atomicLoad(&capture_states.values[projectile_slot].packed_meta);
     if (role(projectile_meta) != ROLE_PROJECTILE
@@ -575,9 +620,79 @@ fn retry_capture_projectile_slot(captor_slot: u32) -> u32 {
             != BODY_LAYER_PROJECTILE
         || (simulations.values[projectile_slot].gameplay_meta & 0xffu)
             != TEAM_PLAYER) {
+        return false;
+    }
+    return true;
+}
+
+fn retry_capture_projectile_slot(captor_slot: u32) -> u32 {
+    if (captor_slot >= counts.body_count) { return INVALID; }
+    let projectile_slot = atomicLoad(
+        &candidates.values[captor_slot].distance_squared_bits
+    );
+    if (!retry_capture_pair_is_retained(captor_slot, projectile_slot)
+        || (atomicLoad(&candidates.values[captor_slot].status)
+            & CANDIDATE_RETRY_CURRENT_CAPTURE) == 0u
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_CURRENT_CAPTURE) == 0u) {
         return INVALID;
     }
     return projectile_slot;
+}
+
+fn retry_capture_endpoint_is_current(slot: u32, expected_role: u32) -> bool {
+    if (slot >= counts.body_count || !alive(slot)
+        || !identity_matches(
+            slot,
+            simulations.values[slot].entity_id,
+            simulations.values[slot].incarnation
+        )) {
+        return false;
+    }
+    let packed_meta = atomicLoad(&capture_states.values[slot].packed_meta);
+    return role(packed_meta) == expected_role && phase(packed_meta) == PHASE_IDLE;
+}
+
+fn retry_capture_captor_marker_is_corrupt(captor_slot: u32) -> bool {
+    if (!retry_capture_endpoint_is_current(captor_slot, ROLE_CAPTOR)) {
+        return false;
+    }
+    let projectile_slot = find_exact_body_slot(
+        atomicLoad(&candidates.values[captor_slot].peer_entity_id),
+        candidates.values[captor_slot].peer_incarnation
+    );
+    if (projectile_slot == INVALID
+        || !retry_capture_endpoint_is_current(projectile_slot, ROLE_PROJECTILE)) {
+        return false;
+    }
+    return projectile_slot == captor_slot
+        || (atomicLoad(&candidates.values[projectile_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u
+        || atomicLoad(&candidates.values[projectile_slot].peer_entity_id)
+            != simulations.values[captor_slot].entity_id
+        || candidates.values[projectile_slot].peer_incarnation
+            != simulations.values[captor_slot].incarnation;
+}
+
+fn retry_capture_projectile_marker_is_corrupt(projectile_slot: u32) -> bool {
+    if (!retry_capture_endpoint_is_current(projectile_slot, ROLE_PROJECTILE)) {
+        return false;
+    }
+    let captor_slot = find_exact_body_slot(
+        atomicLoad(&candidates.values[projectile_slot].peer_entity_id),
+        candidates.values[projectile_slot].peer_incarnation
+    );
+    if (captor_slot == INVALID
+        || !retry_capture_endpoint_is_current(captor_slot, ROLE_CAPTOR)) {
+        return false;
+    }
+    return captor_slot == projectile_slot
+        || (atomicLoad(&candidates.values[captor_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_CAPTOR) == 0u
+        || atomicLoad(&candidates.values[captor_slot].peer_entity_id)
+            != simulations.values[projectile_slot].entity_id
+        || candidates.values[captor_slot].peer_incarnation
+            != simulations.values[projectile_slot].incarnation;
 }
 
 fn retry_tuple_less(
@@ -689,11 +804,24 @@ fn clear_retry_candidate(slot: u32) {
 @compute @workgroup_size(256)
 fn clear_projectile_capture_tick(@builtin(global_invocation_id) id: vec3u) {
     let slot = id.x;
-    if (slot < counts.body_count && !retry_active()) {
-        atomicStore(&candidates.values[slot].distance_squared_bits, 0x7f800000u);
-        atomicStore(&candidates.values[slot].peer_entity_id, INVALID);
-        candidates.values[slot].peer_incarnation = INVALID;
-        atomicStore(&candidates.values[slot].status, 0u);
+    if (slot < counts.body_count) {
+        if (retry_active()) {
+            // Fairness/exact-pair and HELD tokens survive capacity rejection;
+            // current-tick contact/geometry authority never does.
+            atomicStore(
+                &candidates.values[slot].distance_squared_bits,
+                INVALID
+            );
+            atomicAnd(
+                &candidates.values[slot].status,
+                ~CANDIDATE_RETRY_CURRENT_CAPTURE
+            );
+        } else {
+            atomicStore(&candidates.values[slot].distance_squared_bits, 0x7f800000u);
+            atomicStore(&candidates.values[slot].peer_entity_id, INVALID);
+            candidates.values[slot].peer_incarnation = INVALID;
+            atomicStore(&candidates.values[slot].status, 0u);
+        }
     }
     if (slot == 0u) {
         atomicStore(&runtime.values[H_ABI], CAPTURE_ABI_VERSION);
@@ -940,6 +1068,8 @@ fn shield_projectile_capture_contacts(@builtin(global_invocation_id) id: vec3u) 
         projectile_slot = self_slot;
     }
     if (captor_slot == INVALID
+        || (atomicLoad(&candidates.values[captor_slot].status)
+            & CANDIDATE_RETRY_CAPTURE_CAPTOR) == 0u
         || (atomicLoad(&candidates.values[projectile_slot].status)
             & CANDIDATE_RETRY_CAPTURE_PROJECTILE) == 0u
         || atomicLoad(&candidates.values[projectile_slot].peer_entity_id)
@@ -952,6 +1082,34 @@ fn shield_projectile_capture_contacts(@builtin(global_invocation_id) id: vec3u) 
             != simulations.values[projectile_slot].incarnation) {
         return;
     }
+    if (retry_active()) {
+        if (!contact_authenticates_capture_pair(
+                contact,
+                captor_slot,
+                projectile_slot
+            )) {
+            return;
+        }
+        // The distance word is no longer authoritative after rejection. During
+        // retry it is an ephemeral O(1) current-peer slot, while entity /
+        // incarnation tokens continue to own deterministic fairness.
+        atomicStore(
+            &candidates.values[captor_slot].distance_squared_bits,
+            projectile_slot
+        );
+        atomicStore(
+            &candidates.values[projectile_slot].distance_squared_bits,
+            captor_slot
+        );
+        atomicOr(
+            &candidates.values[captor_slot].status,
+            CANDIDATE_RETRY_CURRENT_CAPTURE
+        );
+        atomicOr(
+            &candidates.values[projectile_slot].status,
+            CANDIDATE_RETRY_CURRENT_CAPTURE
+        );
+    }
     var prepared_shield_bits: u32 = PROJECTILE_CAPTURE_PREPARED_SHIELD;
     contacts.values[index].normal.y = bitcast<f32>(prepared_shield_bits);
 }
@@ -961,13 +1119,24 @@ fn preflight_projectile_capture_retry_batch(
     @builtin(global_invocation_id) id: vec3u
 ) {
     if (!retry_active()) { return; }
+    if (atomicLoad(&contact_state.contact_overflow) != 0u) {
+        if (id.x == 0u) {
+            atomicOr(&runtime.values[H_ERRORS], ERROR_CONTACT_OVERFLOW);
+        }
+        return;
+    }
     let slot = id.x;
     if (slot >= counts.body_count) { return; }
     let status = atomicLoad(&candidates.values[slot].status);
     if ((status & CANDIDATE_RETRY_CAPTURE_CAPTOR) != 0u) {
         let projectile_slot = retry_capture_projectile_slot(slot);
         if (projectile_slot == INVALID) {
-            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            // Missing/dead/reincarnated or no-longer-closing/contacting pairs are
+            // normal stale capture demand. Only a contradictory reciprocal
+            // marker between two current live idle endpoints is corruption.
+            if (retry_capture_captor_marker_is_corrupt(slot)) {
+                atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            }
             return;
         }
         atomicAdd(&runtime.values[H_CANDIDATES], 1u);
@@ -975,13 +1144,17 @@ fn preflight_projectile_capture_retry_batch(
         return;
     }
     if ((status & CANDIDATE_RETRY_CAPTURE_PROJECTILE) != 0u) {
-        let captor_slot = find_exact_body_slot(
-            atomicLoad(&candidates.values[slot].peer_entity_id),
-            candidates.values[slot].peer_incarnation
-        );
+        var captor_slot = INVALID;
+        if ((status & CANDIDATE_RETRY_CURRENT_CAPTURE) != 0u) {
+            captor_slot = atomicLoad(
+                &candidates.values[slot].distance_squared_bits
+            );
+        }
         if (captor_slot == INVALID
             || retry_capture_projectile_slot(captor_slot) != slot) {
-            atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            if (retry_capture_projectile_marker_is_corrupt(slot)) {
+                atomicOr(&runtime.values[H_ERRORS], ERROR_BILATERAL);
+            }
         }
         return;
     }
@@ -1757,7 +1930,7 @@ export const GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE = Object.freeze({
     select_ring_capture_projectiles: 7,
     preflight_projectile_capture_batch: 7,
     shield_projectile_capture_contacts: 7,
-    preflight_projectile_capture_retry_batch: 6,
+    preflight_projectile_capture_retry_batch: 7,
     select_projectile_capture_retry_prefix: 6,
     seal_projectile_capture_batch: 1,
     commit_projectile_capture_batch: 7,

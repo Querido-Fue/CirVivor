@@ -130,10 +130,23 @@ Arrow gameplay selection, validity, charge, and aim now use the dedicated 16-byt
 `TOWER_GAMEPLAY_TARGET_CONFIG` binding. `tracked_pose_config` and its readback are presentation,
 camera, and diagnostic-only; clearing or changing tracked presentation cannot select a gameplay Tower.
 
+Arrow's direct Tower motion is conditional on a bounded terrain-SDF segment check. A wall-occluded SEEK keeps
+the immutable route-flow authority instead of repeatedly steering into the wall, WINDUP rechecks the same
+visibility before locking, and a terrain-blocked CHARGE enters ordinary recovery without manufacturing a
+Tower contact/recoil/damage marker. CHARGE and CONTACT_RECOIL displacement use a fixed-tick finite difference
+of the endpoint-normalized bounded Expo-out curve
+`E(t) = (1 - 2^(-0.5t)) / (1 - 2^(-0.5))`. The curve preserves the authored total distance and phase deadlines;
+render-frame cadence never owns gameplay movement.
+
 Diamond M's selected-target spawn is bound to the same source/tick/selection fingerprint as its GPU control.
 The Core branch emits typed CPU Core damage and never mutates fictitious GPU Core HP. The Tower branch must
 match the exact selected Tower before consuming projectile budget and entering the common Maximum Damage
 Window; a wrong/stale Tower is a rejected hit and consumes nothing.
+
+Once a Tower-selected M projectile has resolved as a live body, its exact target identity, hit budget, and
+attack damage are launch-time projectile authority. Later death/despawn of the source M removes only that
+source and cancels only unresolved source work; it must not revoke, retarget, or zero an already launched
+projectile. A later exact Tower hit therefore still enters the ordinary Maximum Damage Window and HP path.
 
 ### Octagon O orbit and directional defense
 
@@ -169,7 +182,7 @@ CPU Tower pose, O group object, or special Tower imprisonment path exists.
 This `LATCH_CORE_FALLBACK` behavior is the current single-Tower R2 baseline. Future Tower reappearance or
 multi-Tower gameplay must reacquire on a Tower-roster change and choose the exact living Tower by lowest
 entity ID, then incarnation; that policy is documented but inactive in the current runtime. Orbit lease capacity
-is exactly eight, and the injection-only Turn 9 showcase uses four simultaneous O actors. A >8 due batch is one
+is exactly eight, and showcase Wave 2 uses four simultaneous O actors. A >8 due batch is one
 normal whole-fixed-tick rejection with zero registry/backend mutation and `recovery=false`; content retries by
 data-authored staggering after a slot becomes available.
 
@@ -232,8 +245,9 @@ no aggregate, refresh, or silent loss is allowed.
 
 ### J/C′ and the independent Atomic Transform domain
 
-Natural J keeps `basic_gen_01` as its compatibility identity but uses the dedicated analytic/legacy `jorang`
-shape, the common C physics/route family, and exact uint32 bounty `12`. It does not use the old `gen`
+Natural J keeps `basic_gen_01` as its compatibility identity but uses the analytic/legacy joraengi-rice-cake
+silhouette: two regular-octagon lobes joined by one narrow connector from the shared legacy/title/ingame geometry
+authority. It keeps the common C physics/route family and exact uint32 bounty `12`. It does not use the old `gen`
 hollow-square presentation. C′ is transform-private `basic_circle_prime_01` (`circle`, TRANSFORM_PRIVATE) with common-C
 HP/speed/weight/Tower/Core values `1/2.5/1/0.1/1`; it cannot enter authored waves or public spawn ingress.
 The two canonical profiles are `jorang-one-to-many-01` and `circle-prime-return-delayed-01`. Their complete
@@ -298,6 +312,13 @@ ABI, identity, fingerprint, and bilateral-state corruption remain recovery. A tr
 prevents the generic damage path from mutating a contact selected during preflight, including the capacity-reject
 case, without becoming persistent gameplay metadata.
 
+For the capture partition only, a retained rejected pair is deterministic fairness metadata rather than current
+contact authority. Every retry clears ephemeral current-valid/peer-slot marks and reauthenticates the current
+directed contact, exact live identities, predicted positions, captor facing, relative velocity, inclusive funnel,
+and strict-closing dot before demand, rank, prefix, or commit. A no-contact, outside, outbound, dead, reincarnated,
+or old-generation pair therefore captures nothing and leaves retry normally; already-HELD release/cleanup keeps
+its separate persistent bilateral validation.
+
 Release is not despawn/spawn. One privileged lifecycle transaction updates the active registry metadata
 revision and the same GPU body: Team becomes HOSTILE, current owner/source becomes R, target policy becomes
 player-damageable-and-terrain, speed magnitude is preserved, and aim is an exact living Tower or stored
@@ -322,7 +343,8 @@ Subject/Sentence runtime, not end-to-end Sentence execution.
 
 ### Cork Z route closure and forward reroute
 
-Natural `basic_cork_01` uses analytic `circle`, common-C HP/speed/weight/Tower/Core values
+Natural `basic_cork_01` currently uses the technical expanding-circle Cork presentation rather than dedicated
+Cork/trapezoid geometry, with common-C HP/speed/weight/Tower/Core values
 `1/2.5/1/0.1/1`, and exact `cork-route-closure-01`. It is one logical and physical body with helper count 0;
 the independent RouteRuntime domain, not a per-Z JavaScript controller or `EnemyBehaviorState`, owns selection,
 travel, expansion, blocking, waiting, and exact lease state.

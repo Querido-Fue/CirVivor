@@ -2902,7 +2902,6 @@ export class GameObjectSystem {
             && directorStatus.terminalCleanupPendingCount === 0
             && directorStatus.pendingReadbackCount === 0
             && directorStatus.pendingStaleCompletionCount === 0
-            && runtimeStatus.state === 'idle'
             && runtimeStatus.ingressOpen === true
             && runtimeStatus.requiresRecovery === false
             && runtimeStatus.failure === null

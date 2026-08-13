@@ -161,6 +161,10 @@ const BODY_FLAG_CONTROLLED_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.CO
 const BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
 const BODY_FLAG_INTERACTION_ENTER_ONLY: u32 = 256u;
 const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
+// Arrow의 Tower direct ownership은 다음 fixed tick 전에 SDF route clearance를
+// 통과해야 합니다. 이 상한은 자료/ABI가 아니라 shader-local deterministic budget입니다.
+const ENEMY_CHARGE_VISIBILITY_MAX_STEPS: u32 = 48u;
+const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 0.5;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
 const BODY_LAYER_TERRAIN: u32 = ${GPU_CIRCLE_BODY_LAYER.TERRAIN}u;
@@ -247,6 +251,10 @@ const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVI
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.DIRECTIONAL_DEFENSE_ACTIVE}u;
+// Arrow program-local latch. It intentionally stays out of the public behavior
+// flag enum/host input: the 80-byte side-plane layout is unchanged and this bit
+// only distinguishes the first direct->route handoff from later route ticks.
+const ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK: u32 = 128u;
 const ENEMY_ORBIT_COORDINATE_SYSTEM_RING_SLOTS: u32 = ${FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS}u;
 const ENEMY_ORBIT_SLOT_CAPACITY: u32 = ${ENEMY_ORBIT_SLOT_CAPACITY}u;
 const ENEMY_ORBIT_PHASE_RADIANS_PER_Q32: f32 = ${toWgslFloat(
@@ -2097,11 +2105,7 @@ fn enter_enemy_core_fallback(body_id: u32) {
     enemy_behavior_states.values[body_id].target_incarnation = 0u;
     enemy_behavior_states.values[body_id].charge_direction = vec2f(0.0);
     atomicStore(&enemy_behavior_states.values[body_id].flags, 0u);
-    atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
-    atomicAnd(
-        &simulations.values[body_id].flags,
-        ~BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
-    );
+    restore_enemy_route_flow(body_id);
 }
 
 fn disable_enemy_flow(body_id: u32) {
@@ -2110,6 +2114,120 @@ fn disable_enemy_flow(body_id: u32) {
         &simulations.values[body_id].flags,
         BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
     );
+}
+
+fn restore_enemy_route_flow(body_id: u32) {
+    // flow_field_index/stage는 immutable route atlas authority입니다. 여기서는
+    // ownership bit만 되돌려 direct Tower motion이 다음 prepare를 덮지 못하게 합니다.
+    atomicOr(&simulations.values[body_id].flags, BODY_FLAG_USE_FLOW);
+    atomicAnd(
+        &simulations.values[body_id].flags,
+        ~BODY_FLAG_EXTERNAL_MOTION_OWNER_THIS_TICK
+    );
+}
+
+fn clear_enemy_charge_route_fallback_latch(body_id: u32) {
+    atomicAnd(
+        &enemy_behavior_states.values[body_id].flags,
+        ~ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK
+    );
+}
+
+fn enter_enemy_charge_route_fallback(body_id: u32) {
+    atomicStore(
+        &enemy_behavior_states.values[body_id].flags,
+        ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+            | ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK
+    );
+}
+
+fn normalized_bounded_expo_out(progress: f32) -> f32 {
+    let bounded_progress = clamp(progress, 0.0, 1.0);
+    if (bounded_progress <= 0.0) {
+        return 0.0;
+    }
+    if (bounded_progress >= 1.0) {
+        return 1.0;
+    }
+    let denominator = 1.0 - exp2(-ENEMY_CHARGE_EXPO_OUT_LAMBDA);
+    return (1.0 - exp2(-ENEMY_CHARGE_EXPO_OUT_LAMBDA * bounded_progress))
+        / denominator;
+}
+
+fn enemy_charge_expo_out_velocity(
+    direction: vec2f,
+    speed: f32,
+    duration_ticks: u32,
+    elapsed_ticks: u32
+) -> vec2f {
+    // Normalize first/last fixed-tick endpoints exactly to [0, 1]. A finite
+    // difference makes every displacement bounded and telescopes to the authored
+    // constant-speed distance without changing the body/behavior ABI.
+    let safe_duration_ticks = max(duration_ticks, 1u);
+    let duration = f32(safe_duration_ticks);
+    let bounded_elapsed = min(elapsed_ticks, safe_duration_ticks);
+    let bounded_next_elapsed = min(
+        bounded_elapsed + 1u,
+        safe_duration_ticks
+    );
+    let start_progress = f32(bounded_elapsed) / duration;
+    let end_progress = f32(bounded_next_elapsed) / duration;
+    let displacement = max(speed, 0.0)
+        * duration
+        * max(params.dt, 0.0)
+        * (normalized_bounded_expo_out(end_progress)
+            - normalized_bounded_expo_out(start_progress));
+    return direction * displacement * max(params.inverse_dt, 0.0);
+}
+
+fn enemy_charge_recoil_motion_ticks(body_id: u32) -> u32 {
+    // CONTACT_RECOIL is entered after prepare/solver. Its contact tick is an
+    // output-only impulse, so the following [entered + 1, expires) movement has
+    // recoil_ticks - 1 physical fixed steps. Keep a one-tick config well-defined.
+    return max(
+        max(enemy_behavior_states.values[body_id].recoil_ticks, 1u) - 1u,
+        1u
+    );
+}
+
+fn enemy_charge_segment_is_visible(body_id: u32, segment_end: vec2f) -> bool {
+    if (params.sdf_enabled == 0u) {
+        return true;
+    }
+    let body = physics.values[body_id];
+    let segment_start = body.position;
+    let segment = segment_end - segment_start;
+    let segment_length_squared = dot(segment, segment);
+    let clearance_radius = body.radius
+        + max(params.source_world_unit_scale * 0.25, 0.0001);
+    if (segment_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        return sample_world_sdf(segment_start) > clearance_radius;
+    }
+    let segment_length = sqrt(segment_length_squared);
+    let direction = segment * inverseSqrt(segment_length_squared);
+    let minimum_step = max(params.source_world_unit_scale * 0.25, 0.0001);
+    var travelled = 0.0;
+    for (var step_index = 0u;
+        step_index < ENEMY_CHARGE_VISIBILITY_MAX_STEPS;
+        step_index += 1u) {
+        let clearance = sample_world_sdf(segment_start + direction * travelled)
+            - clearance_radius;
+        if (clearance <= 0.0) {
+            return false;
+        }
+        if (travelled >= segment_length) {
+            return true;
+        }
+        // Clearance is a lower bound to terrain. Taking 75% leaves an SDF
+        // interpolation margin while still bounding long clear corridor checks.
+        travelled = min(
+            travelled + max(clearance * 0.75, minimum_step),
+            segment_length
+        );
+    }
+    // A bounded marcher must fail closed rather than let direct ownership tunnel
+    // through an unverified long/degenerate segment.
+    return false;
 }
 
 fn octagon_orbit_config_is_valid(body_id: u32) -> bool {
@@ -2293,13 +2411,17 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
     }
     let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
     if (!tower_gameplay_target_is_valid()) {
+        physics.values[body_id].velocity = vec2f(0.0);
         enter_enemy_core_fallback(body_id);
         return;
     }
     if (state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
         bind_behavior_target_to_gameplay_tower(body_id);
-        disable_enemy_flow(body_id);
+        // CORE_FALLBACK may follow a cancelled direct charge/recoil. Never let
+        // that cached external velocity leak into the route-owned first tick.
         physics.values[body_id].velocity = vec2f(0.0);
+        clear_enemy_charge_route_fallback_latch(body_id);
+        restore_enemy_route_flow(body_id);
         set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
         return;
     }
@@ -2307,15 +2429,32 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
         if ((flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
             && !behavior_target_matches_gameplay_tower(body_id)) {
+            physics.values[body_id].velocity = vec2f(0.0);
             enter_enemy_core_fallback(body_id);
             return;
         }
         bind_behavior_target_to_gameplay_tower(body_id);
-        disable_enemy_flow(body_id);
         let target_slot = tower_gameplay_target.target_slot;
-        let to_target = physics.values[target_slot].position
-            - physics.values[body_id].position;
+        let target_position = physics.values[target_slot].position;
+        let to_target = target_position - physics.values[body_id].position;
         let distance_squared = dot(to_target, to_target);
+        if (!enemy_charge_segment_is_visible(body_id, target_position)) {
+            // First blocked direct->route handoff clears stale charge/recoil
+            // velocity. Later blocked SEEK ticks carry the private latch and keep
+            // their atlas-smoothed flow velocity rather than restarting at zero.
+            let behavior_flags = atomicLoad(
+                &enemy_behavior_states.values[body_id].flags
+            );
+            if ((behavior_flags
+                & ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK) == 0u) {
+                physics.values[body_id].velocity = vec2f(0.0);
+            }
+            restore_enemy_route_flow(body_id);
+            enter_enemy_charge_route_fallback(body_id);
+            return;
+        }
+        clear_enemy_charge_route_fallback_latch(body_id);
+        disable_enemy_flow(body_id);
         let windup_range = enemy_behavior_states.values[body_id].windup_range;
         if (distance_squared <= windup_range * windup_range) {
             physics.values[body_id].velocity = vec2f(0.0);
@@ -2342,6 +2481,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     if (!behavior_target_matches_gameplay_tower(body_id)) {
+        physics.values[body_id].velocity = vec2f(0.0);
         enter_enemy_core_fallback(body_id);
         return;
     }
@@ -2353,6 +2493,16 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             return;
         }
         let target_slot = enemy_behavior_states.values[body_id].target_slot;
+        if (!enemy_charge_segment_is_visible(
+            body_id,
+            physics.values[target_slot].position
+        )) {
+            physics.values[body_id].velocity = vec2f(0.0);
+            restore_enemy_route_flow(body_id);
+            enter_enemy_charge_route_fallback(body_id);
+            set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
+            return;
+        }
         var direction = physics.values[target_slot].position
             - physics.values[body_id].position;
         let direction_squared = dot(direction, direction);
@@ -2362,17 +2512,22 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             direction *= inverseSqrt(direction_squared);
         }
         enemy_behavior_states.values[body_id].charge_direction = direction;
+        clear_enemy_charge_route_fallback_latch(body_id);
         atomicStore(
             &enemy_behavior_states.values[body_id].flags,
             ENEMY_BEHAVIOR_FLAG_TARGET_VALID
         );
-        physics.values[body_id].velocity = direction
-            * enemy_behavior_states.values[body_id].charge_speed;
         set_enemy_behavior_state(
             body_id,
             ENEMY_BEHAVIOR_STATE_CHARGE,
-            params.fixed_tick
-                + enemy_behavior_states.values[body_id].charge_max_ticks
+                params.fixed_tick
+                    + enemy_behavior_states.values[body_id].charge_max_ticks
+        );
+        physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
+            direction,
+            enemy_behavior_states.values[body_id].charge_speed,
+            enemy_behavior_states.values[body_id].charge_max_ticks,
+            0u
         );
         return;
     }
@@ -2380,6 +2535,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         if (params.fixed_tick
             >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
             physics.values[body_id].velocity = vec2f(0.0);
+            clear_enemy_charge_route_fallback_latch(body_id);
             set_enemy_behavior_state(
                 body_id,
                 ENEMY_BEHAVIOR_STATE_RECOVER,
@@ -2388,20 +2544,63 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             );
             return;
         }
-        physics.values[body_id].velocity
-            = enemy_behavior_states.values[body_id].charge_direction
-                * enemy_behavior_states.values[body_id].charge_speed;
+        let charge_direction = enemy_behavior_states.values[body_id].charge_direction;
+        let charge_speed = enemy_behavior_states.values[body_id].charge_speed;
+        let charge_elapsed_ticks = params.fixed_tick
+            - enemy_behavior_states.values[body_id].state_entered_fixed_tick;
+        let charge_velocity = enemy_charge_expo_out_velocity(
+            charge_direction,
+            charge_speed,
+            enemy_behavior_states.values[body_id].charge_max_ticks,
+            charge_elapsed_ticks
+        );
+        let charge_segment_end = physics.values[body_id].position
+            + charge_velocity * max(params.dt, 0.0);
+        if (!enemy_charge_segment_is_visible(
+            body_id,
+            charge_segment_end
+        )) {
+            // Terrain is not an exact Tower contact. Leave the target intact but
+            // suppress both charge damage and recoil by leaving CHARGE before the
+            // contact passes, then boundedly reacquire through SEEK after RECOVER.
+            physics.values[body_id].velocity = vec2f(0.0);
+            clear_enemy_charge_route_fallback_latch(body_id);
+            atomicStore(
+                &enemy_behavior_states.values[body_id].flags,
+                ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+            );
+            set_enemy_behavior_state(
+                body_id,
+                ENEMY_BEHAVIOR_STATE_RECOVER,
+                params.fixed_tick
+                    + enemy_behavior_states.values[body_id].recover_ticks
+            );
+            return;
+        }
+        physics.values[body_id].velocity = charge_velocity;
         return;
     }
     if (state == ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
         if (params.fixed_tick
             >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
             physics.values[body_id].velocity = vec2f(0.0);
+            clear_enemy_charge_route_fallback_latch(body_id);
             set_enemy_behavior_state(
                 body_id,
                 ENEMY_BEHAVIOR_STATE_RECOVER,
                 params.fixed_tick
                     + enemy_behavior_states.values[body_id].recover_ticks
+            );
+        } else if (params.fixed_tick
+            > enemy_behavior_states.values[body_id].state_entered_fixed_tick) {
+            let recoil_elapsed_ticks = params.fixed_tick
+                - enemy_behavior_states.values[body_id].state_entered_fixed_tick
+                - 1u;
+            physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
+                -enemy_behavior_states.values[body_id].charge_direction,
+                enemy_behavior_states.values[body_id].recoil_impulse,
+                enemy_charge_recoil_motion_ticks(body_id),
+                recoil_elapsed_ticks
             );
         }
         return;
@@ -2410,6 +2609,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         physics.values[body_id].velocity = vec2f(0.0);
         if (params.fixed_tick
             >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
+            clear_enemy_charge_route_fallback_latch(body_id);
             set_enemy_behavior_state(
                 body_id,
                 ENEMY_BEHAVIOR_STATE_SEEK_TOWER,
@@ -2418,6 +2618,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         }
         return;
     }
+    physics.values[body_id].velocity = vec2f(0.0);
     enter_enemy_core_fallback(body_id);
 }
 
@@ -5075,10 +5276,15 @@ fn apply_enemy_charge_recoil(@builtin(global_invocation_id) global_id: vec3u) {
             != ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
         return;
     }
-    // solver/rebuild/final velocity 뒤에 한 번만 cached charge 반대 속도를 부여합니다.
-    physics.values[body_id].velocity
-        = -enemy_behavior_states.values[body_id].charge_direction
-            * enemy_behavior_states.values[body_id].recoil_impulse;
+    // solver/rebuild/final velocity 뒤에 첫 Expo-out finite difference만 기록합니다.
+    // 다음 fixed tick의 CONTACT_RECOIL branch가 같은 첫 segment를 실제 motion으로
+    // 적용하므로 contact tick에 solver를 두 번 움직이지 않습니다.
+    physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
+        -enemy_behavior_states.values[body_id].charge_direction,
+        enemy_behavior_states.values[body_id].recoil_impulse,
+        enemy_charge_recoil_motion_ticks(body_id),
+        0u
+    );
 }
 
 @compute @workgroup_size(1)
@@ -5312,6 +5518,7 @@ struct VertexOutput {
     @location(6) @interpolate(flat) formation_presentation_flags: u32,
     @location(7) @interpolate(flat) health_ratio: f32,
     @location(8) @interpolate(flat) directional_defense_active: u32,
+    @location(9) @interpolate(flat) effect_presentation_tags: u32,
 }
 
 @group(0) @binding(0) var<storage, read> counts: BodyCounts;
@@ -5396,13 +5603,17 @@ const GENERATOR_TERMINAL_HALF_SIZES = ${toWgslPointArray(
     ENEMY_RENDER_GEOMETRY.gen.terminalBoxes.map(({ halfSize }) => halfSize),
     4
 )};
-const JORANG_BOX_CENTERS = ${toWgslPointArray(
-    ENEMY_RENDER_GEOMETRY.jorang.boxes.map(({ center }) => center),
-    4
+const JORANG_LEFT_LOBE_POINTS = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.jorang.lobes[0]
 )};
-const JORANG_BOX_HALF_SIZES = ${toWgslPointArray(
-    ENEMY_RENDER_GEOMETRY.jorang.boxes.map(({ halfSize }) => halfSize),
-    4
+const JORANG_RIGHT_LOBE_POINTS = ${toWgslPointArray(
+    ENEMY_RENDER_GEOMETRY.jorang.lobes[1]
+)};
+const JORANG_CONNECTOR_CENTER: vec2f = ${toWgslVec2(
+    ENEMY_RENDER_GEOMETRY.jorang.connector.center
+)};
+const JORANG_CONNECTOR_HALF_SIZE: vec2f = ${toWgslVec2(
+    ENEMY_RENDER_GEOMETRY.jorang.connector.halfSize
 )};
 
 fn directional_local_position(point: vec2f, velocity: vec2f) -> vec2f {
@@ -5483,19 +5694,22 @@ fn generator_distance(point: vec2f) -> f32 {
 }
 
 fn jorang_distance(point: vec2f) -> f32 {
-    var distance = box_distance(
+    let left_lobe = polygon_distance(
         point,
-        JORANG_BOX_CENTERS[0u],
-        JORANG_BOX_HALF_SIZES[0u]
+        JORANG_LEFT_LOBE_POINTS,
+        8u
     );
-    for (var index = 1u; index < 4u; index += 1u) {
-        distance = min(distance, box_distance(
-            point,
-            JORANG_BOX_CENTERS[index],
-            JORANG_BOX_HALF_SIZES[index]
-        ));
-    }
-    return distance;
+    let right_lobe = polygon_distance(
+        point,
+        JORANG_RIGHT_LOBE_POINTS,
+        8u
+    );
+    let connector = box_distance(
+        point,
+        JORANG_CONNECTOR_CENTER,
+        JORANG_CONNECTOR_HALF_SIZE
+    );
+    return min(min(left_lobe, right_lobe), connector);
 }
 
 fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
@@ -5642,6 +5856,7 @@ fn vertex_main(
         output.formation_presentation_flags = 0u;
         output.health_ratio = 0.0;
         output.directional_defense_active = 0u;
+        output.effect_presentation_tags = 0u;
         return output;
     }
     let simulation_flags = simulations.values[instance_index].flags;
@@ -5657,6 +5872,7 @@ fn vertex_main(
         output.formation_presentation_flags = 0u;
         output.health_ratio = 0.0;
         output.directional_defense_active = 0u;
+        output.effect_presentation_tags = 0u;
         return output;
     }
     let body = physics.values[instance_index];
@@ -5682,27 +5898,13 @@ fn vertex_main(
             == simulations.values[instance_index].entity_id
         && effect_summary.incarnation
             == simulations.values[instance_index].incarnation;
-    if (effect_identity_matches
-        && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_BOOST) != 0u) {
-        presentation_color = vec4f(
-            mix(
-                presentation_color.rgb,
-                vec3f(0.28, 0.92, 1.0),
-                0.35
-            ),
-            presentation_color.a
-        );
-    }
+    let effect_presentation_tags = select(
+        0u,
+        effect_summary.presentation_tags,
+        effect_identity_matches
+    );
     if (effect_identity_matches
         && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_PULSE) != 0u) {
-        presentation_color = vec4f(
-            mix(
-                presentation_color.rgb,
-                vec3f(0.72, 1.0, 0.95),
-                0.55
-            ),
-            presentation_color.a
-        );
         presentation_radius_scale *= 1.0
             + (0.16 * clamp(effect_summary.presentation_magnitude, 0.0, 1.0));
     }
@@ -5805,7 +6007,59 @@ fn vertex_main(
         1u,
         directional_defense_active
     );
+    output.effect_presentation_tags = effect_presentation_tags;
     return output;
+}
+
+struct EffectPresentation {
+    rgb: vec3f,
+    alpha: f32,
+}
+
+fn apply_effect_presentation(
+    base_rgb: vec3f,
+    base_alpha: f32,
+    opacity: f32,
+    shape_edge_distance: f32,
+    shape_edge_aa: f32,
+    pulse_halo_distance: f32,
+    pulse_halo_aa: f32,
+    presentation_tags: u32
+) -> EffectPresentation {
+    var rgb = base_rgb;
+    var alpha = base_alpha;
+    if ((presentation_tags & EFFECT_PRESENTATION_TAG_BOOST) != 0u) {
+        let boost_rim_distance = abs(shape_edge_distance);
+        let boost_rim = 1.0 - smoothstep(
+            0.055 - shape_edge_aa,
+            0.055 + shape_edge_aa,
+            boost_rim_distance
+        );
+        if (boost_rim > 0.0) {
+            rgb = mix(
+                rgb,
+                vec3f(0.04, 0.88, 1.0),
+                0.92 * boost_rim
+            );
+        }
+        alpha = max(alpha, boost_rim * opacity * 0.94);
+    }
+    if ((presentation_tags & EFFECT_PRESENTATION_TAG_PULSE) != 0u) {
+        let pulse_halo = 1.0 - smoothstep(
+            0.035 - pulse_halo_aa,
+            0.035 + pulse_halo_aa,
+            pulse_halo_distance
+        );
+        if (pulse_halo > 0.0) {
+            rgb = mix(
+                rgb,
+                vec3f(0.08, 1.0, 0.82),
+                0.94 * pulse_halo
+            );
+        }
+        alpha = max(alpha, pulse_halo * opacity * 0.96);
+    }
+    return EffectPresentation(rgb, alpha);
 }
 
 @fragment
@@ -5929,7 +6183,20 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
             }
         }
         if (alpha <= 0.0) { discard; }
-        return vec4f(rgb * alpha, alpha);
+        let effect_presentation = apply_effect_presentation(
+            rgb,
+            alpha,
+            input.color.a,
+            occupied_distance,
+            occupied_aa,
+            pulse_distance,
+            pulse_aa,
+            input.effect_presentation_tags
+        );
+        return vec4f(
+            effect_presentation.rgb * effect_presentation.alpha,
+            effect_presentation.alpha
+        );
     }
     let coverage = 1.0 - smoothstep(-anti_alias_width, anti_alias_width, distance);
     let alpha = input.color.a * coverage;
@@ -5956,6 +6223,19 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
             rgb = mix(rgb, vec3f(0.38, 0.94, 1.0), 0.72 * armor_rim);
         }
     }
-    return vec4f(rgb * alpha, alpha);
+    let effect_presentation = apply_effect_presentation(
+        rgb,
+        alpha,
+        input.color.a,
+        distance,
+        anti_alias_width,
+        pulse_distance,
+        pulse_aa,
+        input.effect_presentation_tags
+    );
+    return vec4f(
+        effect_presentation.rgb * effect_presentation.alpha,
+        effect_presentation.alpha
+    );
 }
 `;

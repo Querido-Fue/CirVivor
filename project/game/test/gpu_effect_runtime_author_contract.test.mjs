@@ -26,7 +26,8 @@ const {
     GPU_EFFECT_RUNTIME_ENTRY_POINT
 } = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_shaders.js');
 const {
-    GPU_COLLISION_COMPUTE_WGSL
+    GPU_COLLISION_COMPUTE_WGSL,
+    GPU_COLLISION_RENDER_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
 const {
     GPU_FORMATION_RUNTIME_COMPUTE_WGSL
@@ -396,6 +397,51 @@ test('Effect damage order는 immutable contact base와 Tower-only projectile sna
     );
 });
 
+test('BOOST/PULSE presentation은 authored fill을 보존하고 premultiplied rim/halo만 합성한다', () => {
+    const vertexStart = GPU_COLLISION_RENDER_WGSL.indexOf('@vertex');
+    const fragmentStart = GPU_COLLISION_RENDER_WGSL.indexOf('@fragment');
+    assert.ok(vertexStart >= 0 && fragmentStart > vertexStart);
+    const vertexShader = GPU_COLLISION_RENDER_WGSL.slice(
+        vertexStart,
+        fragmentStart
+    );
+    const fragmentShader = GPU_COLLISION_RENDER_WGSL.slice(fragmentStart);
+
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /@location\(9\) @interpolate\(flat\) effect_presentation_tags: u32/
+    );
+    assert.match(vertexShader, /var presentation_color = style\.color;/);
+    assert.doesNotMatch(
+        vertexShader,
+        /presentation_color\s*=\s*vec4f\([\s\S]*?EFFECT_PRESENTATION_TAG_(?:BOOST|PULSE)/
+    );
+    assert.match(
+        vertexShader,
+        /EFFECT_PRESENTATION_TAG_PULSE[\s\S]*?presentation_radius_scale \*= 1\.0[\s\S]*?0\.16/
+    );
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /fn apply_effect_presentation\([\s\S]*?EFFECT_PRESENTATION_TAG_BOOST[\s\S]*?boost_rim_distance = abs\(shape_edge_distance\)[\s\S]*?vec3f\(0\.04, 0\.88, 1\.0\)/
+    );
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /fn apply_effect_presentation\([\s\S]*?pulse_halo_distance: f32,[\s\S]*?EFFECT_PRESENTATION_TAG_PULSE[\s\S]*?vec3f\(0\.08, 1\.0, 0\.82\)/
+    );
+    assert.match(
+        fragmentShader,
+        /pulse_distance = abs\(length\(input\.local_position\) - 0\.92\)[\s\S]*?pulse_aa = max\(fwidth\(pulse_distance\), 0\.002\)/
+    );
+    assert.match(
+        fragmentShader,
+        /effect_presentation\.rgb \* effect_presentation\.alpha,[\s\S]*?effect_presentation\.alpha/
+    );
+    assert.doesNotMatch(
+        fragmentShader,
+        /return vec4f\(effect_presentation\.rgb, effect_presentation\.alpha\)/
+    );
+});
+
 test('일반 projectile Tower damage channel은 exact TARGET_ENTITY request bit로만 authoring된다', () => {
     const storage = createGpuSpawnProgramStorage(1);
     const baseRecord = {
@@ -557,7 +603,19 @@ test('전용 NW stage는 big-bucket dedupe와 offscreen pulse/boost/expiry pixel
     );
     assert.match(
         nwEffectRunnerSource,
-        /runEffectPresentationPixelFixture[\s\S]*?GPUTextureUsage\.RENDER_ATTACHMENT \| GPUTextureUsage\.COPY_SRC[\s\S]*?pulsedSourcePixels > baselineSourcePixels[\s\S]*?BOOST visual did not disappear at half-open expiry/
+        /runEffectPresentationPixelFixture[\s\S]*?GPUTextureUsage\.RENDER_ATTACHMENT \| GPUTextureUsage\.COPY_SRC[\s\S]*?pulsedSourcePixels > baselineSourcePixels[\s\S]*?BOOST rim\/halo did not disappear at half-open expiry/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /sourceCenterPixel[\s\S]*?pulsedSourceCenterPixel[\s\S]*?PULSE changed authored source center fill[\s\S]*?pulseDifference\.minimumChangedRadiusPixels >= 3[\s\S]*?pulseDifference\.saturatedCyanPixelCount > 0/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /baselineTargetPixel[\s\S]*?boostedTargetPixel[\s\S]*?BOOST changed authored target center fill[\s\S]*?boostDifference\.minimumChangedRadiusPixels >= 3[\s\S]*?boostDifference\.saturatedCyanPixelCount > 0/
+    );
+    assert.match(
+        nwEffectRunnerSource,
+        /premultiplied === true[\s\S]*?Effect BOOST output broke premultiplied alpha/
     );
     assert.match(
         nwEffectRunnerSource,

@@ -115,6 +115,33 @@ function createDirector(registry, commandPort, capacity = 32) {
     });
 }
 
+test('empty lineage roster is a replay-stable host no-op without opening GPU prepare', () => {
+    const registry = createRegistry();
+    const commandPort = createCommandPort();
+    const director = createDirector(registry, commandPort);
+
+    assert.deepEqual(director.stageForFixedTick({ targetFixedTick: 1 }), {
+        accepted: true,
+        targetFixedTick: 1,
+        candidateCount: 0,
+        requestedCount: 0,
+        replayed: false,
+        recoveryRequired: false
+    });
+    assert.equal(commandPort.prepareRequests.length, 0);
+    assert.deepEqual(director.stageForFixedTick({ targetFixedTick: 1 }), {
+        accepted: true,
+        targetFixedTick: 1,
+        candidateCount: 0,
+        requestedCount: 0,
+        replayed: true,
+        recoveryRequired: false
+    });
+    assert.equal(commandPort.prepareRequests.length, 0);
+    assert.equal(director.getStatus().lastPrepareStageTick, 1);
+    assert.equal(director.requiresRecovery(), false);
+});
+
 function completedEventSnapshot(events = [], overrides = {}) {
     return Object.freeze({
         events: Object.freeze(events),
@@ -606,8 +633,11 @@ test('delayed C prime is absent before T-1 prepare and starts exactly at T', () 
         recoveryRequired: false
     }, 12);
 
-    director.stageForFixedTick({ targetFixedTick: 69 });
-    assert.equal(commandPort.prepareRequests.at(-1).records.length, 0);
+    const prepareCountBeforeIdleTick = commandPort.prepareRequests.length;
+    const idleStage = director.stageForFixedTick({ targetFixedTick: 69 });
+    assert.equal(idleStage.accepted, true);
+    assert.equal(idleStage.candidateCount, 0);
+    assert.equal(commandPort.prepareRequests.length, prepareCountBeforeIdleTick);
     director.stageForFixedTick({ targetFixedTick: 70 });
     const atTMinusOne = commandPort.prepareRequests.at(-1);
     assert.equal(atTMinusOne.records.length, 1);
@@ -779,9 +809,16 @@ test('one, both, or no C prime survivor author exactly 1, 2, or 0 returns', () =
             rejected: [],
             recoveryRequired: false
         }, 12);
-        director.stageForFixedTick({ targetFixedTick: 70 });
-        assert.equal(commandPort.prepareRequests.at(-1).records.length,
-            survivorCount);
+        const prepareCountBeforeReturn = commandPort.prepareRequests.length;
+        const returnStage = director.stageForFixedTick({ targetFixedTick: 70 });
+        if (survivorCount === 0) {
+            assert.equal(returnStage.candidateCount, 0);
+            assert.equal(commandPort.prepareRequests.length,
+                prepareCountBeforeReturn);
+        } else {
+            assert.equal(commandPort.prepareRequests.at(-1).records.length,
+                survivorCount);
+        }
         assert.equal((survivorCount * 6) + ((2 - survivorCount) * 6), 12);
     }
 });

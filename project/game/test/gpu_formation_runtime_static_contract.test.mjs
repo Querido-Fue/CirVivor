@@ -111,16 +111,24 @@ test('Hexa ring/rotation ABI는 empty-center six-slot vocabulary를 exact 고정
     );
 });
 
-test('Formation/HX render WGSL은 Effect 색상 혼합과 Formation payload를 보존한다', () => {
+test('Formation/HX render WGSL은 Effect rim/halo와 Formation payload를 보존한다', () => {
     const vertexShader = GPU_COLLISION_RENDER_WGSL.match(
         /@vertex[\s\S]*?(?=\n@fragment)/
     )?.[0] ?? '';
     assert.notEqual(vertexShader, '');
     assert.doesNotMatch(vertexShader, /presentation_color\.rgb\s*=/);
+    assert.match(vertexShader, /var presentation_color = style\.color;/);
+    assert.doesNotMatch(vertexShader,
+        /presentation_color = vec4f\(\s*mix\(/);
     assert.match(vertexShader,
-        /presentation_color = vec4f\(\s*mix\(\s*presentation_color\.rgb,\s*vec3f\(0\.28, 0\.92, 1\.0\),\s*0\.35\s*\),\s*presentation_color\.a\s*\);/);
+        /output\.effect_presentation_tags = effect_presentation_tags;/);
     assert.match(vertexShader,
-        /presentation_color = vec4f\(\s*mix\(\s*presentation_color\.rgb,\s*vec3f\(0\.72, 1\.0, 0\.95\),\s*0\.55\s*\),\s*presentation_color\.a\s*\);/);
+        /fn apply_effect_presentation\([\s\S]*?boost_rim_distance[\s\S]*?pulse_halo_distance/);
+    const effectHelper = vertexShader.match(
+        /fn apply_effect_presentation\([\s\S]*?return EffectPresentation\(rgb, alpha\);\n\}/
+    )?.[0] ?? '';
+    assert.notEqual(effectHelper, '');
+    assert.doesNotMatch(effectHelper, /\bfwidth\(/);
     assert.match(vertexShader,
         /output\.color = presentation_color \* f32\(style\.visible != 0u\);/);
     assert.match(vertexShader,

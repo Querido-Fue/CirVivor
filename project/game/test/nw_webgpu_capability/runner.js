@@ -9,6 +9,7 @@ import {
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_IDENTITY,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
@@ -1893,31 +1894,56 @@ async function runProductionEnemyShapePixelSmoke(device) {
                 x: Math.round(x * radiusPixels),
                 y: Math.round(y * radiusPixels)
             });
-            const jorangBoxes = ENEMY_NORMALIZED_RENDER_GEOMETRY.jorang.boxes;
-            const jorangStrokeOffsets = Object.freeze(
-                jorangBoxes.map(({ center }) => toJorangPixelOffset(center))
+            const jorangGeometry = ENEMY_NORMALIZED_RENDER_GEOMETRY.jorang;
+            const jorangLobeCenters = Object.freeze(
+                jorangGeometry.lobes.map((points) => Object.freeze(
+                    points.reduce((center, point) => ({
+                        x: center.x + (point.x / points.length),
+                        y: center.y + (point.y / points.length)
+                    }), { x: 0, y: 0 })
+                ))
             );
-            const jorangGapOffsets = Object.freeze([
-                Object.freeze({ x: 0, y: 0 }),
+            const jorangConnectedOffsets = Object.freeze([
+                toJorangPixelOffset(jorangLobeCenters[0]),
                 toJorangPixelOffset({
-                    x: jorangBoxes[3].center.x,
-                    y: 0
-                })
+                    x: jorangGeometry.connector.center.x
+                        - (jorangGeometry.connector.halfSize.x * 0.75),
+                    y: jorangGeometry.connector.center.y
+                }),
+                toJorangPixelOffset(jorangGeometry.connector.center),
+                toJorangPixelOffset({
+                    x: jorangGeometry.connector.center.x
+                        + (jorangGeometry.connector.halfSize.x * 0.75),
+                    y: jorangGeometry.connector.center.y
+                }),
+                toJorangPixelOffset(jorangLobeCenters[1])
+            ]);
+            const jorangLobeMaximumY = Math.max(
+                ...jorangGeometry.lobes.flatMap((points) => (
+                    points.map(({ y }) => Math.abs(y))
+                ))
+            );
+            const jorangWaistGapY = jorangGeometry.connector.halfSize.y
+                + ((jorangLobeMaximumY
+                    - jorangGeometry.connector.halfSize.y) * 0.75);
+            const jorangWaistGapOffsets = Object.freeze([
+                toJorangPixelOffset({ x: 0, y: -jorangWaistGapY }),
+                toJorangPixelOffset({ x: 0, y: jorangWaistGapY })
             ]);
             const readJorangAlpha = ({ x, y }) => readAlpha(
                 Math.floor(jorangCenter.x) + x,
                 Math.floor(jorangCenter.y) + y
             );
-            const jorangStrokeAlphas = Object.freeze(
-                jorangStrokeOffsets.map(readJorangAlpha)
+            const jorangConnectedAlphas = Object.freeze(
+                jorangConnectedOffsets.map(readJorangAlpha)
             );
-            const jorangGapAlphas = Object.freeze(
-                jorangGapOffsets.map(readJorangAlpha)
+            const jorangWaistGapAlphas = Object.freeze(
+                jorangWaistGapOffsets.map(readJorangAlpha)
             );
             assert(
-                jorangStrokeAlphas.every((alpha) => alpha >= 192)
-                    && jorangGapAlphas.every((alpha) => alpha < 16),
-                `jorang four-stroke/gap topology가 잘못됐습니다: strokes=${jorangStrokeAlphas.join(',')}, gaps=${jorangGapAlphas.join(',')}`
+                jorangConnectedAlphas.every((alpha) => alpha >= 192)
+                    && jorangWaistGapAlphas.every((alpha) => alpha < 16),
+                `jorang two-lobe/waist topology가 잘못됐습니다: connected=${jorangConnectedAlphas.join(',')}, waistGaps=${jorangWaistGapAlphas.join(',')}`
             );
             assert(drawMarks === 1, `production enemy shape draw mark 불일치: ${drawMarks}`);
 
@@ -1932,10 +1958,11 @@ async function runProductionEnemyShapePixelSmoke(device) {
                     backwardAlpha: arrowBackwardAlpha
                 },
                 jorang: {
-                    strokeOffsets: jorangStrokeOffsets,
-                    gapOffsets: jorangGapOffsets,
-                    strokeAlphas: jorangStrokeAlphas,
-                    gapAlphas: jorangGapAlphas
+                    lobeCenters: jorangLobeCenters,
+                    connectedOffsets: jorangConnectedOffsets,
+                    waistGapOffsets: jorangWaistGapOffsets,
+                    connectedAlphas: jorangConnectedAlphas,
+                    waistGapAlphas: jorangWaistGapAlphas
                 }
             };
         } finally {
@@ -8977,11 +9004,251 @@ async function runProductionMaximumDamageWindowCapacityAtomicityHardwareSmoke(de
 }
 
 /**
+ * Arrow Tower direct line이 terrain을 가로지를 때 SDF visibility가 exact Tower
+ * ownership보다 route flow를 우선하는지 실제 GPU에서 확인합니다. 이 fixture는
+ * charge/contact을 만들지 않아 terrain이 Tower recoil/damage로 오인되는 회귀를
+ * 좁은 fixed-tick window에서 분리합니다.
+ */
+async function runProductionEnemyArrowWallVisibilityHardwareSmoke(device) {
+    const columns = 16;
+    const rows = 16;
+    const blocked = new Uint8Array(columns * rows);
+    for (let row = 5; row <= 10; row++) {
+        blocked[(row * columns) + 7] = 1;
+    }
+    const navigationSource = createPhase5ProjectileNavigationSource({ blocked });
+    const sdf = createGpuSignedDistanceField(navigationSource.getNavigationGrid());
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 4,
+        controlCommandCapacity: 1,
+        sourceRelativeSpawnCommandCapacity: 1,
+        spawnProgramCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 12, y: 8 });
+    const arrowPosition = Object.freeze({ x: 5.5, y: 8 });
+    // Shader-private Arrow route fallback latch. It is deliberately not exported
+    // by GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG or accepted by host spawn data.
+    const arrowRouteFallbackLatch = 1 << 7;
+    const submittedTicks = [];
+    const completedEvents = [];
+    const samples = [];
+    let towerHandle = null;
+    let arrowHandle = null;
+    const exactHandleMatches = (left, right) => (
+        left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation
+    );
+    const submitTick = async (tick, label, { alreadyCommitted = false } = {}) => {
+        const commit = alreadyCommitted
+            ? null
+            : endpoint.commitAtFixedBoundary(tick);
+        assert(
+            alreadyCommitted || !commit.recoveryRequired,
+            `${label} lifecycle/fixed commit 실패: ${JSON.stringify(commit)}`
+        );
+        assert(
+            !submittedTicks.includes(tick),
+            `${label} fixed tick을 두 번 submit하려 합니다: ${tick}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        submittedTicks.push(tick);
+        await settlePhase5Endpoint(endpoint, label);
+        const bodies = await readPhase5Bodies(endpoint);
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick + 1);
+        assert(
+            completed.protocolFailure === null,
+            `${label} completed event protocol 실패: ${JSON.stringify(completed)}`
+        );
+        completedEvents.push(...completed.contactEvents);
+        return Object.freeze({ commit, bodies, completed });
+    };
+    const createArrowIntent = (position, spawnSequence) => Object.freeze({
+        ...createGpuEnemySpawnIntent({
+            definition: BASIC_ARROW_ENEMY_DATA,
+            route: navigationSource.route,
+            spawnSequence,
+            waveId: 'nw-arrow-wall-visibility',
+            policyId: 'hardware-fixture'
+        }),
+        position: Object.freeze({ ...position })
+    });
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Arrow wall visibility endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const requests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'arrow-wall:initial-tower'
+            ),
+            endpoint.requestSpawn(
+                createArrowIntent(arrowPosition, 0),
+                1,
+                'arrow-wall:initial-arrow'
+            )
+        ];
+        assert(requests.every(({ accepted }) => accepted),
+            `Arrow wall visibility 초기 spawn 요청 실패: ${JSON.stringify(requests)}`);
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const initialHandles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        towerHandle = initialHandles.get('arrow-wall:initial-tower');
+        arrowHandle = initialHandles.get('arrow-wall:initial-arrow');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && towerHandle
+                && arrowHandle,
+            `Arrow wall visibility 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        assert(
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Arrow wall visibility exact Tower gameplay target 구성 실패'
+        );
+
+        let initialTowerHealth = null;
+        for (let tick = 1; tick <= 60; tick++) {
+            const step = await submitTick(
+                tick,
+                `Arrow wall visibility route tick ${tick}`,
+                { alreadyCommitted: tick === 1 }
+            );
+            const tower = findPhase5Body(
+                step.bodies,
+                towerHandle,
+                `Arrow wall visibility Tower ${tick}`
+            );
+            const arrow = findPhase5Body(
+                step.bodies,
+                arrowHandle,
+                `Arrow wall visibility Arrow ${tick}`
+            );
+            if (initialTowerHealth === null) {
+                initialTowerHealth = tower.health;
+            }
+            const behavior = arrow.enemyBehaviorState;
+            const sdfDistance = sampleGpuSignedDistanceField(
+                sdf,
+                arrow.position.x,
+                arrow.position.y
+            );
+            samples.push(Object.freeze({
+                tick,
+                position: Object.freeze({ ...arrow.position }),
+                velocity: Object.freeze({ ...arrow.velocity }),
+                speed: Math.hypot(arrow.velocity.x, arrow.velocity.y),
+                state: behavior?.state,
+                flags: behavior?.flags,
+                simulationMeta: arrow.simulationMeta,
+                sdfDistance
+            }));
+        }
+
+        const finalStatus = endpoint.getStatus();
+        const finalArrow = samples.at(-1);
+        const routeProgress = Math.hypot(
+            finalArrow.position.x - arrowPosition.x,
+            finalArrow.position.y - arrowPosition.y
+        );
+        const lateralRouteDeviation = Math.abs(
+            finalArrow.position.y - arrowPosition.y
+        );
+        const initialRouteSamples = samples.slice(0, 3);
+        const routeFallbackEvidence = Object.freeze({
+            latch: arrowRouteFallbackLatch,
+            first: initialRouteSamples[0],
+            second: initialRouteSamples[1],
+            third: initialRouteSamples[2]
+        });
+        const wallInteriorDistance = sampleGpuSignedDistanceField(sdf, 7.5, 8);
+        const sawFalseRecoil = completedEvents.some((event) => (
+            event.eventType === 'enemy-charge-contact-recoil-started'
+            && exactHandleMatches(event, arrowHandle)
+        ));
+        const sawTowerDamage = completedEvents.some((event) => (
+            event.eventType === 'damage-applied'
+            && exactHandleMatches(event, arrowHandle)
+            && event.otherEntityId === towerHandle.entityId
+            && event.otherIncarnation === towerHandle.incarnation
+        ));
+        const terminalBodies = await readPhase5Bodies(endpoint);
+        const terminalTower = findPhase5Body(
+            terminalBodies,
+            towerHandle,
+            'Arrow wall visibility terminal Tower'
+        );
+        assert(
+            wallInteriorDistance < 0
+                && submittedTicks.length === 60
+                && samples.every((sample) => (
+                    sample.state === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.SEEK_TOWER
+                    && (sample.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID) !== 0
+                    && (sample.simulationMeta
+                        & GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW) !== 0
+                    && sample.sdfDistance >= BASIC_ARROW_ENEMY_DATA.collisionRadiusTiles
+                        - 0.05
+                ))
+                && initialRouteSamples.length === 3
+                && initialRouteSamples.every((sample) => (
+                    (sample.flags & arrowRouteFallbackLatch) !== 0
+                ))
+                && initialRouteSamples[0].speed > 0
+                && initialRouteSamples[1].speed
+                    > initialRouteSamples[0].speed + 0.001
+                && routeProgress > 0.25
+                && lateralRouteDeviation > 0.2
+                && !sawFalseRecoil
+                && !sawTowerDamage
+                && terminalTower.health === initialTowerHealth
+                && !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery(),
+            `Arrow wall visibility SDF/route/recoil 경계 불일치: ${JSON.stringify({
+                wallInteriorDistance,
+                samples,
+                routeFallbackEvidence,
+                routeProgress,
+                lateralRouteDeviation,
+                sawFalseRecoil,
+                sawTowerDamage,
+                terminalTower,
+                initialTowerHealth,
+                finalStatus
+            })}`
+        );
+        return Object.freeze({
+            wallInteriorDistance,
+            routeProgress,
+            lateralRouteDeviation,
+            first: samples[0],
+            last: finalArrow,
+            sampleCount: samples.length,
+            routeFallbackEvidence,
+            falseTowerRecoil: sawFalseRecoil,
+            falseTowerDamage: sawTowerDamage,
+            storageProfile: finalStatus.backend?.gpu?.fixedPrimitives?.storageProfile
+                ?? finalStatus.backend?.fixedPrimitives?.storageProfile
+                ?? null
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
+/**
  * Arrow A의 production adapter/side-plane/compute pass를 실제 WebGPU에서 bounded하게
  * 검증합니다. Arrow gameplay은 dedicated exact Tower config만 읽고 tracked pose는
  * presentation-only로 독립 교체해도 gameplay state가 변하지 않아야 합니다.
  */
 async function runProductionEnemyArrowChargeHardwareSmoke(device) {
+    const wallVisibility = await runProductionEnemyArrowWallVisibilityHardwareSmoke(device);
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPhase3PlatformPort(device)
@@ -8994,8 +9261,47 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
     const fixedDelta = 1 / 60;
     const towerPosition = Object.freeze({ x: 8, y: 8 });
     const arrowPosition = Object.freeze({ x: 5.5, y: 8 });
+    const expoOutLambda = Math.fround(0.5);
+    const normalizedExpoOutF32 = (progress) => {
+        const boundedProgress = Math.min(Math.max(Math.fround(progress), 0), 1);
+        if (boundedProgress <= 0) return 0;
+        if (boundedProgress >= 1) return 1;
+        const denominator = Math.fround(
+            1 - Math.fround(2 ** Math.fround(-expoOutLambda))
+        );
+        return Math.fround(
+            Math.fround(
+                1 - Math.fround(2 ** Math.fround(-expoOutLambda * boundedProgress))
+            ) / denominator
+        );
+    };
+    const expectedExpoOutSpeed = (speed, durationTicks, elapsedTicks) => {
+        const multiplyF32 = (left, right) => Math.fround(
+            Math.fround(left) * Math.fround(right)
+        );
+        const duration = Math.fround(Math.max(durationTicks, 1));
+        const elapsed = Math.min(Math.max(elapsedTicks, 0), durationTicks);
+        const nextElapsed = Math.min(elapsed + 1, durationTicks);
+        const normalizedDelta = Math.fround(
+            normalizedExpoOutF32(Math.fround(nextElapsed / duration))
+            - normalizedExpoOutF32(Math.fround(elapsed / duration))
+        );
+        // WGSL multiplies total distance by inverse_dt after the finite difference.
+        return multiplyF32(
+            multiplyF32(
+                multiplyF32(
+                    multiplyF32(speed, duration),
+                    fixedDelta
+                ),
+                normalizedDelta
+            ),
+            1 / fixedDelta
+        );
+    };
     const submittedTicks = [];
     const chargeEvents = [];
+    const chargeSpeedSamples = [];
+    const recoilSpeedSamples = [];
     let towerHandle = null;
     let arrowHandle = null;
     let projectileHandle = null;
@@ -9297,6 +9603,31 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const snapshotDirection = Object.freeze({ ...behavior.chargeDirection });
         assertNear(Math.hypot(snapshotDirection.x, snapshotDirection.y), 1, 0.00001,
             'Arrow charge snapshot direction unit length');
+        const recordChargeSpeed = (tick, body) => {
+            if (body.enemyBehaviorState.state
+                !== GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE) {
+                return;
+            }
+            chargeSpeedSamples.push(Object.freeze({
+                tick,
+                speed: Math.hypot(body.velocity.x, body.velocity.y),
+                forwardSpeed: (body.velocity.x * snapshotDirection.x)
+                    + (body.velocity.y * snapshotDirection.y)
+            }));
+        };
+        const recordRecoilSpeed = (tick, body) => {
+            if (body.enemyBehaviorState.state
+                !== GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
+                return;
+            }
+            recoilSpeedSamples.push(Object.freeze({
+                tick,
+                speed: Math.hypot(body.velocity.x, body.velocity.y),
+                reverseSpeed: -((body.velocity.x * snapshotDirection.x)
+                    + (body.velocity.y * snapshotDirection.y))
+            }));
+        };
+        recordChargeSpeed(35, arrowBody);
 
         const moveTower = endpoint.requestBodyControl({
             handle: towerHandle,
@@ -9328,6 +9659,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 && Math.abs(towerBody.position.y - towerPosition.y) > 0.0001,
             `Arrow charge가 moved Tower로 재조준했습니다: ${JSON.stringify({ towerBody, arrowBody, behavior })}`
         );
+        recordChargeSpeed(36, arrowBody);
 
         const stopTower = endpoint.requestBodyControl({
             handle: towerHandle,
@@ -9337,6 +9669,10 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         assert(stopTower.accepted,
             `Arrow charge Tower stop control 실패: ${JSON.stringify(stopTower)}`);
         let latest = await submitTick(37, 'Arrow charge Tower stop');
+        recordChargeSpeed(
+            37,
+            findBody(latest.bodies, arrowHandle, 'charge Expo tick 37 Arrow')
+        );
         let primedMaximumCandidate = false;
         let contactTick = null;
         let contactSnapshot = null;
@@ -9370,6 +9706,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 ))?.handle ?? null;
             }
             const currentArrow = findBody(latest.bodies, arrowHandle, 'contact approach Arrow');
+            recordChargeSpeed(tick, currentArrow);
             if (currentArrow.enemyBehaviorState.state
                 === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
                 contactTick = tick;
@@ -9392,6 +9729,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         );
         const recoilDot = (arrowBody.velocity.x * snapshotDirection.x)
             + (arrowBody.velocity.y * snapshotDirection.y);
+        recordRecoilSpeed(contactTick, arrowBody);
         assert(
             recoilDot < 0
                 && Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y) > 3.9
@@ -9435,6 +9773,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             'Arrow charge recoil one-shot next tick'
         );
         arrowBody = findBody(postContact.bodies, arrowHandle, 'post-contact Arrow');
+        recordRecoilSpeed(contactTick + 1, arrowBody);
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
@@ -9453,6 +9792,14 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         let recoilBeforeExpiry = postContact;
         for (let tick = contactTick + 2; tick < contactTick + 12; tick++) {
             recoilBeforeExpiry = await submitTick(tick, `Arrow charge recoil boundary ${tick}`);
+            recordRecoilSpeed(
+                tick,
+                findBody(
+                    recoilBeforeExpiry.bodies,
+                    arrowHandle,
+                    `recoil Expo tick ${tick} Arrow`
+                )
+            );
         }
         arrowBody = findBody(
             recoilBeforeExpiry.bodies,
@@ -9746,6 +10093,43 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const recoilEvents = chargeEvents.filter((event) => (
             event.eventType === 'enemy-charge-contact-recoil-started'
         ));
+        const assertExpoDeceleration = (samples, label) => {
+            assert(
+                samples.length >= 2
+                    && samples.every(({ speed, forwardSpeed, reverseSpeed }) => (
+                        speed > 0 && (forwardSpeed === undefined || forwardSpeed > 0)
+                            && (reverseSpeed === undefined || reverseSpeed > 0)
+                    ))
+                    && samples[0].speed > samples.at(-1).speed,
+                `${label} Expo-out first/last deceleration 불일치: ${JSON.stringify(samples)}`
+            );
+        };
+        assertExpoDeceleration(chargeSpeedSamples, 'Arrow charge');
+        assertExpoDeceleration(recoilSpeedSamples, 'Arrow recoil');
+        const chargeK0 = chargeSpeedSamples.find(({ tick }) => tick === 35);
+        const chargeK1 = chargeSpeedSamples.find(({ tick }) => tick === 36);
+        const recoilPreload = recoilSpeedSamples.find(({ tick }) => tick === contactTick);
+        const recoilK0 = recoilSpeedSamples.find(
+            ({ tick }) => tick === contactTick + 1
+        );
+        const recoilK1 = recoilSpeedSamples.find(
+            ({ tick }) => tick === contactTick + 2
+        );
+        const assertExpoOracleSpeed = (sample, expected, label) => {
+            assert(sample,
+                `${label} Expo sample이 없습니다: ${JSON.stringify({ chargeSpeedSamples, recoilSpeedSamples })}`);
+            assertNear(sample.speed, expected, 0.01,
+                `${label} normalized λ=0.5 f32 Expo speed`);
+        };
+        const expectedChargeK0 = expectedExpoOutSpeed(6, 60, 0);
+        const expectedChargeK1 = expectedExpoOutSpeed(6, 60, 1);
+        const expectedRecoilK0 = expectedExpoOutSpeed(4, 11, 0);
+        const expectedRecoilK1 = expectedExpoOutSpeed(4, 11, 1);
+        assertExpoOracleSpeed(chargeK0, expectedChargeK0, 'Arrow charge k=0');
+        assertExpoOracleSpeed(chargeK1, expectedChargeK1, 'Arrow charge k=1');
+        assertExpoOracleSpeed(recoilPreload, expectedRecoilK0, 'Arrow recoil contact preload');
+        assertExpoOracleSpeed(recoilK0, expectedRecoilK0, 'Arrow recoil S+1 k=0');
+        assertExpoOracleSpeed(recoilK1, expectedRecoilK1, 'Arrow recoil S+2 k=1');
         const errors = Object.freeze({
             contactOverflow: gpuStatus.contact.lastOverflowCount,
             eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
@@ -9756,7 +10140,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 && new Set(submittedTicks).size === submittedTicks.length
                 && gpuStatus.submittedTickCount === submittedTicks.length
                 && recoilEvents.length === 1
-                && storageProfile.enemyBehavior === 8
+                && storageProfile.enemyBehavior === 9
                 && storageProfile.trackedPose === 6
                 && storageProfile.contactHandling === 9
                 && gameplayTargetStatus.abiVersion === 1
@@ -9802,6 +10186,28 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 appliedFixedPoint: damageEvent.valueFixedPoint,
                 arrowAppliedFixedPoint: recoilEvent.valueFixedPoint,
                 recoilDot
+            }),
+            wallVisibility,
+            expoMotion: Object.freeze({
+                charge: Object.freeze({
+                    expectedK0: expectedChargeK0,
+                    expectedK1: expectedChargeK1,
+                    first: chargeSpeedSamples[0],
+                    last: chargeSpeedSamples.at(-1),
+                    samples: Object.freeze([...chargeSpeedSamples])
+                }),
+                recoil: Object.freeze({
+                    entered: contactTick,
+                    expires: contactTick + 12,
+                    expectedPreloadAndK0: expectedRecoilK0,
+                    expectedK1: expectedRecoilK1,
+                    preload: recoilPreload,
+                    k0: recoilK0,
+                    k1: recoilK1,
+                    first: recoilSpeedSamples[0],
+                    last: recoilSpeedSamples.at(-1),
+                    samples: Object.freeze([...recoilSpeedSamples])
+                })
             }),
             typedEventCount: chargeEvents.length,
             targetingPorts: Object.freeze({

@@ -88,7 +88,7 @@ test('Node/churn/WASM/stress/render-golden/diff automated gates는 versioned com
         focusedNodeGate.args.slice(2),
         R2_FINAL_FOCUSED_NODE_TEST_FILES
     );
-    assert.equal(R2_FINAL_FOCUSED_NODE_TEST_FILES.length, 22);
+    assert.equal(R2_FINAL_FOCUSED_NODE_TEST_FILES.length, 23);
     assert.equal(nodeGate.executable, process.execPath);
     assert.deepEqual(nodeGate.args.slice(0, 2), [
         '--experimental-vm-modules',

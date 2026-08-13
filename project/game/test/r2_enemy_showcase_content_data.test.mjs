@@ -258,13 +258,20 @@ test('showcase waves는 실제 TileMap/WaveDirector compiler에서 bounded sched
     )));
 });
 
-test('default production은 그대로이고 advanced content placement는 injection-only다', async () => {
+test('첫 production 카드가 showcase Wave 1을 열고 corridor 데이터 자체는 불변이다', async () => {
     assert.equal(R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT.defaultProduction.mapId,
         CORRIDOR_EIGHT_MAP_DATA.id);
     assert.equal(R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT.showcase.mapId,
         R2_ENEMY_SHOWCASE_MAP_ID);
     assert.equal(R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT.showcase.accessPolicyId,
-        'showcase-injection-only');
+        'production-stage-one-and-manual-injection');
+    assert.deepEqual({
+        ...R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT.productionStageOne
+    }, {
+        selectionMapId: CORRIDOR_EIGHT_MAP_DATA.id,
+        runtimeMapId: R2_ENEMY_SHOWCASE_MAP_ID,
+        waveId: R2_ENEMY_SHOWCASE_WAVE_01_DATA.waveId
+    });
     assert.equal(INGAME_MAP_DATA.MAPS.includes(R2_ENEMY_SHOWCASE_MAP_DATA), false);
     assert.deepEqual(Array.from(
         INGAME_MAP_DATA.MAPS,

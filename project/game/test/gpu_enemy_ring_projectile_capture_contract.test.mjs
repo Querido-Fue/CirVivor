@@ -499,7 +499,7 @@ test('capture runtime은 storage 9, release program은 7이며 모든 dispatch�
         select_ring_capture_projectiles: 7,
         preflight_projectile_capture_batch: 7,
         shield_projectile_capture_contacts: 7,
-        preflight_projectile_capture_retry_batch: 6,
+        preflight_projectile_capture_retry_batch: 7,
         select_projectile_capture_retry_prefix: 6,
         seal_projectile_capture_batch: 1,
         commit_projectile_capture_batch: 7,
@@ -628,6 +628,120 @@ test('strict-closing funnel과 capacity retry는 shader/dispatch/host ledger에�
         /runReleasePreparationCapacityRetry[\s\S]*releasePreparationDemandCount === 2[\s\S]*releaseCompletions\.length === 2/);
     assert.match(RUNNER_SOURCE,
         /runCleanupCapacityRetry[\s\S]*cleanupDemandCount === 2[\s\S]*projectileRegistryCount/);
+});
+
+test('capture retry는 current contact 권한만 재인증하고 HELD retry와 fairness token은 보존한다', () => {
+    const functionSlice = (name, nextName) => {
+        const start = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.indexOf(
+            `fn ${name}(`
+        );
+        const end = GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.indexOf(
+            `fn ${nextName}(`,
+            start + 1
+        );
+        assert.ok(start >= 0 && end > start, `${name} source missing`);
+        return GPU_PROJECTILE_CAPTURE_RUNTIME_WGSL.slice(start, end);
+    };
+    const currentPair = functionSlice(
+        'capture_pair_is_current',
+        'candidate_is_exact'
+    );
+    assert.match(currentPair,
+        /identity_matches[\s\S]*alive\(captor_slot\)[\s\S]*alive\(projectile_slot\)/);
+    assert.match(currentPair,
+        /relative_projectile_velocity[\s\S]*temporaries\.values\[projectile_slot\]\.predicted_position[\s\S]*radial_closing_dot < 0\.0[\s\S]*funnel_cos_half_angle/);
+
+    const clear = functionSlice(
+        'clear_projectile_capture_tick',
+        'update_projectile_capture_facing'
+    );
+    assert.match(clear,
+        /retry_active\(\)[\s\S]*distance_squared_bits,[\s\S]*INVALID[\s\S]*~CANDIDATE_RETRY_CURRENT_CAPTURE/);
+    assert.doesNotMatch(clear,
+        /retry_active\(\)[\s\S]{0,220}peer_entity_id, INVALID/);
+
+    const shield = functionSlice(
+        'shield_projectile_capture_contacts',
+        'preflight_projectile_capture_retry_batch'
+    );
+    assert.match(shield,
+        /contact_authenticates_capture_pair[\s\S]*distance_squared_bits,[\s\S]*projectile_slot[\s\S]*distance_squared_bits,[\s\S]*captor_slot[\s\S]*CANDIDATE_RETRY_CURRENT_CAPTURE/);
+    assert.doesNotMatch(shield, /find_exact_body_slot/);
+
+    const retrySlot = functionSlice(
+        'retry_capture_projectile_slot',
+        'retry_capture_endpoint_is_current'
+    );
+    assert.match(retrySlot,
+        /distance_squared_bits[\s\S]*retry_capture_pair_is_retained[\s\S]*CANDIDATE_RETRY_CURRENT_CAPTURE/);
+    assert.doesNotMatch(retrySlot, /find_exact_body_slot|contacts\.values/);
+    const rank = functionSlice('retry_capture_rank', 'retry_held_exact');
+    assert.match(rank, /retry_capture_projectile_slot\(other_captor\)/);
+    assert.doesNotMatch(rank,
+        /find_exact_body_slot|contact_authenticates_capture_pair|contacts\.values/);
+
+    const captorCorruption = functionSlice(
+        'retry_capture_captor_marker_is_corrupt',
+        'retry_capture_projectile_marker_is_corrupt'
+    );
+    assert.match(captorCorruption,
+        /!retry_capture_endpoint_is_current\(captor_slot, ROLE_CAPTOR\)[\s\S]*return false/);
+    assert.match(captorCorruption,
+        /projectile_slot == INVALID[\s\S]*!retry_capture_endpoint_is_current\(projectile_slot, ROLE_PROJECTILE\)[\s\S]*return false/);
+    const projectileCorruption = functionSlice(
+        'retry_capture_projectile_marker_is_corrupt',
+        'retry_tuple_less'
+    );
+    assert.match(projectileCorruption,
+        /captor_slot == INVALID[\s\S]*!retry_capture_endpoint_is_current\(captor_slot, ROLE_CAPTOR\)[\s\S]*return false/);
+
+    const held = functionSlice('retry_held_exact', 'retry_held_rank');
+    assert.doesNotMatch(held,
+        /CANDIDATE_RETRY_CURRENT_CAPTURE|contact_authenticates_capture_pair/);
+    const preflight = functionSlice(
+        'preflight_projectile_capture_retry_batch',
+        'select_projectile_capture_retry_prefix'
+    );
+    assert.match(preflight,
+        /contact_state\.contact_overflow[\s\S]*ERROR_CONTACT_OVERFLOW/);
+    assert.match(preflight,
+        /retry_capture_captor_marker_is_corrupt[\s\S]*ERROR_BILATERAL/);
+    assert.match(preflight,
+        /retry_capture_projectile_marker_is_corrupt[\s\S]*ERROR_BILATERAL/);
+
+    assert.match(RUNNER_SOURCE,
+        /runCapacityWholeBatchRejection[\s\S]*placeCapturePairForRetry[\s\S]*currentValid: true[\s\S]*retryOne\.retryBacklogRemaining === true[\s\S]*retryTwo\.retryBacklogRemaining === false[\s\S]*retryTwo\.captureCount === 1/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityCurrentTickInvalidation[\s\S]*currentValid: false[\s\S]*completion\.captureCount === 1[\s\S]*invalidCaptureCount[\s\S]*staleCandidateCleared/);
+    assert.match(RUNNER_SOURCE,
+        /capture-retry-current T3 normal clear[\s\S]*candidate\.status === 0[\s\S]*retryMode === false/);
+    assert.match(SIMULATION_SOURCE,
+        /Rejected exact-pair\/fairness tokens persist[\s\S]*rebuilds capture authority from current[\s\S]*HELD retry/);
+    assert.doesNotMatch(SIMULATION_SOURCE,
+        /Persistent Candidate16 backlog is immutable across the/);
+});
+
+test('capacity retry stale mutation actual은 bilateral full-state/metadata와 generation 경계를 봉인한다', () => {
+    assert.match(RUNNER_SOURCE,
+        /const CAPTURE_STATE_FIELDS = Object\.freeze\(\[[\s\S]*'peerBodySlot'[\s\S]*'peerEntityId'[\s\S]*'peerIncarnation'[\s\S]*'captureSequence'[\s\S]*'facingY'/);
+    assert.match(RUNNER_SOURCE,
+        /const CAPTURE_OWNERSHIP_STATE_FIELDS[\s\S]*field !== 'facingX'[\s\S]*field !== 'facingY'/);
+    assert.match(RUNNER_SOURCE,
+        /function assertIdleBilateralCaptureUnchanged[\s\S]*captureOwnershipStateIsExact[\s\S]*registryViewIsExact[\s\S]*facingAuthorityCoherent[\s\S]*fullState/);
+    assert.match(RUNNER_SOURCE,
+        /gpuFacingMatchesCurrentVelocity[\s\S]*0\.9999[\s\S]*current GPU facing authority contradiction/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityCurrentTickInvalidation[\s\S]*invalidPairBeforeRetry[\s\S]*invalidPairAfterRetry[\s\S]*invalidPairInvariant/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityRetryProjectileAba[\s\S]*entityId === oldProjectileHandle\.entityId[\s\S]*incarnation[\s\S]*oldProjectileHandle\.incarnation \+ 1[\s\S]*const replacementCaptureCount[\s\S]*exactHandle[\s\S]*replacementHandle[\s\S]*replacementCaptureCount === 0/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityRetryDeathInvalidation[\s\S]*mode === 'captor'[\s\S]*mode === 'projectile'[\s\S]*GPU_CIRCLE_BODY_SIMULATION_FLAG\.ALIVE[\s\S]*const targetCaptureCount[\s\S]*exactHandle[\s\S]*targetHandle[\s\S]*targetCaptureCount === 0/);
+    assert.match(RUNNER_SOURCE,
+        /runCapacityRetryOldGenerationRollover[\s\S]*oldSeed\.runtime\.retryMode === true[\s\S]*projectile-capture-release-ingress-revoked[\s\S]*sessionGeneration[\s\S]*oldBacklogCleared[\s\S]*newGenerationCaptureCount/);
+    assert.match(RUNNER_SOURCE,
+        /function assertZeroCaptureRetryCompletion[\s\S]*retryBacklogRemaining === false[\s\S]*captureCount === 0[\s\S]*requiresRecovery === false/);
+    assert.match(SIMULATION_SOURCE,
+        /#releaseGpuResources\(\)[\s\S]*projectileCaptureRetryState = null/);
 });
 
 test('Ring terminal empty-world header와 모든 body candidate를 함께 clear한다', () => {

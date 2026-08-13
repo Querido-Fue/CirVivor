@@ -422,7 +422,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.targetingPorts.gameplayTarget.storageBuffersPerStage === 8
             && fixture.targetingPorts.gameplayTarget.configured === false
             && fixture.targetingPorts.trackedPoseConfigured === false
-            && fixture.storageProfile?.enemyBehavior === 8
+            && fixture.storageProfile?.enemyBehavior === 9
             && fixture.storageProfile?.trackedPose === 6;
     } else if (fixtureStage === 'maximum-damage-window') {
         fixture = result?.productionMaximumDamageWindow;
@@ -430,6 +430,94 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         fixture = result?.productionEnemyRhomPriority;
         scenarioValid = result?.productionEnemyRhomPriority?.scenario
             === 'rhom-core-priority-selected-target';
+    } else if (fixtureStage === 'enemy-rhom-source-death-projectile') {
+        fixture = result?.productionEnemyRhomSourceDeathProjectile;
+        const launch = fixture?.launch;
+        const sourceDeath = fixture?.sourceDeath;
+        const impact = fixture?.impact;
+        const cleanup = fixture?.cleanup;
+        const runtime = fixture?.runtime;
+        const snapshotFlag = 1 << 16;
+        scenarioValid = fixture?.scenario
+                === 'rhom-tower-selected-projectile-survives-source-death'
+            && launch?.selectedTargetOutcome === 'tower'
+            && launch.projectileAlive === true
+            && launch.selectedTowerBehaviorExact === true
+            && Number.isFinite(launch.coreDistance)
+            && launch.coreDistance > launch.attackRangeTiles
+            && Number.isSafeInteger(launch?.sourceHandle?.entityId)
+            && Number.isSafeInteger(launch?.sourceHandle?.incarnation)
+            && Number.isSafeInteger(launch?.projectileHandle?.entityId)
+            && Number.isSafeInteger(launch?.projectileHandle?.incarnation)
+            && Number.isSafeInteger(launch?.targetTowerHandle?.entityId)
+            && Number.isSafeInteger(launch?.targetTowerHandle?.incarnation)
+            && Number.isSafeInteger(launch?.wrongTowerHandle?.entityId)
+            && Number.isSafeInteger(launch?.wrongTowerHandle?.incarnation)
+            && Number.isSafeInteger(launch?.coreHandle?.entityId)
+            && Number.isSafeInteger(launch?.coreHandle?.incarnation)
+            && launch.snapshot?.entityId === launch.projectileHandle.entityId
+            && launch.snapshot?.incarnation === launch.projectileHandle.incarnation
+            && launch.snapshot.resolvedBaseDamageOther === 5
+            && launch.snapshot.attackMultiplier === 1
+            && launch.snapshot.sourceSnapshotTick === 2
+            && (launch.snapshot.flags & snapshotFlag) !== 0
+            && launch.authority?.sourceEntityId === launch.sourceHandle.entityId
+            && launch.authority?.sourceIncarnation
+                === launch.sourceHandle.incarnation
+            && launch.authority?.selectedTargetKind === 'tower'
+            && launch.authority?.selectedTargetEntityId
+                === launch.targetTowerHandle.entityId
+            && launch.authority?.selectedTargetIncarnation
+                === launch.targetTowerHandle.incarnation
+            && launch.authority?.selectionSourceTick === 2
+            && launch.authority?.selectionSequence === 1
+            && Number.isSafeInteger(launch.authority?.attackFingerprint)
+            && launch.authority.attackFingerprint > 0
+            && sourceDeath?.fixedTick === 4
+            && sourceDeath.exactSourceDespawned === true
+            && sourceDeath.sourceRegistryPresent === false
+            && sourceDeath.sourceBackendPresent === false
+            && sourceDeath.projectileRegistryPresent === true
+            && sourceDeath.projectileBackendPresent === true
+            && sourceDeath.projectileAliveAfterSourceDeath === true
+            && sourceDeath.provenancePreserved === true
+            && sourceDeath.selectedTowerAuthorityPreserved === true
+            && sourceDeath.immutableSnapshotPreserved === true
+            && JSON.stringify(sourceDeath.snapshot) === JSON.stringify(launch.snapshot)
+            && JSON.stringify(sourceDeath.authority) === JSON.stringify(launch.authority)
+            && impact?.targetHpBefore === 30
+            && impact.targetHpAfter === 25
+            && impact.wrongTowerHpBefore === 30
+            && impact.wrongTowerHpAfter === 30
+            && impact.coreHealthAfter === impact.coreHealthBefore
+            && impact.coreUnchanged === true
+            && impact.wrongTowerUnchanged === true
+            && impact.noSourceRevalidation === true
+            && impact.projectileDamageFixedPoint === 500
+            && impact.maximumDamageWindow === true
+            && impact.projectileSelfBudgetBefore === 1
+            && typeof impact.projectileDeath?.reason === 'string'
+            && Number.isSafeInteger(impact.projectileDeath?.sourceTick)
+            && typeof impact.projectileDeath?.disposition === 'string'
+            && impact.wrongOrCoreDamageEventCount === 0
+            && cleanup?.terminalCleanupExact === true
+            && cleanup.projectileRegistryPresent === false
+            && cleanup.projectileBackendPresent === false
+            && cleanup.sourceRegistryPresent === false
+            && cleanup.sourceBackendPresent === false
+            && cleanup.noRevive === true
+            && cleanup.targetHpAfterCleanup === 25
+            && cleanup.activeCount === 3
+            && cleanup.activeProjectileCount === 0
+            && cleanup.reservedCount === 0
+            && cleanup.pendingCommandCount === 0
+            && runtime?.recoveryRequired === false
+            && runtime.endpointRequiresRecovery === false
+            && runtime.storageMaximum === 9
+            && runtime.pendingEventReadbacks === 0
+            && runtime.pendingSpawnProgramReadbacks === 0
+            && runtime.uncapturedErrorCount === 0
+            && runtime.deviceTeardownExpected === 'destroyed';
     } else if (fixtureStage === 'enemy-pentagon-effect') {
         fixture = result?.productionEnemyPentagonEffect;
         scenarioValid = fixture?.scenario
@@ -2316,6 +2404,7 @@ function assertFixtureStageResult(result) {
         fixtureStage === 'enemy-arrow-charge'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
+        || fixtureStage === 'enemy-rhom-source-death-projectile'
         || fixtureStage === 'enemy-pentagon-effect'
         || fixtureStage === 'enemy-hexa-formation'
         || fixtureStage === 'enemy-jorang-split-lineage'
@@ -2429,6 +2518,8 @@ async function prepareHarnessApp(
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
     const runnerFileName = fixtureStage === 'enemy-pentagon-effect'
         ? 'enemy_pentagon_effect_runner.js'
+        : fixtureStage === 'enemy-rhom-source-death-projectile'
+            ? 'enemy_rhom_source_death_projectile_runner.js'
         : fixtureStage === 'enemy-hexa-formation'
             ? 'enemy_hexa_formation_runner.js'
             : fixtureStage === 'enemy-jorang-split-lineage'
@@ -2496,6 +2587,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'enemy_pentagon_effect_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'enemy_rhom_source_death_projectile_runner.js'
             )),
             fs.access(path.join(
                 harnessDirectory,

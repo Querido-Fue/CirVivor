@@ -793,6 +793,23 @@ export class JorangSplitLineageDirector {
             return this.#fail('prepare-stage-registry-scan', error?.message);
         }
         dueCandidates.sort(compareDueCandidates);
+        if (dueCandidates.length === 0) {
+            // GPU backend는 첫 non-empty spawn까지 의도적으로 deferred입니다.
+            // 빈 J/C′ roster가 readback slot을 요구하면 그 첫 spawn의 lifecycle
+            // commit보다 앞에서 영구 대기하므로, Formation과 같은 host no-op으로
+            // 이 boundary를 인증하고 실제 후보가 생길 때만 GPU prepare를 엽니다.
+            const result = Object.freeze({
+                accepted: true,
+                targetFixedTick: tick,
+                candidateCount: 0,
+                requestedCount: 0,
+                replayed: false,
+                recoveryRequired: false
+            });
+            this.lastPrepareStageTick = tick;
+            this.lastPrepareStageResult = result;
+            return result;
+        }
         // Prepare는 pending/due backlog 전부를 authenticate합니다. max4는 다음
         // boundary의 actual lifecycle starts에만 적용되어 5번째가 한 tick 더
         // 지연되거나 ENTER_ONLY admission을 잃지 않습니다.

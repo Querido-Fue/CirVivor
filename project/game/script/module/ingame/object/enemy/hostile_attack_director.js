@@ -595,6 +595,9 @@ export class HostileAttackDirector {
         this.committedGpuDeathsByHandle = new Map();
         this.committedGpuDeathHandleKeys = [];
         this.committedGpuDeathHandleHead = 0;
+        this.committedLifecycleDespawnsByHandle = new Map();
+        this.committedLifecycleDespawnHandleKeys = [];
+        this.committedLifecycleDespawnHandleHead = 0;
         this.terminalCommands = new Map();
         this.terminalCommandIds = [];
         this.terminalCommandHead = 0;
@@ -1576,6 +1579,9 @@ export class HostileAttackDirector {
             pendingControlCount: frozenPendingControls.length,
             committedGpuDeathCount: this.committedGpuDeathsByHandle.size,
             committedGpuDeathCapacity: this.historyCapacity,
+            committedLifecycleDespawnCount:
+                this.committedLifecycleDespawnsByHandle.size,
+            committedLifecycleDespawnCapacity: this.historyCapacity,
             terminalHistoryCount: this.terminalCommands.size,
             terminalHistoryCapacity: this.historyCapacity,
             shotStartAttemptCount: this.telemetry.requestAttempts,
@@ -1616,6 +1622,9 @@ export class HostileAttackDirector {
         this.committedGpuDeathsByHandle.clear();
         this.committedGpuDeathHandleKeys.length = 0;
         this.committedGpuDeathHandleHead = 0;
+        this.committedLifecycleDespawnsByHandle.clear();
+        this.committedLifecycleDespawnHandleKeys.length = 0;
+        this.committedLifecycleDespawnHandleHead = 0;
         this.lastBudgetFixedTick = 0;
         this.startAttemptsInBudgetTick = 0;
         this.nextAttemptOrdinal = 1;
@@ -1636,6 +1645,9 @@ export class HostileAttackDirector {
         this.committedGpuDeathsByHandle.clear();
         this.committedGpuDeathHandleKeys.length = 0;
         this.committedGpuDeathHandleHead = 0;
+        this.committedLifecycleDespawnsByHandle.clear();
+        this.committedLifecycleDespawnHandleKeys.length = 0;
+        this.committedLifecycleDespawnHandleHead = 0;
         this.terminalCommands.clear();
         this.terminalCommandIds.length = 0;
         this.terminalCommandHead = 0;
@@ -1741,6 +1753,13 @@ export class HostileAttackDirector {
                             `committed lifecycle source가 exact stale이 아닙니다: ${exactHandleKey}/${dispositionAtObservation}`
                         );
                     }
+                    if (!this.#rememberCommittedLifecycleDespawn(
+                        raw,
+                        handle,
+                        fixedTick
+                    )) {
+                        break;
+                    }
                     exactTerminalSourceKeys.add(exactHandleKey);
                 }
                 despawned.push(Object.freeze({
@@ -1834,10 +1853,64 @@ export class HostileAttackDirector {
         return true;
     }
 
+    /**
+     * Lifecycle commit이 exact registry/backend removal을 끝낸 M source 증거를
+     * 비동기 fixed/control completion이 도착할 때까지 bounded하게 보존합니다.
+     */
+    #rememberCommittedLifecycleDespawn(entry, handle, fixedTick) {
+        const key = handleKey(handle);
+        const proof = Object.freeze({
+            handle,
+            commandId: entry.commandId,
+            fixedTick,
+            reason: typeof entry.reason === 'string' ? entry.reason : null,
+            disposition: typeof entry.disposition === 'string'
+                ? entry.disposition
+                : null,
+            bountyEligible: entry.bountyEligible
+        });
+        const known = this.committedLifecycleDespawnsByHandle.get(key);
+        if (known) {
+            if (known.commandId !== proof.commandId
+                || known.fixedTick !== proof.fixedTick
+                || known.reason !== proof.reason
+                || known.disposition !== proof.disposition
+                || known.bountyEligible !== proof.bountyEligible) {
+                this.#fail(
+                    'lifecycle-despawn',
+                    'source-terminal-history-contradiction',
+                    `M lifecycle terminal 증거가 exact handle에서 바뀌었습니다: ${key}`
+                );
+                return false;
+            }
+            return true;
+        }
+        this.committedLifecycleDespawnsByHandle.set(key, proof);
+        this.committedLifecycleDespawnHandleKeys.push(key);
+        while ((this.committedLifecycleDespawnHandleKeys.length
+                - this.committedLifecycleDespawnHandleHead)
+            > this.historyCapacity) {
+            const forgotten = this.committedLifecycleDespawnHandleKeys[
+                this.committedLifecycleDespawnHandleHead++
+            ];
+            this.committedLifecycleDespawnsByHandle.delete(forgotten);
+        }
+        if (this.committedLifecycleDespawnHandleHead >= this.historyCapacity) {
+            this.committedLifecycleDespawnHandleKeys
+                = this.committedLifecycleDespawnHandleKeys.slice(
+                    this.committedLifecycleDespawnHandleHead
+                );
+            this.committedLifecycleDespawnHandleHead = 0;
+        }
+        this.telemetry.committedLifecycleDespawnSources++;
+        return true;
+    }
+
     #hasTerminalizedMSourceProof(sourceHandle, lifecycleContext) {
         const key = handleKey(sourceHandle);
         return lifecycleContext.exactTerminalSourceKeys.includes(key)
-            || this.committedGpuDeathsByHandle.has(key);
+            || this.committedGpuDeathsByHandle.has(key)
+            || this.committedLifecycleDespawnsByHandle.has(key);
     }
 
     /** Pending-only state도 canonical authored provenance로 재구성 가능한지 검증합니다. */
@@ -1911,6 +1984,23 @@ export class HostileAttackDirector {
                 `terminalized M ${domain} pending provenance가 canonical하지 않습니다: ${pending.commandId}`
             );
             return false;
+        }
+        const sourceKey = handleKey(pending.sourceHandle);
+        const hasLifecycleProof
+            = lifecycleContext.exactTerminalSourceKeys.includes(sourceKey)
+                || this.committedLifecycleDespawnsByHandle.has(sourceKey);
+        if (hasLifecycleProof) {
+            const sourceDisposition = this.#getExactActiveDisposition(
+                pending.sourceHandle
+            );
+            if (sourceDisposition !== 'stale') {
+                this.#fail(
+                    'source-terminal-cancel',
+                    'source-terminal-liveness-contract',
+                    `lifecycle-terminalized M source가 exact stale이 아닙니다: ${pending.commandId}/${sourceDisposition}`
+                );
+                return false;
+            }
         }
         if (!this.#hasTerminalizedMSourceProof(
             pending.sourceHandle,
@@ -2878,6 +2968,7 @@ export class HostileAttackDirector {
             noTargetTicks: 0,
             staleOldSessionResults: 0,
             committedGpuDeathSources: 0,
+            committedLifecycleDespawnSources: 0,
             duplicateResults: 0,
             protocolFailures: 0,
             resets: 0

@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <base href="../../">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>CirVivor Post-R2 S1 Manual Showcase</title>
+    <link rel="stylesheet" type="text/css" href="./style.css">
+    <link rel="stylesheet" type="text/css" href="./test/nw_r2_showcase_manual/manual.css">
+    <link rel="icon" type="image/ico" href="./image/logo.ico">
+    <script type="importmap">
+    {
+        "imports": {
+            "display/": "./script/module/display/",
+            "scene/": "./script/module/scene/",
+            "simulation/": "./script/module/simulation/",
+            "ui/": "./script/module/ui/",
+            "util/": "./script/util/",
+            "animation/": "./script/module/animation/",
+            "input/": "./script/module/input/",
+            "sound/": "./script/module/sound/",
+            "save/": "./script/module/save/",
+            "physics/": "./script/module/physics/",
+            "ingame/": "./script/module/ingame/",
+            "data/": "./script/data/",
+            "object/": "./script/module/object/",
+            "debug/": "./script/module/debug/",
+            "game/": "./script/",
+            "overlay/": "./script/module/overlay/"
+        }
+    }
+    </script>
+</head>
+
+<body>
+    <canvas class="canvas" id="background"></canvas>
+    <canvas class="canvas" id="gpu-object"></canvas>
+    <canvas class="canvas" id="object"></canvas>
+    <canvas class="canvas" id="effect"></canvas>
+    <canvas class="canvas" id="texteffect"></canvas>
+    <canvas class="canvas" id="ui"></canvas>
+    <div id="overlaylayerhost"></div>
+    <canvas class="canvas" id="vignette"></canvas>
+    <canvas class="canvas" id="top"></canvas>
+    <script type="module" src="./script/main.js"></script>
+    <script type="module" src="./script/nw-setup.js"></script>
+    <script type="module" src="./test/nw_r2_showcase_manual/bootstrap.js"></script>
+</body>
+
+</html>

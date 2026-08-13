@@ -49,6 +49,8 @@ const {
 
 const CORE_HANDLE = Object.freeze({ entityId: 700, incarnation: 3 });
 const SOURCE_HANDLE = Object.freeze({ entityId: 40, incarnation: 2 });
+const TOWER_HANDLE = Object.freeze({ entityId: 701, incarnation: 4 });
+const PROJECTILE_HANDLE = Object.freeze({ entityId: 702, incarnation: 1 });
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -760,6 +762,256 @@ test('committed exact GPU death 뒤 M control/selected shot source-invalid는 bo
     assert.equal(status.telemetry.sourceTerminalCancelledShots, 1);
 });
 
+test('resolved M Tower projectile 뒤 source lifecycle death는 projectile을 cascade-cancel하지 않는다', () => {
+    const fixture = createDirectorFixture();
+    registerRhom(fixture);
+    addExact(fixture, CORE_HANDLE, {
+        kindId: 'core-proxy',
+        definitionId: 'the-core-interaction-proxy',
+        createdAtTick: 1,
+        metadata: null
+    });
+    addExact(fixture, TOWER_HANDLE, {
+        kindId: 'tower',
+        definitionId: 'the-tower',
+        createdAtTick: 1,
+        metadata: null
+    });
+    const tick = fixture.director.getStatus().sources[0].nextEligibleFixedTick;
+    const staged = fixture.director.stageForFixedTick({
+        targetFixedTick: tick,
+        coreTargetHandle: CORE_HANDLE,
+        towerTargetHandle: TOWER_HANDLE
+    });
+    assert.equal(staged.acceptedCount, 1);
+    assert.equal(staged.controlAcceptedCount, 1);
+    const control = fixture.priorityControlPort.calls.at(-1);
+    const shot = fixture.adapter.calls.at(-1);
+    const accepted = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            selectedTargetSpawns: Object.freeze([Object.freeze({
+                commandId: shot.commandId,
+                handle: PROJECTILE_HANDLE,
+                state: 'gpu-resolve-pending'
+            })])
+        })
+    }), tick);
+    assert.equal(accepted.recoveryRequired, false);
+    addExact(fixture, PROJECTILE_HANDLE, {
+        kindId: 'projectile',
+        definitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+        createdAtTick: tick,
+        metadata: Object.freeze({
+            sourceEntityId: SOURCE_HANDLE.entityId,
+            sourceIncarnation: SOURCE_HANDLE.incarnation,
+            selectedTargetKind: 'tower',
+            selectedTargetEntityId: TOWER_HANDLE.entityId,
+            selectedTargetIncarnation: TOWER_HANDLE.incarnation,
+            selectedTargetPolicyId: HOSTILE_RHOM_PROJECTILE_DATA.towerTargetPolicyId
+        })
+    });
+    const resolved = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 1,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            priorityTargetControlResults: Object.freeze([
+                priorityControlResult(control, 'tower')
+            ]),
+            priorityTargetControlCompletedThroughTick: tick,
+            completed: Object.freeze([Object.freeze({
+                commandId: shot.commandId,
+                handle: PROJECTILE_HANDLE,
+                outcome: 'resolved',
+                selectedTargetKind: 'tower',
+                targetHandle: TOWER_HANDLE
+            })])
+        })
+    }), tick + 1);
+    assert.equal(resolved.recoveryRequired, false);
+    assert.equal(fixture.director.getStatus().pendingControlCount, 0);
+    assert.equal(fixture.director.getStatus().pendingShotCount, 0);
+    assert.equal(fixture.director.getStatus().shotResolvedCount, 1);
+
+    fixture.registry.remove(SOURCE_HANDLE);
+    fixture.backend.remove(SOURCE_HANDLE);
+    const sourceDespawn = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 2,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([Object.freeze({
+            commandId: 'gpu-death:fixture:resolved-tower-shot',
+            handle: SOURCE_HANDLE,
+            reason: 'gpu-death'
+        })]),
+        fixedCommands: emptyFixedCommands()
+    }), tick + 2);
+    assert.equal(sourceDespawn.recoveryRequired, false);
+    assert.equal(sourceDespawn.removedSourceCount, 1);
+    assert.equal(fixture.director.getStatus().activeSourceCount, 0);
+    assert.equal(fixture.registry.has(PROJECTILE_HANDLE), true);
+    assert.equal(fixture.backend.hasBody(PROJECTILE_HANDLE), true);
+    assert.equal(fixture.registry.has(CORE_HANDLE), true);
+    assert.equal(fixture.backend.hasBody(CORE_HANDLE), true);
+    assert.equal(fixture.registry.has(TOWER_HANDLE), true);
+    assert.equal(fixture.backend.hasBody(TOWER_HANDLE), true);
+});
+
+test('committed lifecycle despawn은 지연된 M source-invalid까지 bounded terminal 증거로 유지된다', () => {
+    const fixture = createDirectorFixture({ historyCapacity: 4 });
+    registerRhom(fixture);
+    addExact(fixture, CORE_HANDLE, {
+        kindId: 'core-proxy',
+        definitionId: 'the-core-interaction-proxy',
+        createdAtTick: 1,
+        metadata: null
+    });
+    const tick = fixture.director.getStatus().sources[0].nextEligibleFixedTick;
+    fixture.director.stageForFixedTick({
+        targetFixedTick: tick,
+        coreTargetHandle: CORE_HANDLE
+    });
+    const controlCall = fixture.priorityControlPort.calls.at(-1);
+    const shotCall = fixture.adapter.calls.at(-1);
+    const destination = Object.freeze({ entityId: 941, incarnation: 1 });
+    const accepted = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            selectedTargetSpawns: Object.freeze([Object.freeze({
+                commandId: shotCall.commandId,
+                handle: destination,
+                state: 'gpu-resolve-pending'
+            })])
+        })
+    }), tick);
+    assert.equal(accepted.recoveryRequired, false);
+
+    fixture.registry.remove(SOURCE_HANDLE);
+    fixture.backend.remove(SOURCE_HANDLE);
+    const despawned = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 1,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([Object.freeze({
+            commandId: 'gpu-death:fixture:delayed-rhom',
+            handle: SOURCE_HANDLE,
+            reason: 'gpu-death'
+        })]),
+        fixedCommands: emptyFixedCommands()
+    }), tick + 1);
+    assert.equal(despawned.recoveryRequired, false);
+    assert.equal(despawned.removedSourceCount, 1);
+    assert.equal(fixture.director.getStatus().pendingControlCount, 1);
+    assert.equal(fixture.director.getStatus().pendingShotCount, 1);
+    assert.equal(
+        fixture.director.getStatus().committedLifecycleDespawnCount,
+        1
+    );
+
+    const completed = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 2,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            priorityTargetControlResults: Object.freeze([
+                priorityControlResult(controlCall, 'source-invalid')
+            ]),
+            priorityTargetControlCompletedThroughTick: tick,
+            completed: Object.freeze([Object.freeze({
+                commandId: shotCall.commandId,
+                handle: destination,
+                outcome: 'source-invalid'
+            })])
+        })
+    }), tick + 2);
+    assert.equal(completed.recoveryRequired, false);
+    const status = fixture.director.getStatus();
+    assert.equal(status.activeSourceCount, 0);
+    assert.equal(status.pendingControlCount, 0);
+    assert.equal(status.pendingShotCount, 0);
+    assert.equal(status.telemetry.sourceTerminalCancelledControls, 1);
+    assert.equal(status.telemetry.sourceTerminalCancelledShots, 1);
+});
+
+test('과거 lifecycle despawn 증거는 같은 exact handle의 비정상 재활성화를 숨기지 않는다', () => {
+    const fixture = createDirectorFixture();
+    registerRhom(fixture);
+    addExact(fixture, CORE_HANDLE, {
+        kindId: 'core-proxy',
+        definitionId: 'the-core-interaction-proxy',
+        createdAtTick: 1,
+        metadata: null
+    });
+    const tick = fixture.director.getStatus().sources[0].nextEligibleFixedTick;
+    fixture.director.stageForFixedTick({
+        targetFixedTick: tick,
+        coreTargetHandle: CORE_HANDLE
+    });
+    const controlCall = fixture.priorityControlPort.calls.at(-1);
+    const shotCall = fixture.adapter.calls.at(-1);
+    const destination = Object.freeze({ entityId: 942, incarnation: 1 });
+    const accepted = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            selectedTargetSpawns: Object.freeze([Object.freeze({
+                commandId: shotCall.commandId,
+                handle: destination,
+                state: 'gpu-resolve-pending'
+            })])
+        })
+    }), tick);
+    assert.equal(accepted.recoveryRequired, false);
+    fixture.registry.remove(SOURCE_HANDLE);
+    fixture.backend.remove(SOURCE_HANDLE);
+    const despawned = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 1,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([Object.freeze({
+            commandId: 'gpu-death:fixture:rhom-aba',
+            handle: SOURCE_HANDLE,
+            reason: 'gpu-death'
+        })]),
+        fixedCommands: emptyFixedCommands()
+    }), tick + 1);
+    assert.equal(despawned.recoveryRequired, false);
+
+    addExact(fixture, SOURCE_HANDLE, {
+        kindId: 'enemy',
+        definitionId: BASIC_RHOM_ENEMY_DEFINITION_ID,
+        createdAtTick: tick + 1,
+        metadata: Object.freeze({
+            definitionId: BASIC_RHOM_ENEMY_DATA.id,
+            enemyDefinitionId: BASIC_RHOM_ENEMY_DATA.id,
+            teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            capabilityMask: createEnemyCapabilityMask(BASIC_RHOM_CAPABILITY_IDS),
+            physicsProfileId: BASIC_RHOM_ENEMY_DATA.physicsProfileId,
+            combatProfileId: BASIC_RHOM_ENEMY_DATA.combatProfileId,
+            behaviorProfileId: BASIC_RHOM_ENEMY_DATA.behaviorProfileId
+        })
+    });
+    const replay = fixture.director.observeFixedCommit(Object.freeze({
+        fixedTick: tick + 2,
+        spawned: Object.freeze([]),
+        despawned: Object.freeze([]),
+        fixedCommands: emptyFixedCommands({
+            priorityTargetControlResults: Object.freeze([
+                priorityControlResult(controlCall, 'source-invalid')
+            ]),
+            priorityTargetControlCompletedThroughTick: tick
+        })
+    }), tick + 2);
+    assert.equal(replay.recoveryRequired, true);
+    assert.equal(
+        replay.protocolFailure.code,
+        'source-terminal-liveness-contract'
+    );
+});
+
 test('committed M GPU-death exact evidence는 session-local history capacity를 넘지 않는다', () => {
     const fixture = createDirectorFixture({ historyCapacity: 2 });
     const handles = [
@@ -789,6 +1041,35 @@ test('committed M GPU-death exact evidence는 session-local history capacity를 
     assert.equal(status.committedGpuDeathCount, 2);
     assert.equal(status.committedGpuDeathCapacity, 2);
     assert.equal(status.telemetry.committedGpuDeathSources, 3);
+});
+
+test('committed M lifecycle-despawn exact evidence도 session-local history capacity를 넘지 않는다', () => {
+    const fixture = createDirectorFixture({ historyCapacity: 2 });
+    const handles = [
+        Object.freeze({ entityId: 61, incarnation: 1 }),
+        Object.freeze({ entityId: 62, incarnation: 1 }),
+        Object.freeze({ entityId: 63, incarnation: 1 })
+    ];
+    handles.forEach((handle, index) => {
+        registerRhom(fixture, handle);
+        fixture.registry.remove(handle);
+        fixture.backend.remove(handle);
+        const observed = fixture.director.observeFixedCommit(Object.freeze({
+            fixedTick: index + 2,
+            spawned: Object.freeze([]),
+            despawned: Object.freeze([Object.freeze({
+                commandId: `gpu-death:fixture:lifecycle-history:${index}`,
+                handle,
+                reason: 'gpu-death'
+            })]),
+            fixedCommands: emptyFixedCommands()
+        }), index + 2);
+        assert.equal(observed.recoveryRequired, false);
+    });
+    const status = fixture.director.getStatus();
+    assert.equal(status.committedLifecycleDespawnCount, 2);
+    assert.equal(status.committedLifecycleDespawnCapacity, 2);
+    assert.equal(status.telemetry.committedLifecycleDespawnSources, 3);
 });
 
 test('same-boundary exact canonical lifecycle despawn만 M stale control/shot을 terminal-cancel한다', () => {

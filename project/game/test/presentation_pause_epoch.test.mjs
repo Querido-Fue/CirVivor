@@ -97,6 +97,9 @@ async function loadSceneSystem() {
             GameScene: EmptyScene
         })],
         ['./benchmark/_benchmark_scene.js', createSyntheticModule(context, { BenchmarkScene: EmptyScene })],
+        ['./game/production_game_start_route.js', createSyntheticModule(context, {
+            createProductionGameStartOptions: (mapId) => ({ mapId })
+        })],
         ['simulation/simulation_command_queue.js', createSyntheticModule(context, {
             clearSimulationCommands: () => {}
         })]
