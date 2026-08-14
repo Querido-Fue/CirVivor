@@ -35,7 +35,10 @@ import {
     FORMATION_COORDINATE_SYSTEM_CODE,
     ENEMY_FORMATION_POLICY_CODE
 } from '../../contract/enemy_formation_contract.js';
-import { GPU_ROUTE_RUNTIME_ROLE } from './gpu_route_runtime_abi.js';
+import {
+    GPU_ROUTE_RUNTIME_ABI,
+    GPU_ROUTE_RUNTIME_ROLE
+} from './gpu_route_runtime_abi.js';
 
 const toWgslFloat = (value) => {
     const normalized = Math.fround(Number(value));
@@ -148,6 +151,9 @@ const EFFECT_INSTANCE_ACTIVE: u32 = ${GPU_EFFECT_INSTANCE_FLAG.ACTIVE}u;
 const ROUTE_ROLE_NONE: u32 = ${GPU_ROUTE_RUNTIME_ROLE.NONE}u;
 const ROUTE_ROLE_ACTOR: u32 = ${GPU_ROUTE_RUNTIME_ROLE.ACTOR}u;
 const ROUTE_ROLE_CLOSER: u32 = ${GPU_ROUTE_RUNTIME_ROLE.CLOSER}u;
+const ROUTE_TOPOLOGY_PATH_COUNT_WORD: u32 = ${GPU_ROUTE_RUNTIME_ABI.TOPOLOGY_HEADER.PATH_COUNT / 4}u;
+const ROUTE_TOPOLOGY_PATH_OFFSET_WORD: u32 = ${GPU_ROUTE_RUNTIME_ABI.TOPOLOGY_HEADER.PATH_OFFSET_WORDS / 4}u;
+const ROUTE_TOPOLOGY_PATH_STRIDE_WORDS: u32 = ${GPU_ROUTE_RUNTIME_ABI.PATH.STRIDE_WORDS}u;
 const INT32_MAX_VALUE: i32 = 2147483647;
 const FLOAT_UNREACHABLE: f32 = 10000000000000000000.0;
 const EPSILON: f32 = 0.000001;
@@ -589,6 +595,20 @@ struct RouteRuntimeState {
     lease_generation: u32, profile_code: u32, reserved_0: u32, reserved_1: u32,
 }
 
+struct ProjectileCaptureState {
+    packed_meta: atomic<u32>,
+    self_entity_id: u32,
+    self_incarnation: u32,
+    peer_body_slot: u32,
+    peer_entity_id: u32,
+    peer_incarnation: u32,
+    captured_at_fixed_tick: u32,
+    release_due_fixed_tick: u32,
+    capture_sequence: u32,
+    captured_speed: f32,
+    facing: vec2f,
+}
+
 struct PhysicsBuffer { values: array<BodyPhysics> }
 struct SimulationBuffer { values: array<BodySimulation> }
 struct TemporaryBuffer { values: array<BodyTemporary> }
@@ -603,6 +623,8 @@ struct BodyRenderStyleBuffer { values: array<BodyRenderStyle> }
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
 struct BodyControlStateBuffer { values: array<BodyControlState> }
 struct RouteRuntimeStateBuffer { values: array<RouteRuntimeState> }
+struct ProjectileCaptureStateBuffer { values: array<ProjectileCaptureState> }
+struct RawRouteTopologyBuffer { values: array<u32> }
 struct AtomicGridCounts { values: array<atomic<u32>> }
 struct GridBodyBuffer { values: array<GridBody> }
 struct GridOverflowBuffer { value: GridOverflow }
@@ -626,6 +648,8 @@ struct SdfBuffer { values: array<f32> }
 @group(0) @binding(15) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(16) var<storage, read_write> body_control_states: BodyControlStateBuffer;
 @group(0) @binding(17) var<storage, read_write> route_states: RouteRuntimeStateBuffer;
+@group(0) @binding(18) var<storage, read_write> projectile_capture_states: ProjectileCaptureStateBuffer;
+@group(0) @binding(19) var<storage, read> route_topology: RawRouteTopologyBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read_write> grid_overflow: GridOverflowBuffer;
@@ -650,6 +674,70 @@ fn formation_identity_matches(slot: u32) -> bool {
             == simulations.values[slot].entity_id
         && formation_states.values[slot].incarnation
             == simulations.values[slot].incarnation;
+}
+
+fn formation_route_role(state: RouteRuntimeState) -> u32 {
+    return state.packed_meta & 255u;
+}
+
+fn formation_route_actor_identity_matches(slot: u32, state: RouteRuntimeState) -> bool {
+    return formation_route_role(state) == ROUTE_ROLE_ACTOR
+        && state.self_entity_id == simulations.values[slot].entity_id
+        && state.self_incarnation == simulations.values[slot].incarnation
+        && state.current_path_index != INVALID
+        && state.route_set_index != INVALID;
+}
+
+fn synchronize_formation_route_span(slot: u32) -> bool {
+    let route_state = route_states.values[slot];
+    let role = formation_route_role(route_state);
+    if (role == ROUTE_ROLE_NONE) {
+        return true;
+    }
+    if (!formation_route_actor_identity_matches(slot, route_state)
+        || arrayLength(&route_topology.values)
+            <= ROUTE_TOPOLOGY_PATH_OFFSET_WORD
+        || route_state.current_path_index
+            >= route_topology.values[ROUTE_TOPOLOGY_PATH_COUNT_WORD]) {
+        return false;
+    }
+    let path_base = route_topology.values[ROUTE_TOPOLOGY_PATH_OFFSET_WORD]
+        + route_state.current_path_index * ROUTE_TOPOLOGY_PATH_STRIDE_WORDS;
+    if (path_base + 2u >= arrayLength(&route_topology.values)) {
+        return false;
+    }
+    let first_field = route_topology.values[path_base + 1u];
+    let field_count = route_topology.values[path_base + 2u];
+    if (field_count == 0u
+        || first_field >= params.flow_field_count
+        || field_count > params.flow_field_count - first_field) {
+        return false;
+    }
+    formation_states.values[slot].route_first_field_index = first_field;
+    formation_states.values[slot].route_field_count = field_count;
+    return true;
+}
+
+fn formation_route_pair_is_compatible(source_slot: u32, candidate_slot: u32) -> bool {
+    let source_route = route_states.values[source_slot];
+    let candidate_route = route_states.values[candidate_slot];
+    let source_role = formation_route_role(source_route);
+    if (source_role != formation_route_role(candidate_route)) {
+        return false;
+    }
+    if (source_role == ROUTE_ROLE_ACTOR) {
+        return formation_route_actor_identity_matches(source_slot, source_route)
+            && formation_route_actor_identity_matches(candidate_slot, candidate_route)
+            && source_route.route_set_index == candidate_route.route_set_index
+            && source_route.current_path_index == candidate_route.current_path_index;
+    }
+    if (source_role == ROUTE_ROLE_NONE) {
+        let source = formation_states.values[source_slot];
+        let candidate = formation_states.values[candidate_slot];
+        return source.route_first_field_index == candidate.route_first_field_index
+            && source.route_field_count == candidate.route_field_count;
+    }
+    return false;
 }
 
 fn valid_formation_state(slot: u32) -> bool {
@@ -1244,7 +1332,9 @@ fn scan_formation_candidate(
 @compute @workgroup_size(256)
 fn seed_formation_motion(@builtin(global_invocation_id) id: vec3u) {
     let slot = id.x;
-    if (slot >= counts.body_count || !valid_formation_state(slot)) {
+    if (slot >= counts.body_count
+        || !synchronize_formation_route_span(slot)
+        || !valid_formation_state(slot)) {
         return;
     }
     if (formation_states.values[slot].presentation_tick < params.fixed_tick) {
@@ -1593,10 +1683,6 @@ fn fail_transform(status: u32, record_index: u32) {
     atomicMin(&transform_program.header.failure_record_index, record_index);
 }
 
-fn formation_route_role(state: RouteRuntimeState) -> u32 {
-    return state.packed_meta & 255u;
-}
-
 fn formation_route_source_is_transformable(
     state: RouteRuntimeState,
     entity_id: u32,
@@ -1676,6 +1762,28 @@ fn source_state_matches(
         && current_health <= max_health;
 }
 
+fn canonical_inactive_projectile_capture_state(
+    slot: u32,
+    entity_id: u32,
+    incarnation: u32
+) -> bool {
+    if (slot >= arrayLength(&projectile_capture_states.values)) {
+        return false;
+    }
+    return atomicLoad(&projectile_capture_states.values[slot].packed_meta) == 0u
+        && projectile_capture_states.values[slot].self_entity_id == entity_id
+        && projectile_capture_states.values[slot].self_incarnation == incarnation
+        && projectile_capture_states.values[slot].peer_body_slot == INVALID
+        && projectile_capture_states.values[slot].peer_entity_id == INVALID
+        && projectile_capture_states.values[slot].peer_incarnation == INVALID
+        && projectile_capture_states.values[slot].captured_at_fixed_tick == 0u
+        && projectile_capture_states.values[slot].release_due_fixed_tick == 0u
+        && projectile_capture_states.values[slot].capture_sequence == 0u
+        && projectile_capture_states.values[slot].captured_speed == 0.0
+        && projectile_capture_states.values[slot].facing.x == 0.0
+        && projectile_capture_states.values[slot].facing.y == 0.0;
+}
+
 @compute @workgroup_size(256)
 fn preflight_formation_transforms(@builtin(global_invocation_id) id: vec3u) {
     let index = id.x;
@@ -1715,6 +1823,14 @@ fn preflight_formation_transforms(@builtin(global_invocation_id) id: vec3u) {
         record.source_b_lineage_hash,
         record.source_b_current_health_centi,
         record.source_b_max_health_centi
+    ) && canonical_inactive_projectile_capture_state(
+        record.source_a_slot,
+        record.source_a_entity_id,
+        record.source_a_incarnation
+    ) && canonical_inactive_projectile_capture_state(
+        record.source_b_slot,
+        record.source_b_entity_id,
+        record.source_b_incarnation
     );
     if (!sources_match) {
         fail_transform(STATUS_SOURCE_CONFLICT, index);
@@ -1835,6 +1951,9 @@ fn preflight_formation_route_rekeys(@builtin(global_invocation_id) id: vec3u) {
             source_b_route_state,
             record.source_b_entity_id,
             record.source_b_incarnation
+        ) || !formation_route_pair_is_compatible(
+            record.source_a_slot,
+            record.source_b_slot
         )) {
         fail_transform(STATUS_SOURCE_CONFLICT, index);
     }
@@ -2133,6 +2252,24 @@ fn clear_body_control(slot: u32) {
     );
 }
 
+fn reset_projectile_capture_state(
+    slot: u32,
+    self_entity_id: u32,
+    self_incarnation: u32
+) {
+    atomicStore(&projectile_capture_states.values[slot].packed_meta, 0u);
+    projectile_capture_states.values[slot].self_entity_id = self_entity_id;
+    projectile_capture_states.values[slot].self_incarnation = self_incarnation;
+    projectile_capture_states.values[slot].peer_body_slot = INVALID;
+    projectile_capture_states.values[slot].peer_entity_id = INVALID;
+    projectile_capture_states.values[slot].peer_incarnation = INVALID;
+    projectile_capture_states.values[slot].captured_at_fixed_tick = 0u;
+    projectile_capture_states.values[slot].release_due_fixed_tick = 0u;
+    projectile_capture_states.values[slot].capture_sequence = 0u;
+    projectile_capture_states.values[slot].captured_speed = 0.0;
+    projectile_capture_states.values[slot].facing = vec2f(0.0);
+}
+
 @compute @workgroup_size(256)
 fn commit_formation_transform_auxiliary(@builtin(global_invocation_id) id: vec3u) {
     let index = id.x;
@@ -2188,6 +2325,12 @@ fn commit_formation_transform_auxiliary(@builtin(global_invocation_id) id: vec3u
     clear_enemy_behavior(other_slot);
     clear_body_control(root_slot);
     clear_body_control(other_slot);
+    reset_projectile_capture_state(
+        root_slot,
+        record.destination_entity_id,
+        record.destination_incarnation
+    );
+    reset_projectile_capture_state(other_slot, INVALID, INVALID);
     let destination_color = render_styles.values[root_slot].color;
     render_styles.values[root_slot] = BodyRenderStyle(
         destination_color,
@@ -2235,7 +2378,7 @@ export const GPU_FORMATION_RUNTIME_ENTRY_POINT = Object.freeze({
 export const GPU_FORMATION_RUNTIME_STORAGE_PROFILE = Object.freeze({
     byEntryPoint: Object.freeze({
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.CLEAR_CANDIDATES]: 1,
-        [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEED_MOTION]: 5,
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEED_MOTION]: 7,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SELECT_MOTION]: 8,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.ADVANCE_MOTION]: 6,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEED_PREPARE]: 4,
@@ -2243,14 +2386,14 @@ export const GPU_FORMATION_RUNTIME_STORAGE_PROFILE = Object.freeze({
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.FINALIZE_PREPARE]: 5,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEAL_PREPARE]: 1,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.RESET_TRANSFORM]: 1,
-        [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS]: 6,
-        [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS]: 2,
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS]: 7,
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS]: 4,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: 4,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEAL_TRANSFORM]: 2,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.REKEY_EFFECTS]: 4,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_BODIES]: 6,
         [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_ROUTE_STATE]: 2,
-        [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: 8
+        [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: 9
     }),
     maximum: 9,
     render: 9

@@ -101,6 +101,35 @@ export function countWholeFixedSteps(accumulatorSeconds, fixedStepSeconds) {
 }
 
 /**
+ * GPU readback/backpressure 때문에 완료되지 않은 fixed tick의 시간을 accumulator에 되돌립니다.
+ * 완료 수가 예약 수보다 크면 예약 수로 제한하고, 유효한 정수가 아니면 호환성을 위해 전부 완료된 것으로 봅니다.
+ * @param {number} accumulatorSeconds - 예약 tick을 선차감한 뒤 남은 simulation 시간입니다.
+ * @param {number} scheduledFixedStepCount - 이번 frame에 예약한 fixed tick 수입니다.
+ * @param {number} completedFixedStepCount - 실제로 완료한 fixed tick 수입니다.
+ * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
+ * @returns {number} 미완료 fixed tick 시간을 복원한 accumulator입니다.
+ */
+export function restoreUncompletedFixedStepDebt(
+    accumulatorSeconds,
+    scheduledFixedStepCount,
+    completedFixedStepCount,
+    fixedStepSeconds
+) {
+    const safeAccumulator = Number.isFinite(accumulatorSeconds)
+        ? Math.max(0, accumulatorSeconds)
+        : 0;
+    const safeFixedStep = normalizePositiveNumber(fixedStepSeconds, 1 / 60);
+    const safeScheduledCount = Number.isInteger(scheduledFixedStepCount)
+        ? Math.max(0, scheduledFixedStepCount)
+        : 0;
+    const safeCompletedCount = Number.isInteger(completedFixedStepCount)
+        ? Math.min(safeScheduledCount, Math.max(0, completedFixedStepCount))
+        : safeScheduledCount;
+    return safeAccumulator
+        + ((safeScheduledCount - safeCompletedCount) * safeFixedStep);
+}
+
+/**
  * 유한한 양수를 반환합니다.
  * @param {number} value - 입력 값입니다.
  * @param {number} fallback - 기본값입니다.

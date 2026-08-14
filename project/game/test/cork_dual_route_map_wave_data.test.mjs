@@ -42,6 +42,11 @@ const {
 const {
     CORRIDOR_EIGHT_WAVE_01_DATA
 } = await loadGameModule('data/scene/game/corridor_eight_wave_01_data.js');
+const {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} = await loadGameModule(
+    'data/scene/game/performance_serpentine_map_data.js'
+);
 
 function graphSource(graph, overrides = {}) {
     return {
@@ -344,7 +349,10 @@ test('production figure-eight map/wave는 routeGraph와 Z를 받지 않고 injec
         'west-figure-eight-core'
     );
     assert.equal(INGAME_MAP_DATA.MAPS.includes(CORK_DUAL_ROUTE_MAP_DATA), false);
-    assert.equal(INGAME_MAP_DATA.MAPS.length, 1);
+    assert.deepEqual(INGAME_MAP_DATA.MAPS.map(({ id }) => id), [
+        CORRIDOR_EIGHT_MAP_DATA.id,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id
+    ]);
 
     const productionGroup = CORRIDOR_EIGHT_WAVE_01_DATA.timeline[0].spawnGroups[0];
     assert.equal(productionGroup.count, 32);

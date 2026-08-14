@@ -131,6 +131,10 @@ export class PentagonEffectDirector {
         this.pendingBatchIdByTick = new Map();
         this.pendingBatchCountByTick = new Map();
         this.staleSubmittedCommandById = new Map();
+        // 다른 GPU readback이 같은 fixed boundary를 보류하면 Effect owner는
+        // 동일한 frozen completion snapshot을 그대로 replay합니다. Director가
+        // 이미 적용한 snapshot을 다시 cadence mutation으로 해석하지 않습니다.
+        this.observedCompletionSnapshots = new WeakSet();
         this.lastCompletedSourceTick = 0;
         this.lastStageResult = createEmptyStageResult();
         this.recoveryRequired = false;
@@ -228,6 +232,9 @@ export class PentagonEffectDirector {
                 snapshot.protocolFailure.message
                     ?? 'Effect completion protocol failure가 발생했습니다.'
             );
+            return this.getStatus();
+        }
+        if (this.observedCompletionSnapshots.has(snapshot)) {
             return this.getStatus();
         }
         const results = Array.isArray(snapshot.results) ? snapshot.results : [];
@@ -373,6 +380,7 @@ export class PentagonEffectDirector {
                     this.telemetry.capacityRejectedCompletionCount++;
                 }
             }
+            this.observedCompletionSnapshots.add(snapshot);
         } catch (error) {
             this.#fail(
                 'effect-completion-cadence',
@@ -679,6 +687,7 @@ export class PentagonEffectDirector {
         this.pendingBatchIdByTick.clear();
         this.pendingBatchCountByTick.clear();
         this.staleSubmittedCommandById.clear();
+        this.observedCompletionSnapshots = new WeakSet();
         this.lastCompletedSourceTick = 0;
         this.lastStageResult = createEmptyStageResult();
         this.recoveryRequired = false;
@@ -739,10 +748,6 @@ export class PentagonEffectDirector {
 
     #registerIfEmitter(handle, fixedTick) {
         const registryHas = this.registry.has(handle);
-        const backendHas = this.endpoint.hasBody(handle);
-        if (registryHas !== backendHas) {
-            throw new RangeError('spawned Effect source registry/backend identity가 불일치합니다.');
-        }
         if (!registryHas) {
             throw new RangeError('spawned Effect source exact identity가 active하지 않습니다.');
         }
@@ -762,6 +767,14 @@ export class PentagonEffectDirector {
                 throw new RangeError('비-Emitter enemy에 effect profile metadata가 있습니다.');
             }
             return false;
+        }
+        // Lifecycle에는 Formation transform destination처럼 host registry에 먼저
+        // 공개되고 같은 GPU submit에서 body가 materialize되는 비-Emitter spawn도
+        // 포함됩니다. Effect capability를 확인하기 전 backend parity를 강제하면
+        // unrelated H transform을 Effect desync로 오판합니다. 실제 Emitter만
+        // exact GPU body 존재를 요구해 roster authority를 유지합니다.
+        if (!this.endpoint.hasBody(handle)) {
+            throw new RangeError('spawned Effect source registry/backend identity가 불일치합니다.');
         }
         const profile = this.effectEmitterProfileById[
             metadata.effectEmitterProfileId

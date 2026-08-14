@@ -17,6 +17,39 @@ Combat
 - An optional `End Wave Early` command may be available only when scheduled and pending hostile
   creation is zero and no hostile actor lives.
 
+### 2.1 Stage 1 performance wave
+
+The first production map card currently routes to a deterministic long-run performance wave:
+
+- exactly 10,000 spawn requests;
+- one request every five authoritative 60 Hz fixed ticks;
+- an opening census containing every R2 showcase type `C/T/A/M/P/H/O/J/R/Z`;
+- a bulk stream over the eight types without global actor-capacity ownership;
+- exactly eight O actors total and two Z actors total, with the second Z as the final request.
+
+The last authored spawn tick is `49,996` (about 13 minutes 53 seconds without fixed-step stalls). Stage 1 alone
+uses Tower HP and Core Integrity `20,000,000` so the performance stream is not cut short by ordinary combat.
+The values remain inside the signed GPU centi-HP range. Other maps and the historical corridor wave keep their
+normal combat values. Arrow movement remains GPU fixed-authoritative `easeOutExpo` (`lambda = 10`); the wave
+does not implement or duplicate easing.
+
+### 2.2 Map 2 real-load wave
+
+The second production map card is a separate bounded acceptance session rather than a preview alias:
+
+- map ID `performance_serpentine_02`, a `120×170` navigation grid with nine alternating horizontal runs;
+- exactly 10 tiles of traversable corridor width and one connected serpentine route;
+- exactly 10,000 sequential spawn requests at one request per authoritative fixed tick;
+- opening census `C/T/A/M/P/H/O/J/R/Z`, so every natural R2 enemy is executed;
+- remaining 9,990 requests cycle `C/T/A`, avoiding abuse of bounded H/O/J/R/Z domain capacities;
+- Tower HP and Core Integrity `20,000,000` for a non-terminal load run.
+
+The acceptance target counts Tower and Core separately, so completion is exactly 10,002 active GPU bodies,
+10,000 queued enemies, and zero remaining requests. The 2026-08-15 NW.js run completed that target with no
+GPU-world restart, recovery, or protocol failure; active-simulation throughput was 58.89 fixed ticks/s and
+frame CPU p99 was 12.1 ms. Short diagnostic soaks may end before all spawns are queued and are not substitutes
+for this complete receipt.
+
 ## 3. Player-created enemy bounty
 
 A player-created Enemy:

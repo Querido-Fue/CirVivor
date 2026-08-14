@@ -177,7 +177,8 @@ async function loadMainHarness(options = {}) {
         }],
         ['simulation/fixed_step_catch_up_policy.js', {
             FixedStepCatchUpPolicy,
-            countWholeFixedSteps: () => 0
+            countWholeFixedSteps: () => 0,
+            restoreUncompletedFixedStepDebt: (accumulatorSeconds) => accumulatorSeconds
         }],
         ['simulation/release_simulation_profiler.js', {
             isReleaseSimulationProfilerCollecting: () => false,

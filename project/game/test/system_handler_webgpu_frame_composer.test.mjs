@@ -17,8 +17,8 @@ function createSyntheticModule(context, exports) {
     }, { context });
 }
 
-async function loadSystemHandler() {
-    const context = vm.createContext({ console });
+async function loadSystemHandler(options = {}) {
+    const context = vm.createContext({ console, performance });
     const timeHandler = {
         fixedStepSeconds: 1 / 60,
         setFixedInterpolationAlpha() {}
@@ -46,9 +46,9 @@ async function loadSystemHandler() {
         }],
         ['simulation/simulation_runtime.js', { syncSimulationRuntime: () => {} }],
         ['simulation/release_simulation_profiler.js', {
-            isReleaseSimulationProfilerCollecting: () => false,
-            recordReleaseSimulationFixedStep: () => {},
-            shouldRecordReleaseSimulationForFrameMode: () => false
+            isReleaseSimulationProfilerCollecting: () => options.measureFixedSteps === true,
+            recordReleaseSimulationFixedStep: (...args) => options.recordFixedStep?.(...args),
+            shouldRecordReleaseSimulationForFrameMode: () => options.measureFixedSteps === true
         }],
         ['debug/_release_simulation_profiler_hud.js', {
             drawReleaseSimulationProfilerHud: () => {}
@@ -249,6 +249,66 @@ test('renderFrame 비활성 정책은 WebGPU frame lifecycle을 열지 않는다
     handler.tick({ fixedStepCount: 0 });
 
     assert.deepEqual(events, ['update']);
+});
+
+test('scene의 명시적 false는 남은 catch-up을 중단하고 완료 fixed step 수만 반환한다', async () => {
+    const SystemHandler = await loadSystemHandler();
+    const events = [];
+    const handler = createRenderableHandler(SystemHandler, events);
+    const sceneResults = [true, false, true];
+    handler.frameExecutionPolicy = handler.createPausePolicy({ renderFrame: false });
+    handler.animationSystem = {
+        update() {
+            events.push('fixed-animation');
+        }
+    };
+    handler.objectSystem = {
+        fixedUpdate() {
+            events.push('fixed-object');
+        }
+    };
+    handler.sceneSystem.fixedUpdate = () => {
+        events.push('fixed-scene');
+        return sceneResults.shift();
+    };
+    handler.gameManager = {
+        fixedUpdate() {
+            events.push('fixed-game-manager');
+        }
+    };
+
+    const completedFixedStepCount = handler.tick({ fixedStepCount: 3 });
+
+    assert.equal(completedFixedStepCount, 1);
+    assert.deepEqual(events, [
+        'fixed-animation',
+        'fixed-object',
+        'fixed-scene',
+        'fixed-game-manager',
+        'fixed-animation',
+        'fixed-object',
+        'fixed-scene',
+        'update'
+    ]);
+    assert.deepEqual(sceneResults, [true]);
+});
+
+test('release profiler는 GPU 대기 attempt를 미완료로 기록하고 같은 frame에서 재시도하지 않는다', async () => {
+    const completedFlags = [];
+    const SystemHandler = await loadSystemHandler({
+        measureFixedSteps: true,
+        recordFixedStep(_timestampMs, _durationMs, completed) {
+            completedFlags.push(completed);
+        }
+    });
+    const handler = createRenderableHandler(SystemHandler, []);
+    const sceneResults = [true, false, true];
+    handler.frameExecutionPolicy = handler.createPausePolicy({ renderFrame: false });
+    handler.sceneSystem.fixedUpdate = () => sceneResults.shift();
+
+    assert.equal(handler.tick({ fixedStepCount: 3 }), 1);
+    assert.deepEqual(completedFlags, [true, false]);
+    assert.deepEqual(sceneResults, [true]);
 });
 
 console.log('system handler WebGPU frame composer contract: ok');

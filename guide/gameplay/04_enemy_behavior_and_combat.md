@@ -133,20 +133,23 @@ camera, and diagnostic-only; clearing or changing tracked presentation cannot se
 Arrow's direct Tower motion is conditional on a bounded terrain-SDF segment check. A wall-occluded SEEK keeps
 the immutable route-flow authority instead of repeatedly steering into the wall, WINDUP rechecks the same
 visibility before locking, and a terrain-blocked CHARGE enters ordinary recovery without manufacturing a
-Tower contact/recoil/damage marker. CHARGE and CONTACT_RECOIL displacement use a fixed-tick finite difference
-of the endpoint-normalized bounded Expo-out curve
-`E(t) = (1 - 2^(-0.5t)) / (1 - 2^(-0.5))`. The curve preserves the authored total distance and phase deadlines;
+Tower contact/recoil/damage marker. WINDUP keeps the authored body radius unchanged and uses color/halo only
+for its telegraph. CHARGE and CONTACT_RECOIL displacement use a fixed-tick finite difference of the
+endpoint-normalized Expo-out curve
+`E(t) = (1 - 2^(-10t)) / (1 - 2^(-10))`. The curve preserves the authored total distance and phase deadlines;
 render-frame cadence never owns gameplay movement.
 
 Diamond M's selected-target spawn is bound to the same source/tick/selection fingerprint as its GPU control.
 The Core branch emits typed CPU Core damage and never mutates fictitious GPU Core HP. The Tower branch must
-match the exact selected Tower before consuming projectile budget and entering the common Maximum Damage
-Window; a wrong/stale Tower is a rejected hit and consumes nothing.
+match the exact selected Tower before consuming projectile budget, then applies the immutable launch-time
+damage once as a direct event. It does not compete with the continuous-contact Maximum Damage Window; a
+wrong/stale Tower is a rejected hit and consumes nothing.
 
 Once a Tower-selected M projectile has resolved as a live body, its exact target identity, hit budget, and
 attack damage are launch-time projectile authority. Later death/despawn of the source M removes only that
 source and cancels only unresolved source work; it must not revoke, retarget, or zero an already launched
-projectile. A later exact Tower hit therefore still enters the ordinary Maximum Damage Window and HP path.
+projectile. A later exact Tower hit therefore still applies its snapshotted damage through the direct Tower HP
+path even if another source currently owns an active Maximum Damage Window.
 
 ### Octagon O orbit and directional defense
 
@@ -470,9 +473,11 @@ applies zero without changing expiry, while a larger value applies only `D - pea
 updates winning provenance without extending the original `N + 60` expiry. `DAMAGE_APPLIED.value` is the
 actual Tower HP decrement, never the unclamped source maximum.
 
-A valid projectile contact consumes penetration/self-hit budget even when this window reduces applied HP
-damage to zero. A rejected friendly-fire, stale/invalid-target, miss, capture, or reflect contact consumes no
-budget. Enemy overlap remains a valid continuous candidate every fixed tick; separation is not the rearm rule.
+A valid ordinary projectile contact consumes penetration/self-hit budget even when this window reduces applied
+HP damage to zero. An authenticated selected-target M Tower projectile is a discrete direct-damage channel and
+is not reduced by this window. A rejected friendly-fire, stale/invalid-target, miss, capture, or reflect contact
+consumes no budget. Enemy overlap remains a valid continuous candidate every fixed tick; separation is not the
+rearm rule.
 
 ## 8. Physical response
 

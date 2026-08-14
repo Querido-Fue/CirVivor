@@ -174,6 +174,11 @@ fingerprint, or bilateral corruption remains recovery. Capture preflight may wri
 must leave all persistent capture and metadata state unchanged. Actual hardware acceptance distinguishes
 inside-inbound, boundary-inbound, outside, and inside-outbound.
 
+When at least one captor exists but there is no capturable projectile and no HELD/release/retry maintenance,
+the backend publishes an authenticated zero-capture completion without allocating or mapping a capture readback.
+This advances the exact source watermark only; it may not invent a capture, mutate bilateral state, or hide
+maintenance work. The endpoint validates the same ABI/session/device/epoch/source tick as an ordinary completion.
+
 Route Runtime compiles optional routeGraph v1 indices from the existing Flow Field atlas and reads the same
 immutable stage goals/directions. It never edits TileMap blocked cells, SDF data, or flow planes. One GPU
 availability record moves `OPEN → LEASED → CLOSED → OPEN` under an exact owner slot/entity/incarnation/
@@ -195,6 +200,15 @@ remaining entry. Closure preserves the whole remaining group/rows as one backlog
 reopen submits that remaining entry on the same path in one batch. This does not disable the ordinary runtime
 reroute policy for actors already published. Any future remaining-formation reroute policy must move the whole
 remaining formation atomically.
+
+A CLOSED steady state still executes Route Runtime GPU passes so the GPU remains authoritative, but it does not
+map a route readback when all exact leases are closed, no route cleanup or terminal submit is staged, and no
+physical projectile has an interaction mask capable of affecting Enemy. The backend publishes a zero-event
+completion with `readbackBypassed=true`, the immutable final records, and the exact queue-front source tick.
+The endpoint may accept it before the generic event stream catches up only when current runtime status independently
+reports the same source tick and `readbackBypassEligible=true`, and only with event base/count `0/0`. A normal GPU
+readback, a terminal batch, projectile threat, cleanup, mismatched marker, or mismatched source tick keeps the
+original generic-event coherence gate and fails closed on contradictory evidence.
 
 ## 2. Required metadata extensions
 
@@ -378,12 +392,17 @@ health is never introduced. The exact source need not remain alive when a comple
 consumed, but generation/epoch, source definition/capability/profile, target handle, tick/sequence/fingerprint,
 policy, and dedupe identity must all validate before Core mutation.
 
-Tower `DAMAGE_APPLIED` records carry the actual HP delta after same-tick maximum aggregation and the
-Maximum Damage Window, including zero for a valid suppressed candidate. The same Tower/source-tick winner
-is selected independently of append order by final damage descending, then source entityId/incarnation
-ascending. Raising an active peak applies only the delta and never extends the first accepted tick's
-`N + 60` expiry. Valid projectile contacts consume penetration/self-hit budget before this target-side window;
-hit rejection (friendly/stale/invalid/miss/capture/reflect) consumes nothing.
+Ordinary contact/projectile and Arrow `DAMAGE_APPLIED` records carry the actual HP delta after same-tick
+maximum aggregation and the Maximum Damage Window, including zero for a valid suppressed candidate. The same
+Tower/source-tick winner is selected independently of append order by final damage descending, then source
+entityId/incarnation ascending. Raising an active peak applies only the delta and never extends the first
+accepted tick's `N + 60` expiry. Valid projectile contacts consume penetration/self-hit budget before this
+target-side window; hit rejection (friendly/stale/invalid/miss/capture/reflect) consumes nothing.
+
+M's exact selected-Tower projectile instead applies its immutable launch-time one-hit damage snapshot directly
+after validating that selected Tower. Source death after launch does not invalidate the projectile. This branch
+bypasses same-tick maximum aggregation and the continuous Maximum Damage Window, and its event reports
+`maximumDamageWindow=false`.
 
 Effect Summary never becomes a new base-damage authority. GPU contact handlers recompute from immutable
 authored/resolved base damage each tick, while a projectile snapshots its resolved damage once at spawn.
@@ -443,7 +462,8 @@ completed fixed/SpawnProgram outcomes
 → completed Atomic Transform first-hit/prepare/transform evidence drain and exact J/C′ lineage preflight
 → completed Effect batch/event drain and exact provenance/cardinality preflight
 → completed Formation prepare/transform evidence drain and exact protocol/lineage preflight
-→ completed Route Availability assignment/close/reopen/cleanup evidence drain and exact Z lease mirror
+→ completed Route Availability assignment/close/reopen/cleanup evidence drain and exact Z lease mirror;
+  an authenticated closed-steady zero-event queue-front may commit independently while generic events catch up
 → generic gameplay event drain only after capture evidence publication for the same source tick
 → CPU domain event commit
 → exact Core-impact damage and authenticated cleanup staging
@@ -470,9 +490,8 @@ completed fixed/SpawnProgram outcomes
 → Route Runtime selection/forward-reroute/clearance-wait and Z expansion
 → Projectile Capture inbound match/preflight and transient prepared shield
 → collision/contact/final damage
-→ same-Tower/source-tick maximum aggregation
-→ Tower Maximum Damage Window
-→ HP mutation
+→ ordinary contact/projectile and Arrow only: same-Tower/source-tick maximum aggregation
+→ contact handler: selected-target M Tower direct launch-snapshot one-hit, otherwise Maximum Damage Window → HP mutation
 → death
 → Projectile Capture late whole-batch seal or zero-mutation capacity rejection
 → Route Runtime exact availability + physical blocker close/reopen/finalize

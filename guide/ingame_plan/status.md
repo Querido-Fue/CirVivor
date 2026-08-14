@@ -407,11 +407,17 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 ## Post-R2 Stabilization S1 current product routing and combat corrections
 
 - The first title map card keeps the corridor preview/selection ID, but selecting that card constructs the R2
-  showcase map with authored Wave 1 in the real `GameScene`. Other explicit map IDs, including an omitted
+  showcase map with authored Wave 1 in the real `GameScene`. Wave 1 is now a deterministic performance stream
+  of exactly 10,000 sequential spawn requests at five-fixed-tick intervals (last authored tick `49,996`). Its
+  opening census includes `C/T/A/M/P/H/O/J/R/Z`; the bulk repeats the eight types without global actor limits,
+  while the tail keeps O at its exact capacity of eight and places the second Z last so both routes cannot close
+  before the stream is authored. The Stage 1 session alone uses Tower HP/Core Integrity `20,000,000`, which is
+  below the signed centi-HP GPU limit and prevents ordinary combat from terminating the long run early.
+  Other explicit map IDs, including an omitted
   direct-start map ID, continue through the ordinary resolver path.
 - Arrow direct Tower steering is admitted only after a bounded terrain-SDF segment check. Wall-occluded SEEK
   retains immutable route flow; blocked WINDUP/CHARGE cannot synthesize Tower recoil or damage. CHARGE and
-  CONTACT_RECOIL use an endpoint-normalized bounded Expo-out finite difference at the authoritative 60 Hz
+  CONTACT_RECOIL use an endpoint-normalized bounded `easeOutExpo` finite difference with lambda `10` at the authoritative 60 Hz
   fixed tick, preserving total authored distance and phase deadlines.
 - A resolved Tower-selected M projectile owns its exact target, self-hit budget, and snapshotted attack damage
   independently of later source-M death. Source cleanup cancels unresolved source work only; a live projectile

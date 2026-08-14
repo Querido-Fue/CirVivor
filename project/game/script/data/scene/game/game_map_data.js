@@ -1,4 +1,7 @@
 import { CORRIDOR_EIGHT_MAP_DATA } from './corridor_eight_map_data.js';
+import {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} from './performance_serpentine_map_data.js';
 
 const TILE_TYPES = Object.freeze({
     VOID: '.',
@@ -16,6 +19,18 @@ const MAPS = Object.freeze([
         playerSpawn: Object.freeze({
             row: CORRIDOR_EIGHT_MAP_DATA.towerSpawnMacroCell[0],
             column: CORRIDOR_EIGHT_MAP_DATA.towerSpawnMacroCell[1]
+        })
+    }),
+    Object.freeze({
+        id: PERFORMANCE_SERPENTINE_MAP_DATA.id,
+        nameKey: PERFORMANCE_SERPENTINE_MAP_DATA.nameKey,
+        descriptionKey: PERFORMANCE_SERPENTINE_MAP_DATA.descriptionKey,
+        rows: PERFORMANCE_SERPENTINE_MAP_DATA.macroRows,
+        columns: PERFORMANCE_SERPENTINE_MAP_DATA.macroColumns,
+        tiles: PERFORMANCE_SERPENTINE_MAP_DATA.previewTiles,
+        playerSpawn: Object.freeze({
+            row: PERFORMANCE_SERPENTINE_MAP_DATA.towerSpawnMacroCell[0],
+            column: PERFORMANCE_SERPENTINE_MAP_DATA.towerSpawnMacroCell[1]
         })
     })
 ]);

@@ -40,6 +40,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/scene/game/corridor_eight_wave_01_data.js',
     'data/scene/game/cork_dual_route_map_data.js',
     'data/scene/game/cork_dual_route_wave_01_data.js',
+    'data/scene/game/performance_serpentine_map_data.js',
     'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
@@ -434,12 +435,14 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         fixture = result?.productionEnemyRhomSourceDeathProjectile;
         const launch = fixture?.launch;
         const sourceDeath = fixture?.sourceDeath;
+        const windowPrime = fixture?.windowPrime;
+        const windowPrimeEntry = windowPrime?.entryGeometry;
         const impact = fixture?.impact;
         const cleanup = fixture?.cleanup;
         const runtime = fixture?.runtime;
         const snapshotFlag = 1 << 16;
         scenarioValid = fixture?.scenario
-                === 'rhom-tower-selected-projectile-survives-source-death'
+                === 'rhom-tower-selected-direct-projectile-survives-source-death'
             && launch?.selectedTargetOutcome === 'tower'
             && launch.projectileAlive === true
             && launch.selectedTowerBehaviorExact === true
@@ -485,8 +488,49 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && sourceDeath.immutableSnapshotPreserved === true
             && JSON.stringify(sourceDeath.snapshot) === JSON.stringify(launch.snapshot)
             && JSON.stringify(sourceDeath.authority) === JSON.stringify(launch.authority)
-            && impact?.targetHpBefore === 30
-            && impact.targetHpAfter === 25
+            && windowPrime?.spawnTick === 5
+            && windowPrime.publicationTick === 6
+            && Number.isSafeInteger(windowPrime?.projectileHandle?.entityId)
+            && Number.isSafeInteger(windowPrime?.projectileHandle?.incarnation)
+            && Number.isFinite(windowPrimeEntry?.targetPosition?.x)
+            && Number.isFinite(windowPrimeEntry?.targetPosition?.y)
+            && Number.isFinite(windowPrimeEntry?.startPosition?.x)
+            && Number.isFinite(windowPrimeEntry?.startPosition?.y)
+            && windowPrimeEntry.startPosition.x
+                < windowPrimeEntry.targetPosition.x
+            && windowPrimeEntry.startPosition.y
+                === windowPrimeEntry.targetPosition.y
+            && windowPrimeEntry.velocity?.x > 0
+            && windowPrimeEntry.velocity?.y === 0
+            && windowPrimeEntry.previousDistance > windowPrimeEntry.contactRadius
+            && windowPrimeEntry.predictedDistance > 0
+            && windowPrimeEntry.predictedDistance < windowPrimeEntry.contactRadius
+            && Math.abs(
+                windowPrimeEntry.targetPosition.x
+                    - windowPrimeEntry.startPosition.x
+                    - windowPrimeEntry.previousDistance
+            ) <= 0.000001
+            && Math.abs(
+                windowPrimeEntry.previousDistance
+                    - (windowPrimeEntry.velocity.x / 60)
+                    - windowPrimeEntry.predictedDistance
+            ) <= 0.000001
+            && windowPrime.targetHpBefore === 30
+            && windowPrime.targetHpAfter === 25
+            && windowPrime.damageFixedPoint === 500
+            && windowPrime.maximumDamageWindow === true
+            && windowPrime.peakFinalDamageFixedPoint === 500
+            && windowPrime.expiresAtFixedTick === 65
+            && windowPrime.peakSourceEntityId
+                === windowPrime.projectileHandle.entityId
+            && windowPrime.peakSourceIncarnation
+                === windowPrime.projectileHandle.incarnation
+            && typeof windowPrime.projectileDeath?.reason === 'string'
+            && Number.isSafeInteger(windowPrime.projectileDeath?.sourceTick)
+            && typeof windowPrime.projectileDeath?.disposition === 'string'
+            && windowPrime.terminalCleanupExact === true
+            && impact?.targetHpBefore === 25
+            && impact.targetHpAfter === 20
             && impact.wrongTowerHpBefore === 30
             && impact.wrongTowerHpAfter === 30
             && impact.coreHealthAfter === impact.coreHealthBefore
@@ -494,7 +538,15 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && impact.wrongTowerUnchanged === true
             && impact.noSourceRevalidation === true
             && impact.projectileDamageFixedPoint === 500
-            && impact.maximumDamageWindow === true
+            && impact.maximumDamageWindow === false
+            && impact.directDiscreteDamage === true
+            && impact.windowActiveBeforeImpact === true
+            && impact.sourceTick < windowPrime.expiresAtFixedTick
+            && impact.windowPeakBeforeImpactFixedPoint === 500
+            && impact.windowPeakAfterImpactFixedPoint === 500
+            && impact.windowExpiryBeforeImpact === windowPrime.expiresAtFixedTick
+            && impact.windowExpiryAfterImpact === windowPrime.expiresAtFixedTick
+            && impact.windowStatePreserved === true
             && impact.projectileSelfBudgetBefore === 1
             && typeof impact.projectileDeath?.reason === 'string'
             && Number.isSafeInteger(impact.projectileDeath?.sourceTick)
@@ -506,7 +558,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && cleanup.sourceRegistryPresent === false
             && cleanup.sourceBackendPresent === false
             && cleanup.noRevive === true
-            && cleanup.targetHpAfterCleanup === 25
+            && cleanup.targetHpAfterCleanup === 20
             && cleanup.activeCount === 3
             && cleanup.activeProjectileCount === 0
             && cleanup.reservedCount === 0

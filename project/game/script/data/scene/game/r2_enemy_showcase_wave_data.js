@@ -35,7 +35,14 @@ import {
 export const R2_ENEMY_SHOWCASE_WAVE_01_ID = 'r2_enemy_showcase_wave_01';
 export const R2_ENEMY_SHOWCASE_WAVE_02_ID = 'r2_enemy_showcase_wave_02';
 export const R2_ENEMY_SHOWCASE_WAVE_03_ID = 'r2_enemy_showcase_wave_03';
-export const R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O = 4;
+export const R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O = 8;
+export const R2_ENEMY_SHOWCASE_WAVE_TWO_AUTHORED_SIMULTANEOUS_O = 4;
+export const R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT = 10_000;
+export const R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS = 5;
+export const R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION = Object.freeze({
+    towerMaxHp: 20_000_000,
+    coreMaxIntegrity: 20_000_000
+});
 
 if (R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O
     > BASIC_OCTA_ORBIT_CAPACITY_POLICY.maximumSimultaneousActors) {
@@ -61,51 +68,78 @@ const ROUTE_SET_BINDING = Object.freeze({
     routeSetId: R2_ENEMY_SHOWCASE_ROUTE_SET_ID
 });
 
+export const R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS = Object.freeze([
+    BASIC_CIRCLE_ENEMY_DATA.id,
+    BASIC_TRIANGLE_ENEMY_DATA.id,
+    BASIC_ARROW_ENEMY_DATA.id,
+    BASIC_RHOM_ENEMY_DATA.id,
+    BASIC_PENTA_ENEMY_DATA.id,
+    BASIC_HEXA_ENEMY_DATA.id,
+    BASIC_OCTA_ENEMY_DATA.id,
+    BASIC_JORANG_ENEMY_DATA.id,
+    BASIC_RING_ENEMY_DATA.id,
+    BASIC_CORK_ENEMY_DATA.id
+]);
+
+const STAGE_ONE_SCALABLE_STREAM_CYCLE = Object.freeze([
+    BASIC_CIRCLE_ENEMY_DATA.id,
+    BASIC_TRIANGLE_ENEMY_DATA.id,
+    BASIC_ARROW_ENEMY_DATA.id,
+    BASIC_RHOM_ENEMY_DATA.id,
+    BASIC_PENTA_ENEMY_DATA.id,
+    BASIC_HEXA_ENEMY_DATA.id,
+    BASIC_JORANG_ENEMY_DATA.id
+]);
+
+// O/R/Z는 각각 bounded orbit/capture/route owner를 소유하므로 첫 census에서
+// 실제 동작을 한 번 포함하고, 나머지 bulk는 수천 개까지 확장 가능한 7종을
+// 순환합니다. H prepare도 bounded round-robin ingress라 bulk에 포함합니다.
+const STAGE_ONE_BULK_SPAWN_COUNT
+    = R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT
+        - R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS.length;
+const STAGE_ONE_LANE_OFFSETS_TILES = Object.freeze([-1.8, -0.6, 0.6, 1.8]);
+
+function createStageOneSequentialEntry({
+    timelineEntryId,
+    groupId,
+    enemyDefinitionIds,
+    count
+}) {
+    return Object.freeze({
+        timelineEntryId,
+        type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_FOR_DURATION,
+        durationSeconds: (
+            count * R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS
+        ) / 60,
+        spawnGroups: Object.freeze([
+            Object.freeze({
+                groupId,
+                enemyDefinitionId: enemyDefinitionIds[0],
+                enemyDefinitionIds,
+                routeBinding: ROUTE_SET_BINDING,
+                policyId: 'stage-one-performance-corebound',
+                count,
+                intervalTicks:
+                    R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS,
+                laneOffsetsTiles: STAGE_ONE_LANE_OFFSETS_TILES
+            })
+        ])
+    });
+}
+
 const WAVE_01_TIMELINE = Object.freeze([
-    Object.freeze({
-        timelineEntryId: 'baseline-c-pressure',
-        type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_GROUP,
-        spawnGroup: Object.freeze({
-            groupId: 'baseline-c-pressure-group',
-            enemyDefinitionId: BASIC_CIRCLE_ENEMY_DATA.id,
-            routeBinding: ROUTE_SET_BINDING,
-            policyId: 'corebound',
-            count: 4,
-            laneOffsetsTiles: Object.freeze([-1.8, -0.6, 0.6, 1.8])
-        })
+    createStageOneSequentialEntry({
+        timelineEntryId: 'stage-one-all-enemy-opening-census',
+        groupId: 'stage-one-all-enemy-opening-census-group',
+        enemyDefinitionIds:
+            R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS,
+        count: R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS.length
     }),
-    Object.freeze({
-        timelineEntryId: 'baseline-to-specialist-gap',
-        type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.WAIT,
-        durationSeconds: 2
-    }),
-    Object.freeze({
-        timelineEntryId: 'row-introduction-t-a-m-p',
-        type: AUTHORED_WAVE_TIMELINE_COMMAND_TYPE.SPAWN_FORMATION,
-        formation: Object.freeze({
-            groupId: 'row-introduction-formation',
-            memberCount: 5,
-            rows: 2,
-            columns: 3,
-            coordinateSystem:
-                AUTHORED_FORMATION_COORDINATE_SYSTEM.PATH_RELATIVE,
-            spawnMode: AUTHORED_FORMATION_SPAWN_MODE.SEQUENTIAL_ROWS,
-            rowDelayTicks: 15,
-            keepFormation: false,
-            layout: Object.freeze(['CTA', 'MP.']),
-            symbolMap: Object.freeze({
-                C: BASIC_CIRCLE_ENEMY_DATA.id,
-                T: BASIC_TRIANGLE_ENEMY_DATA.id,
-                A: BASIC_ARROW_ENEMY_DATA.id,
-                M: BASIC_RHOM_ENEMY_DATA.id,
-                P: BASIC_PENTA_ENEMY_DATA.id
-            }),
-            routeBinding: ROUTE_SET_BINDING,
-            policyId: 'showcase-row-introduction',
-            rowSpacingTiles: 1.2,
-            columnSpacingTiles: 1.2,
-            anchorOffsetTiles: Object.freeze({ x: 0.5, y: 0 })
-        })
+    createStageOneSequentialEntry({
+        timelineEntryId: 'stage-one-scalable-performance-stream',
+        groupId: 'stage-one-scalable-performance-stream-group',
+        enemyDefinitionIds: STAGE_ONE_SCALABLE_STREAM_CYCLE,
+        count: STAGE_ONE_BULK_SPAWN_COUNT
     })
 ]);
 
@@ -144,7 +178,7 @@ const WAVE_02_TIMELINE = Object.freeze([
             enemyDefinitionId: BASIC_OCTA_ENEMY_DATA.id,
             routeBinding: ROUTE_SET_BINDING,
             policyId: 'showcase-orbit-defense',
-            count: R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O,
+            count: R2_ENEMY_SHOWCASE_WAVE_TWO_AUTHORED_SIMULTANEOUS_O,
             laneOffsetsTiles: Object.freeze([-1.8, -0.6, 0.6, 1.8])
         })
     }),
@@ -273,18 +307,8 @@ export const R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT = Object.freeze({
     showcase: Object.freeze({
         mapId: R2_ENEMY_SHOWCASE_MAP_DATA.id,
         waveIds: Object.freeze(R2_ENEMY_SHOWCASE_WAVES.map(({ waveId }) => waveId)),
-        enemyDefinitionIds: Object.freeze([
-            BASIC_CIRCLE_ENEMY_DATA.id,
-            BASIC_TRIANGLE_ENEMY_DATA.id,
-            BASIC_ARROW_ENEMY_DATA.id,
-            BASIC_RHOM_ENEMY_DATA.id,
-            BASIC_PENTA_ENEMY_DATA.id,
-            BASIC_HEXA_ENEMY_DATA.id,
-            BASIC_OCTA_ENEMY_DATA.id,
-            BASIC_JORANG_ENEMY_DATA.id,
-            BASIC_RING_ENEMY_DATA.id,
-            BASIC_CORK_ENEMY_DATA.id
-        ]),
+        enemyDefinitionIds:
+            R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS,
         accessPolicyId: 'production-stage-one-and-manual-injection'
     }),
     productionStageOne: Object.freeze({
@@ -298,11 +322,15 @@ export const R2_ENEMY_SHOWCASE_STAGE_MANIFEST = Object.freeze([
     Object.freeze({
         waveId: R2_ENEMY_SHOWCASE_WAVE_01_ID,
         mechanics: Object.freeze([
-            'baseline-c-t-pressure',
-            'arrow-charge-recoil',
+            'sequential-ten-thousand-all-r2-enemies',
+            'arrow-ease-out-expo-charge-recoil',
             'rhom-core-priority-fire',
             'penta-boost',
-            'formation-sequential-rows'
+            'hexa-group-merge-to-hx',
+            'octagon-orbit-directional-defense',
+            'jorang-split-regrowth',
+            'ring-projectile-capture',
+            'cork-route-closure'
         ])
     }),
     Object.freeze({

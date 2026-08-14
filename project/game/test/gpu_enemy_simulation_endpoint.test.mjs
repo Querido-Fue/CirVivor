@@ -25,6 +25,9 @@ const {
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
 );
+const {
+    GPU_ROUTE_AVAILABILITY_STATE
+} = await loadGameModule('ingame/physics/gpu/gpu_route_runtime_abi.js');
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -245,6 +248,125 @@ function installIdleProjectileCaptureBackend(backend, getSessionGeneration) {
         captureBodyStates,
         setRuntimeStatus(overrides = {}) {
             runtimeStatusOverrides = { ...overrides };
+        }
+    };
+}
+
+function installClosedRouteAvailabilityBackend(backend, getSessionGeneration) {
+    const completedRouteBatches = [];
+    let runtimeStatusOverrides = {};
+    const routeGraph = Object.freeze({
+        routeSets: Object.freeze([Object.freeze({
+            id: 'closed-route-set',
+            candidateOffset: 0,
+            candidateCount: 1
+        })]),
+        routeCandidates: Object.freeze([Object.freeze({ pathIndex: 0 })]),
+        paths: Object.freeze([Object.freeze({
+            pathIndex: 0,
+            pathId: 'closed-path'
+        })]),
+        closures: Object.freeze([Object.freeze({
+            closureIndex: 0,
+            pathIndex: 0,
+            id: 'closed-route-closure'
+        })])
+    });
+    Object.assign(backend, {
+        preflightRouteLifecycleBatch() {
+            return Object.freeze({ accepted: true });
+        },
+        commitRouteLifecycleBatch() {
+            return Object.freeze({ accepted: true });
+        },
+        cancelRouteLifecycleBatch() {
+            return Object.freeze({ accepted: true });
+        },
+        resolveExactRouteBodySlot() { return null; },
+        drainCompletedRouteAvailabilityBatches(out = []) {
+            out.push(...completedRouteBatches.splice(0));
+            return out;
+        },
+        getRouteAvailabilityRuntimeStatus() {
+            return Object.freeze({
+                abiVersion: 1,
+                state: 'ready',
+                sessionGeneration: getSessionGeneration(),
+                deviceGeneration: 1,
+                authoritativeEpoch: 1,
+                ingressOpen: true,
+                graphEnabled: true,
+                graphContentKey: 'closed-route-graph',
+                closureCount: 1,
+                availabilityVersion: 2,
+                closedPathIds: Object.freeze(['closed-path']),
+                rosterCount: 1,
+                projectileThreatBodyCount: 0,
+                closedSteadyState: true,
+                readbackBypassEligible: true,
+                completedReadbackBypassSourceTick: 0,
+                capacity: 1,
+                leaseCount: 1,
+                lifecycleReservationCount: 0,
+                stagedCount: 0,
+                commitRequested: false,
+                pendingReadbackCount: 0,
+                queuedBatchCount: completedRouteBatches.length,
+                completedThroughTick: 1,
+                runtimeStatus: 0,
+                storageBuffersPerStage: 9,
+                requiresRecovery: false,
+                failure: null,
+                terminal: null,
+                ...runtimeStatusOverrides
+            });
+        },
+        cancelPendingRouteAvailabilityProgramsForTerminal() {
+            return Object.freeze({ accepted: false });
+        },
+        getTerminalRouteAvailabilityProgramCancelStatus() { return null; },
+        getRouteLifecyclePortStatus() {
+            return Object.freeze({ revoked: false });
+        },
+        getFlowFieldAtlas() {
+            return Object.freeze({ routeGraph });
+        }
+    });
+    return {
+        completedRouteBatches,
+        setRuntimeStatus(overrides = {}) {
+            runtimeStatusOverrides = { ...overrides };
+        },
+        createCompletion(overrides = {}) {
+            return Object.freeze({
+                abiVersion: 1,
+                sessionGeneration: getSessionGeneration(),
+                deviceGeneration: 1,
+                authoritativeEpoch: 1,
+                sourceTick: 1,
+                completedThroughTick: 1,
+                availabilityVersion: 2,
+                graphContentFingerprint: 123,
+                terminal: false,
+                readbackBypassed: true,
+                lastEventBase: 0,
+                lastEventCount: 0,
+                records: Object.freeze([Object.freeze({
+                    closureIndex: 0,
+                    pathIndex: 0,
+                    state: GPU_ROUTE_AVAILABILITY_STATE.CLOSED,
+                    ownerSlot: 7,
+                    ownerHandle: Object.freeze({
+                        entityId: 77,
+                        incarnation: 1
+                    }),
+                    leaseGeneration: 1,
+                    changedAtFixedTick: 1
+                })]),
+                closedPathIndices: Object.freeze([0]),
+                failure: null,
+                ...overrides
+            });
         }
     };
 }
@@ -759,6 +881,74 @@ test('event가 없는 completion도 완전한 envelope에서만 watermark를 전
     assert.equal(endpoint.getStatus().events.completedThroughTick, 8);
     assert.equal(endpoint.requiresRecovery(), false);
     endpoint.destroy();
+});
+
+test('closed route zero-event completion은 exact backend bypass proof로 generic readback 지연과 분리된다', () => {
+    const createFixture = (label) => {
+        const backend = createFakeBackend({ capacity: 4 });
+        let endpoint = null;
+        const route = installClosedRouteAvailabilityBackend(
+            backend,
+            () => endpoint.sessionGeneration
+        );
+        endpoint = createGpuEnemySimulationEndpoint({
+            enemySimulationBackend: backend
+        });
+        endpoint.init({ id: `closed-route-bypass-${label}` });
+        setCurrentEventProtocol(endpoint, backend);
+        return { backend, endpoint, route };
+    };
+
+    const bypass = createFixture('accepted');
+    bypass.route.setRuntimeStatus({
+        completedReadbackBypassSourceTick: 1
+    });
+    bypass.route.completedRouteBatches.push(
+        bypass.route.createCompletion()
+    );
+    const completed = bypass.endpoint
+        .commitCompletedRouteAvailabilityProgramsAtFixedBoundary(2);
+    assert.equal(completed.protocolFailure, null);
+    assert.equal(completed.pending, false);
+    assert.equal(completed.sourceTick, 1);
+    assert.equal(completed.completedThroughTick, 1);
+    assert.equal(completed.readbackBypassed, true);
+    assert.deepEqual(completed.closedPathIds, ['closed-path']);
+    assert.equal(
+        bypass.endpoint.getLastCompletedSimulationEvents().completedThroughTick,
+        0
+    );
+    assert.equal(bypass.route.completedRouteBatches.length, 0);
+    assert.equal(bypass.endpoint.requiresRecovery(), false);
+    bypass.endpoint.destroy();
+
+    const ordinary = createFixture('ordinary-readback');
+    ordinary.route.completedRouteBatches.push(
+        ordinary.route.createCompletion({ readbackBypassed: false })
+    );
+    const pending = ordinary.endpoint
+        .commitCompletedRouteAvailabilityProgramsAtFixedBoundary(2);
+    assert.equal(pending.protocolFailure, null);
+    assert.equal(pending.pending, true);
+    assert.equal(ordinary.route.completedRouteBatches.length, 1);
+    assert.equal(ordinary.endpoint.requiresRecovery(), false);
+    ordinary.endpoint.destroy();
+
+    const inconsistent = createFixture('inconsistent-proof');
+    inconsistent.route.setRuntimeStatus({
+        completedReadbackBypassSourceTick: 1
+    });
+    inconsistent.route.completedRouteBatches.push(
+        inconsistent.route.createCompletion({ readbackBypassed: false })
+    );
+    const rejected = inconsistent.endpoint
+        .commitCompletedRouteAvailabilityProgramsAtFixedBoundary(2);
+    assert.equal(
+        rejected.protocolFailure?.code,
+        'route-availability-readback-bypass-contract'
+    );
+    assert.equal(inconsistent.endpoint.requiresRecovery(), true);
+    inconsistent.endpoint.destroy();
 });
 
 test('지연된 generic event batch는 같은 source tick의 bounded capture proof로 검증한다', () => {

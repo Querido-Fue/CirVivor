@@ -2489,6 +2489,7 @@ export class GpuEnemySimulationEndpoint {
                 pendingReadbackCount: 0,
                 queuedBatchCount: 0,
                 completedThroughTick: 0,
+                completedReadbackBypassSourceTick: 0,
                 requiresRecovery: false,
                 failure: null,
                 terminal: null
@@ -3137,7 +3138,13 @@ export class GpuEnemySimulationEndpoint {
                 && genericSnapshot.sourceTick === expectedSourceTick
                 && genericSnapshot.completedThroughTick === expectedSourceTick;
         const allowIdleCompletion = exactIdle && !terminalEventBoundary;
-        if (!genericExpectedSourceReady && !allowIdleCompletion) {
+        const completedReadbackBypassReady = !terminalEventBoundary
+            && runtimeStatus.readbackBypassEligible === true
+            && runtimeStatus.completedReadbackBypassSourceTick
+                === expectedSourceTick;
+        if (!genericExpectedSourceReady
+            && !allowIdleCompletion
+            && !completedReadbackBypassReady) {
             return Object.freeze({
                 abiVersion: ROUTE_AVAILABILITY_ABI_VERSION,
                 sessionGeneration: runtimeStatus.sessionGeneration,
@@ -3230,6 +3237,21 @@ export class GpuEnemySimulationEndpoint {
         }
         const batch = matching[0];
         drained.length = 0;
+        const authenticatedReadbackBypass = !genericExpectedSourceReady
+            && completedReadbackBypassReady
+            && batch.readbackBypassed === true
+            && batch.terminal === false
+            && batch.lastEventBase === 0
+            && batch.lastEventCount === 0;
+        if (!genericExpectedSourceReady
+            && !allowIdleCompletion
+            && !authenticatedReadbackBypass) {
+            return this.#failRouteAvailabilityProtocol(
+                tick,
+                'route-availability-readback-bypass-contract',
+                'RouteAvailability readback bypass 증거가 runtime queue-front와 다릅니다.'
+            );
+        }
         if (batch.failure
             || batch.abiVersion !== ROUTE_AVAILABILITY_ABI_VERSION
             || batch.sessionGeneration !== this.sessionGeneration
@@ -3238,6 +3260,8 @@ export class GpuEnemySimulationEndpoint {
             || batch.completedThroughTick !== expectedSourceTick
             || batch.availabilityVersion <= 0
             || batch.availabilityVersion >= 0xffffffff
+            || (batch.readbackBypassed !== true
+                && batch.readbackBypassed !== false)
             || !Array.isArray(batch.closedPathIndices)
             || !Array.isArray(batch.records)
             || batch.lastEventCount !== routeEvents.length) {
@@ -3461,6 +3485,7 @@ export class GpuEnemySimulationEndpoint {
             graphContentKey: runtimeStatus.graphContentKey,
             availabilityVersion: batch.availabilityVersion,
             batchIdFingerprint,
+            readbackBypassed: batch.readbackBypassed,
             pending: false,
             status: 0,
             errorFlags: 0,

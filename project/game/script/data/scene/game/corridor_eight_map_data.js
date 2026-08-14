@@ -103,6 +103,10 @@ export const CORRIDOR_EIGHT_MAP_DATA = Object.freeze({
 export const INGAME_MAP_DATA = Object.freeze({
     DEFAULT_MAP_ID: CORRIDOR_EIGHT_MAP_DATA.id,
     MAPS: Object.freeze([
-        CORRIDOR_EIGHT_MAP_DATA
+        CORRIDOR_EIGHT_MAP_DATA,
+        PERFORMANCE_SERPENTINE_MAP_DATA
     ])
 });
+import {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} from './performance_serpentine_map_data.js';

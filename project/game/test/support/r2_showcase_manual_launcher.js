@@ -8,6 +8,13 @@ import {
 import {
     R2_ENEMY_SHOWCASE_WAVES
 } from 'data/scene/game/r2_enemy_showcase_wave_data.js';
+import {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} from 'data/scene/game/performance_serpentine_map_data.js';
+import {
+    PERFORMANCE_SERPENTINE_SESSION,
+    PERFORMANCE_SERPENTINE_WAVE_01_DATA
+} from 'data/scene/game/performance_serpentine_wave_data.js';
 import { getWebGpuPlatformPort } from 'display/display_system.js';
 import { GameScene } from 'scene/game/_game_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
@@ -279,6 +286,7 @@ function createPanel() {
                 <button id="r2-manual-wave-1" type="button">Wave 1</button>
                 <button id="r2-manual-wave-2" type="button">Wave 2</button>
                 <button id="r2-manual-wave-3" type="button">Wave 3</button>
+                <button id="r2-manual-performance" type="button">Map 2 · 10K</button>
                 <button id="r2-manual-pause" type="button">Pause</button>
                 <button id="r2-manual-resume" type="button">Resume</button>
                 <button id="r2-manual-capture" type="button">Screenshot</button>
@@ -311,6 +319,8 @@ class R2ShowcaseManualController {
         this.panel = panel;
         this.currentScene = null;
         this.currentWaveNumber = 0;
+        this.currentMapId = null;
+        this.currentWaveDefinition = null;
         this.spawnSequence = 1_000_000;
         this.actionSequence = 0;
         this.actions = [];
@@ -379,11 +389,48 @@ class R2ShowcaseManualController {
         this.sceneSystem.sceneState = 'inGame';
         this.currentScene = scene;
         this.currentWaveNumber = waveNumber;
+        this.currentMapId = R2_ENEMY_SHOWCASE_MAP_DATA.id;
+        this.currentWaveDefinition = waveDefinition;
         this.firstRecoveryFailure = null;
         this.recoveryFailureCount = 0;
         this.#attachRecoveryProbe(scene);
         this.game.resize();
         this.#record('wave-selected', `Wave ${waveNumber}: ${waveDefinition.waveId}`);
+        this.#renderStatus();
+        return this.getSnapshot();
+    }
+
+    selectPerformanceMap() {
+        this.resume();
+        clearSimulationCommands();
+        this.#detachRecoveryProbe();
+        this.sceneSystem.scene?.destroy?.();
+
+        const tileMap = new TileMap(PERFORMANCE_SERPENTINE_MAP_DATA);
+        const scene = new GameScene(this.sceneSystem, {
+            mapId: PERFORMANCE_SERPENTINE_MAP_DATA.id,
+            tileNavigationSource: tileMap,
+            enemyWaveEnabled: true,
+            gameplayWorldActorsEnabled: true,
+            enemyRecoveryEnabled: true,
+            towerMaxHp: PERFORMANCE_SERPENTINE_SESSION.towerMaxHp,
+            coreMaxIntegrity: PERFORMANCE_SERPENTINE_SESSION.coreMaxIntegrity,
+            waveDefinition: PERFORMANCE_SERPENTINE_WAVE_01_DATA
+        });
+        this.sceneSystem.scene = scene;
+        this.sceneSystem.sceneState = 'inGame';
+        this.currentScene = scene;
+        this.currentWaveNumber = 0;
+        this.currentMapId = PERFORMANCE_SERPENTINE_MAP_DATA.id;
+        this.currentWaveDefinition = PERFORMANCE_SERPENTINE_WAVE_01_DATA;
+        this.firstRecoveryFailure = null;
+        this.recoveryFailureCount = 0;
+        this.#attachRecoveryProbe(scene);
+        this.game.resize();
+        this.#record(
+            'performance-map-selected',
+            `Map 2: ${PERFORMANCE_SERPENTINE_WAVE_01_DATA.waveId}`
+        );
         this.#renderStatus();
         return this.getSnapshot();
     }
@@ -499,8 +546,9 @@ class R2ShowcaseManualController {
         return Object.freeze({
             apiVersion: MANUAL_API_VERSION,
             actualGameScene: this.currentScene instanceof GameScene,
+            mapId: this.currentMapId,
             waveNumber: this.currentWaveNumber,
-            waveId: R2_ENEMY_SHOWCASE_WAVES[this.currentWaveNumber - 1]?.waveId ?? null,
+            waveId: this.currentWaveDefinition?.waveId ?? null,
             paused: manualPaused || appInactivePaused,
             manualPaused,
             appInactivePaused,
@@ -624,6 +672,8 @@ class R2ShowcaseManualController {
             this.sceneSystem.scene = null;
         }
         this.currentScene = null;
+        this.currentMapId = null;
+        this.currentWaveDefinition = null;
         window.removeEventListener('beforeunload', this.boundBeforeUnload);
         if (console.warn === this.loopWarningCapture) {
             console.warn = this.originalConsoleWarn;
@@ -762,7 +812,7 @@ class R2ShowcaseManualController {
                 x: target.x - entry.x,
                 y: target.y - entry.y
             }),
-            waveId: R2_ENEMY_SHOWCASE_WAVES[this.currentWaveNumber - 1].waveId,
+            waveId: this.currentWaveDefinition.waveId,
             policyId: `${TEST_POLICY_ID_PREFIX}-${options.targetKind}`,
             resolvedStats
         });
@@ -835,6 +885,7 @@ class R2ShowcaseManualController {
         bind('r2-manual-wave-1', () => this.selectWave(1));
         bind('r2-manual-wave-2', () => this.selectWave(2));
         bind('r2-manual-wave-3', () => this.selectWave(3));
+        bind('r2-manual-performance', () => this.selectPerformanceMap());
         bind('r2-manual-pause', () => this.pause());
         bind('r2-manual-resume', () => this.resume());
         bind('r2-manual-capture', () => this.captureScreenshot());
@@ -875,7 +926,7 @@ class R2ShowcaseManualController {
                 );
             }
             const lines = [
-                `Wave ${status.waveNumber} · ${status.waveId}`,
+                `${status.mapId} · ${status.waveId}`,
                 `actualGameScene=${status.actualGameScene} | paused=${status.paused} (manual=${status.manualPaused}, appInactive=${status.appInactivePaused})`,
                 `focus=${status.windowFocused} | loop=${status.loopRunning}`,
                 `policy fixed=${status.framePolicy.runFixedStep} frame=${status.framePolicy.runFrameTimeUpdate} pauses=[${status.pauseReasons.join(', ')}]`,
@@ -927,6 +978,7 @@ export async function installR2ShowcaseManualLauncher() {
     const api = Object.freeze({
         apiVersion: MANUAL_API_VERSION,
         selectWave: (waveNumber) => controller.selectWave(waveNumber),
+        selectPerformanceMap: () => controller.selectPerformanceMap(),
         pause: () => controller.pause(),
         resume: () => controller.resume(),
         setCameraView: (mode) => controller.setCameraView(mode),

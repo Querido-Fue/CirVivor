@@ -374,6 +374,44 @@ test('lifecycle roster는 Archer만 exact 등록하고 duplicate/stale incarnati
     assert.equal(fixture.registry.fullScanCallCount, 0);
 });
 
+test('동일 boundary의 registry-only 비공격 spawn은 무시하되 실제 attack source parity는 fail-close한다', () => {
+    const nonAttackFixture = createFixture();
+    const formationDestination = { entityId: 5, incarnation: 2 };
+    nonAttackFixture.registry.add(formationDestination, {
+        definitionId: 'basic_hexa_01',
+        createdAtTick: 9
+    });
+    const ignored = observeLifecycle(nonAttackFixture, 9, {
+        spawned: [{
+            commandId: 'formation-transform:destination',
+            handle: formationDestination
+        }]
+    });
+    assert.equal(ignored.recoveryRequired, false);
+    assert.equal(ignored.spawnedSourceCount, 0);
+    assert.equal(nonAttackFixture.director.getStatus().activeSourceCount, 0);
+    assert.equal(
+        nonAttackFixture.director.getStatus().telemetry.nonAttackSpawnsIgnored,
+        1
+    );
+
+    const attackFixture = createFixture();
+    const registryOnlyArcher = { entityId: 6, incarnation: 1 };
+    attackFixture.registry.add(registryOnlyArcher, { createdAtTick: 9 });
+    const rejected = observeLifecycle(attackFixture, 9, {
+        spawned: [{
+            commandId: 'spawn:registry-only-archer',
+            handle: registryOnlyArcher
+        }]
+    });
+    assert.equal(rejected.recoveryRequired, true);
+    assert.equal(
+        rejected.protocolFailure.code,
+        'spawn-registry-backend-desync'
+    );
+    assert.equal(attackFixture.director.getStatus().activeSourceCount, 0);
+});
+
 test('Hostile roster와 attack catalog는 TARGETING capability bit를 exact runtime authority로 사용한다', () => {
     const missingTargetingDefinition = Object.freeze({
         ...ARCHER_ENEMY_DATA,

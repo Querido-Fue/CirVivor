@@ -324,7 +324,9 @@ The bounded exact-handle roster currently owns Archer and Diamond M production w
 start budget. Archer keeps its Tower-only source-relative shot. M provides explicit exact Core/Tower handles
 to BodyControlProgram v2, consumes completed GPU Core-first inclusive-range selection, and binds the result to
 SpawnProgram v4 without CPU pose. No target resumes route movement; selected range keeps movement stopped.
-Typed selected-Core damage is authenticated by `EnemyCoreImpactDirector` rather than GPU Core HP.
+Typed selected-Core damage is authenticated by `EnemyCoreImpactDirector` rather than GPU Core HP. A launched
+selected-Tower projectile remains valid after M dies and applies its snapshotted one-hit damage directly to the
+exact Tower, bypassing the continuous Maximum Damage Window with `maximumDamageWindow=false`.
 
 ### PentagonEffectDirector
 
@@ -410,11 +412,12 @@ offer 생성, 가격, transaction, WordSystem 재컴파일 무효화를 조정�
 ### CombatResolver
 
 Collision/Ability가 만든 hit intent를 받아 피해와 사망을 확정한다. Core,
-Enemy, Tower, 구조물의 대상 규칙을 분리한다. 현재 GPU Tower 피해는 target-side
-same-tick maximum aggregation과 `TowerMaximumDamageWindow`가 권위이며, Core damage는
+Enemy, Tower, 구조물의 대상 규칙을 분리한다. Ordinary contact/projectile and Arrow GPU Tower
+피해는 target-side same-tick maximum aggregation과 `TowerMaximumDamageWindow`가 권위이며, Core damage는
 `EnemyCoreImpactDirector`가 exact event/provenance를 검증한 뒤 CPU `CoreIntegrity`에 적용한다.
 An active larger Tower maximum applies only the peak delta and updates provenance; it never extends the first
-accepted tick's fixed `N + 60` expiry.
+accepted tick's fixed `N + 60` expiry. Diamond M의 exact selected-Tower projectile만 launch-time damage
+snapshot을 한 번 직접 적용하며, source death 이후에도 유효하고 continuous window를 우회한다.
 
 ## 7. Command 계약
 
@@ -505,7 +508,8 @@ completed fixed/SpawnProgram outcomes
 → Effect A/B expiry, summary, regeneration, and pulse application
 → Projectile Capture inclusive-funnel + strictly-closing preflight/prepared shield
 → raw → source modifiers → defense/status → final damage
-→ same-Tower/source-tick maximum aggregation → Maximum Damage Window → HP mutation
+→ ordinary contact/projectile and Arrow only: same-Tower/source-tick maximum aggregation
+→ contact handler: selected-target M Tower direct launch-snapshot one-hit, otherwise Maximum Damage Window → HP mutation
 → canonical-zero death marking
 → Projectile Capture late whole-batch seal or normal zero-mutation capacity rejection
 → Route Runtime availability + physical blocker close/reopen finalize atomically

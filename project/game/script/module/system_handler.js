@@ -322,13 +322,14 @@ export class SystemHandler {
      * 디버그 모드와 실행 정책을 정규화하고 시뮬레이션 스냅샷을 동기화한 뒤 fixed step 반복,
      * 보간 alpha 설정, surface clear, 가변 update, draw, 최종 WebGL flush 순서로 한 프레임을 실행합니다.
      * release profiler가 활성화된 fixed step은 `try/finally`로 성공 여부와 소요 시간을 기록합니다.
+     * 활성 scene이 명시적으로 `false`를 반환하면 GPU 대기 경계로 보고 남은 catch-up을 중단합니다.
      * @param {object} [frameContext={}] 프레임 컨텍스트입니다.
      * @param {number} [frameContext.frameDeltaSeconds] 가변 프레임 델타(초)입니다.
      * @param {number} [frameContext.fixedStepSeconds] 고정 스텝 델타(초)입니다.
      * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수입니다.
      * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)입니다.
      * @param {'running'|'paused'|'step'} [frameContext.debugFrameMode='running'] 디버그 프레임 제어 상태입니다.
-     * @returns {void}
+     * @returns {number} 실제로 완료된 fixed step 수입니다.
      */
     tick(frameContext = EMPTY_FRAME_CONTEXT) {
         const debugFrameMode = DEBUG_FRAME_MODES.has(frameContext.debugFrameMode)
@@ -361,6 +362,7 @@ export class SystemHandler {
                 : 0);
         const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting()
             && shouldRecordReleaseSimulationForFrameMode(debugFrameMode);
+        let completedFixedStepCount = 0;
 
         if (fixedStepCount > 0) {
             const fixedTotalStart = beginPerformanceSection();
@@ -371,7 +373,10 @@ export class SystemHandler {
                         timeHandler.updateFixed(fixedStepSeconds);
                         endPerformanceSection('fixed.time', fixedTimeStart);
                     }
-                    this.#runFixedStep();
+                    if (!this.#runFixedStep()) {
+                        break;
+                    }
+                    completedFixedStepCount++;
                     continue;
                 }
 
@@ -383,8 +388,10 @@ export class SystemHandler {
                         timeHandler.updateFixed(fixedStepSeconds);
                         endPerformanceSection('fixed.time', fixedTimeStart);
                     }
-                    this.#runFixedStep();
-                    completedReleaseFixedStep = true;
+                    completedReleaseFixedStep = this.#runFixedStep();
+                    if (completedReleaseFixedStep) {
+                        completedFixedStepCount++;
+                    }
                 } finally {
                     if (shouldMeasureReleaseSimulation) {
                         const releaseFixedEnd = performance.now();
@@ -394,6 +401,9 @@ export class SystemHandler {
                             completedReleaseFixedStep
                         );
                     }
+                }
+                if (!completedReleaseFixedStep) {
+                    break;
                 }
             }
             endPerformanceSection('frame.fixed.total', fixedTotalStart);
@@ -472,6 +482,7 @@ export class SystemHandler {
                 }
             }
         }
+        return completedFixedStepCount;
     }
 
     /**
@@ -616,7 +627,9 @@ export class SystemHandler {
     /**
      * @private
      * 고정 시간 축에서 animation, object, scene, 선택적 game manager 순서로 갱신합니다.
-     * @returns {void}
+     * 활성 scene이 `false`를 반환하면 game manager를 진행하지 않습니다.
+     * 반환값이 없는 legacy scene은 완료로 취급합니다.
+     * @returns {boolean} fixed step이 실제로 완료되었는지 여부입니다.
      */
     #runFixedStep() {
         const totalStart = beginPerformanceSection();
@@ -636,8 +649,12 @@ export class SystemHandler {
         if (this.sceneSystem
             && typeof this.sceneSystem.fixedUpdate === 'function') {
             const startTime = beginPerformanceSection();
-            this.sceneSystem.fixedUpdate();
+            const sceneFixedUpdateResult = this.sceneSystem.fixedUpdate();
             endPerformanceSection('fixed.scene', startTime);
+            if (sceneFixedUpdateResult === false) {
+                endPerformanceSection('fixed.step.total', totalStart);
+                return false;
+            }
         }
 
         if (this.gameManager && typeof this.gameManager.fixedUpdate === 'function') {
@@ -646,6 +663,7 @@ export class SystemHandler {
             endPerformanceSection('fixed.gameManager', startTime);
         }
         endPerformanceSection('fixed.step.total', totalStart);
+        return true;
     }
 
     /**

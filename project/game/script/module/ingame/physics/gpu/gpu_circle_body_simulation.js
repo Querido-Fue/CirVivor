@@ -26,6 +26,7 @@ import {
     readGpuCircleBody,
     readGpuProjectileCaptureState,
     unpackGpuCircleInteractionMeta,
+    unpackGpuCirclePhysicsMeta,
     unpackGpuCircleGameplayMeta,
     unpackGpuCircleAppliedEventMeta,
     unpackGpuProjectileCaptureStateMeta,
@@ -1588,6 +1589,8 @@ export class GpuCircleBodySimulation {
         this.idleReleasePending = false;
         this.eventBackpressureCount = 0;
         this.projectileCaptureDomainBodyCount = 0;
+        this.projectileCaptureProjectileBodyCount = 0;
+        this.projectileCaptureMaintenanceBodyCount = 0;
         this.projectileCaptureReadbackSlots = [];
         this.projectileCaptureReadbackLease = 0;
         this.projectileCaptureReadbackCursor = 0;
@@ -1615,6 +1618,7 @@ export class GpuCircleBodySimulation {
         this.lastRouteAvailabilityVersion = 1;
         this.lastRouteRuntimeStatus = 0;
         this.routeRuntimeRosterCount = 0;
+        this.routeRuntimeProjectileThreatBodyCount = 0;
         this.stagedRouteCleanupBatch = null;
         this.routeLifecycleReservations = new Map();
         this.nextRouteLifecycleReceiptId = 1;
@@ -5637,6 +5641,20 @@ export class GpuCircleBodySimulation {
     getRouteAvailabilityRuntimeStatus() {
         const terminal = this.terminalRouteAvailabilityProgramCancelStatus;
         const snapshot = this.#readHostRouteAvailabilitySnapshot();
+        const completedQueueFront = this.routeRuntimeBatchQueue[0];
+        const completedReadbackBypassSourceTick
+            = completedQueueFront?.completed === true
+                && completedQueueFront.completion?.readbackBypassed === true
+            ? completedQueueFront.sourceTick
+            : 0;
+        const closedSteadyState = this.routeRuntimeRosterCount > 0
+            && snapshot.leaseCount === this.routeRuntimeRosterCount
+            && snapshot.closedPathIds.length === this.routeRuntimeRosterCount;
+        const readbackBypassEligible = this.routeRuntimeTopology.enabled
+            && closedSteadyState
+            && this.routeRuntimeProjectileThreatBodyCount === 0
+            && this.stagedRouteCleanupBatch === null
+            && terminal?.state !== 'armed';
         return Object.freeze({
             abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
             state: this.state,
@@ -5650,6 +5668,11 @@ export class GpuCircleBodySimulation {
             availabilityVersion: snapshot.availabilityVersion,
             closedPathIds: snapshot.closedPathIds,
             rosterCount: this.routeRuntimeRosterCount,
+            projectileThreatBodyCount:
+                this.routeRuntimeProjectileThreatBodyCount,
+            closedSteadyState,
+            readbackBypassEligible,
+            completedReadbackBypassSourceTick,
             capacity: GPU_ROUTE_RUNTIME_MAX_CLOSERS,
             leaseCount: snapshot.leaseCount,
             lifecycleReservationCount: this.routeLifecycleReservations.size,
@@ -6970,7 +6993,22 @@ export class GpuCircleBodySimulation {
             0
         ) ?? 0;
         const stagedLegacySpawnCount = stagedSpawnCount - stagedSelectedSpawnCount;
+        const routeAvailabilitySnapshot = this.routeRuntimeTopology.enabled
+            ? this.#readHostRouteAvailabilitySnapshot()
+            : null;
+        const canPublishEmptyRouteRuntimeCompletion
+            = this.routeRuntimeTopology.enabled
+                && !terminalFinalSubmit
+                && this.routeRuntimeRosterCount > 0
+                && this.routeRuntimeProjectileThreatBodyCount === 0
+                && stagedRouteCleanup === null
+                && terminalRouteAvailabilityCancel?.state !== 'armed'
+                && routeAvailabilitySnapshot.leaseCount
+                    === this.routeRuntimeRosterCount
+                && routeAvailabilitySnapshot.closedPathIds.length
+                    === this.routeRuntimeRosterCount;
         const needsRouteRuntimeReadback = this.routeRuntimeTopology.enabled
+            && !canPublishEmptyRouteRuntimeCompletion
             && (this.routeRuntimeRosterCount > 0
                 || stagedRouteCleanup !== null
                 || terminalRouteAvailabilityCancel?.state === 'armed');
@@ -6980,8 +7018,18 @@ export class GpuCircleBodySimulation {
                 || stagedSpawnCount > 0
                 || stagedControlCount > 0
             ));
-        const needsProjectileCaptureReadback
+        const canPublishEmptyProjectileCaptureCompletion
             = this.projectileCaptureDomainBodyCount > 0
+                && this.projectileCaptureProjectileBodyCount === 0
+                && this.projectileCaptureMaintenanceBodyCount === 0
+                && this.projectileCaptureRetryState === null
+                && armedProjectileCaptureRelease?.commitRequested !== true
+                && terminalProjectileCaptureCancel?.state !== 'armed';
+        const needsProjectileCaptureReadback
+            = (this.projectileCaptureDomainBodyCount > 0
+                && (this.projectileCaptureProjectileBodyCount > 0
+                    || this.projectileCaptureMaintenanceBodyCount > 0))
+                || this.projectileCaptureRetryState !== null
                 || armedProjectileCaptureRelease?.commitRequested === true
                 || terminalProjectileCaptureCancel?.state === 'armed';
         if (this.state === 'event-backpressure') {
@@ -8299,6 +8347,13 @@ export class GpuCircleBodySimulation {
                 releaseQueueEntry,
                 projectileCaptureLease
             );
+        } else if (canPublishEmptyProjectileCaptureCompletion) {
+            this.#publishEmptyProjectileCaptureCompletion({
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch
+            });
         }
         if (routeRuntimeSlot) {
             const routeQueueEntry = {
@@ -8321,6 +8376,14 @@ export class GpuCircleBodySimulation {
                 routeQueueEntry,
                 routeRuntimeLease
             );
+        } else if (canPublishEmptyRouteRuntimeCompletion) {
+            this.#publishEmptyRouteRuntimeCompletion({
+                sourceTick: resolvedSourceTick,
+                submittedTick: tick,
+                deviceGeneration: generation,
+                authoritativeEpoch: routeAuthoritativeEpoch,
+                snapshot: routeAvailabilitySnapshot
+            });
         }
         if (eventSlot) {
             const queueEntry = {
@@ -9261,6 +9324,8 @@ export class GpuCircleBodySimulation {
         this.slotRouteRuntimeDomain.fill(0);
         this.eventProducingBodyCount = 0;
         this.projectileCaptureDomainBodyCount = 0;
+        this.projectileCaptureProjectileBodyCount = 0;
+        this.projectileCaptureMaintenanceBodyCount = 0;
         this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
         this.slotHandles.fill(null);
@@ -9541,7 +9606,10 @@ export class GpuCircleBodySimulation {
         let eventProducingBodyCount = 0;
         let atomicTransformFirstHitBodyCount = 0;
         let projectileCaptureDomainBodyCount = 0;
+        let projectileCaptureProjectileBodyCount = 0;
+        let projectileCaptureMaintenanceBodyCount = 0;
         let routeRuntimeRosterCount = 0;
+        let routeRuntimeProjectileThreatBodyCount = 0;
         let maximumBodyRadius = 0;
         const activeEntityIds = new Set();
         this.slotEventProducing.fill(0);
@@ -9582,6 +9650,10 @@ export class GpuCircleBodySimulation {
                 physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.INTERACTION_META,
                 LITTLE_ENDIAN
             );
+            const physicalMeta = physicsView.getUint32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.PHYSICAL_META,
+                LITTLE_ENDIAN
+            );
             const lifetime = simulationView.getFloat32(
                 simulationOffset + GPU_CIRCLE_BODY_ABI.SIMULATION.LIFETIME,
                 LITTLE_ENDIAN
@@ -9595,16 +9667,27 @@ export class GpuCircleBodySimulation {
                     + GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.FLAGS,
                 LITTLE_ENDIAN
             );
+            const interaction = unpackGpuCircleInteractionMeta(interactionMeta);
+            const physics = unpackGpuCirclePhysicsMeta(physicalMeta);
             const sourcePolicyMask =
                 GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
                 | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS;
             const eventProducing = (
-                unpackGpuCircleInteractionMeta(interactionMeta).interactionMask !== 0
+                interaction.interactionMask !== 0
                 && (handlerFlags & sourcePolicyMask) !== 0
             ) || lifetime >= 0 || healthFixedPoint <= 0;
             if (eventProducing) {
                 this.slotEventProducing[slot] = 1;
                 eventProducingBodyCount++;
+            }
+            // Hostile M/A projectile은 PLAYER_DAMAGEABLE/CORE 전용이므로
+            // 닫힌 Cork의 availability를 바꿀 수 없습니다. ENEMY contact를
+            // 실제로 허용한 player projectile만 reopen 위협으로 셉니다.
+            if (physics.bodyLayer
+                    === GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
+                && (interaction.interactionMask
+                    & GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY) !== 0) {
+                routeRuntimeProjectileThreatBodyCount++;
             }
             if (atomicTransformStateView.getUint32(
                 (slot * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE)
@@ -9626,6 +9709,12 @@ export class GpuCircleBodySimulation {
             if (captureMeta.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR) {
                 this.slotProjectileCaptureDomain[slot] = 1;
                 projectileCaptureDomainBodyCount++;
+                if (captureMeta.phase !== GPU_PROJECTILE_CAPTURE_PHASE.IDLE) {
+                    projectileCaptureMaintenanceBodyCount++;
+                }
+            } else if (captureMeta.role
+                    === GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE) {
+                projectileCaptureProjectileBodyCount++;
             }
             const routeState = readGpuRouteRuntimeState(
                 this.hostRouteRuntimeStates,
@@ -9654,7 +9743,13 @@ export class GpuCircleBodySimulation {
         this.atomicTransformFirstHitBodyCount
             = atomicTransformFirstHitBodyCount;
         this.projectileCaptureDomainBodyCount = projectileCaptureDomainBodyCount;
+        this.projectileCaptureProjectileBodyCount
+            = projectileCaptureProjectileBodyCount;
+        this.projectileCaptureMaintenanceBodyCount
+            = projectileCaptureMaintenanceBodyCount;
         this.routeRuntimeRosterCount = routeRuntimeRosterCount;
+        this.routeRuntimeProjectileThreatBodyCount
+            = routeRuntimeProjectileThreatBodyCount;
         this.maximumBodyRadius = maximumBodyRadius;
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
@@ -10364,10 +10459,29 @@ export class GpuCircleBodySimulation {
                         completion
                     );
                 } else {
+                    const recordDiagnostics = results.map((result, index) => ({
+                        programIndex: index,
+                        sourceSlot: queueEntry.records[index]?.sourceSlot ?? null,
+                        sourceEntityId: result.sourceEntityId,
+                        sourceIncarnation: result.sourceIncarnation,
+                        result: result.result,
+                        definitionCode: result.definitionCode,
+                        coordinateSystemCode: result.coordinateSystemCode,
+                        policyCode: result.policyCode,
+                        memberCount: result.memberCount,
+                        occupiedSlotMask: result.occupiedSlotMask,
+                        rotationStep: result.rotationStep,
+                        generation: result.generation,
+                        lineageHash: result.lineageHash,
+                        sourceInvalidReason: result.sourceInvalidReason
+                    }));
                     this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
                     this.failure = captureFailure(
                         'formation-prepare-status',
-                        new Error(`GPU Formation prepare status=${header.status}`)
+                        new Error(
+                            `GPU Formation prepare status=${header.status}; `
+                            + `records=${JSON.stringify(recordDiagnostics)}`
+                        )
                     );
                 }
             } catch (error) {
@@ -11754,6 +11868,66 @@ export class GpuCircleBodySimulation {
         }
     }
 
+    #publishEmptyProjectileCaptureCompletion({
+        sourceTick,
+        submittedTick,
+        deviceGeneration,
+        authoritativeEpoch
+    }) {
+        const completion = Object.freeze({
+            abiVersion: GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration,
+            authoritativeEpoch,
+            sourceTick,
+            completedThroughTick: sourceTick,
+            status: GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE,
+            errorFlags: 0,
+            overflowFlags: 0,
+            retryStateFlags: 0,
+            batchIdFingerprint: 0,
+            captureCount: 0,
+            releasePreparationCount: 0,
+            cleanupCount: 0,
+            selectedCount: 0,
+            pending: false,
+            capacityRejected: false,
+            retryable: false,
+            retryBatch: false,
+            retryBacklogRemaining: false,
+            retryOriginTick: 0,
+            rejectionReason: null,
+            capacityRejectionFlags: 0,
+            captureDemandCount: 0,
+            releasePreparationDemandCount: 0,
+            cleanupDemandCount: 0,
+            captureCapacity: this.projectileCaptureCompletionCapacity,
+            releasePreparationCapacity:
+                this.projectileCaptureReleasePreparationCapacity,
+            cleanupCapacity: this.projectileCaptureCleanupCapacity,
+            captures: Object.freeze([]),
+            releasePreparations: Object.freeze([]),
+            cleanups: Object.freeze([])
+        });
+        this.projectileCaptureBatchQueue.push({
+            sessionGeneration: this.sessionGeneration,
+            sourceTick,
+            submittedTick,
+            deviceGeneration,
+            authoritativeEpoch,
+            expectedRetryState: null,
+            completed: true,
+            completion,
+            failure: null
+        });
+        this.lastProjectileCaptureSourceTick = sourceTick;
+        this.lastProjectileCaptureRuntimeStatus
+            = GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE;
+        this.lastProjectileCaptureErrorFlags = 0;
+        this.lastProjectileCaptureCapacityRejectionFlags = 0;
+        this.#advanceProjectileCaptureCompletionWatermark();
+    }
+
     #beginProjectileCaptureReadback(
         slot,
         captureQueueEntry,
@@ -11855,7 +12029,27 @@ export class GpuCircleBodySimulation {
                     || (!completedNormally && !capacityRejected)
                     || header.selectedCount
                         !== header.releasePreparationCount + header.cleanupCount) {
-                    throw new RangeError('projectile capture tick header 인증에 실패했습니다.');
+                    throw new RangeError(
+                        'projectile capture tick header 인증에 실패했습니다: '
+                        + JSON.stringify({
+                            header,
+                            expected: {
+                                abiVersion:
+                                    GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION,
+                                sessionGeneration: this.sessionGeneration,
+                                deviceGeneration:
+                                    captureQueueEntry.deviceGeneration,
+                                authoritativeEpoch:
+                                    captureQueueEntry.authoritativeEpoch,
+                                sourceTick: captureQueueEntry.sourceTick,
+                                selectedCount:
+                                    header.releasePreparationCount
+                                        + header.cleanupCount,
+                                completedNormally,
+                                capacityRejected
+                            }
+                        })
+                    );
                 }
                 const captures = [];
                 const releasePreparations = [];
@@ -12271,6 +12465,51 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    #publishEmptyRouteRuntimeCompletion({
+        sourceTick,
+        submittedTick,
+        deviceGeneration,
+        authoritativeEpoch,
+        snapshot
+    }) {
+        const closedPathIndices = snapshot.records
+            .filter((record) => record.state === GPU_ROUTE_AVAILABILITY_STATE.CLOSED)
+            .map((record) => record.pathIndex)
+            .sort((left, right) => left - right);
+        const completion = Object.freeze({
+            abiVersion: GPU_ROUTE_RUNTIME_ABI_VERSION,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration,
+            authoritativeEpoch,
+            sourceTick,
+            completedThroughTick: sourceTick,
+            availabilityVersion: snapshot.availabilityVersion,
+            graphContentFingerprint: this.routeRuntimeTopology.contentFingerprint,
+            terminal: false,
+            readbackBypassed: true,
+            lastEventBase: 0,
+            lastEventCount: 0,
+            records: snapshot.records,
+            closedPathIndices: Object.freeze(closedPathIndices)
+        });
+        this.routeRuntimeBatchQueue.push({
+            sessionGeneration: this.sessionGeneration,
+            sourceTick,
+            submittedTick,
+            deviceGeneration,
+            authoritativeEpoch,
+            expectedGraphContentFingerprint:
+                this.routeRuntimeTopology.contentFingerprint,
+            expectedTerminalFinalSubmit: false,
+            completed: true,
+            completion,
+            failure: null
+        });
+        this.routeRuntimeCompletedThroughTick = sourceTick;
+        this.lastRouteRuntimeSourceTick = sourceTick;
+        this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
+    }
+
     #beginRouteRuntimeReadback(slot, queueEntry, lease) {
         slot.tick = queueEntry.submittedTick;
         slot.generation = queueEntry.deviceGeneration;
@@ -12472,6 +12711,7 @@ export class GpuCircleBodySimulation {
                     availabilityVersion,
                     graphContentFingerprint,
                     terminal: terminalFlags === 1,
+                    readbackBypassed: false,
                     lastEventBase,
                     lastEventCount,
                     records: Object.freeze(records),
@@ -12775,6 +13015,7 @@ export class GpuCircleBodySimulation {
         this.lastRouteAvailabilityVersion = 1;
         this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
         this.routeRuntimeRosterCount = 0;
+        this.routeRuntimeProjectileThreatBodyCount = 0;
         this.stagedRouteCleanupBatch = null;
         this.routeLifecycleReservations.clear();
         this.slotRouteRuntimeDomain.fill(0);
@@ -14498,7 +14739,7 @@ export class GpuCircleBodySimulation {
                 [7], [], false
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEED_MOTION]: [
-                [0, 2, 6, 7], [2], true
+                [0, 2, 6, 7, 17, 19], [2], true
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.SELECT_MOTION]: [
                 [0, 1, 2, 6, 7], [0, 1, 4, 6], true
@@ -14522,10 +14763,10 @@ export class GpuCircleBodySimulation {
                 [9], [], false
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS]: [
-                [1, 2, 6, 7, 9, 10], [6], true
+                [1, 2, 6, 7, 9, 10, 18], [6], true
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS]: [
-                [9, 17], [], false
+                [2, 6, 9, 17], [], false
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_EFFECT_REKEYS]: [
                 [7, 9, 13, 14], [], false
@@ -14543,10 +14784,10 @@ export class GpuCircleBodySimulation {
                 [9, 17], [], false
             ],
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY]: [
-                [6, 7, 9, 10, 11, 12, 15, 16], [], false
+                [6, 7, 9, 10, 11, 12, 15, 16, 18], [], false
             ]
         });
-        const formationReadOnlyBodyBindings = new Set([0]);
+        const formationReadOnlyBodyBindings = new Set([0, 19]);
         const formationWorldStorageBindings = new Set([0, 1, 2, 4]);
         const formationReadOnlyWorldBindings = new Set([1, 4]);
         const formationPipelineLayouts = Object.fromEntries(Object.entries(
@@ -15038,7 +15279,9 @@ export class GpuCircleBodySimulation {
             14: this.buffers.effectPoolState,
             15: this.buffers.enemyBehaviorStates,
             16: this.buffers.bodyControlStates,
-            17: this.buffers.routeRuntimeStates
+            17: this.buffers.routeRuntimeStates,
+            18: this.buffers.projectileCaptureStates,
+            19: this.buffers.routeRuntimeTopology
         };
         const formationWorldBuffers = {
             0: this.buffers.gridCounts,

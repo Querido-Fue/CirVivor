@@ -572,6 +572,19 @@ export class HostileAttackDirector {
                 ?? HOSTILE_ATTACK_RUNTIME_DATA.MAXIMUM_STARTS_PER_FIXED_TICK,
             'maximumStartsPerFixedTick'
         );
+        this.priorityControlRefreshIntervalTicks = requirePositiveSafeInteger(
+            options.priorityControlRefreshIntervalTicks
+                ?? HOSTILE_ATTACK_RUNTIME_DATA
+                    .PRIORITY_CONTROL_REFRESH_INTERVAL_TICKS,
+            'priorityControlRefreshIntervalTicks'
+        );
+        this.maximumPriorityControlRefreshesPerFixedTick
+            = requirePositiveSafeInteger(
+                options.maximumPriorityControlRefreshesPerFixedTick
+                    ?? HOSTILE_ATTACK_RUNTIME_DATA
+                        .MAXIMUM_PRIORITY_CONTROL_REFRESHES_PER_FIXED_TICK,
+                'maximumPriorityControlRefreshesPerFixedTick'
+            );
 
         this.projectileSpawnAdapter = options.projectileSpawnAdapter
             ?? new GpuProjectileSpawnAdapter(endpoint, {
@@ -649,11 +662,19 @@ export class HostileAttackDirector {
                 try {
                     const handle = freezeHandle(event, 'deathEvent');
                     const record = this.recordsByHandle.get(handleKey(handle));
-                    if (record?.attack.targetMode
-                        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED) {
-                        this.#rememberCommittedGpuDeath(event, handle);
-                    }
-                    if (this.#removeRecord(handle, 'death')) {
+                    const isCorePrioritySource = record?.attack.targetMode
+                        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED;
+                    const committedGpuDeath = isCorePrioritySource
+                        ? this.#rememberCommittedGpuDeath(event, handle)
+                        : false;
+                    // M은 late priority-control/selected-shot 결과를 정상 종결할
+                    // exact terminal 증거가 먼저 materialize되어야 roster에서
+                    // 제거할 수 있습니다. Backend protocol을 읽는 짧은 순간에
+                    // death proof를 인증하지 못했다면 record를 유지해, 뒤따르는
+                    // canonical lifecycle commit이 exact stale/unique-command
+                    // 증거를 저장하고 같은 경계에서 제거하도록 합니다.
+                    if ((!isCorePrioritySource || committedGpuDeath)
+                        && this.#removeRecord(handle, 'death')) {
                         removedSourceCount++;
                         if (record?.attack.targetMode
                             === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
@@ -828,10 +849,31 @@ export class HostileAttackDirector {
                 protocolFailure: this.protocolFailure
             }));
         }
-        let controlAttemptedCount = 0;
-        let controlAcceptedCount = 0;
-        let controlRejectedCount = 0;
-        const controlCommandIds = [];
+        const eligible = Array.from(this.recordsByHandle.values()).filter((record) => (
+            record.pendingCommandId === null
+            && record.lastAttemptedFixedTick !== targetFixedTick
+            && record.nextEligibleFixedTick <= targetFixedTick
+            && (record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+                ? coreTargetHandle !== null
+                : targetHandle !== null)
+        ));
+        eligible.sort((left, right) => (
+            left.lastAttemptOrdinal - right.lastAttemptOrdinal
+            || left.nextEligibleFixedTick - right.nextEligibleFixedTick
+            || left.createdAtTick - right.createdAtTick
+            || left.handle.entityId - right.handle.entityId
+            || left.handle.incarnation - right.handle.incarnation
+        ));
+
+        const availableBudget = Math.max(
+            0,
+            this.maximumStartsPerFixedTick - this.startAttemptsInBudgetTick
+        );
+        const selected = eligible.slice(0, availableBudget);
+        const deferredCount = eligible.length - selected.length;
+        this.telemetry.budgetDeferred += deferredCount;
+
         const priorityRecords = Array.from(
             this.recordsByHandle.values()
         ).filter((record) => (
@@ -843,7 +885,49 @@ export class HostileAttackDirector {
             || left.handle.entityId - right.handle.entityId
             || left.handle.incarnation - right.handle.incarnation
         ));
-        for (const record of priorityRecords) {
+        const selectedPriorityKeys = new Set(
+            selected.filter((record) => (
+                record.attack.targetMode
+                    === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            )).map((record) => handleKey(record.handle))
+        );
+        const refreshRecords = priorityRecords.filter((record) => (
+            !selectedPriorityKeys.has(handleKey(record.handle))
+            && record.nextPriorityControlFixedTick <= targetFixedTick
+        )).sort((left, right) => (
+            left.nextPriorityControlFixedTick
+                - right.nextPriorityControlFixedTick
+            || left.createdAtTick - right.createdAtTick
+            || left.handle.entityId - right.handle.entityId
+            || left.handle.incarnation - right.handle.incarnation
+        )).slice(0, this.maximumPriorityControlRefreshesPerFixedTick);
+        const controlRecordKeys = new Set(selectedPriorityKeys);
+        for (const record of refreshRecords) {
+            controlRecordKeys.add(handleKey(record.handle));
+        }
+        const controlRecords = priorityRecords.filter((record) => (
+            controlRecordKeys.has(handleKey(record.handle))
+        ));
+        let controlAttemptedCount = 0;
+        let controlAcceptedCount = 0;
+        let controlRejectedCount = 0;
+        const controlCommandIds = [];
+        for (const record of controlRecords) {
+            let nextPriorityControlFixedTick;
+            try {
+                nextPriorityControlFixedTick = checkedTickSum(
+                    targetFixedTick,
+                    this.priorityControlRefreshIntervalTicks,
+                    'next priority control refresh fixed tick'
+                );
+            } catch (error) {
+                this.#fail(
+                    'priority-control-request',
+                    'refresh-tick-overflow',
+                    String(error?.message ?? error)
+                );
+                break;
+            }
             const controlCommandId = createHostileAttackControlCommandId({
                 sessionGeneration: this.sessionGeneration,
                 sourceHandle: record.handle,
@@ -931,6 +1015,8 @@ export class HostileAttackDirector {
             });
             record.lastControlFixedTick = targetFixedTick;
             record.lastControlCommandId = controlCommandId;
+            record.nextPriorityControlFixedTick
+                = nextPriorityControlFixedTick;
             controlAcceptedCount++;
             this.telemetry.controlRequestAccepted++;
         }
@@ -960,30 +1046,6 @@ export class HostileAttackDirector {
             }));
         }
 
-        const eligible = Array.from(this.recordsByHandle.values()).filter((record) => (
-            record.pendingCommandId === null
-            && record.lastAttemptedFixedTick !== targetFixedTick
-            && record.nextEligibleFixedTick <= targetFixedTick
-            && (record.attack.targetMode
-                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-                ? coreTargetHandle !== null
-                : targetHandle !== null)
-        ));
-        eligible.sort((left, right) => (
-            left.lastAttemptOrdinal - right.lastAttemptOrdinal
-            || left.nextEligibleFixedTick - right.nextEligibleFixedTick
-            || left.createdAtTick - right.createdAtTick
-            || left.handle.entityId - right.handle.entityId
-            || left.handle.incarnation - right.handle.incarnation
-        ));
-
-        const availableBudget = Math.max(
-            0,
-            this.maximumStartsPerFixedTick - this.startAttemptsInBudgetTick
-        );
-        const selected = eligible.slice(0, availableBudget);
-        const deferredCount = eligible.length - selected.length;
-        this.telemetry.budgetDeferred += deferredCount;
         let attemptedCount = 0;
         let acceptedCount = 0;
         let rejectedCount = 0;
@@ -1573,6 +1635,10 @@ export class HostileAttackDirector {
         return Object.freeze({
             sessionGeneration: this.sessionGeneration,
             maximumStartsPerFixedTick: this.maximumStartsPerFixedTick,
+            priorityControlRefreshIntervalTicks:
+                this.priorityControlRefreshIntervalTicks,
+            maximumPriorityControlRefreshesPerFixedTick:
+                this.maximumPriorityControlRefreshesPerFixedTick,
             activeSourceCount: records.length,
             activeArcherCount: archers.length,
             pendingShotCount: pendingShots.length,
@@ -2028,11 +2094,12 @@ export class HostileAttackDirector {
             );
             return false;
         }
-        const disposition = this.#getExactActiveDisposition(handle);
-        if (disposition !== 'active') {
+        const registryHas = this.registry.has(handle);
+        if (!registryHas) {
+            const backendHas = this.backendHasBody(handle);
             this.#fail(
                 'lifecycle-spawn',
-                disposition === 'desync'
+                backendHas
                     ? 'spawn-registry-backend-desync'
                     : 'spawn-not-active',
                 `spawned exact handle이 active가 아닙니다: ${handleKey(handle)}`
@@ -2061,6 +2128,19 @@ export class HostileAttackDirector {
             || enemyDefinition.id !== view.definitionId
             || enemyDefinition.attackDefinitionId !== attackEntry.attack.id) {
             this.telemetry.nonAttackSpawnsIgnored++;
+            return false;
+        }
+        // Lifecycle에는 Formation transform destination처럼 host registry에 먼저
+        // 공개되고 같은 GPU submit에서 body가 materialize되는 비-attack spawn도
+        // 포함됩니다. 공격 capability/catalog을 확인하기 전에 backend parity를
+        // 강제하면 unrelated H spawn을 Hostile desync로 오판합니다. 실제 A/M
+        // attack source만 exact GPU body 존재를 요구해 roster authority를 유지합니다.
+        if (!this.backendHasBody(handle)) {
+            this.#fail(
+                'lifecycle-spawn',
+                'spawn-registry-backend-desync',
+                `hostile source registry/backend identity가 불일치합니다: ${handleKey(handle)}`
+            );
             return false;
         }
         const expectedMetadata = attackEntry.expectedSourceMetadata;
@@ -2171,6 +2251,7 @@ export class HostileAttackDirector {
             projectileDefinition: attackEntry.projectileDefinition,
             phaseOffsetTicks,
             nextEligibleFixedTick,
+            nextPriorityControlFixedTick: createdAtTick,
             shotSequence: 0,
             pendingCommandId: null,
             lastAttemptedFixedTick: 0,

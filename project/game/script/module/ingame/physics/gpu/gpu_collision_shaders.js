@@ -164,7 +164,7 @@ const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 // Arrow의 Tower direct ownership은 다음 fixed tick 전에 SDF route clearance를
 // 통과해야 합니다. 이 상한은 자료/ABI가 아니라 shader-local deterministic budget입니다.
 const ENEMY_CHARGE_VISIBILITY_MAX_STEPS: u32 = 48u;
-const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 0.5;
+const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 10.0;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
 const BODY_LAYER_TERRAIN: u32 = ${GPU_CIRCLE_BODY_LAYER.TERRAIN}u;
@@ -979,23 +979,31 @@ fn clear_body_control_states(@builtin(global_invocation_id) global_id: vec3u) {
     if (body_id >= counts.body_count) {
         return;
     }
-    body_control_states.values[body_id] = BodyControlState(
-        vec2f(0.0),
-        INVALID_IDENTITY_COMPONENT,
-        INVALID_IDENTITY_COMPONENT,
-        0u,
-        0u,
-        0u,
-        BODY_CONTROL_RESULT_PENDING,
-        BODY_CONTROL_SELECTED_TARGET_NONE,
-        INVALID_IDENTITY_COMPONENT,
-        INVALID_IDENTITY_COMPONENT,
-        INVALID_IDENTITY_COMPONENT,
-        0u,
-        BODY_CONTROL_SELECTION_POLICY_NONE,
-        0.0,
-        0u
-    );
+    let previous = body_control_states.values[body_id];
+    let retain_priority_state = previous.source_tick != 0u
+        && previous.selection_policy
+            == BODY_CONTROL_SELECTION_POLICY_CORE_FIRST_IN_RANGE_THEN_TOWER
+        && previous.entity_id == simulations.values[body_id].entity_id
+        && previous.incarnation == simulations.values[body_id].incarnation;
+    if (!retain_priority_state) {
+        body_control_states.values[body_id] = BodyControlState(
+            vec2f(0.0),
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            0u,
+            0u,
+            0u,
+            BODY_CONTROL_RESULT_PENDING,
+            BODY_CONTROL_SELECTED_TARGET_NONE,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            INVALID_IDENTITY_COMPONENT,
+            0u,
+            BODY_CONTROL_SELECTION_POLICY_NONE,
+            0.0,
+            0u
+        );
+    }
     atomicAnd(
         &simulations.values[body_id].flags,
         ~(BODY_FLAG_CONTROLLED_THIS_TICK
@@ -1286,11 +1294,42 @@ fn apply_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
         || control_state.incarnation != simulations.values[body_id].incarnation) {
         return;
     }
-    if ((control_state.state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
-        physics.values[body_id].velocity = vec2f(0.0);
+    if (control_state.source_tick != 0u) {
+        if ((control_state.state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
+            let selected_target_still_in_range = exact_living_body(
+                    control_state.selected_target_slot,
+                    control_state.selected_target_entity_id,
+                    control_state.selected_target_incarnation
+                ) && exact_target_is_in_range(
+                    body_id,
+                    control_state.selected_target_slot,
+                    control_state.attack_range
+                );
+            if (selected_target_still_in_range) {
+                physics.values[body_id].velocity = vec2f(0.0);
+                atomicOr(
+                    &simulations.values[body_id].flags,
+                    BODY_FLAG_CONTROLLED_THIS_TICK
+                );
+                return;
+            }
+            body_control_states.values[body_id].result
+                = BODY_CONTROL_RESULT_NO_TARGET;
+            body_control_states.values[body_id].selected_target_kind
+                = BODY_CONTROL_SELECTED_TARGET_NONE;
+            body_control_states.values[body_id].selected_target_slot
+                = INVALID_IDENTITY_COMPONENT;
+            body_control_states.values[body_id].selected_target_entity_id
+                = INVALID_IDENTITY_COMPONENT;
+            body_control_states.values[body_id].selected_target_incarnation
+                = INVALID_IDENTITY_COMPONENT;
+            body_control_states.values[body_id].state_flags
+                = BODY_CONTROL_STATE_FLAG_ROUTE_FLOW;
+        }
         return;
     }
-    if (control_state.source_tick != 0u) {
+    if ((control_state.state_flags & BODY_CONTROL_STATE_FLAG_STOP) != 0u) {
+        physics.values[body_id].velocity = vec2f(0.0);
         return;
     }
     var velocity = physics.values[body_id].velocity;
@@ -3673,14 +3712,7 @@ fn find_maximum_damage_window_candidate(
         contact_index += 1u) {
         let contact = contacts.values[contact_index];
         let marker = bitcast<u32>(contact.normal.y);
-        var policy_event_flag = maximum_damage_window_policy_from_marker(marker);
-        if (policy_event_flag == 0u) {
-            policy_event_flag = selected_target_tower_policy_from_marker(marker);
-            if (policy_event_flag == 0u
-                || !selected_target_tower_candidate_is_valid(contact)) {
-                continue;
-            }
-        }
+        let policy_event_flag = maximum_damage_window_policy_from_marker(marker);
         if (policy_event_flag == 0u
             || contact.other_body_id < 0
             || u32(contact.other_body_id) != target_body_id
@@ -4407,7 +4439,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         ) == BODY_LAYER_PLAYER_DAMAGEABLE) {
         // Tower 후보는 여기서 program state를 읽지 않고 marker만 남깁니다.
         // 전용 <=9-storage pass가 program/team/identity/policy/budget을 exact
-        // 검증한 뒤에만 standard window marker로 승격합니다.
+        // 검증한 뒤 self budget을 reserve하고 Tower HP에 direct 적용합니다.
+        // 성공분만 policy/target-died event로 emit하며 window marker로 승격하지 않습니다.
         mark_selected_target_tower_candidate(
             contact_index,
             resolve_contact_source_modified_damage(
@@ -4703,9 +4736,9 @@ fn preflight_core_damage_requests(
     if (contact_index >= contact_count) {
         return;
     }
-    if (core_damage_request_candidate_is_valid(
-        contacts.values[contact_index]
-    )) {
+    let contact = contacts.values[contact_index];
+    if (core_damage_request_candidate_is_valid(contact)
+        || selected_target_tower_candidate_is_valid(contact)) {
         atomicAdd(&contact_state.core_damage_request_event_count, 1u);
     }
 }
@@ -4762,18 +4795,41 @@ fn resolve_core_damage_requests(
     let contact = contacts.values[contact_index];
     if (selected_target_tower_candidate_is_valid(contact)) {
         let self_body_id = contact.self_body_id;
+        let other_body_id = u32(contact.other_body_id);
         let handler = contact_handlers.values[self_body_id];
         let damage_self = max(i32(handler.damage_self * 100.0), 0);
         if (!reserve_self_hit_budget(self_body_id, damage_self)) {
             return;
         }
-        mark_maximum_damage_window_candidate(
-            contact_index,
-            bitcast<i32>(contact.normal.x),
-            selected_target_tower_policy_from_marker(
-                bitcast<u32>(contact.normal.y)
-            )
+        let damage = apply_target_damage(
+            other_body_id,
+            bitcast<i32>(contact.normal.x)
         );
+        if (damage.applied <= 0) {
+            if (damage_self > 0) {
+                atomicAdd(&simulations.values[self_body_id].health, damage_self);
+            }
+            return;
+        }
+        let policy_event_flag = selected_target_tower_policy_from_marker(
+            bitcast<u32>(contact.normal.y)
+        );
+        let target_died_flag = select(
+            0u,
+            APPLIED_EVENT_FLAG_TARGET_DIED,
+            damage.target_died != 0u
+        );
+        append_applied_event(AppliedEvent(
+            simulations.values[self_body_id].entity_id,
+            contact.self_incarnation,
+            simulations.values[other_body_id].entity_id,
+            contact.other_incarnation,
+            damage.applied,
+            APPLIED_EVENT_TYPE_DAMAGE_APPLIED
+                | policy_event_flag
+                | target_died_flag,
+            contact.world_position
+        ));
         return;
     }
     if (!core_damage_request_candidate_is_valid(contact)) {
@@ -5904,6 +5960,7 @@ fn vertex_main(
         effect_identity_matches
     );
     if (effect_identity_matches
+        && behavior.program_id != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
         && (effect_summary.presentation_tags & EFFECT_PRESENTATION_TAG_PULSE) != 0u) {
         presentation_radius_scale *= 1.0
             + (0.16 * clamp(effect_summary.presentation_magnitude, 0.0, 1.0));
@@ -5912,7 +5969,6 @@ fn vertex_main(
         && behavior.state == ENEMY_BEHAVIOR_STATE_WINDUP) {
         if (behavior.telegraph_style_code != 0u) {
             presentation_color = unpack_rgba8(behavior.telegraph_color_rgba8);
-            presentation_radius_scale *= behavior.telegraph_radius_scale;
         }
         if ((behavior.flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
             && behavior.target_slot < counts.body_count

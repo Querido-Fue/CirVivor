@@ -16,8 +16,17 @@ const {
     writeGpuCircleBodySpawn
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 
-const { GPU_COLLISION_COMPUTE_WGSL } = await loadGameModule(
+const {
+    GPU_COLLISION_COMPUTE_WGSL,
+    GPU_COLLISION_RENDER_WGSL
+} = await loadGameModule(
     'ingame/physics/gpu/gpu_collision_shaders.js'
+);
+const {
+    MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES
+} = await loadGameModule('data/object/enemy/enemy_profile_catalog_data.js');
+const { THE_TOWER_DATA } = await loadGameModule(
+    'data/object/tower/the_tower_data.js'
 );
 const {
     GAMEPLAY_DAMAGE_POLICY_ID,
@@ -32,6 +41,14 @@ const ABI_SOURCE = await readFile(new URL(
     '../script/module/ingame/physics/gpu/gpu_circle_body_abi.js',
     import.meta.url
 ), 'utf8');
+const ENEMY_BACKEND_SOURCE = await readFile(new URL(
+    '../script/module/ingame/object/enemy/enemy_simulation_backend.js',
+    import.meta.url
+), 'utf8');
+const NW_RUNNER_SOURCE = await readFile(new URL(
+    './nw_webgpu_capability/runner.js',
+    import.meta.url
+), 'utf8');
 
 const CHARGE_CONFIG = Object.freeze({
     programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
@@ -44,10 +61,10 @@ const CHARGE_CONFIG = Object.freeze({
     recoverTicks: 30,
     telegraphStyleCode: 1,
     telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
-    telegraphRadiusScale: 1.35
+    telegraphRadiusScale: 1
 });
 
-const EXPO_OUT_LAMBDA = 0.5;
+const EXPO_OUT_LAMBDA = 10;
 
 function normalizedBoundedExpoOut(progress) {
     const boundedProgress = Math.min(Math.max(progress, 0), 1);
@@ -251,7 +268,7 @@ test('Arrow SDF 가시성은 route ownership/WINDUP/terrain CHARGE 회복을 분
     );
 });
 
-test('Arrow charge/recoil Expo-out은 fixed tick endpoint와 first-last monotonic을 고정한다', () => {
+test('Arrow charge/recoil λ=10 Expo-out은 exact samples, endpoint, SDF/Tower no-skip을 고정한다', () => {
     assert.equal(normalizedBoundedExpoOut(0), 0);
     assert.equal(normalizedBoundedExpoOut(1), 1);
     const fixedDelta = 1 / 60;
@@ -265,10 +282,37 @@ test('Arrow charge/recoil Expo-out은 fixed tick endpoint와 first-last monotoni
         durationTicks: CHARGE_CONFIG.recoilTicks - 1,
         fixedDelta
     });
-    assert.ok(
-        charge[0] < (1 / 8),
-        `charge first fixed-tick displacement must stay below 1/8: ${charge[0]}`
-    );
+    const exactSamples = Object.freeze({
+        charge: Object.freeze({
+            k0: 0.6552475813741501,
+            k1: 0.5837592303107873,
+            middle: 0.02047648691794235,
+            last: 0.0007182524827524794
+        }),
+        recoil: Object.freeze({
+            k0: 0.34315337792597783,
+            k1: 0.18273622373564335,
+            middle: 0.014695017792215683,
+            last: 0.0006292916281888402
+        })
+    });
+    for (const [label, displacements] of Object.entries({ charge, recoil })) {
+        const expected = exactSamples[label];
+        assertNear(displacements[0], expected.k0, 0.000000000001, `${label} k0`);
+        assertNear(displacements[1], expected.k1, 0.000000000001, `${label} k1`);
+        assertNear(
+            displacements[Math.floor(displacements.length / 2)],
+            expected.middle,
+            0.000000000001,
+            `${label} middle`
+        );
+        assertNear(
+            displacements.at(-1),
+            expected.last,
+            0.000000000001,
+            `${label} last`
+        );
+    }
     assertNear(
         charge.reduce((sum, displacement) => sum + displacement, 0),
         CHARGE_CONFIG.chargeSpeedTilesPerSecond
@@ -294,13 +338,107 @@ test('Arrow charge/recoil Expo-out은 fixed tick endpoint와 first-last monotoni
             );
         }
     }
+    const maximumRelativeTowerStep = charge[0]
+        + (THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND * fixedDelta);
+    const towerInteractionInterval = 2 * (
+        MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES + THE_TOWER_DATA.RADIUS_TILES
+    );
+    assert.ok(
+        maximumRelativeTowerStep < towerInteractionInterval,
+        `λ=10 first step must not skip the full Arrow/Tower overlap interval: ${JSON.stringify({
+            maximumRelativeTowerStep,
+            towerInteractionInterval
+        })}`
+    );
+    assert.match(
+        ENEMY_BACKEND_SOURCE,
+        /const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 \/ 8;/u
+    );
+    const minimumSdfMarchStepTiles = (1 / 8) * 0.25;
+    assert.ok(
+        Math.ceil(charge[0] / minimumSdfMarchStepTiles) < 48,
+        `λ=10 first segment must fit the bounded production SDF marcher: ${charge[0]}`
+    );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 0\.5;[\s\S]*?fn normalized_bounded_expo_out[\s\S]*?exp2\(-ENEMY_CHARGE_EXPO_OUT_LAMBDA \* bounded_progress\)/u
+        /const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 10\.0;[\s\S]*?fn normalized_bounded_expo_out[\s\S]*?exp2\(-ENEMY_CHARGE_EXPO_OUT_LAMBDA \* bounded_progress\)/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
         /fn enemy_charge_expo_out_velocity[\s\S]*?normalized_bounded_expo_out\(end_progress\)[\s\S]*?normalized_bounded_expo_out\(start_progress\)/u
+    );
+    assert.match(
+        NW_RUNNER_SOURCE,
+        /const ARROW_EXPO_OUT_LAMBDA_F32 = Math\.fround\(10\);[\s\S]*?async function runProductionEnemyArrowExpoOracleHardwareSmoke/u
+    );
+    assert.match(
+        NW_RUNNER_SOURCE,
+        /sampleIndexes = Object\.freeze\(\{ k0: 0, k1: 1, middle: 30, end: 59 \}\)[\s\S]*?Math\.abs\(totalProjectedDistance - 6\) <= 0\.005[\s\S]*?minimumTowerClearance > 2[\s\S]*?noSkippedElapsedTicks: true/u
+    );
+    assert.match(
+        NW_RUNNER_SOURCE,
+        /for \(let tick = 31; tick <= 90; tick\+\+\)[\s\S]*?arrow-expo-oracle:tower-evade:\$\{tick\}[\s\S]*?towerClearance: towerSeparation - overlapDistance/u
+    );
+    assert.match(
+        NW_RUNNER_SOURCE,
+        /expectedRecoilMiddle = expectedArrowExpoOutSpeedF32\(4, 11, 5\)[\s\S]*?expectedRecoilEnd = expectedArrowExpoOutSpeedF32\(4, 11, 10\)[\s\S]*?Arrow recoil normalized total endpoint/u
+    );
+    const deterministicContactGeometry = NW_RUNNER_SOURCE.indexOf(
+        'const arrowPosition = Object.freeze({ x: 5.6, y: 8 });'
+    );
+    const tick37Prime = NW_RUNNER_SOURCE.indexOf(
+        "'arrow-charge:window-maximum-projectile'",
+        deterministicContactGeometry
+    );
+    const tick37Submit = NW_RUNNER_SOURCE.indexOf(
+        "let latest = await submitTick(37, 'Arrow charge Tower stop')",
+        tick37Prime
+    );
+    assert.ok(
+        deterministicContactGeometry >= 0
+            && tick37Prime > deterministicContactGeometry
+            && tick37Submit > tick37Prime,
+        'λ=10 first contact candidate must be primed before tick 37 GPU submit'
+    );
+});
+
+test('Arrow 본체 반경은 WINDUP/effect tag와 무관하고 telegraph는 color/halo만 바꾼다', () => {
+    const pulseStart = GPU_COLLISION_RENDER_WGSL.indexOf(
+        'if (effect_identity_matches'
+    );
+    const arrowWindupStart = GPU_COLLISION_RENDER_WGSL.indexOf(
+        'if (behavior.program_id == ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE'
+    );
+    const directionalDefenseStart = GPU_COLLISION_RENDER_WGSL.indexOf(
+        'let directional_defense_active',
+        arrowWindupStart
+    );
+    assert.ok(
+        pulseStart >= 0
+            && arrowWindupStart > pulseStart
+            && directionalDefenseStart > arrowWindupStart
+    );
+    const pulseBlock = GPU_COLLISION_RENDER_WGSL.slice(
+        pulseStart,
+        arrowWindupStart
+    );
+    const arrowWindupBlock = GPU_COLLISION_RENDER_WGSL.slice(
+        arrowWindupStart,
+        directionalDefenseStart
+    );
+    assert.match(
+        pulseBlock,
+        /behavior\.program_id != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE/u
+    );
+    assert.match(arrowWindupBlock, /presentation_color = unpack_rgba8/u);
+    assert.doesNotMatch(arrowWindupBlock, /presentation_radius_scale/u);
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /let world_position = body_position[\s\S]*?local \* body\.radius \* presentation_radius_scale/u
+    );
+    assert.match(
+        NW_RUNNER_SOURCE,
+        /assertArrowSizeInvariant[\s\S]*?BASIC_ARROW_ENEMY_DATA\.collisionRadiusTiles[\s\S]*?behavior\?\.telegraphRadiusScale === 1/u
     );
 });
 

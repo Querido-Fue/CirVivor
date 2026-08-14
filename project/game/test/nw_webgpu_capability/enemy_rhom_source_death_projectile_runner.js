@@ -8,11 +8,21 @@ import {
     HOSTILE_RHOM_PROJECTILE_DATA
 } from './production/script/data/object/projectile/hostile_rhom_projectile_data.js';
 import {
-    THE_TOWER_COMBAT_DATA
+    THE_TOWER_COMBAT_DATA,
+    THE_TOWER_DATA
 } from './production/script/data/object/tower/the_tower_data.js';
 import {
+    createGpuProjectileSpawnIntent,
     createGpuSimulationEndpoint
 } from './production/script/module/ingame/gpu_simulation_endpoint.js';
+import {
+    GAMEPLAY_ALLEGIANCE_POLICY,
+    GAMEPLAY_DAMAGE_POLICY_ID,
+    GAMEPLAY_TEAM_ID
+} from './production/script/module/ingame/contract/gameplay_team_contract.js';
+import {
+    PROJECTILE_TARGET_POLICY_ID
+} from './production/script/module/ingame/contract/projectile_target_policy_contract.js';
 import {
     createGpuEnemySpawnIntent
 } from './production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js';
@@ -34,8 +44,32 @@ const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
 const FIXED_DELTA = 1 / 60;
 const SOURCE_DEATH_TICK = 4;
-const FIRST_PROJECTILE_TICK = SOURCE_DEATH_TICK + 1;
+const WINDOW_PRIME_SPAWN_TICK = SOURCE_DEATH_TICK + 1;
+const WINDOW_PRIME_PUBLICATION_TICK = WINDOW_PRIME_SPAWN_TICK + 1;
+const FIRST_PROJECTILE_TICK = WINDOW_PRIME_PUBLICATION_TICK + 1;
 const LAST_PROJECTILE_TICK = 48;
+const WINDOW_PRIME_PROJECTILE_DATA = Object.freeze({
+    id: 'nw-rhom-maximum-window-prime-projectile',
+    collisionRadius: HOSTILE_RHOM_PROJECTILE_DATA.collisionRadius,
+    inverseMass: 1,
+    penetration: 1,
+    damage: HOSTILE_RHOM_PROJECTILE_DATA.damage,
+    damageSelf: 1,
+    lifetimeSeconds: 1,
+    killOnTerrain: false,
+    closestOnly: true,
+    visible: false
+});
+const WINDOW_PRIME_PRODUCER_ID = 'nw-rhom-maximum-window-prime';
+const WINDOW_PRIME_SOURCE_ABILITY_ID = 'fixture.rhom.maximum-window-prime';
+const WINDOW_PRIME_ENTRY_MARGIN = 0.07;
+const WINDOW_PRIME_SPEED = 12;
+const WINDOW_PRIME_CONTACT_RADIUS = THE_TOWER_DATA.RADIUS_TILES
+    + WINDOW_PRIME_PROJECTILE_DATA.collisionRadius;
+const WINDOW_PRIME_START_DISTANCE = WINDOW_PRIME_CONTACT_RADIUS
+    + WINDOW_PRIME_ENTRY_MARGIN;
+const WINDOW_PRIME_PREDICTED_DISTANCE = WINDOW_PRIME_START_DISTANCE
+    - (WINDOW_PRIME_SPEED * FIXED_DELTA);
 
 function assert(condition, message) {
     if (!condition) {
@@ -321,6 +355,37 @@ function createSelectedProjectileIntent(sourceHandle, coreHandle, towerHandle) {
         producerId: BASIC_RHOM_ATTACK_DATA.producerId,
         sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId,
         spawnSequence: 1
+    });
+}
+
+function createWindowPrimeEntryGeometry(targetPosition) {
+    const startPosition = Object.freeze({
+        x: targetPosition.x - WINDOW_PRIME_START_DISTANCE,
+        y: targetPosition.y
+    });
+    const velocity = Object.freeze({ x: WINDOW_PRIME_SPEED, y: 0 });
+    return Object.freeze({
+        targetPosition: Object.freeze({ ...targetPosition }),
+        startPosition,
+        velocity,
+        contactRadius: WINDOW_PRIME_CONTACT_RADIUS,
+        previousDistance: WINDOW_PRIME_START_DISTANCE,
+        predictedDistance: WINDOW_PRIME_PREDICTED_DISTANCE
+    });
+}
+
+function createWindowPrimeProjectileIntent(entryGeometry) {
+    return createGpuProjectileSpawnIntent({
+        definition: WINDOW_PRIME_PROJECTILE_DATA,
+        position: entryGeometry.startPosition,
+        velocity: entryGeometry.velocity,
+        producerId: WINDOW_PRIME_PRODUCER_ID,
+        sourceAbilityId: WINDOW_PRIME_SOURCE_ABILITY_ID,
+        teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
+        damagePolicyId: GAMEPLAY_DAMAGE_POLICY_ID.DEFAULT_TEAM_MATRIX,
+        targetPolicyId: PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN,
+        spawnSequence: 0
     });
 }
 
@@ -708,6 +773,178 @@ async function runRhomSourceDeathProjectileFixture(device) {
             coreAfterSourceDeath
         })}`);
 
+        const sourceDeathPublication
+            = await commitCompletedEndpointEventsAtFixedBoundary(
+                endpoint,
+                WINDOW_PRIME_SPAWN_TICK,
+                'Rhom source-death completion before window prime'
+            );
+        assert(sourceDeathPublication.events.contactEvents.length === 0
+            && sourceDeathPublication.events.deathEvents.length === 0,
+        `source-death completion emitted premature events: ${JSON.stringify(
+            sourceDeathPublication
+        )}`);
+
+        const windowPrimeEntryGeometry = createWindowPrimeEntryGeometry(
+            targetAfterSourceDeath.position
+        );
+        assert(windowPrimeEntryGeometry.previousDistance
+                > windowPrimeEntryGeometry.contactRadius
+            && windowPrimeEntryGeometry.predictedDistance > 0
+            && windowPrimeEntryGeometry.predictedDistance
+                < windowPrimeEntryGeometry.contactRadius,
+        `Maximum Damage Window prime enter-only geometry mismatch: ${JSON.stringify(
+            windowPrimeEntryGeometry
+        )}`);
+        const windowPrimeRequest = endpoint.requestSpawn(
+            createWindowPrimeProjectileIntent(windowPrimeEntryGeometry),
+            WINDOW_PRIME_SPAWN_TICK,
+            'rhom-source-death:maximum-window-prime'
+        );
+        assert(windowPrimeRequest.accepted === true,
+            `Maximum Damage Window prime ingress rejected: ${JSON.stringify(
+                windowPrimeRequest
+            )}`);
+        const windowPrimeCommit = endpoint.commitAtFixedBoundary(
+            WINDOW_PRIME_SPAWN_TICK
+        );
+        const windowPrimeSpawn = windowPrimeCommit.spawned.find(({ commandId }) => (
+            commandId === 'rhom-source-death:maximum-window-prime'
+        ));
+        assert(windowPrimeSpawn?.handle
+            && windowPrimeCommit.rejected.length === 0
+            && !windowPrimeCommit.recoveryRequired,
+        `Maximum Damage Window prime commit mismatch: ${JSON.stringify(
+            windowPrimeCommit
+        )}`);
+        const windowPrimeProjectileHandle = windowPrimeSpawn.handle;
+        assert(endpoint.fixedUpdate(FIXED_DELTA, WINDOW_PRIME_SPAWN_TICK),
+            'Maximum Damage Window prime fixed submit failed');
+        await settleEndpoint(endpoint, 'Rhom Maximum Damage Window prime');
+        const windowPrimeBodies = await readBodies(
+            endpoint,
+            'Rhom Maximum Damage Window prime'
+        );
+        const targetAfterWindowPrime = findBody(
+            windowPrimeBodies,
+            targetTowerHandle,
+            'target Tower after Maximum Damage Window prime'
+        );
+        const wrongAfterWindowPrime = findBody(
+            windowPrimeBodies,
+            wrongTowerHandle,
+            'wrong Tower after Maximum Damage Window prime'
+        );
+        const coreAfterWindowPrime = findBody(
+            windowPrimeBodies,
+            coreHandle,
+            'Core after Maximum Damage Window prime'
+        );
+        const expectedWindowExpiry = WINDOW_PRIME_SPAWN_TICK
+            + THE_TOWER_COMBAT_DATA.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS;
+        assertNear(
+            targetAfterWindowPrime.health,
+            THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
+            0.000001,
+            'Tower HP after Maximum Damage Window prime'
+        );
+        assert(targetAfterWindowPrime.combatState?.peakFinalDamageFixedPoint
+                === targetDamageFixedPoint
+            && targetAfterWindowPrime.combatState?.expiresAtFixedTick
+                === expectedWindowExpiry
+            && targetAfterWindowPrime.combatState?.peakSourceEntityId
+                === windowPrimeProjectileHandle.entityId
+            && targetAfterWindowPrime.combatState?.peakSourceIncarnation
+                === windowPrimeProjectileHandle.incarnation
+            && wrongAfterWindowPrime.health === initialWrongTower.health
+            && coreAfterWindowPrime.health === initialCore.health
+            && containsBody(windowPrimeBodies, projectileHandle)
+            && !containsBody(windowPrimeBodies, sourceHandle),
+        `Maximum Damage Window prime GPU state mismatch: ${JSON.stringify({
+            targetAfterWindowPrime,
+            wrongAfterWindowPrime,
+            coreAfterWindowPrime,
+            windowPrimeBodies,
+            expectedWindowExpiry
+        })}`);
+        const windowPrimeState = Object.freeze({
+            peakFinalDamageFixedPoint:
+                targetAfterWindowPrime.combatState.peakFinalDamageFixedPoint,
+            expiresAtFixedTick: targetAfterWindowPrime.combatState.expiresAtFixedTick,
+            peakSourceEntityId:
+                targetAfterWindowPrime.combatState.peakSourceEntityId,
+            peakSourceIncarnation:
+                targetAfterWindowPrime.combatState.peakSourceIncarnation
+        });
+
+        const windowPrimePublication
+            = await commitCompletedEndpointEventsAtFixedBoundary(
+                endpoint,
+                WINDOW_PRIME_PUBLICATION_TICK,
+                'Rhom Maximum Damage Window prime publication'
+            );
+        const windowPrimeDamageEvent = windowPrimePublication.events.contactEvents.find(
+            (event) => event.eventType === 'damage-applied'
+                && isExactContact(
+                    event,
+                    windowPrimeProjectileHandle,
+                    targetTowerHandle
+                )
+        );
+        const windowPrimeDeath = windowPrimePublication.events.deathEvents.find(
+            (event) => exactHandle(event, windowPrimeProjectileHandle)
+        );
+        assert(windowPrimeDamageEvent
+            && windowPrimeDamageEvent.damageFixedPoint === targetDamageFixedPoint
+            && windowPrimeDamageEvent.valueFixedPoint === targetDamageFixedPoint
+            && windowPrimeDamageEvent.maximumDamageWindow === true
+            && windowPrimeDamageEvent.sourceTick === WINDOW_PRIME_SPAWN_TICK
+            && windowPrimeDeath,
+        `Maximum Damage Window prime event mismatch: ${JSON.stringify(
+            windowPrimePublication
+        )}`);
+        const windowPrimeCleanupCommit = endpoint.commitAtFixedBoundary(
+            WINDOW_PRIME_PUBLICATION_TICK
+        );
+        assert(windowPrimeCleanupCommit.despawned.length === 1
+            && exactHandle(
+                windowPrimeCleanupCommit.despawned[0].handle,
+                windowPrimeProjectileHandle
+            )
+            && windowPrimeCleanupCommit.despawned[0].reason === 'gpu-death'
+            && !windowPrimeCleanupCommit.recoveryRequired
+            && endpoint.getRegistry().has(windowPrimeProjectileHandle) === false
+            && endpoint.hasBody(windowPrimeProjectileHandle) === false,
+        `Maximum Damage Window prime cleanup mismatch: ${JSON.stringify(
+            windowPrimeCleanupCommit
+        )}`);
+        assert(endpoint.fixedUpdate(FIXED_DELTA, WINDOW_PRIME_PUBLICATION_TICK),
+            'Maximum Damage Window primed continuation fixed submit failed');
+        await settleEndpoint(endpoint, 'Rhom Maximum Damage Window primed continuation');
+        lastBodies = await readBodies(
+            endpoint,
+            'Rhom Maximum Damage Window primed continuation'
+        );
+        const primedTargetBeforeRhomImpact = findBody(
+            lastBodies,
+            targetTowerHandle,
+            'primed target Tower before Rhom impact'
+        );
+        assert(primedTargetBeforeRhomImpact.health
+                === THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage
+            && primedTargetBeforeRhomImpact.combatState?.peakFinalDamageFixedPoint
+                === windowPrimeState.peakFinalDamageFixedPoint
+            && primedTargetBeforeRhomImpact.combatState?.expiresAtFixedTick
+                === windowPrimeState.expiresAtFixedTick
+            && containsBody(lastBodies, projectileHandle)
+            && !containsBody(lastBodies, sourceHandle)
+            && !containsBody(lastBodies, windowPrimeProjectileHandle),
+        `primed Tower/source-dead Rhom continuation mismatch: ${JSON.stringify({
+            primedTargetBeforeRhomImpact,
+            lastBodies,
+            windowPrimeState
+        })}`);
+
         const allContactEvents = [];
         let impactBoundary = null;
         let cleanupCommit = null;
@@ -743,7 +980,7 @@ async function runRhomSourceDeathProjectileFixture(device) {
                     'Core at projectile impact'
                 );
                 assertNear(targetAfterImpact.health,
-                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
+                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - (targetDamage * 2),
                     0.000001,
                     'Tower HP after source-dead Rhom projectile');
                 assertNear(wrongAfterImpact.health,
@@ -753,14 +990,18 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 assert(coreAfterImpact.health === initialCore.health
                     && projectileTowerHit.damageFixedPoint === targetDamageFixedPoint
                     && projectileTowerHit.valueFixedPoint === targetDamageFixedPoint
-                    && projectileTowerHit.maximumDamageWindow === true
+                    && projectileTowerHit.maximumDamageWindow === false
                     && projectileTowerHit.damage === targetDamage
                     && targetAfterImpact.combatState?.peakFinalDamageFixedPoint
-                        === targetDamageFixedPoint
+                        === windowPrimeState.peakFinalDamageFixedPoint
+                    && targetAfterImpact.combatState?.expiresAtFixedTick
+                        === windowPrimeState.expiresAtFixedTick
                     && targetAfterImpact.combatState?.peakSourceEntityId
-                        === projectileHandle.entityId
+                        === windowPrimeState.peakSourceEntityId
                     && targetAfterImpact.combatState?.peakSourceIncarnation
-                        === projectileHandle.incarnation
+                        === windowPrimeState.peakSourceIncarnation
+                    && projectileTowerHit.sourceTick
+                        < windowPrimeState.expiresAtFixedTick
                     && !containsBody(lastBodies, projectileHandle),
                 `source-dead Rhom projectile Tower impact mismatch: ${JSON.stringify({
                     projectileTowerHit,
@@ -803,7 +1044,7 @@ async function runRhomSourceDeathProjectileFixture(device) {
                     'Core after projectile terminal cleanup'
                 );
                 assertNear(finalTarget.health,
-                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
+                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - (targetDamage * 2),
                     0.000001,
                     'Tower HP after projectile terminal cleanup');
                 assertNear(finalWrong.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH,
@@ -892,7 +1133,7 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 && event.incarnation === projectileHandle.incarnation
         ));
         return Object.freeze({
-            scenario: 'rhom-tower-selected-projectile-survives-source-death',
+            scenario: 'rhom-tower-selected-direct-projectile-survives-source-death',
             launch: Object.freeze({
                 sourceHandle: copyHandle(sourceHandle),
                 projectileHandle: copyHandle(projectileHandle),
@@ -921,9 +1162,31 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 snapshot: afterSourceDeathSnapshot,
                 authority: authorityAfterSourceDeath
             }),
+            windowPrime: Object.freeze({
+                spawnTick: WINDOW_PRIME_SPAWN_TICK,
+                publicationTick: WINDOW_PRIME_PUBLICATION_TICK,
+                projectileHandle: copyHandle(windowPrimeProjectileHandle),
+                entryGeometry: windowPrimeEntryGeometry,
+                targetHpBefore: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+                targetHpAfter: targetAfterWindowPrime.health,
+                damageFixedPoint: windowPrimeDamageEvent.damageFixedPoint,
+                maximumDamageWindow: windowPrimeDamageEvent.maximumDamageWindow,
+                peakFinalDamageFixedPoint:
+                    windowPrimeState.peakFinalDamageFixedPoint,
+                expiresAtFixedTick: windowPrimeState.expiresAtFixedTick,
+                peakSourceEntityId: windowPrimeState.peakSourceEntityId,
+                peakSourceIncarnation: windowPrimeState.peakSourceIncarnation,
+                projectileDeath: Object.freeze({
+                    reason: windowPrimeDeath.reason,
+                    sourceTick: windowPrimeDeath.sourceTick,
+                    disposition: windowPrimeDeath.disposition
+                }),
+                terminalCleanupExact: true
+            }),
             impact: Object.freeze({
                 boundaryTick: impactBoundary.tick,
-                targetHpBefore: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+                sourceTick: impactBoundary.projectileTowerHit.sourceTick,
+                targetHpBefore: targetAfterWindowPrime.health,
                 targetHpAfter: targetAfterImpact.health,
                 wrongTowerHpBefore: THE_TOWER_COMBAT_DATA.MAX_HEALTH,
                 wrongTowerHpAfter: wrongAfterImpact.health,
@@ -933,7 +1196,27 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 wrongTowerUnchanged: true,
                 noSourceRevalidation: true,
                 projectileDamageFixedPoint: targetDamageFixedPoint,
-                maximumDamageWindow: true,
+                maximumDamageWindow: false,
+                directDiscreteDamage: true,
+                windowActiveBeforeImpact:
+                    impactBoundary.projectileTowerHit.sourceTick
+                        < windowPrimeState.expiresAtFixedTick,
+                windowPeakBeforeImpactFixedPoint:
+                    windowPrimeState.peakFinalDamageFixedPoint,
+                windowPeakAfterImpactFixedPoint:
+                    targetAfterImpact.combatState.peakFinalDamageFixedPoint,
+                windowExpiryBeforeImpact: windowPrimeState.expiresAtFixedTick,
+                windowExpiryAfterImpact:
+                    targetAfterImpact.combatState.expiresAtFixedTick,
+                windowStatePreserved:
+                    targetAfterImpact.combatState.peakFinalDamageFixedPoint
+                        === windowPrimeState.peakFinalDamageFixedPoint
+                    && targetAfterImpact.combatState.expiresAtFixedTick
+                        === windowPrimeState.expiresAtFixedTick
+                    && targetAfterImpact.combatState.peakSourceEntityId
+                        === windowPrimeState.peakSourceEntityId
+                    && targetAfterImpact.combatState.peakSourceIncarnation
+                        === windowPrimeState.peakSourceIncarnation,
                 projectileSelfBudgetBefore: HOSTILE_RHOM_PROJECTILE_DATA.penetration,
                 projectileDeath: Object.freeze({
                     reason: projectileDeath.reason,

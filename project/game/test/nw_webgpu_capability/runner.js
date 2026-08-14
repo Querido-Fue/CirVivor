@@ -9242,12 +9242,422 @@ async function runProductionEnemyArrowWallVisibilityHardwareSmoke(device) {
     }
 }
 
+const ARROW_EXPO_OUT_LAMBDA_F32 = Math.fround(10);
+
+function normalizedArrowExpoOutF32(progress) {
+    const boundedProgress = Math.min(Math.max(Math.fround(progress), 0), 1);
+    if (boundedProgress <= 0) return 0;
+    if (boundedProgress >= 1) return 1;
+    const denominator = Math.fround(
+        1 - Math.fround(2 ** Math.fround(-ARROW_EXPO_OUT_LAMBDA_F32))
+    );
+    return Math.fround(
+        Math.fround(
+            1 - Math.fround(2 ** Math.fround(
+                -ARROW_EXPO_OUT_LAMBDA_F32 * boundedProgress
+            ))
+        ) / denominator
+    );
+}
+
+function expectedArrowExpoOutSpeedF32(
+    speed,
+    durationTicks,
+    elapsedTicks,
+    fixedDelta = 1 / 60
+) {
+    const multiplyF32 = (left, right) => Math.fround(
+        Math.fround(left) * Math.fround(right)
+    );
+    const duration = Math.fround(Math.max(durationTicks, 1));
+    const elapsed = Math.min(Math.max(elapsedTicks, 0), durationTicks);
+    const nextElapsed = Math.min(elapsed + 1, durationTicks);
+    const normalizedDelta = Math.fround(
+        normalizedArrowExpoOutF32(Math.fround(nextElapsed / duration))
+        - normalizedArrowExpoOutF32(Math.fround(elapsed / duration))
+    );
+    return multiplyF32(
+        multiplyF32(
+            multiplyF32(
+                multiplyF32(speed, duration),
+                fixedDelta
+            ),
+            normalizedDelta
+        ),
+        1 / fixedDelta
+    );
+}
+
+/**
+ * 실제 GPU에서 contact 없는 Arrow CHARGE 전 구간을 끝까지 실행합니다. velocity뿐
+ * 아니라 적분된 position을 함께 읽어 k0/k1/mid/end, 총 endpoint, tick no-skip,
+ * physical radius/telegraph scale 불변을 독립적으로 고정합니다.
+ */
+async function runProductionEnemyArrowExpoOracleHardwareSmoke(device) {
+    const navigationSource = createPhase5ProjectileNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPhase3PlatformPort(device)
+    }, {
+        capacity: 2,
+        controlCommandCapacity: 1
+    });
+    const fixedDelta = 1 / 60;
+    const towerPosition = Object.freeze({ x: 8, y: 8 });
+    const arrowPosition = Object.freeze({ x: 5, y: 8 });
+    const submittedTicks = [];
+    const completedEvents = [];
+    const radiusSamples = [];
+    let towerHandle = null;
+    let arrowHandle = null;
+
+    const exactHandleMatches = (left, right) => (
+        left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation
+    );
+    const findBody = (bodies, handle, label) => findPhase5Body(
+        bodies,
+        handle,
+        `Arrow Expo oracle ${label}`
+    );
+    const submitTick = async (tick, label, { alreadyCommitted = false } = {}) => {
+        if (!alreadyCommitted) {
+            const commit = endpoint.commitAtFixedBoundary(tick);
+            assert(
+                !commit.recoveryRequired,
+                `${label} lifecycle/fixed commit 실패: ${JSON.stringify(commit)}`
+            );
+        }
+        assert(
+            !submittedTicks.includes(tick),
+            `${label} fixed tick을 두 번 submit하려 합니다: ${tick}`
+        );
+        assert(endpoint.fixedUpdate(fixedDelta, tick), `${label} fixed submit 실패`);
+        submittedTicks.push(tick);
+        await settlePhase5Endpoint(endpoint, label);
+        const bodies = await readPhase5Bodies(endpoint);
+        const completed = endpoint.commitCompletedEventsAtFixedBoundary(tick + 1);
+        assert(
+            completed.protocolFailure === null,
+            `${label} completed event protocol 실패: ${JSON.stringify(completed)}`
+        );
+        completedEvents.push(...completed.contactEvents);
+        return Object.freeze({ bodies, completed });
+    };
+    const assertArrowSizeInvariant = (body, tick) => {
+        const behavior = body.enemyBehaviorState;
+        const sample = Object.freeze({
+            tick,
+            radius: body.radius,
+            telegraphRadiusScale: behavior?.telegraphRadiusScale,
+            state: behavior?.state
+        });
+        radiusSamples.push(sample);
+        assertNear(
+            body.radius,
+            BASIC_ARROW_ENEMY_DATA.collisionRadiusTiles,
+            0.000001,
+            `Arrow Expo oracle tick ${tick} physical radius`
+        );
+        assert(
+            behavior?.telegraphRadiusScale === 1,
+            `Arrow Expo oracle tick ${tick} telegraphRadiusScale 불변 실패: ${JSON.stringify(sample)}`
+        );
+    };
+
+    try {
+        assert(
+            endpoint.init(navigationSource) === false,
+            'Arrow Expo oracle endpoint는 첫 spawn 전 deferred여야 합니다.'
+        );
+        const requests = [
+            endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: towerPosition }),
+                1,
+                'arrow-expo-oracle:initial-tower'
+            ),
+            endpoint.requestSpawn(
+                Object.freeze({
+                    ...createGpuEnemySpawnIntent({
+                        definition: BASIC_ARROW_ENEMY_DATA,
+                        route: navigationSource.route,
+                        spawnSequence: 0,
+                        waveId: 'nw-arrow-expo-oracle',
+                        policyId: 'hardware-fixture'
+                    }),
+                    position: arrowPosition
+                }),
+                1,
+                'arrow-expo-oracle:initial-arrow'
+            )
+        ];
+        assert(
+            requests.every(({ accepted }) => accepted),
+            `Arrow Expo oracle 초기 spawn 요청 실패: ${JSON.stringify(requests)}`
+        );
+        const initialCommit = endpoint.commitAtFixedBoundary(1);
+        const handles = new Map(
+            initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
+        );
+        towerHandle = handles.get('arrow-expo-oracle:initial-tower');
+        arrowHandle = handles.get('arrow-expo-oracle:initial-arrow');
+        assert(
+            initialCommit.state === 'committed'
+                && initialCommit.spawned.length === 2
+                && towerHandle
+                && arrowHandle,
+            `Arrow Expo oracle 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+        );
+        assert(
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Arrow Expo oracle exact Tower gameplay target 구성 실패'
+        );
+
+        const tickOne = await submitTick(1, 'Arrow Expo oracle WINDUP tick 1', {
+            alreadyCommitted: true
+        });
+        let towerBody = findBody(tickOne.bodies, towerHandle, 'tick 1 Tower');
+        let arrowBody = findBody(tickOne.bodies, arrowHandle, 'tick 1 Arrow');
+        const initialTowerHealth = towerBody.health;
+        assertArrowSizeInvariant(arrowBody, 1);
+        assert(
+            arrowBody.enemyBehaviorState.state
+                === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP
+                && arrowBody.enemyBehaviorState.stateEnteredFixedTick === 1
+                && arrowBody.enemyBehaviorState.stateExpiresAtFixedTick === 31,
+            `Arrow Expo oracle 첫 WINDUP 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+        );
+
+        let beforeCharge = tickOne;
+        for (let tick = 2; tick < 31; tick++) {
+            const moveTower = endpoint.requestBodyControl({
+                handle: towerHandle,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }, tick, `arrow-expo-oracle:tower-clear-charge-lane:${tick}`);
+            assert(
+                moveTower.accepted,
+                `Arrow Expo oracle tick ${tick} Tower 이동 요청 실패: ${JSON.stringify(moveTower)}`
+            );
+            beforeCharge = await submitTick(
+                tick,
+                `Arrow Expo oracle WINDUP boundary ${tick}`
+            );
+            arrowBody = findBody(beforeCharge.bodies, arrowHandle, `WINDUP ${tick} Arrow`);
+            assertArrowSizeInvariant(arrowBody, tick);
+            assert(
+                arrowBody.enemyBehaviorState.state
+                    === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
+                `Arrow Expo oracle tick ${tick} WINDUP 이탈: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+            );
+        }
+        const preChargeArrow = findBody(
+            beforeCharge.bodies,
+            arrowHandle,
+            'pre-CHARGE Arrow'
+        );
+        const preChargePosition = Object.freeze({ ...preChargeArrow.position });
+
+        const chargeSamples = [];
+        let chargeDirection = null;
+        let previousPosition = preChargePosition;
+        for (let tick = 31; tick <= 90; tick++) {
+            // Tower를 매 tick +X로 계속 제어해 Arrow의 authored 6-tile endpoint보다
+            // 확실히 앞에 둡니다. 단발 control 뒤 ballistic 상태에 기대지 않습니다.
+            const moveTower = endpoint.requestBodyControl({
+                handle: towerHandle,
+                moveIntentX: 1,
+                moveIntentY: 0
+            }, tick, `arrow-expo-oracle:tower-evade:${tick}`);
+            assert(
+                moveTower.accepted,
+                `Arrow Expo oracle tick ${tick} Tower evade 요청 실패: ${JSON.stringify(moveTower)}`
+            );
+            const step = await submitTick(tick, `Arrow Expo oracle CHARGE ${tick}`);
+            towerBody = findBody(step.bodies, towerHandle, `CHARGE ${tick} Tower`);
+            arrowBody = findBody(step.bodies, arrowHandle, `CHARGE ${tick} Arrow`);
+            const behavior = arrowBody.enemyBehaviorState;
+            assertArrowSizeInvariant(arrowBody, tick);
+            assert(
+                behavior.state === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE
+                    && behavior.stateEnteredFixedTick === 31
+                    && behavior.stateExpiresAtFixedTick === 91,
+                `Arrow Expo oracle tick ${tick} CHARGE 경계 불일치: ${JSON.stringify(behavior)}`
+            );
+            if (chargeDirection === null) {
+                chargeDirection = Object.freeze({ ...behavior.chargeDirection });
+                assertNear(
+                    Math.hypot(chargeDirection.x, chargeDirection.y),
+                    1,
+                    0.00001,
+                    'Arrow Expo oracle snapshot direction unit length'
+                );
+            }
+            const elapsedTick = tick - 31;
+            const expectedSpeed = expectedArrowExpoOutSpeedF32(
+                6,
+                60,
+                elapsedTick,
+                fixedDelta
+            );
+            const deltaX = arrowBody.position.x - previousPosition.x;
+            const deltaY = arrowBody.position.y - previousPosition.y;
+            const forwardSpeed = (arrowBody.velocity.x * chargeDirection.x)
+                + (arrowBody.velocity.y * chargeDirection.y);
+            const projectedDisplacement = (deltaX * chargeDirection.x)
+                + (deltaY * chargeDirection.y);
+            const lateralDisplacement = Math.abs(
+                (deltaX * chargeDirection.y) - (deltaY * chargeDirection.x)
+            );
+            const towerSeparation = Math.hypot(
+                towerBody.position.x - arrowBody.position.x,
+                towerBody.position.y - arrowBody.position.y
+            );
+            const overlapDistance = towerBody.radius + arrowBody.radius;
+            chargeSamples.push(Object.freeze({
+                tick,
+                elapsedTick,
+                position: Object.freeze({ ...arrowBody.position }),
+                velocity: Object.freeze({ ...arrowBody.velocity }),
+                speed: Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y),
+                forwardSpeed,
+                projectedDisplacement,
+                lateralDisplacement,
+                expectedSpeed,
+                expectedDisplacement: expectedSpeed * fixedDelta,
+                towerPosition: Object.freeze({ ...towerBody.position }),
+                towerSeparation,
+                overlapDistance,
+                towerClearance: towerSeparation - overlapDistance,
+                radius: arrowBody.radius,
+                telegraphRadiusScale: behavior.telegraphRadiusScale
+            }));
+            previousPosition = arrowBody.position;
+        }
+
+        const recover = await submitTick(91, 'Arrow Expo oracle exact RECOVER boundary');
+        towerBody = findBody(recover.bodies, towerHandle, 'RECOVER Tower');
+        arrowBody = findBody(recover.bodies, arrowHandle, 'RECOVER Arrow');
+        assertArrowSizeInvariant(arrowBody, 91);
+        assert(
+            arrowBody.enemyBehaviorState.state
+                === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER
+                && arrowBody.enemyBehaviorState.stateEnteredFixedTick === 91
+                && arrowBody.enemyBehaviorState.stateExpiresAtFixedTick === 121,
+            `Arrow Expo oracle RECOVER 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+        );
+
+        const sampleIndexes = Object.freeze({ k0: 0, k1: 1, middle: 30, end: 59 });
+        const oracleSamples = {};
+        for (const [label, index] of Object.entries(sampleIndexes)) {
+            const sample = chargeSamples[index];
+            oracleSamples[label] = sample;
+            assertNear(
+                sample.forwardSpeed,
+                sample.expectedSpeed,
+                0.02,
+                `Arrow Expo oracle ${label} λ=10 f32 speed`
+            );
+            assertNear(
+                sample.projectedDisplacement,
+                sample.expectedDisplacement,
+                0.002,
+                `Arrow Expo oracle ${label} integrated displacement`
+            );
+        }
+        const totalProjectedDistance = (
+            (chargeSamples.at(-1).position.x - preChargePosition.x) * chargeDirection.x
+        ) + (
+            (chargeSamples.at(-1).position.y - preChargePosition.y) * chargeDirection.y
+        );
+        const totalLateralDistance = Math.abs(
+            ((chargeSamples.at(-1).position.x - preChargePosition.x) * chargeDirection.y)
+            - ((chargeSamples.at(-1).position.y - preChargePosition.y) * chargeDirection.x)
+        );
+        const minimumTowerClearance = Math.min(
+            ...chargeSamples.map(({ towerClearance }) => towerClearance)
+        );
+        const chargeEvent = completedEvents.find((event) => (
+            event.eventType === 'enemy-charge-contact-recoil-started'
+                && exactHandleMatches(event, arrowHandle)
+        ));
+        const towerDamageEvent = completedEvents.find((event) => (
+            event.eventType === 'damage-applied'
+                && exactHandleMatches(event, arrowHandle)
+                && event.otherEntityId === towerHandle.entityId
+                && event.otherIncarnation === towerHandle.incarnation
+        ));
+        const finalStatus = endpoint.getStatus();
+        const gpuStatus = finalStatus.backend?.gpu ?? finalStatus.backend;
+        const errors = Object.freeze({
+            contactOverflow: gpuStatus.contact.lastOverflowCount,
+            eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
+            deathOverflow: gpuStatus.events.lastDeathOverflowCount
+        });
+        assert(
+            chargeSamples.length === 60
+                && chargeSamples.every((sample, index) => (
+                    sample.elapsedTick === index
+                    && sample.tick === index + 31
+                    && sample.forwardSpeed > 0
+                    && sample.lateralDisplacement <= 0.0001
+                    && (index === 0
+                        || chargeSamples[index - 1].forwardSpeed
+                            >= sample.forwardSpeed)
+                ))
+                && submittedTicks.length === 91
+                && submittedTicks.every((tick, index) => tick === index + 1)
+                && new Set(submittedTicks).size === submittedTicks.length
+                && gpuStatus.submittedTickCount === submittedTicks.length
+                && Math.abs(totalProjectedDistance - 6) <= 0.005
+                && totalLateralDistance <= 0.001
+                && minimumTowerClearance > 2
+                && Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y) <= 0.000001
+                && arrowBody.position.x === chargeSamples.at(-1).position.x
+                && arrowBody.position.y === chargeSamples.at(-1).position.y
+                && towerBody.health === initialTowerHealth
+                && chargeEvent === undefined
+                && towerDamageEvent === undefined
+                && radiusSamples.length === 91
+                && radiusSamples.every((sample) => (
+                    Math.abs(
+                        sample.radius - BASIC_ARROW_ENEMY_DATA.collisionRadiusTiles
+                    ) <= 0.000001
+                    && sample.telegraphRadiusScale === 1
+                ))
+                && Object.values(errors).every((count) => count === 0)
+                && !finalStatus.recoveryRequired
+                && !endpoint.requiresRecovery(),
+            `Arrow Expo oracle endpoint/no-skip/size 불일치: ${JSON.stringify({ chargeSamples, oracleSamples, totalProjectedDistance, totalLateralDistance, minimumTowerClearance, towerBody, initialTowerHealth, chargeEvent, towerDamageEvent, radiusSamples, submittedTicks, errors, finalStatus })}`
+        );
+        return Object.freeze({
+            lambda: ARROW_EXPO_OUT_LAMBDA_F32,
+            entered: 31,
+            expires: 91,
+            samples: Object.freeze({ ...oracleSamples }),
+            sampleCount: chargeSamples.length,
+            totalProjectedDistance,
+            totalLateralDistance,
+            minimumTowerClearance,
+            noSkippedElapsedTicks: true,
+            radiusInvariant: true,
+            telegraphRadiusScale: 1,
+            radius: BASIC_ARROW_ENEMY_DATA.collisionRadiusTiles,
+            towerHealthPreserved: true,
+            errors
+        });
+    } finally {
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
 /**
  * Arrow A의 production adapter/side-plane/compute pass를 실제 WebGPU에서 bounded하게
  * 검증합니다. Arrow gameplay은 dedicated exact Tower config만 읽고 tracked pose는
  * presentation-only로 독립 교체해도 gameplay state가 변하지 않아야 합니다.
  */
 async function runProductionEnemyArrowChargeHardwareSmoke(device) {
+    const expoOracle = await runProductionEnemyArrowExpoOracleHardwareSmoke(device);
     const wallVisibility = await runProductionEnemyArrowWallVisibilityHardwareSmoke(device);
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
@@ -9260,44 +9670,9 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
     });
     const fixedDelta = 1 / 60;
     const towerPosition = Object.freeze({ x: 8, y: 8 });
-    const arrowPosition = Object.freeze({ x: 5.5, y: 8 });
-    const expoOutLambda = Math.fround(0.5);
-    const normalizedExpoOutF32 = (progress) => {
-        const boundedProgress = Math.min(Math.max(Math.fround(progress), 0), 1);
-        if (boundedProgress <= 0) return 0;
-        if (boundedProgress >= 1) return 1;
-        const denominator = Math.fround(
-            1 - Math.fround(2 ** Math.fround(-expoOutLambda))
-        );
-        return Math.fround(
-            Math.fround(
-                1 - Math.fround(2 ** Math.fround(-expoOutLambda * boundedProgress))
-            ) / denominator
-        );
-    };
-    const expectedExpoOutSpeed = (speed, durationTicks, elapsedTicks) => {
-        const multiplyF32 = (left, right) => Math.fround(
-            Math.fround(left) * Math.fround(right)
-        );
-        const duration = Math.fround(Math.max(durationTicks, 1));
-        const elapsed = Math.min(Math.max(elapsedTicks, 0), durationTicks);
-        const nextElapsed = Math.min(elapsed + 1, durationTicks);
-        const normalizedDelta = Math.fround(
-            normalizedExpoOutF32(Math.fround(nextElapsed / duration))
-            - normalizedExpoOutF32(Math.fround(elapsed / duration))
-        );
-        // WGSL multiplies total distance by inverse_dt after the finite difference.
-        return multiplyF32(
-            multiplyF32(
-                multiplyF32(
-                    multiplyF32(speed, duration),
-                    fixedDelta
-                ),
-                normalizedDelta
-            ),
-            1 / fixedDelta
-        );
-    };
+    // λ=10의 k0/k1은 크게 전진하므로 tick 36에는 분리, tick 37에는 충분한
+    // overlap이 생기는 deterministic contact margin을 둡니다.
+    const arrowPosition = Object.freeze({ x: 5.6, y: 8 });
     const submittedTicks = [];
     const chargeEvents = [];
     const chargeSpeedSamples = [];
@@ -9610,6 +9985,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             }
             chargeSpeedSamples.push(Object.freeze({
                 tick,
+                position: Object.freeze({ ...body.position }),
                 speed: Math.hypot(body.velocity.x, body.velocity.y),
                 forwardSpeed: (body.velocity.x * snapshotDirection.x)
                     + (body.velocity.y * snapshotDirection.y)
@@ -9622,6 +9998,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             }
             recoilSpeedSamples.push(Object.freeze({
                 tick,
+                position: Object.freeze({ ...body.position }),
                 speed: Math.hypot(body.velocity.x, body.velocity.y),
                 reverseSpeed: -((body.velocity.x * snapshotDirection.x)
                     + (body.velocity.y * snapshotDirection.y))
@@ -9668,53 +10045,39 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         }, 37, 'arrow-charge:tower-stop');
         assert(stopTower.accepted,
             `Arrow charge Tower stop control 실패: ${JSON.stringify(stopTower)}`);
-        let latest = await submitTick(37, 'Arrow charge Tower stop');
-        recordChargeSpeed(
-            37,
-            findBody(latest.bodies, arrowHandle, 'charge Expo tick 37 Arrow')
-        );
         let primedMaximumCandidate = false;
         let contactTick = null;
         let contactSnapshot = null;
-        let towerHealthBeforeContact = null;
-        for (let tick = 38; tick < 95 && contactTick === null; tick++) {
-            const previousArrow = findBody(latest.bodies, arrowHandle, 'pre-contact Arrow');
-            const previousTower = findBody(latest.bodies, towerHandle, 'pre-contact Tower');
-            const previousBehavior = previousArrow.enemyBehaviorState;
-            const distance = Math.hypot(
-                previousTower.position.x - previousArrow.position.x,
-                previousTower.position.y - previousArrow.position.y
-            );
-            const contactDistance = previousTower.radius + previousArrow.radius;
-            if (!primedMaximumCandidate
-                && previousBehavior.state === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE
-                && distance <= contactDistance + 0.13) {
-                towerHealthBeforeContact = previousTower.health;
-                const request = endpoint.requestSpawn(
-                    createMaximumCandidateIntent(previousTower.position, 1),
-                    tick,
-                    'arrow-charge:window-maximum-projectile'
-                );
-                assert(request.accepted,
-                    `Arrow charge same-tick maximum candidate 요청 실패: ${JSON.stringify(request)}`);
-                primedMaximumCandidate = true;
-            }
-            latest = await submitTick(tick, `Arrow charge contact approach ${tick}`);
-            if (primedMaximumCandidate && projectileHandle === null) {
-                projectileHandle = latest.commit?.spawned.find(({ commandId }) => (
-                    commandId === 'arrow-charge:window-maximum-projectile'
-                ))?.handle ?? null;
-            }
-            const currentArrow = findBody(latest.bodies, arrowHandle, 'contact approach Arrow');
-            recordChargeSpeed(tick, currentArrow);
-            if (currentArrow.enemyBehaviorState.state
-                === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
-                contactTick = tick;
-                contactSnapshot = latest;
-            }
+        const towerHealthBeforeContact = towerBody.health;
+        const maximumCandidateRequest = endpoint.requestSpawn(
+            createMaximumCandidateIntent(towerBody.position, 1),
+            37,
+            'arrow-charge:window-maximum-projectile'
+        );
+        assert(
+            maximumCandidateRequest.accepted,
+            `Arrow charge tick 37 maximum candidate 요청 실패: ${JSON.stringify(maximumCandidateRequest)}`
+        );
+        primedMaximumCandidate = true;
+        let latest = await submitTick(37, 'Arrow charge Tower stop');
+        projectileHandle = latest.commit?.spawned.find(({ commandId }) => (
+            commandId === 'arrow-charge:window-maximum-projectile'
+        ))?.handle ?? null;
+        const tick37Arrow = findBody(
+            latest.bodies,
+            arrowHandle,
+            'tick 37 deterministic contact Arrow'
+        );
+        if (tick37Arrow.enemyBehaviorState.state
+            === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
+            contactTick = 37;
+            contactSnapshot = latest;
         }
         assert(
-            primedMaximumCandidate && projectileHandle && contactTick !== null,
+            primedMaximumCandidate
+                && projectileHandle
+                && contactTick === 37
+                && contactSnapshot === latest,
             `Arrow charge valid same-tick contact를 만들지 못했습니다: ${JSON.stringify({ primedMaximumCandidate, projectileHandle, contactTick })}`
         );
 
@@ -9760,6 +10123,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         ));
         assert(
             damageEvent?.valueFixedPoint === 100
+                && damageEvent.maximumDamageWindow === true
                 && recoilEvent?.valueFixedPoint === 0
                 && !contactSnapshot.completed.contactEvents.some((event) => (
                     event.eventType === 'damage-applied'
@@ -10115,21 +10479,50 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const recoilK1 = recoilSpeedSamples.find(
             ({ tick }) => tick === contactTick + 2
         );
+        const recoilMiddle = recoilSpeedSamples.find(
+            ({ tick }) => tick === contactTick + 6
+        );
+        const recoilEnd = recoilSpeedSamples.find(
+            ({ tick }) => tick === contactTick + 11
+        );
         const assertExpoOracleSpeed = (sample, expected, label) => {
             assert(sample,
                 `${label} Expo sample이 없습니다: ${JSON.stringify({ chargeSpeedSamples, recoilSpeedSamples })}`);
             assertNear(sample.speed, expected, 0.01,
-                `${label} normalized λ=0.5 f32 Expo speed`);
+                `${label} normalized λ=10 f32 Expo speed`);
         };
-        const expectedChargeK0 = expectedExpoOutSpeed(6, 60, 0);
-        const expectedChargeK1 = expectedExpoOutSpeed(6, 60, 1);
-        const expectedRecoilK0 = expectedExpoOutSpeed(4, 11, 0);
-        const expectedRecoilK1 = expectedExpoOutSpeed(4, 11, 1);
+        const expectedChargeK0 = expectedArrowExpoOutSpeedF32(6, 60, 0);
+        const expectedChargeK1 = expectedArrowExpoOutSpeedF32(6, 60, 1);
+        const expectedRecoilK0 = expectedArrowExpoOutSpeedF32(4, 11, 0);
+        const expectedRecoilK1 = expectedArrowExpoOutSpeedF32(4, 11, 1);
+        const expectedRecoilMiddle = expectedArrowExpoOutSpeedF32(4, 11, 5);
+        const expectedRecoilEnd = expectedArrowExpoOutSpeedF32(4, 11, 10);
         assertExpoOracleSpeed(chargeK0, expectedChargeK0, 'Arrow charge k=0');
         assertExpoOracleSpeed(chargeK1, expectedChargeK1, 'Arrow charge k=1');
         assertExpoOracleSpeed(recoilPreload, expectedRecoilK0, 'Arrow recoil contact preload');
         assertExpoOracleSpeed(recoilK0, expectedRecoilK0, 'Arrow recoil S+1 k=0');
         assertExpoOracleSpeed(recoilK1, expectedRecoilK1, 'Arrow recoil S+2 k=1');
+        assertExpoOracleSpeed(
+            recoilMiddle,
+            expectedRecoilMiddle,
+            'Arrow recoil S+6 k=5 middle'
+        );
+        assertExpoOracleSpeed(
+            recoilEnd,
+            expectedRecoilEnd,
+            'Arrow recoil S+11 k=10 end'
+        );
+        const recoilTotalProjectedDistance = -(
+            ((recoilEnd.position.x - recoilPreload.position.x) * snapshotDirection.x)
+            + ((recoilEnd.position.y - recoilPreload.position.y) * snapshotDirection.y)
+        );
+        const expectedRecoilTotalDistance = 4 * 11 * fixedDelta;
+        assertNear(
+            recoilTotalProjectedDistance,
+            expectedRecoilTotalDistance,
+            0.005,
+            'Arrow recoil normalized total endpoint'
+        );
         const errors = Object.freeze({
             contactOverflow: gpuStatus.contact.lastOverflowCount,
             eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
@@ -10189,6 +10582,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             }),
             wallVisibility,
             expoMotion: Object.freeze({
+                fullChargeOracle: expoOracle,
                 charge: Object.freeze({
                     expectedK0: expectedChargeK0,
                     expectedK1: expectedChargeK1,
@@ -10201,9 +10595,15 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                     expires: contactTick + 12,
                     expectedPreloadAndK0: expectedRecoilK0,
                     expectedK1: expectedRecoilK1,
+                    expectedMiddle: expectedRecoilMiddle,
+                    expectedEnd: expectedRecoilEnd,
+                    expectedTotalDistance: expectedRecoilTotalDistance,
+                    totalProjectedDistance: recoilTotalProjectedDistance,
                     preload: recoilPreload,
                     k0: recoilK0,
                     k1: recoilK1,
+                    middle: recoilMiddle,
+                    end: recoilEnd,
                     first: recoilSpeedSamples[0],
                     last: recoilSpeedSamples.at(-1),
                     samples: Object.freeze([...recoilSpeedSamples])
@@ -11045,8 +11445,8 @@ async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
         assert(beforeFirst, 'Rhom first cooldown cadence evidence가 없습니다.');
         assert(
             beforeFirst.staged.acceptedCount === 0
-                && beforeFirst.staged.controlAcceptedCount === 1,
-            `Rhom first cooldown 직전 shot/control 불일치: ${JSON.stringify(beforeFirst.staged)}`
+                && beforeFirst.staged.controlAcceptedCount === 0,
+            `Rhom first cooldown 직전에는 persistent GPU control을 재사용해야 합니다: ${JSON.stringify(beforeFirst.staged)}`
         );
         const firstShot = await advanceBoundary(
             firstEligibleTick,
@@ -11135,6 +11535,7 @@ async function runRhomCoreDamageRuntimeHardwareSmoke(device) {
         );
         assert(
             secondShot.staged.acceptedCount === 1
+                && secondShot.staged.controlAcceptedCount === 1
                 && secondShot.commit.fixedCommands.selectedTargetSpawns.length === 1,
             `Rhom repeat exact cooldown shot 실패: ${JSON.stringify(secondShot)}`
         );
@@ -17635,6 +18036,22 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 && fact.sourceAbilityId === ARCHER_ATTACK_DATA.sourceAbilityId
                 && fact.sourceTeamId === GAMEPLAY_TEAM_ID.HOSTILE
         ));
+        const archerProjectileDamageContacts = observedContactEvents.filter(
+            (event) => (
+                event.eventType === 'damage-applied'
+                    && resolvedShotRecordByHandle.has(
+                        hostileAttackLifecycleHandleKey(event)
+                    )
+                    && event.otherEntityId === towerHandle.entityId
+                    && event.otherIncarnation === towerHandle.incarnation
+            )
+        );
+        const archerProjectileDamageContactByHandle = new Map(
+            archerProjectileDamageContacts.map((event) => [
+                hostileAttackLifecycleHandleKey(event),
+                event
+            ])
+        );
         const enemyContactDamageFacts = towerDamageFacts.filter((fact) => (
             productionSpawnRecordByHandle.has(
                 hostileAttackLifecycleHandleKey(fact.sourceHandle)
@@ -17648,6 +18065,9 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 const shot = resolvedShotRecordByHandle.get(
                     hostileAttackLifecycleHandleKey(fact.sourceHandle)
                 );
+                const contact = archerProjectileDamageContactByHandle.get(
+                    hostileAttackLifecycleHandleKey(fact.sourceHandle)
+                );
                 return Object.freeze({
                     sourceHandle: Object.freeze({ ...fact.sourceHandle }),
                     commandId: shot.commandId,
@@ -17655,7 +18075,9 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                     sourceTick: fact.sourceTick,
                     damageFixedPoint: fact.damageFixedPoint,
                     currentHp: fact.currentHp,
-                    targetDied: fact.targetDied
+                    targetDied: fact.targetDied,
+                    maximumDamageWindow:
+                        contact?.maximumDamageWindow ?? null
                 });
             })
         );
@@ -17718,76 +18140,129 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 && primaryController.isControlEnabled() === false,
             `Production-wave actual LMB/death cutover 실패: ${JSON.stringify({ playerShotRequestCount, primaryShotCommittedCount, primaryProjectileMaterialized, playerShotRequestCountAtTowerDeath, primaryControllerStatusAfterDeath })}`
         );
-        assert(
-            firstTargetedShot
-                && firstTargetedShot.completionBoundaryTick
-                    === firstTargetedShot.targetFixedTick + 1
-                && firstDamageContact?.damage === 5
-                && firstDamageContact.damageFixedPoint === 500
-                && firstDamageFact?.damage === 5
-                && firstDamageFact.damageFixedPoint === 500
-                && archerProjectileDamageFacts.length === 6
-                && JSON.stringify(archerProjectileDamageFacts.map(
+        const archerProjectileDamageContactsMatchFacts =
+            archerProjectileDamageFacts.every((fact) => {
+                const contact = archerProjectileDamageContactByHandle.get(
+                    hostileAttackLifecycleHandleKey(fact.sourceHandle)
+                );
+                return contact?.maximumDamageWindow === true
+                    && contact.disposition === 'applied'
+                    && contact.damageFixedPoint === fact.damageFixedPoint
+                    && contact.sourceTick === fact.sourceTick
+                    && hostileAttackLifecyclePairMatches(
+                        contact,
+                        fact.sourceHandle,
+                        towerHandle
+                    );
+            });
+        const towerDamageDeathChecks = Object.freeze({
+            firstTargetedShotPresent: firstTargetedShot !== null,
+            firstShotCompletionBoundary:
+                firstTargetedShot?.completionBoundaryTick
+                    === firstTargetedShot?.targetFixedTick + 1,
+            firstContactDamage: firstDamageContact?.damage === 5,
+            firstContactDamageFixedPoint:
+                firstDamageContact?.damageFixedPoint === 500,
+            firstFactDamage: firstDamageFact?.damage === 5,
+            firstFactDamageFixedPoint:
+                firstDamageFact?.damageFixedPoint === 500,
+            archerDamageCount: archerProjectileDamageFacts.length === 6,
+            archerDamageFixedPoints: JSON.stringify(
+                archerProjectileDamageFacts.map(
                     ({ damageFixedPoint }) => damageFixedPoint
-                )) === JSON.stringify([500, 490, 490, 490, 490, 490])
-                && JSON.stringify(archerProjectileDamageFacts.map(
-                    ({ currentHp }) => currentHp
-                )) === JSON.stringify([25, 20, 15, 10, 5, 0])
-                && enemyContactDamageFacts.length === 5
-                && enemyContactDamageFacts.every((fact) => (
-                    fact.damageFixedPoint === 10 && !fact.targetDied
-                ))
-                && JSON.stringify(enemyContactDamageFacts.map(
-                    ({ currentHp }) => currentHp
-                )) === JSON.stringify([24.9, 19.9, 14.9, 9.9, 4.9])
-                && archerProjectileDamageFacts.length
-                    + enemyContactDamageFacts.length
-                    === towerDamageFacts.length
-                && towerDamageFacts.length === 11
-                && towerDamageFacts.reduce((sum, fact) => (
-                    sum + fact.damageFixedPoint
-                ), 0) === 3000
-                && JSON.stringify(towerHpTimeline)
-                    === JSON.stringify([
-                        30,
-                        25,
-                        24.9,
-                        20,
-                        19.9,
-                        15,
-                        14.9,
-                        10,
-                        9.9,
-                        5,
-                        4.9,
-                        0
-                    ])
-                && lethalArcherDamageFact?.damageFixedPoint === 490
-                && lethalArcherDamageFact.currentHp === 0
-                && lethalArcherDamageFact.targetDied
-                && towerDeathFacts.length === 1
-                && hostileAttackLifecycleHandleMatches(
-                    towerDeathFacts[0].sourceHandle,
-                    lethalArcherDamageFact.sourceHandle
                 )
-                && towerDeathFacts[0].producerId
-                    === ARCHER_ATTACK_DATA.producerId
-                && towerDeathFacts[0].sourceAbilityId
-                    === ARCHER_ATTACK_DATA.sourceAbilityId
-                && towerDeathFacts[0].sourceTeamId
-                    === GAMEPLAY_TEAM_ID.HOSTILE
-                && noLivingTowerFacts.length === 1
-                && towerRoster.getLivingTowerCount() === 0
-                && !towerRoster.isPrimaryTowerAlive()
-                && towerDeathSourceTick !== null
-                && towerDeathBoundaryTick === towerDeathSourceTick + 1
-                && towerAlphaAfterLethal === 0
-                && towerRenderExclusion?.drawCount === 1
-                && towerRenderExclusion.alpha === 0
-                && towerRemovedAtDeathBoundary
-                && trackedDisableReceipt?.accepted === true
-                && trackedDisableReceipt.tracked === false,
-            `Production-wave Tower damage/death contract 실패: ${JSON.stringify({ firstTargetedShot, firstDamageContact, firstDamageFact, archerProjectileDamageEvidence, enemyContactDamageEvidence, towerHpTimeline, towerDeathFacts, noLivingTowerFacts, towerDeathSourceTick, towerDeathBoundaryTick, towerAlphaAfterLethal, towerRemovedAtDeathBoundary })}`
+            ) === JSON.stringify([500, 500, 490, 490, 490, 490]),
+            archerCurrentHp: JSON.stringify(
+                archerProjectileDamageFacts.map(({ currentHp }) => currentHp)
+            ) === JSON.stringify([25, 20, 15, 10, 5, 0]),
+            archerContactCountCoversPositiveFacts:
+                archerProjectileDamageContacts.length
+                    >= archerProjectileDamageFacts.length,
+            archerContactUniqueSourceCount:
+                archerProjectileDamageContactByHandle.size
+                    === archerProjectileDamageContacts.length,
+            archerContactMaximumWindowPolicy:
+                archerProjectileDamageContacts.every((contact) => (
+                    contact.maximumDamageWindow === true
+                        && contact.disposition === 'applied'
+                        && Number.isSafeInteger(contact.damageFixedPoint)
+                        && contact.damageFixedPoint >= 0
+                )),
+            archerContactsMatchFacts:
+                archerProjectileDamageContactsMatchFacts,
+            enemyContactCount: enemyContactDamageFacts.length === 4,
+            enemyContactDamagePolicy: enemyContactDamageFacts.every((fact) => (
+                fact.damageFixedPoint === 10 && !fact.targetDied
+            )),
+            enemyContactCurrentHp: JSON.stringify(
+                enemyContactDamageFacts.map(({ currentHp }) => currentHp)
+            ) === JSON.stringify([19.9, 14.9, 9.9, 4.9]),
+            classifiedDamageCount:
+                archerProjectileDamageFacts.length
+                    + enemyContactDamageFacts.length
+                    === towerDamageFacts.length,
+            towerDamageFactCount: towerDamageFacts.length === 10,
+            towerDamageTotalFixedPoint: towerDamageFacts.reduce(
+                (sum, fact) => sum + fact.damageFixedPoint,
+                0
+            ) === 3000,
+            towerHpTimeline: JSON.stringify(towerHpTimeline)
+                === JSON.stringify([
+                    30,
+                    25,
+                    20,
+                    19.9,
+                    15,
+                    14.9,
+                    10,
+                    9.9,
+                    5,
+                    4.9,
+                    0
+                ]),
+            lethalDamageFixedPoint:
+                lethalArcherDamageFact?.damageFixedPoint === 490,
+            lethalCurrentHp: lethalArcherDamageFact?.currentHp === 0,
+            lethalTargetDied: lethalArcherDamageFact?.targetDied === true,
+            towerDeathCount: towerDeathFacts.length === 1,
+            towerDeathSourceHandle: Boolean(
+                towerDeathFacts[0]?.sourceHandle
+                    && lethalArcherDamageFact?.sourceHandle
+                    && hostileAttackLifecycleHandleMatches(
+                        towerDeathFacts[0].sourceHandle,
+                        lethalArcherDamageFact.sourceHandle
+                    )
+            ),
+            towerDeathProducer:
+                towerDeathFacts[0]?.producerId
+                    === ARCHER_ATTACK_DATA.producerId,
+            towerDeathAbility:
+                towerDeathFacts[0]?.sourceAbilityId
+                    === ARCHER_ATTACK_DATA.sourceAbilityId,
+            towerDeathTeam:
+                towerDeathFacts[0]?.sourceTeamId
+                    === GAMEPLAY_TEAM_ID.HOSTILE,
+            noLivingTowerFactCount: noLivingTowerFacts.length === 1,
+            livingTowerCount: towerRoster.getLivingTowerCount() === 0,
+            primaryTowerDead: !towerRoster.isPrimaryTowerAlive(),
+            towerDeathSourceTickPresent: towerDeathSourceTick !== null,
+            towerDeathBoundary:
+                towerDeathBoundaryTick === towerDeathSourceTick + 1,
+            towerAlphaAfterLethal: towerAlphaAfterLethal === 0,
+            towerRenderDrawCount: towerRenderExclusion?.drawCount === 1,
+            towerRenderAlpha: towerRenderExclusion?.alpha === 0,
+            towerRemovedAtDeathBoundary,
+            trackedDisableAccepted: trackedDisableReceipt?.accepted === true,
+            trackedDisabled: trackedDisableReceipt?.tracked === false
+        });
+        const towerDamageDeathFalseKeys = Object.freeze(
+            Object.entries(towerDamageDeathChecks)
+                .filter(([, passed]) => !passed)
+                .map(([key]) => key)
+        );
+        assert(
+            towerDamageDeathFalseKeys.length === 0,
+            `Production-wave Tower damage/death contract 실패: ${JSON.stringify({ falseKeys: towerDamageDeathFalseKeys, checks: towerDamageDeathChecks, firstTargetedShot, firstDamageContact, firstDamageFact, archerProjectileDamageEvidence, archerProjectileDamageContactCount: archerProjectileDamageContacts.length, archerProjectileDamageContactUniqueSourceCount: archerProjectileDamageContactByHandle.size, enemyContactDamageEvidence, towerHpTimeline, towerDeathFacts, noLivingTowerFacts, towerDeathSourceTick, towerDeathBoundaryTick, towerAlphaAfterLethal, towerRenderExclusion, towerRemovedAtDeathBoundary, trackedDisableReceipt })}`
         );
         assert(
             repeatedArcherRecord

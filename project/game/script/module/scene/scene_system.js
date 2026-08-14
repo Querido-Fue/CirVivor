@@ -79,9 +79,10 @@ export class SceneSystem {
 
     /**
      * 현재 씬의 고정 틱 업데이트를 호출합니다.
+     * @returns {*} 활성 씬의 fixedUpdate 반환값입니다.
      */
     fixedUpdate() {
-        this.#callActiveScene('fixedUpdate');
+        return this.#callActiveScene('fixedUpdate');
     }
 
     /**

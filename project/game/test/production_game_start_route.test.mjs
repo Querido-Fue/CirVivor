@@ -16,13 +16,33 @@ const {
     R2_ENEMY_SHOWCASE_MAP_DATA
 } = await loadGameModule('data/scene/game/r2_enemy_showcase_map_data.js');
 const {
+    R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION,
     R2_ENEMY_SHOWCASE_WAVE_01_DATA
 } = await loadGameModule('data/scene/game/r2_enemy_showcase_wave_data.js');
 const {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} = await loadGameModule(
+    'data/scene/game/performance_serpentine_map_data.js'
+);
+const {
+    PERFORMANCE_SERPENTINE_SESSION,
+    PERFORMANCE_SERPENTINE_WAVE_01_DATA
+} = await loadGameModule(
+    'data/scene/game/performance_serpentine_wave_data.js'
+);
+const {
+    PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID,
+    PRODUCTION_PERFORMANCE_SELECTION_MAP_ID,
     PRODUCTION_STAGE_ONE_RUNTIME_MAP_ID,
     PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
     createProductionGameStartOptions
 } = await loadGameModule('scene/game/production_game_start_route.js');
+const {
+    TowerCombatRoster
+} = await loadGameModule('ingame/object/tower/tower_combat_roster.js');
+const {
+    CoreIntegrity
+} = await loadGameModule('ingame/state/core_integrity.js');
 
 test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1 세션을 연다', () => {
     assert.equal(PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
@@ -40,15 +60,57 @@ test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(
+        options.towerMaxHp,
+        R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION.towerMaxHp
+    );
+    assert.equal(
+        options.coreMaxIntegrity,
+        R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION.coreMaxIntegrity
+    );
     assert.equal(options.tileNavigationSource.getSpawnRoutes().length, 2);
     assert.equal(options.tileNavigationSource.getRouteGraph()?.closures.length, 2);
     assert.equal(GAME_MAP_DATA.DEFAULT_MAP_ID, CORRIDOR_EIGHT_MAP_DATA.id);
     assert.deepEqual(Array.from(GAME_MAP_DATA.MAPS, ({ id }) => id), [
-        CORRIDOR_EIGHT_MAP_DATA.id
+        CORRIDOR_EIGHT_MAP_DATA.id,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id
     ]);
     assert.deepEqual(Array.from(INGAME_MAP_DATA.MAPS, ({ id }) => id), [
-        CORRIDOR_EIGHT_MAP_DATA.id
+        CORRIDOR_EIGHT_MAP_DATA.id,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id
     ]);
+
+    const towerRoster = new TowerCombatRoster({ maxHp: options.towerMaxHp });
+    const coreIntegrity = new CoreIntegrity({
+        maxIntegrity: options.coreMaxIntegrity
+    });
+    assert.equal(towerRoster.getStatus().currentHp, 20_000_000);
+    assert.equal(towerRoster.getStatus().maxHpFixedPoint, 2_000_000_000);
+    assert.equal(coreIntegrity.getCurrentIntegrity(), 20_000_000);
+    towerRoster.destroy();
+});
+
+test('두 번째 production map 선택은 폭 10 ㄹ자 10,000-body 성능 세션을 연다', () => {
+    assert.equal(PRODUCTION_PERFORMANCE_SELECTION_MAP_ID,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id);
+    assert.equal(PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id);
+    const options = createProductionGameStartOptions(
+        PERFORMANCE_SERPENTINE_MAP_DATA.id
+    );
+    assert.equal(options.mapId, PERFORMANCE_SERPENTINE_MAP_DATA.id);
+    assert.equal(options.tileNavigationSource.mapId,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id);
+    assert.equal(options.tileNavigationSource.pathWidthTiles, 10);
+    assert.strictEqual(options.waveDefinition,
+        PERFORMANCE_SERPENTINE_WAVE_01_DATA);
+    assert.equal(options.enemyWaveEnabled, true);
+    assert.equal(options.gameplayWorldActorsEnabled, true);
+    assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(options.towerMaxHp,
+        PERFORMANCE_SERPENTINE_SESSION.towerMaxHp);
+    assert.equal(options.coreMaxIntegrity,
+        PERFORMANCE_SERPENTINE_SESSION.coreMaxIntegrity);
 });
 
 test('첫 카드가 아닌 직접 map 요청은 기존 map resolver 경로를 보존한다', () => {
@@ -154,4 +216,35 @@ test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(options.towerMaxHp, 20_000_000);
+    assert.equal(options.coreMaxIntegrity, 20_000_000);
+});
+
+test('Stage 1 performance 생존값은 GameScene→GameSystem→GPU Tower intent까지 전달된다', async () => {
+    const [gameSceneSource, gameSystemSource, towerAdapterSource] = await Promise.all([
+        readFile(new URL(
+            '../script/module/scene/game/_game_scene.js',
+            import.meta.url
+        ), 'utf8'),
+        readFile(new URL(
+            '../script/module/ingame/game_system.js',
+            import.meta.url
+        ), 'utf8'),
+        readFile(new URL(
+            '../script/module/ingame/object/tower/gpu_tower_spawn_adapter.js',
+            import.meta.url
+        ), 'utf8')
+    ]);
+    assert.match(
+        gameSceneSource,
+        /this\.towerMaxHp = options\.towerMaxHp;[\s\S]*?this\.coreMaxIntegrity = options\.coreMaxIntegrity;[\s\S]*?towerMaxHp: this\.towerMaxHp,[\s\S]*?coreMaxIntegrity: this\.coreMaxIntegrity/u
+    );
+    assert.match(
+        gameSystemSource,
+        /maxIntegrity: options\.coreMaxIntegrity[\s\S]*?\?\? THE_CORE_DATA\.MAX_INTEGRITY[\s\S]*?new TowerCombatRoster\([\s\S]*?maxHp: this\.towerMaxHp/u
+    );
+    assert.match(
+        towerAdapterSource,
+        /encodeGpuCircleBodyFixedPoint\(currentHp\)/u
+    );
 });

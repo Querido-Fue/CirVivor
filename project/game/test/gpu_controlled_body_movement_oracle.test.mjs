@@ -459,8 +459,8 @@ test('control marker는 controlled body의 FLOW_FIELD overwrite를 막고 ballis
         (GPU_COLLISION_COMPUTE_WGSL.match(
             /BODY_FLAG_CONTROLLED_THIS_TICK/g
         ) ?? []).length,
-        7,
-        'marker는 선언/clear/move+stop apply/flow skip/general+controlled finalize에만 있어야 합니다.'
+        8,
+        'marker는 선언/clear/move+stop apply/persistent selected stop/flow skip/general+controlled finalize에만 있어야 합니다.'
     );
 });
 

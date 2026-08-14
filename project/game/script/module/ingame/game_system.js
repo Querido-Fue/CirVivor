@@ -178,7 +178,7 @@ export class GameSystem {
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -208,10 +208,12 @@ export class GameSystem {
         this.inputActionMapper = new InputActionMapper();
         this.playerControlRouter = new PlayerControlRouter();
         this.coreIntegrity = new CoreIntegrity({
-            maxIntegrity: THE_CORE_DATA.MAX_INTEGRITY
+            maxIntegrity: options.coreMaxIntegrity
+                ?? THE_CORE_DATA.MAX_INTEGRITY
         });
         this.runOutcome = new RunOutcome();
         this.initialCameraZoom = options.initialCameraZoom;
+        this.towerMaxHp = options.towerMaxHp;
         this.objectSystemOptions = Object.freeze({
             mapId: options.mapId,
             tileNavigationSource: options.tileNavigationSource,
@@ -257,7 +259,11 @@ export class GameSystem {
             enumerable: true
         });
         this.towerCombatRoster = sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
-            ? new TowerCombatRoster()
+            ? new TowerCombatRoster(
+                this.towerMaxHp === undefined
+                    ? undefined
+                    : { maxHp: this.towerMaxHp }
+            )
             : null;
         this.objectSystem = new GameObjectSystem(this.dependencies, {
             ...this.objectSystemOptions,

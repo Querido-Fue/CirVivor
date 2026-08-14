@@ -6,7 +6,8 @@ import { ColorUtil } from 'util/color_util.js';
 import { RuntimeTool, runtimeTool } from 'util/runtime_tool.js';
 import {
     FixedStepCatchUpPolicy,
-    countWholeFixedSteps
+    countWholeFixedSteps,
+    restoreUncompletedFixedStepDebt
 } from 'simulation/fixed_step_catch_up_policy.js';
 import {
     isReleaseSimulationProfilerCollecting,
@@ -117,7 +118,8 @@ class App {
     /**
      * 다음 animation frame을 먼저 예약하고 frame delta를 보정·상한 처리한 뒤 디버그 pause/step과
      * 고정 스텝 catch-up 정책을 적용해 `SystemHandler.tick()`을 호출합니다. catch-up 상한을 넘은 정수
-     * fixed debt는 버리고 나머지만 보간에 사용하며, 프레임 오류와 무관하게 CPU·release profiler 표본을 마무리합니다.
+     * fixed debt는 버리되 GPU backpressure로 완료되지 않은 예약 tick은 accumulator에 되돌립니다.
+     * 프레임 오류와 무관하게 CPU·release profiler 표본을 마무리합니다.
      * @param {number} now - requestAnimationFrame에서 전달되는 현재 시각(ms)입니다.
      * @returns {void}
      */
@@ -193,13 +195,21 @@ class App {
                 this.fixedStepCatchUpPolicy.reset();
             }
 
-            this.systemHandler.tick({
+            const completedFixedStepCount = this.systemHandler.tick({
                 frameDeltaSeconds,
                 fixedStepSeconds: this.fixedStepSeconds,
                 fixedStepCount,
                 fixedAlpha,
                 debugFrameMode
             });
+            if (debugFrameMode === 'running' && fixedStepCount > 0) {
+                this.accumulatorSeconds = restoreUncompletedFixedStepDebt(
+                    this.accumulatorSeconds,
+                    fixedStepCount,
+                    completedFixedStepCount,
+                    this.fixedStepSeconds
+                );
+            }
         } catch (e) {
             console.warn("프레임 루프 중 오류가 발생했습니다\n", e);
         } finally {

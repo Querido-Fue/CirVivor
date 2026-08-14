@@ -259,6 +259,36 @@ assert.match(
     compute,
     /struct BodyControlState \{[\s\S]*?move_intent: vec2f,[\s\S]*?source_tick: u32,[\s\S]*?selected_target_kind: u32,[\s\S]*?state_flags: u32,[\s\S]*?attack_range: f32,[\s\S]*?reserved_0: u32,\s*\}/
 );
+const clearBodyControlStart = compute.indexOf('fn clear_body_control_states(');
+const validateBodyControlStart = compute.indexOf(
+    'fn validate_body_control_commands(',
+    clearBodyControlStart
+);
+const clearBodyControlBlock = compute.slice(
+    clearBodyControlStart,
+    validateBodyControlStart
+);
+assert.match(
+    clearBodyControlBlock,
+    /retain_priority_state[\s\S]*?previous\.source_tick != 0u[\s\S]*?CORE_FIRST_IN_RANGE_THEN_TOWER[\s\S]*?if \(!retain_priority_state\)/
+);
+const applyControlledMotionStart = compute.indexOf('fn apply_controlled_motion(');
+const validateSpawnStart = compute.indexOf(
+    'fn validate_source_relative_spawns(',
+    applyControlledMotionStart
+);
+const applyControlledMotionBlock = compute.slice(
+    applyControlledMotionStart,
+    validateSpawnStart
+);
+assert.match(
+    applyControlledMotionBlock,
+    /control_state\.source_tick != 0u[\s\S]*?exact_living_body\([\s\S]*?exact_target_is_in_range\([\s\S]*?BODY_FLAG_CONTROLLED_THIS_TICK/
+);
+assert.match(
+    applyControlledMotionBlock,
+    /BODY_CONTROL_RESULT_NO_TARGET[\s\S]*?BODY_CONTROL_STATE_FLAG_ROUTE_FLOW/
+);
 assert.match(
     compute,
     /struct SpawnProgramRecord \{\s*destination_slot: u32,\s*destination_entity_id: u32,\s*destination_incarnation: u32,\s*source_slot: u32,\s*source_entity_id: u32,\s*source_incarnation: u32,\s*target_slot: u32,\s*target_entity_id: u32,\s*target_incarnation: u32,\s*mode_flags: u32,\s*result: u32,\s*source_tick: u32,\s*position_offset: vec2f,\s*target_offset: vec2f,\s*vector: vec2f,\s*scalar: f32,\s*reserved_0: u32,\s*selection_sequence: u32,\s*attack_fingerprint: u32,\s*selected_target_kind: u32,\s*request_flags: u32,\s*\}/
@@ -557,9 +587,13 @@ const maximumDamageWindowFinder = compute.slice(
 );
 assert.match(
     maximumDamageWindowFinder,
-    /var policy_event_flag = maximum_damage_window_policy_from_marker\(marker\)/
+    /let policy_event_flag = maximum_damage_window_policy_from_marker\(marker\)/
 );
 assert.doesNotMatch(maximumDamageWindowFinder, /contact_handlers/);
+assert.doesNotMatch(
+    maximumDamageWindowFinder,
+    /selected_target_tower_policy_from_marker|selected_target_tower_candidate_is_valid/
+);
 assert.match(compute, /const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC: u32 = 0x7fc00000u;/);
 assert.match(compute, /const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;/);
 assert.match(compute, /fn maximum_damage_window_marker_for_policy\(policy_event_flag: u32\)[\s\S]*?MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_ENTER[\s\S]*?MAXIMUM_DAMAGE_WINDOW_MARKER_POLICY_CONTINUOUS/);
@@ -694,7 +728,7 @@ assert.match(
 );
 assert.match(
     compute,
-    /fn preflight_core_damage_requests\([\s\S]*?core_damage_request_candidate_is_valid[\s\S]*?core_damage_request_event_count/
+    /fn preflight_core_damage_requests\([\s\S]*?core_damage_request_candidate_is_valid\(contact\)[\s\S]*?selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?core_damage_request_event_count/
 );
 assert.match(
     compute,
@@ -706,9 +740,27 @@ assert.match(
 );
 assert.match(
     coreResolveBlock,
-    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?mark_maximum_damage_window_candidate/
+    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?apply_target_damage\([\s\S]*?damage\.applied <= 0[\s\S]*?atomicAdd\(&simulations\.values\[self_body_id\]\.health, damage_self\)[\s\S]*?APPLIED_EVENT_TYPE_DAMAGE_APPLIED[\s\S]*?policy_event_flag[\s\S]*?target_died_flag/
 );
-assert.doesNotMatch(coreResolveBlock, /apply_target_damage|\.health\s*=|atomicSub/);
+const selectedTowerResolveStart = coreResolveBlock.indexOf(
+    'if (selected_target_tower_candidate_is_valid(contact))'
+);
+const coreCandidateResolveStart = coreResolveBlock.indexOf(
+    'if (!core_damage_request_candidate_is_valid(contact))'
+);
+assert.ok(
+    selectedTowerResolveStart >= 0
+        && coreCandidateResolveStart > selectedTowerResolveStart
+);
+const selectedTowerResolveBlock = coreResolveBlock.slice(
+    selectedTowerResolveStart,
+    coreCandidateResolveStart
+);
+assert.doesNotMatch(
+    selectedTowerResolveBlock,
+    /mark_maximum_damage_window_candidate|APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW/
+);
+assert.doesNotMatch(coreResolveBlock, /\.health\s*=|atomicSub/);
 assert.match(
     compute,
     /fn finalize_maximum_damage_window_preflight\([\s\S]*?maximum_damage_window_event_count[\s\S]*?core_damage_request_event_count[\s\S]*?event_overflow/

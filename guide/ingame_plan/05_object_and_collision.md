@@ -426,7 +426,7 @@ CollisionHandler는 기하와 위치 해소를 소유한다.
 
 projectile 충돌 결과는 `HitIntent`로 CombatResolver에 전달한다.
 
-GPU Tower damage uses the locked target-side order:
+Ordinary GPU Tower contact/projectile damage, including Arrow, uses the locked target-side order:
 
 ```text
 raw → source modifier → armor/resistance/directional/status → final damage
@@ -437,6 +437,11 @@ Maximum selection is independent of append order. Equal final damage chooses sou
 incarnation ascending. A valid projectile contact consumes penetration/self-hit even when the window
 applies zero HP; friendly/stale/invalid/miss/capture/reflect rejection consumes nothing. A larger value inside
 an active window applies only the peak delta and never extends the first accepted tick's `N + 60` expiry.
+
+Diamond M's exact selected-Tower projectile is the explicit exception. It reserves its one-hit projectile
+budget, applies the immutable launch-time damage snapshot directly to that selected Tower even if M has since
+died, and emits `maximumDamageWindow=false`; it never enters same-tick maximum aggregation or the continuous
+Tower Maximum Damage Window.
 
 동적 접촉 해소 순서:
 
@@ -658,8 +663,10 @@ Gold/bounty를 forfeiture하며, stale/forged/duplicate events cannot mutate Cor
 Diamond M's Core-selected projectile reaches the same CPU domain through a separate typed damage request.
 It carries exact Core/source identity, generation/epoch, source tick, selection sequence/fingerprint, and
 positive resolved damage; it never mutates GPU Core health. Batch validation/dedupe is atomic before CPU
-CoreIntegrity mutation. Its Tower-selected branch instead validates the exact selected Tower and enters the
-ordinary projectile/Maximum Damage Window path.
+CoreIntegrity mutation. Its Tower-selected branch instead validates the exact selected Tower and applies its
+launch-time one-hit damage snapshot directly after contact, even after source death. That branch bypasses the
+continuous Maximum Damage Window and reports `maximumDamageWindow=false`; ordinary contact and Arrow retain
+the established maximum/window path.
 
 Core depletion closes new gameplay ingress immediately. The exact impact cleanup is still included in that
 boundary's one lifecycle commit and one final GPU fixed submit; `RunFailed` is emitted once. Fixed,

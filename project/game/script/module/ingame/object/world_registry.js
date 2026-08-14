@@ -265,9 +265,10 @@ export class WorldRegistry {
     /**
      * backend batch가 수락하기 전 외부 활성 query에 보이지 않는 handle을 예약합니다.
      * @param {{kindId:string,definitionId?:string|null,createdAtTick:number}} descriptor
+     * @param {{excludedEntityIds?:Set<number>|null}} [options={}] - 같은 fixed boundary에서 backend slot이 아직 퇴역하지 않은 ID를 피합니다.
      * @returns {{entityId:number,incarnation:number}|null} capacity가 없으면 null입니다.
      */
-    reserveEntity(descriptor) {
+    reserveEntity(descriptor, options = {}) {
         this.#assertUsable();
         if ((this.activeCount + this.reservedCount) >= this.capacity) {
             return null;
@@ -281,9 +282,27 @@ export class WorldRegistry {
             descriptor?.createdAtTick,
             'createdAtTick'
         );
-        const entityId = this.freeEntityIds.length > 0
-            ? this.freeEntityIds.pop()
-            : this.nextEntityId++;
+        const excludedEntityIds = options?.excludedEntityIds ?? null;
+        if (excludedEntityIds !== null && !(excludedEntityIds instanceof Set)) {
+            throw new TypeError('excludedEntityIds는 Set이어야 합니다.');
+        }
+        let entityId = null;
+        const deferredFreeEntityIds = [];
+        while (this.freeEntityIds.length > 0) {
+            const candidate = this.freeEntityIds.pop();
+            if (excludedEntityIds?.has(candidate) === true) {
+                deferredFreeEntityIds.push(candidate);
+                continue;
+            }
+            entityId = candidate;
+            break;
+        }
+        for (let index = deferredFreeEntityIds.length - 1; index >= 0; index--) {
+            this.freeEntityIds.push(deferredFreeEntityIds[index]);
+        }
+        if (entityId === null) {
+            entityId = this.nextEntityId++;
+        }
         if (entityId >= INVALID_HANDLE_COMPONENT) {
             throw new RangeError('WorldRegistry entity ID 공간이 고갈되었습니다.');
         }

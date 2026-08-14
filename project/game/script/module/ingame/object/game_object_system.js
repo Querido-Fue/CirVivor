@@ -853,6 +853,9 @@ export class GameObjectSystem {
                 .commitCompletedFormationProgramsAtFixedBoundary(
                     proposedFixedTick
                 );
+            if (completedFormationPrograms.pending === true) {
+                return false;
+            }
             if (completedFormationPrograms.protocolFailure) {
                 if (this.runOutcome.isDefeated() || this.coreIntegrity.isDepleted()) {
                     return this.#sealTerminalFailure(
@@ -2582,11 +2585,14 @@ export class GameObjectSystem {
     }
 
     #createFormationRuntimeDirector(endpoint) {
+        const endpointStatus = endpoint.getStatus();
         const director = this.formationRuntimeDirectorFactory({
             registry: endpoint.getRegistry(),
             formationCommandPort: endpoint.getFormationCommandPort(),
-            sessionGeneration: endpoint.getStatus().sessionGeneration,
-            capacity: endpoint.getCapacity()
+            sessionGeneration: endpointStatus.sessionGeneration,
+            capacity: endpoint.getCapacity(),
+            maximumPrepareRecordsPerFixedTick:
+                endpointStatus.formationCommandCapacity
         });
         if (!director
             || typeof director.observeLifecycle !== 'function'

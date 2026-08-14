@@ -377,13 +377,21 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
         currentHp: 17
     });
     assert.equal(damagedTower.health, 17);
+    const sessionScaledTower = createGpuTowerSpawnIntent({
+        position: authoredPosition,
+        currentHp: 20_000_000
+    });
+    assert.equal(sessionScaledTower.health, 20_000_000);
     assert.throws(
         () => createGpuTowerSpawnIntent({ position: authoredPosition, currentHp: 0 }),
         /currentHp/
     );
     assert.throws(
-        () => createGpuTowerSpawnIntent({ position: authoredPosition, currentHp: 31 }),
-        /currentHp/
+        () => createGpuTowerSpawnIntent({
+            position: authoredPosition,
+            currentHp: 21_474_837
+        }),
+        /fixedPoint/
     );
     assert.throws(
         () => createGpuTowerSpawnIntent({ position: { x: NaN, y: 0 } }),

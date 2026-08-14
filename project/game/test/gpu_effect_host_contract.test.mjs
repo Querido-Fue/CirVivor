@@ -1090,10 +1090,10 @@ test('Pentagon director는 lifecycle spawn+120 tick cadence와 zero-target compl
             }]
         }
     }, 121);
-    director.observeCompletedEvents({
+    const firstCompletionSnapshot = Object.freeze({
         fixedTick: 122,
         protocolFailure: null,
-        results: [{
+        results: Object.freeze([Object.freeze({
             commandId: command.commandId,
             sourceTick: 121,
             sourceHandle: command.sourceHandle,
@@ -1101,10 +1101,18 @@ test('Pentagon director는 lifecycle spawn+120 tick cadence와 zero-target compl
             resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
             candidateCount: 0,
             appliedCount: 0
-        }]
+        })])
     });
+    director.observeCompletedEvents(firstCompletionSnapshot);
     assert.equal(director.getStatus().pendingPulseCount, 0);
     assert.equal(director.getStatus().lastCompletedSourceTick, 121);
+    assert.equal(director.getStatus().telemetry.zeroTargetCompletionCount, 1);
+    // 같은 fixed boundary의 downstream readback이 pending이면 owner가 같은
+    // frozen snapshot object를 반환합니다. 이미 적용한 completion은 no-op입니다.
+    director.observeCompletedEvents(firstCompletionSnapshot);
+    assert.equal(director.requiresRecovery(), false);
+    assert.equal(director.getStatus().pendingPulseCount, 0);
+    assert.equal(director.getStatus().telemetry.completedPulseCount, 1);
     assert.equal(director.getStatus().telemetry.zeroTargetCompletionCount, 1);
     assert.equal(director.stageForFixedTick({ targetFixedTick: 240 }).stagedCount, 0);
     const secondStage = director.stageForFixedTick({ targetFixedTick: 241 });
@@ -1150,6 +1158,73 @@ test('Pentagon director는 lifecycle spawn+120 tick cadence와 zero-target compl
     director.closeForTerminal(241);
     assert.equal(director.stageForFixedTick({ targetFixedTick: 242 }).accepted, false);
     director.destroy();
+});
+
+test('Pentagon director는 same-boundary GPU materialization 전 비-Emitter lifecycle spawn을 무시한다', () => {
+    const sessionGeneration = 211;
+    const registry = new WorldRegistry({ capacity: 2 });
+    const backend = createEffectBackend(sessionGeneration);
+    const handle = registry.reserveEntity({
+        kindId: 'enemy',
+        definitionId: 'basic_hexa_group_01',
+        createdAtTick: 5
+    });
+    assert.ok(handle);
+    assert.equal(registry.activateReserved(handle, Object.freeze({
+        capabilityMask: 0,
+        effectEmitterProfileId: null
+    })), true);
+    assert.equal(backend.hasBody(handle), false);
+    const director = new PentagonEffectDirector({
+        endpoint: {
+            hasBody: (candidate) => backend.hasBody(candidate),
+            getCapacity: () => 2,
+            getStatus: () => Object.freeze({ sessionGeneration })
+        },
+        registry,
+        effectCommandPort: Object.freeze({
+            requestPulseBatch() { throw new Error('not used'); }
+        }),
+        sessionGeneration,
+        capacity: 2
+    });
+
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [],
+        spawned: [{ handle }]
+    }, 5);
+    assert.equal(director.getStatus().activeEmitterCount, 0);
+    assert.equal(director.requiresRecovery(), false);
+});
+
+test('Pentagon director는 backend body가 없는 실제 Emitter spawn을 계속 fail-close한다', () => {
+    const sessionGeneration = 212;
+    const registry = new WorldRegistry({ capacity: 2 });
+    const backend = createEffectBackend(sessionGeneration);
+    const handle = activateEmitter(registry, backend, 5);
+    backend.bodies.delete(handleKey(handle));
+    const director = new PentagonEffectDirector({
+        endpoint: {
+            hasBody: (candidate) => backend.hasBody(candidate),
+            getCapacity: () => 2,
+            getStatus: () => Object.freeze({ sessionGeneration })
+        },
+        registry,
+        effectCommandPort: Object.freeze({
+            requestPulseBatch() { throw new Error('not used'); }
+        }),
+        sessionGeneration,
+        capacity: 2
+    });
+
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [],
+        spawned: [{ handle }]
+    }, 5);
+    assert.equal(director.requiresRecovery(), true);
+    assert.equal(director.getStatus().failure.code, 'effect-lifecycle-contract');
 });
 
 test('Pentagon director는 live roster SOURCE_INVALID completion을 recovery로 fail-close한다', () => {

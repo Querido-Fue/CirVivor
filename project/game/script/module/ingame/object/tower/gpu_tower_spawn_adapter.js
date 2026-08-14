@@ -6,7 +6,8 @@ import {
 import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_LIFETIME,
-    GPU_CIRCLE_BODY_RENDER_SHAPE
+    GPU_CIRCLE_BODY_RENDER_SHAPE,
+    encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
     GAMEPLAY_ALLEGIANCE_POLICY,
@@ -30,12 +31,10 @@ function requireFinitePosition(source, label) {
 function requireLivingCurrentHp(value) {
     const currentHp = Number(value);
     if (!Number.isFinite(currentHp)
-        || currentHp <= 0
-        || currentHp > THE_TOWER_COMBAT_DATA.MAX_HEALTH) {
-        throw new RangeError(
-            `GPU Tower currentHp는 0보다 크고 ${THE_TOWER_COMBAT_DATA.MAX_HEALTH} 이하여야 합니다.`
-        );
+        || currentHp <= 0) {
+        throw new RangeError('GPU Tower currentHp는 0보다 큰 유한수여야 합니다.');
     }
+    encodeGpuCircleBodyFixedPoint(currentHp);
     return currentHp;
 }
 

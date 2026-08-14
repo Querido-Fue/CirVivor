@@ -191,6 +191,10 @@ test('route blocker는 Enemy/Tower만 물리 차단하고 projectile interaction
 test('dedicated actual-hardware stage는 production Endpoint/Director/body readback만 사용한다', () => {
     assert.match(SUPPORT_SOURCE, /enemy-cork-route-closure/);
     assert.match(SUPPORT_SOURCE, /enemy_cork_route_closure_runner\.js/);
+    assert.match(
+        SUPPORT_SOURCE,
+        /data\/scene\/game\/performance_serpentine_map_data\.js/
+    );
     assert.match(RUNNER_SOURCE, /new GpuEnemySimulationEndpoint/);
     assert.match(RUNNER_SOURCE, /new CorkRouteClosureDirector/);
     assert.match(RUNNER_SOURCE, /readbackBodies\(\)/);

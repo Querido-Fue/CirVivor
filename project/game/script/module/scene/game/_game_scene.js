@@ -19,7 +19,7 @@ export const GAME_SCENE_MODES = Object.freeze({
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler - 상위 SceneSystem입니다.
-     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number}} [options={}] - 플레이 진입 옵션입니다.
+     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number}} [options={}] - 플레이 진입 옵션입니다.
      */
     constructor(sceneHandler, options = {}) {
         super(sceneHandler);
@@ -33,6 +33,8 @@ export class GameScene extends BaseScene {
         this.waveDefinition = options.waveDefinition;
         this.enemyPresentationProfile = options.enemyPresentationProfile;
         this.initialCameraZoom = options.initialCameraZoom;
+        this.towerMaxHp = options.towerMaxHp;
+        this.coreMaxIntegrity = options.coreMaxIntegrity;
         this.recoveryRestartGeneration = null;
         this.recoveryRestartCount = 0;
         this.destroyed = false;
@@ -43,18 +45,19 @@ export class GameScene extends BaseScene {
 
     /**
      * @override
-     * @returns {void}
+     * @returns {boolean} GameSystem fixed tick이 실제로 전진했는지 여부입니다.
      */
     fixedUpdate() {
         const advanced = this.gameSystem.fixedUpdate();
         if (advanced) {
             this.recoveryRestartGeneration = null;
-            return;
+            return true;
         }
         if (this.enemyRecoveryEnabled
             && this.gameSystem.isEnemySimulationRecoveryRequired()) {
             this.#restartAtSafeWaveBoundary();
         }
+        return false;
     }
 
     /**
@@ -178,7 +181,9 @@ export class GameScene extends BaseScene {
             gameplayWorldActorsEnabled: this.gameplayWorldActorsEnabled,
             waveDefinition: this.waveDefinition,
             enemyPresentationProfile: this.enemyPresentationProfile,
-            initialCameraZoom: this.initialCameraZoom
+            initialCameraZoom: this.initialCameraZoom,
+            towerMaxHp: this.towerMaxHp,
+            coreMaxIntegrity: this.coreMaxIntegrity
         });
         gameSystem.enter();
         return gameSystem;

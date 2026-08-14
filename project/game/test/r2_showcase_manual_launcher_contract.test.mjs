@@ -44,7 +44,7 @@ test('manual showcase NW package는 production main 위에 visible test-only boo
     );
 });
 
-test('manual launcher는 actual GameScene과 injection-only 3-wave content를 사용한다', async () => {
+test('manual launcher는 actual GameScene과 injection-only 3-wave/Map 2 content를 사용한다', async () => {
     const source = await readGameFile(
         'test/support/r2_showcase_manual_launcher.js'
     );
@@ -53,6 +53,8 @@ test('manual launcher는 actual GameScene과 injection-only 3-wave content를 �
     assert.match(source, /new GameScene\(this\.sceneSystem, \{/);
     assert.match(source, /waveDefinition/);
     assert.match(source, /R2_ENEMY_SHOWCASE_WAVES\[waveNumber - 1\]/);
+    assert.match(source, /new TileMap\(PERFORMANCE_SERPENTINE_MAP_DATA\)/);
+    assert.match(source, /selectPerformanceMap\(\)/);
     assert.match(source, /actualGameScene: this\.currentScene instanceof GameScene/);
     assert.doesNotMatch(source, /INGAME_MAP_DATA|gameStart\(/);
 });
@@ -126,6 +128,7 @@ test('visible controls는 SendInput click, pause epoch, camera, bounded evidence
         'r2-manual-wave-1',
         'r2-manual-wave-2',
         'r2-manual-wave-3',
+        'r2-manual-performance',
         'r2-manual-pause',
         'r2-manual-resume',
         'r2-manual-camera-fit',

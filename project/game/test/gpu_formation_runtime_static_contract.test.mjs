@@ -193,19 +193,107 @@ test('모든 Formation compute/render profile은 실제 telemetry 기준 storage
             [GPU_FORMATION_RUNTIME_ENTRY_POINT.SELECT_PREPARE],
         9
     );
+    assert.equal(
+        GPU_FORMATION_RUNTIME_STORAGE_PROFILE.byEntryPoint
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.SEED_MOTION],
+        7
+    );
+    assert.equal(
+        GPU_FORMATION_RUNTIME_STORAGE_PROFILE.byEntryPoint
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_ROUTE_REKEYS],
+        4
+    );
+    assert.equal(
+        GPU_FORMATION_RUNTIME_STORAGE_PROFILE.byEntryPoint
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.PREFLIGHT_TRANSFORMS],
+        7
+    );
+    assert.equal(
+        GPU_FORMATION_RUNTIME_STORAGE_PROFILE.byEntryPoint
+            [GPU_FORMATION_RUNTIME_ENTRY_POINT.COMMIT_AUXILIARY],
+        9
+    );
 });
 
 test('transitive shader resource binding plan은 pipeline exact-set을 보존한다', () => {
     assert.match(simulationSource,
         /SEED_PREPARE\]: \[\s*\[2, 7, 8\], \[2\], false/);
     assert.match(simulationSource,
-        /PREFLIGHT_TRANSFORMS\]: \[\s*\[1, 2, 6, 7, 9, 10\], \[6\], true/);
+        /SEED_MOTION\]: \[\s*\[0, 2, 6, 7, 17, 19\], \[2\], true/);
+    assert.match(simulationSource,
+        /PREFLIGHT_ROUTE_REKEYS\]: \[\s*\[2, 6, 9, 17\], \[\], false/);
+    assert.match(simulationSource,
+        /PREFLIGHT_TRANSFORMS\]: \[\s*\[1, 2, 6, 7, 9, 10, 18\], \[6\], true/);
+    assert.match(simulationSource,
+        /COMMIT_AUXILIARY\]: \[\s*\[6, 7, 9, 10, 11, 12, 15, 16, 18\], \[\], false/);
     assert.match(simulationSource,
         /SEAL_TRANSFORM\]: \[\s*\[7, 9\], \[\], false/);
     assert.match(simulationSource,
         /storageBindingCount !== expectedStorageBindingCount/);
     assert.match(simulationSource,
         /renderBodyStorageBindings\.length\s*\n\s*!== GPU_FORMATION_RUNTIME_STORAGE_PROFILE\.render/);
+});
+
+test('Formation transform은 inactive capture side-plane만 수용하고 destination identity로 원자 rekey한다', () => {
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /struct ProjectileCaptureState \{[\s\S]*?packed_meta: atomic<u32>[\s\S]*?facing: vec2f/);
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /@group\(0\) @binding\(18\) var<storage, read_write> projectile_capture_states/);
+    const preflight = GPU_FORMATION_RUNTIME_COMPUTE_WGSL.match(
+        /fn canonical_inactive_projectile_capture_state\([\s\S]*?\n\}/
+    )?.[0] ?? '';
+    assert.notEqual(preflight, '');
+    assert.match(preflight, /packed_meta\) == 0u/);
+    assert.match(preflight, /values\[slot\]\.self_entity_id == entity_id/);
+    assert.match(preflight, /values\[slot\]\.self_incarnation == incarnation/);
+    assert.match(preflight, /values\[slot\]\.peer_body_slot == INVALID/);
+    assert.match(preflight, /values\[slot\]\.capture_sequence == 0u/);
+    assert.match(preflight, /values\[slot\]\.facing\.x == 0\.0/);
+    assert.match(preflight, /values\[slot\]\.facing\.y == 0\.0/);
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /sources_match = source_state_matches\([\s\S]*?canonical_inactive_projectile_capture_state\(\s*record\.source_a_slot[\s\S]*?canonical_inactive_projectile_capture_state\(\s*record\.source_b_slot/);
+    const commit = GPU_FORMATION_RUNTIME_COMPUTE_WGSL.match(
+        /fn commit_formation_transform_auxiliary\([\s\S]*?\n\}/
+    )?.[0] ?? '';
+    assert.match(commit,
+        /reset_projectile_capture_state\(\s*root_slot,\s*record\.destination_entity_id,\s*record\.destination_incarnation/);
+    assert.match(commit,
+        /reset_projectile_capture_state\(other_slot, INVALID, INVALID\)/);
+});
+
+test('Formation route 권위는 Cork 재경로 이후 current actor path를 사용하고 legacy span만 별도 보존한다', () => {
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /@group\(0\) @binding\(19\) var<storage, read> route_topology/);
+    const routeSynchronization = GPU_FORMATION_RUNTIME_COMPUTE_WGSL.match(
+        /fn synchronize_formation_route_span\([\s\S]*?\n\}/
+    )?.[0] ?? '';
+    assert.notEqual(routeSynchronization, '');
+    assert.match(routeSynchronization, /role == ROUTE_ROLE_NONE/);
+    assert.match(routeSynchronization,
+        /route_state\.current_path_index[\s\S]*?ROUTE_TOPOLOGY_PATH_COUNT_WORD/);
+    assert.match(routeSynchronization,
+        /route_first_field_index = first_field/);
+    assert.match(routeSynchronization, /route_field_count = field_count/);
+    const actorIdentity = GPU_FORMATION_RUNTIME_COMPUTE_WGSL.match(
+        /fn formation_route_actor_identity_matches\([\s\S]*?\n\}/
+    )?.[0] ?? '';
+    assert.match(actorIdentity, /state\.current_path_index != INVALID/);
+    assert.match(actorIdentity, /state\.route_set_index != INVALID/);
+    const pairCompatibility = GPU_FORMATION_RUNTIME_COMPUTE_WGSL.match(
+        /fn formation_route_pair_is_compatible\([\s\S]*?\n\}/
+    )?.[0] ?? '';
+    assert.match(pairCompatibility,
+        /source_route\.route_set_index == candidate_route\.route_set_index/);
+    assert.match(pairCompatibility,
+        /source_route\.current_path_index == candidate_route\.current_path_index/);
+    assert.match(pairCompatibility,
+        /source_role == ROUTE_ROLE_NONE[\s\S]*?source\.route_first_field_index == candidate\.route_first_field_index/);
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /source\.route_first_field_index != candidate\.route_first_field_index[\s\S]*?source\.route_field_count != candidate\.route_field_count/);
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /fn seed_formation_motion[\s\S]*?!synchronize_formation_route_span\(slot\)[\s\S]*?!valid_formation_state\(slot\)/);
+    assert.match(GPU_FORMATION_RUNTIME_COMPUTE_WGSL,
+        /fn preflight_formation_route_rekeys[\s\S]*?!formation_route_pair_is_compatible\(\s*record\.source_a_slot,\s*record\.source_b_slot/);
 });
 
 test('Formation prepare stage는 owner/ABI source identity shape를 exact 수용한다', () => {

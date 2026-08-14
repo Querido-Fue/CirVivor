@@ -204,7 +204,7 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
                 recoverTicks: 30,
                 telegraphStyleCode: 1,
                 telegraphColorRgba: Object.freeze([1, 0.82, 0.2, 1]),
-                telegraphRadiusScale: 1.35
+                telegraphRadiusScale: 1
             })
         }),
         Object.freeze({

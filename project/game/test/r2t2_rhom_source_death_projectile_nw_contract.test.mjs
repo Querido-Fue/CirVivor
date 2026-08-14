@@ -36,6 +36,8 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
 
     for (const modulePath of [
         "./production/script/module/ingame/gpu_simulation_endpoint.js",
+        "./production/script/module/ingame/contract/gameplay_team_contract.js",
+        "./production/script/module/ingame/contract/projectile_target_policy_contract.js",
         "./production/script/module/ingame/object/enemy/gpu_enemy_spawn_adapter.js",
         "./production/script/module/ingame/object/projectile/gpu_projectile_spawn_adapter.js",
         "./production/script/module/ingame/physics/gpu/gpu_effect_runtime_abi.js"
@@ -43,6 +45,10 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
         assert.ok(source.includes(modulePath), `production runner import missing: ${modulePath}`);
     }
     assert.match(source, /const SOURCE_DEATH_TICK = 4;/);
+    assert.match(source, /const WINDOW_PRIME_SPAWN_TICK = SOURCE_DEATH_TICK \+ 1;/);
+    assert.match(source, /const WINDOW_PRIME_PUBLICATION_TICK = WINDOW_PRIME_SPAWN_TICK \+ 1;/);
+    assert.match(source, /const WINDOW_PRIME_CONTACT_RADIUS = THE_TOWER_DATA\.RADIUS_TILES/);
+    assert.match(source, /const WINDOW_PRIME_PREDICTED_DISTANCE = WINDOW_PRIME_START_DISTANCE/);
     assert.match(source, /const targetTowerPosition = Object\.freeze\(\{ x: 6, y: 2 \}\);/);
     assert.match(source, /const corePosition = Object\.freeze\(\{ x: 12, y: 8 \}\);/);
     assert.match(source, /coreDistance > BASIC_RHOM_ATTACK_DATA\.attackRangeTiles/);
@@ -59,9 +65,16 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
     assert.match(source, /endpoint\.hasBody\(sourceHandle\) === false/);
     assert.match(source, /endpoint\.getRegistry\(\)\.has\(projectileHandle\) === true/);
     assert.match(source, /endpoint\.hasBody\(projectileHandle\) === true/);
-    assert.match(source, /THE_TOWER_COMBAT_DATA\.MAX_HEALTH - targetDamage/);
+    assert.match(source, /createWindowPrimeEntryGeometry\(\s*targetAfterSourceDeath\.position/);
+    assert.match(source, /createWindowPrimeProjectileIntent\(windowPrimeEntryGeometry\)/);
+    assert.match(source, /windowPrimeEntryGeometry\.previousDistance\s+> windowPrimeEntryGeometry\.contactRadius/);
+    assert.match(source, /windowPrimeEntryGeometry\.predictedDistance\s+< windowPrimeEntryGeometry\.contactRadius/);
+    assert.match(source, /windowPrimeDamageEvent\.maximumDamageWindow === true/);
+    assert.match(source, /windowPrimeState\.peakFinalDamageFixedPoint/);
+    assert.match(source, /projectileTowerHit\.sourceTick\s+< windowPrimeState\.expiresAtFixedTick/);
+    assert.match(source, /THE_TOWER_COMBAT_DATA\.MAX_HEALTH - \(targetDamage \* 2\)/);
     assert.match(source, /projectileTowerHit\.damageFixedPoint === targetDamageFixedPoint/);
-    assert.match(source, /projectileTowerHit\.maximumDamageWindow === true/);
+    assert.match(source, /projectileTowerHit\.maximumDamageWindow === false/);
     assert.match(source, /unwantedDamageEvents\.length === 0/);
     assert.match(source, /cleanupCommit\.despawned\.length === 1/);
     assert.match(source, /cleanupCommit\.despawned\[0\]\.reason === 'gpu-death'/);
@@ -78,7 +91,7 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
     assert.equal(
         (source.match(/commitCompletedEndpointEventsAtFixedBoundary\(/g) ?? [])
             .length,
-        6,
+        8,
         'each submitted source tick and terminal cleanup must use the publication wrapper'
     );
     assertOrdered(source, [
@@ -98,6 +111,11 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
         'const sourceDespawnRequest = endpoint.requestDespawn(',
         'const sourceDespawnCommit = endpoint.commitAtFixedBoundary(SOURCE_DEATH_TICK);',
         'const projectileAfterSourceDeath = findBody(',
+        'const sourceDeathPublication',
+        'const windowPrimeRequest = endpoint.requestSpawn(',
+        'const windowPrimeCommit = endpoint.commitAtFixedBoundary(',
+        'const windowPrimePublication',
+        'const windowPrimeCleanupCommit = endpoint.commitAtFixedBoundary(',
         'const completedPublication',
         'const projectileTowerHit = completed.contactEvents.find((event) => (',
         'cleanupCommit = endpoint.commitAtFixedBoundary(tick);',
@@ -127,16 +145,26 @@ test('Rhom source-death stage is fail-closed and wired to only its dedicated run
     assert.match(source, new RegExp(
         `fs\\.access\\(path\\.join\\([\\s\\S]*?'${runner}'`
     ));
-    assert.match(source, /fixture\?\.scenario\s+=== 'rhom-tower-selected-projectile-survives-source-death'/);
+    assert.match(source, /fixture\?\.scenario\s+=== 'rhom-tower-selected-direct-projectile-survives-source-death'/);
     assert.match(source, /launch\.snapshot\.resolvedBaseDamageOther === 5/);
     assert.match(source, /launch\.snapshot\.sourceSnapshotTick === 2/);
     assert.match(source, /sourceDeath\.sourceRegistryPresent === false/);
     assert.match(source, /sourceDeath\.projectileRegistryPresent === true/);
     assert.match(source, /JSON\.stringify\(sourceDeath\.snapshot\) === JSON\.stringify\(launch\.snapshot\)/);
-    assert.match(source, /impact\?\.targetHpBefore === 30/);
-    assert.match(source, /impact\.targetHpAfter === 25/);
+    assert.match(source, /windowPrime\?\.spawnTick === 5/);
+    assert.match(source, /windowPrimeEntry\.previousDistance > windowPrimeEntry\.contactRadius/);
+    assert.match(source, /windowPrimeEntry\.predictedDistance < windowPrimeEntry\.contactRadius/);
+    assert.match(source, /windowPrime\.targetHpAfter === 25/);
+    assert.match(source, /windowPrime\.maximumDamageWindow === true/);
+    assert.match(source, /windowPrime\.peakFinalDamageFixedPoint === 500/);
+    assert.match(source, /impact\?\.targetHpBefore === 25/);
+    assert.match(source, /impact\.targetHpAfter === 20/);
     assert.match(source, /impact\.wrongTowerHpAfter === 30/);
     assert.match(source, /impact\.noSourceRevalidation === true/);
+    assert.match(source, /impact\.maximumDamageWindow === false/);
+    assert.match(source, /impact\.directDiscreteDamage === true/);
+    assert.match(source, /impact\.windowActiveBeforeImpact === true/);
+    assert.match(source, /impact\.windowStatePreserved === true/);
     assert.match(source, /cleanup\.noRevive === true/);
     assert.match(source, /runtime\.storageMaximum === 9/);
     assert.match(source, /runtime\.uncapturedErrorCount === 0/);

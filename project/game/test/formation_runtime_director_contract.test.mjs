@@ -202,6 +202,43 @@ test('Formation roster는 accepted prepare에서만 sequence를 전진하고 rej
     assert.equal(director.requiresRecovery(), false);
 });
 
+test('대규모 H roster prepare는 bounded overlapping round-robin batch로 전수 순회한다', () => {
+    const authority = Object.freeze({});
+    const registry = new WorldRegistry({
+        capacity: 8,
+        atomicTransformAuthority: authority
+    });
+    const sources = Array.from({ length: 8 }, (_, index) => (
+        activateNaturalH(registry, index + 1)
+    ));
+    const harness = createCommandHarness();
+    const director = new FormationRuntimeDirector({
+        registry,
+        formationCommandPort: harness.port,
+        sessionGeneration: 71,
+        capacity: 8,
+        maximumPrepareRecordsPerFixedTick: 3
+    });
+    director.observeLifecycle(lifecycleCommit(
+        1,
+        sources.map(({ handle }) => Object.freeze({ handle }))
+    ), 1);
+
+    const observed = new Set();
+    for (let tick = 2; tick <= 5; tick++) {
+        const staged = director.stageForFixedTick({ targetFixedTick: tick });
+        assert.equal(staged.accepted, true);
+        const records = harness.prepareRequests.at(-1).records;
+        assert.equal(records.length, 3);
+        for (const { sourceHandle } of records) {
+            observed.add(`${sourceHandle.entityId}:${sourceHandle.incarnation}`);
+        }
+    }
+    assert.equal(observed.size, 8);
+    assert.equal(director.getStatus().maximumPrepareRecordsPerFixedTick, 3);
+    assert.equal(director.requiresRecovery(), false);
+});
+
 test('two-source exact lineage는 prepare→privileged lifecycle→destination SoA까지 보존된다', () => {
     const authority = Object.freeze({});
     const registry = new WorldRegistry({ capacity: 2, atomicTransformAuthority: authority });

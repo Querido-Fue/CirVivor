@@ -125,6 +125,17 @@ export class FormationRuntimeDirector {
             'sessionGeneration'
         );
         this.capacity = requirePositiveSafeInteger(options.capacity, 'capacity');
+        this.maximumPrepareRecordsPerFixedTick = requirePositiveSafeInteger(
+            options.maximumPrepareRecordsPerFixedTick
+                ?? Math.min(this.capacity, 256),
+            'maximumPrepareRecordsPerFixedTick',
+            this.capacity
+        );
+        if (this.maximumPrepareRecordsPerFixedTick < 2) {
+            throw new RangeError(
+                'maximumPrepareRecordsPerFixedTick은 Formation pair를 위해 2 이상이어야 합니다.'
+            );
+        }
         this.entityIds = new Uint32Array(this.capacity);
         this.incarnations = new Uint32Array(this.capacity);
         this.definitionCodes = new Uint32Array(this.capacity);
@@ -149,6 +160,7 @@ export class FormationRuntimeDirector {
         this.lastPreparedSourceTick = 0;
         this.lastPrepareStageTick = 0;
         this.lastPrepareStageResult = null;
+        this.nextPrepareCursor = 0;
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -654,7 +666,17 @@ export class FormationRuntimeDirector {
             this.entityIds[left] - this.entityIds[right]
             || this.incarnations[left] - this.incarnations[right]
         ));
-        const sequencePlan = indices.map((index) => {
+        const batchSize = Math.min(
+            indices.length,
+            this.maximumPrepareRecordsPerFixedTick
+        );
+        const startCursor = indices.length <= batchSize
+            ? 0
+            : this.nextPrepareCursor % indices.length;
+        const selectedIndices = Array.from({ length: batchSize }, (_, offset) => (
+            indices[(startCursor + offset) % indices.length]
+        ));
+        const sequencePlan = selectedIndices.map((index) => {
             if (this.prepareSequences[index] === 0xffffffff) {
                 throw new RangeError('Formation prepare sequence 공간이 고갈되었습니다.');
             }
@@ -686,6 +708,10 @@ export class FormationRuntimeDirector {
             for (const plan of sequencePlan) {
                 this.prepareSequences[plan.index] = plan.nextPrepareSequence;
             }
+            this.nextPrepareCursor = indices.length <= batchSize
+                ? 0
+                : (startCursor + Math.max(1, batchSize - 1))
+                    % indices.length;
         }
         if (receipt?.accepted === true) {
             this.lastPrepareStageTick = tick;
@@ -823,6 +849,7 @@ export class FormationRuntimeDirector {
         this.lastPreparedSourceTick = 0;
         this.lastPrepareStageTick = 0;
         this.lastPrepareStageResult = null;
+        this.nextPrepareCursor = 0;
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -847,6 +874,9 @@ export class FormationRuntimeDirector {
             lastObservedFixedTick: this.lastObservedFixedTick,
             lastPreparedSourceTick: this.lastPreparedSourceTick,
             lastPrepareStageTick: this.lastPrepareStageTick,
+            maximumPrepareRecordsPerFixedTick:
+                this.maximumPrepareRecordsPerFixedTick,
+            nextPrepareCursor: this.nextPrepareCursor,
             hiveHealthBarPolicy: 'hx-separate-health-bar',
             recoveryRequired: this.recoveryRequired,
             failure: this.failure,
@@ -1126,6 +1156,7 @@ export class FormationRuntimeDirector {
         this.generations.fill(0);
         this.lineageHashes.fill(0);
         this.prepareSequences.fill(0);
+        this.nextPrepareCursor = 0;
         this.lineageEntityIds.fill(0);
         this.lineageIncarnations.fill(0);
     }

@@ -193,7 +193,7 @@ test('terminal Ring+Cork settlement은 submit 전후 재진입 모두 Capture T�
     );
 });
 
-test('route endpoint는 generic watermark 전 readback을 drain하지 않고 terminal source-0 idle 합성을 금지한다', () => {
+test('route endpoint는 generic 지연 중 exact bypass queue-front만 drain하고 terminal source-0 idle 합성을 금지한다', () => {
     const commitStart = endpointSource.indexOf(
         '    commitCompletedRouteAvailabilityProgramsAtFixedBoundary('
     );
@@ -205,10 +205,21 @@ test('route endpoint는 generic watermark 전 readback을 drain하지 않고 ter
     assertOrdered(commitSource, [
         'const genericExpectedSourceReady',
         'const allowIdleCompletion = exactIdle && !terminalEventBoundary',
-        'if (!genericExpectedSourceReady && !allowIdleCompletion)',
+        'const completedReadbackBypassReady',
+        '&& !completedReadbackBypassReady)',
         'this.backend.drainCompletedRouteAvailabilityBatches(drained)',
-        'if (allowIdleCompletion)'
+        'if (allowIdleCompletion)',
+        'const authenticatedReadbackBypass',
+        '&& !authenticatedReadbackBypass)'
     ]);
+    assert.match(
+        commitSource,
+        /runtimeStatus\.readbackBypassEligible === true[\s\S]*runtimeStatus\.completedReadbackBypassSourceTick[\s\S]*=== expectedSourceTick/
+    );
+    assert.match(
+        commitSource,
+        /batch\.readbackBypassed === true[\s\S]*batch\.lastEventBase === 0[\s\S]*batch\.lastEventCount === 0/
+    );
     assert.match(
         commitSource,
         /terminalBackendStatus[\s\S]*replayProtocolStatus[\s\S]*lastCompletedRouteAvailabilityPrograms/
@@ -279,7 +290,7 @@ test('lifecycle은 Cork exact activation 후 독립 spawn/despawn route sub-tran
         assert.ok(lifecycleSource.includes(marker), `route lifecycle marker 누락: ${marker}`);
     }
     const spawnStart = lifecycleSource.indexOf(
-        '    #commitSpawns(commands, result, consumedCommandIds) {'
+        '    #commitSpawns('
     );
     const spawnEnd = lifecycleSource.indexOf(
         '\n    #activateReservation(',

@@ -309,7 +309,7 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
         recoverTicks: 30,
         telegraphStyleCode: 1,
         telegraphColorRgba: [1, 0.82, 0.2, 1],
-        telegraphRadiusScale: 1.35
+        telegraphRadiusScale: 1
     });
 
     const squareArcherBehavior = normalizeEnemyDefinition({
@@ -737,6 +737,7 @@ test('invalid modifier/profile numbers는 fail-fast하고 intent는 continuous c
     );
     assert.equal(arrowIntent.enemyBehaviorState.windupTicks, 30);
     assert.equal(arrowIntent.enemyBehaviorState.chargeMaxTicks, 60);
+    assert.equal(arrowIntent.enemyBehaviorState.telegraphRadiusScale, 1);
     assert.equal(
         GPU_ENEMY_CAPABILITY_IMPLEMENTATION_REGISTRY
             .byCapabilityId[ENEMY_CAPABILITY_ID.CHARGE].implementationId,

@@ -2016,7 +2016,23 @@ export class EnemyLifecycleCommandOwner {
             return this.#saveResult(baseResult);
         }
 
-        this.#commitSpawns(spawnCommands, baseResult, consumedCommandIds);
+        const retiredTransformEntityIds = new Set();
+        for (const transform of baseResult.atomicTransforms) {
+            const destinationEntityIds = new Set(
+                transform.destinationHandles.map((handle) => handle.entityId)
+            );
+            for (const sourceHandle of transform.sourceHandles) {
+                if (!destinationEntityIds.has(sourceHandle.entityId)) {
+                    retiredTransformEntityIds.add(sourceHandle.entityId);
+                }
+            }
+        }
+        this.#commitSpawns(
+            spawnCommands,
+            baseResult,
+            consumedCommandIds,
+            retiredTransformEntityIds
+        );
         this.#consumeCommands(consumedCommandIds);
         if (baseResult.recoveryRequired) {
             if (baseResult.state !== 'stalled') {
@@ -3572,7 +3588,12 @@ export class EnemyLifecycleCommandOwner {
         });
     }
 
-    #commitSpawns(commands, result, consumedCommandIds) {
+    #commitSpawns(
+        commands,
+        result,
+        consumedCommandIds,
+        excludedEntityIds = null
+    ) {
         if (commands.length === 0 || result.recoveryRequired) {
             return;
         }
@@ -3605,6 +3626,8 @@ export class EnemyLifecycleCommandOwner {
                 kindId: command.intent.kindId,
                 definitionId: command.intent.definitionId,
                 createdAtTick: command.targetFixedTick
+            }, {
+                excludedEntityIds
             });
             if (!handle) {
                 for (const reservation of reservations) {

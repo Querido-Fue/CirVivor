@@ -2,7 +2,11 @@ import assert from 'node:assert/strict';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const policyModule = await loadGameModule('simulation/fixed_step_catch_up_policy.js');
-const { FixedStepCatchUpPolicy, countWholeFixedSteps } = policyModule;
+const {
+    FixedStepCatchUpPolicy,
+    countWholeFixedSteps,
+    restoreUncompletedFixedStepDebt
+} = policyModule;
 
 const policy = new FixedStepCatchUpPolicy();
 const fixedStep = 1 / 60;
@@ -38,5 +42,20 @@ assert.equal(countWholeFixedSteps(fixedStep * 0.99, fixedStep), 0);
 assert.equal(countWholeFixedSteps(fixedStep, fixedStep), 1);
 assert.equal(countWholeFixedSteps(fixedStep * 5.5, fixedStep), 5);
 assert.equal(countWholeFixedSteps(Number.NaN, fixedStep), 0);
+
+assert.equal(
+    restoreUncompletedFixedStepDebt(0.005, 2, 1, fixedStep),
+    0.005 + fixedStep
+);
+assert.equal(
+    restoreUncompletedFixedStepDebt(0.005, 2, 0, fixedStep),
+    0.005 + (fixedStep * 2)
+);
+assert.equal(restoreUncompletedFixedStepDebt(0.005, 2, 2, fixedStep), 0.005);
+assert.equal(restoreUncompletedFixedStepDebt(0.005, 2, 99, fixedStep), 0.005);
+assert.equal(
+    restoreUncompletedFixedStepDebt(0.005, 2, undefined, fixedStep),
+    0.005
+);
 
 console.log('fixed step catch-up policy contract: ok');

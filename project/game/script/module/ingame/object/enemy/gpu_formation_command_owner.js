@@ -252,7 +252,7 @@ function normalizeProtocol(source, label) {
             `${label}.authoritativeEpoch`
         ),
         submittedTick: requireNonNegativeSafeInteger(
-            source?.submittedTick ?? 0,
+            source?.submittedTick ?? source?.submittedTickCount ?? 0,
             `${label}.submittedTick`
         )
     });
@@ -829,6 +829,18 @@ export class GpuFormationCommandOwner {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const transformCompletion = this.#validateTransformCompletionAtBoundary(tick);
+        if (transformCompletion?.pending === true) {
+            return Object.freeze({
+                targetFixedTick: tick,
+                sourceTick: tick - 1,
+                batchIdFingerprint: 0,
+                results: Object.freeze([]),
+                pairs: Object.freeze([]),
+                pending: true,
+                stale: false,
+                protocolFailure: null
+            });
+        }
         if (transformCompletion?.requiresRecovery === true) {
             return this.#completionFailure(
                 tick,
@@ -859,6 +871,16 @@ export class GpuFormationCommandOwner {
         if (this.deferredCompletions.length > this.commandCapacity) {
             return this.#completionFailure(tick, 'completion-capacity');
         }
+        // 같은 fixed boundary는 다른 GPU readback의 backpressure로 재시도될 수
+        // 있습니다. N+1의 첫 drain이 비어 있어도 N in-flight를 지우면, 같은
+        // boundary의 다음 시도에서 도착한 정상 completion을 unknown으로 오판합니다.
+        // 실제로 N+2 이상으로 넘어온 뒤에만 오래된 in-flight를 retire합니다.
+        for (const sourceTick of this.inFlightBySourceTick.keys()) {
+            if (sourceTick < tick - 1) {
+                this.inFlightBySourceTick.delete(sourceTick);
+                this.#rememberBatch(sourceTick);
+            }
+        }
         const due = [];
         const retained = [];
         for (const queued of this.deferredCompletions) {
@@ -880,15 +902,15 @@ export class GpuFormationCommandOwner {
         this.deferredCompletions = retained;
         if (due.length === 0) {
             // N prepare completion은 오직 N+1 boundary에서만 publish 가능합니다.
-            this.inFlightBySourceTick.delete(tick - 1);
-            this.#rememberBatch(tick - 1);
+            const pending = this.inFlightBySourceTick.has(tick - 1);
             return Object.freeze({
                 targetFixedTick: tick,
                 sourceTick: tick - 1,
                 batchIdFingerprint: 0,
                 results: Object.freeze([]),
                 pairs: Object.freeze([]),
-                stale: true,
+                pending,
+                stale: !pending,
                 protocolFailure: null
             });
         }
@@ -978,6 +1000,7 @@ export class GpuFormationCommandOwner {
             || envelope.previousSubmittedTick !== expectedPreviousSubmittedTick
             || sourceTick <= envelope.previousSourceTick
             || envelope.submittedTick <= envelope.previousSubmittedTick
+            || inFlight.protocol.submittedTick + 1 !== envelope.submittedTick
             || envelope.batchIdFingerprint !== inFlight.batchIdFingerprint
             || envelope.programCount !== inFlight.records.length
             || envelope.resultCount !== inFlight.records.length
@@ -1036,7 +1059,15 @@ export class GpuFormationCommandOwner {
             targetFixedTick: tick,
             sourceTick,
             batchIdFingerprint: inFlight.batchIdFingerprint,
-            protocol: Object.freeze({ ...protocol, submittedTick: sourceTick }),
+            // Transform arm은 완료 시점이 아니라 prepare submit 직전의
+            // protocol watermark를 인증합니다. 완료 envelope의 submittedTick을
+            // 넘기면 backend의 N-1 -> N 연속성 검사가 항상 실패합니다.
+            protocol: Object.freeze({
+                sessionGeneration: inFlight.protocol.sessionGeneration,
+                deviceGeneration: inFlight.protocol.deviceGeneration,
+                authoritativeEpoch: inFlight.protocol.authoritativeEpoch,
+                submittedTickCount: inFlight.protocol.submittedTick
+            }),
             results,
             pairs
         });
@@ -1348,11 +1379,14 @@ export class GpuFormationCommandOwner {
                     destinationIntent.healthFixedPoint,
                 expectedMaxHealthCenti:
                     destinationIntent.maxHealthFixedPoint,
-                destinationRadius: destinationIntent.radius,
-                destinationInverseMass: destinationIntent.inverseMass,
-                destinationFlowSpeed: destinationIntent.flowSpeed,
+                // Transform ABI의 scalar destination fields는 storage에서 f32로
+                // round-trip됩니다. authored plan도 같은 정밀도로 고정해야 정상
+                // GPU completion을 JS double과 비교해 recovery로 오판하지 않습니다.
+                destinationRadius: Math.fround(destinationIntent.radius),
+                destinationInverseMass: Math.fround(destinationIntent.inverseMass),
+                destinationFlowSpeed: Math.fround(destinationIntent.flowSpeed),
                 destinationTowerContactDamage:
-                    destinationIntent.towerContactDamage,
+                    Math.fround(destinationIntent.towerContactDamage),
                 motionSourceIndex
             });
         });
@@ -1639,20 +1673,30 @@ export class GpuFormationCommandOwner {
         return Object.freeze(batch.records.map((record, index) => {
             const registryHas = this.registry.has(record.sourceHandle);
             const backendHas = this.backend.hasBody(record.sourceHandle);
-            if (registryHas !== backendHas) {
-                throw new RangeError(
-                    `records[${index}] registry/backend exact identity가 다릅니다.`
-                );
-            }
             let flags = 0;
             if (!registryHas) {
                 if (!despawnProofs.has(handleKey(record.sourceHandle))) {
+                    if (backendHas) {
+                        throw new RangeError(
+                            `records[${index}] registry/backend exact identity가 다릅니다.`
+                        );
+                    }
                     throw new RangeError(
                         `records[${index}] missing source에 authentic lifecycle proof가 없습니다.`
                     );
                 }
+                // Formation transform은 같은 command encoder에서 새 prepare보다
+                // 먼저 GPU body를 교체합니다. Host registry는 lifecycle commit에서
+                // 먼저 source를 제거하므로 이 boundary에만 registry-missing /
+                // backend-live가 정상입니다. authentic despawn proof가 있는 exact
+                // source만 ALLOW_SOURCE_INVALID로 넘기고 GPU 결과에서 다시 봉인합니다.
                 flags = GPU_FORMATION_PREPARE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID;
             } else {
+                if (!backendHas) {
+                    throw new RangeError(
+                        `records[${index}] registry/backend exact identity가 다릅니다.`
+                    );
+                }
                 const current = copyExpectedFormationState(
                     this.registry.copyEntityView(record.sourceHandle, {}),
                     `records[${index}].currentSource`
@@ -1737,6 +1781,30 @@ export class GpuFormationCommandOwner {
         const [targetFixedTick, expected] = due[0];
         const runtime = this.backend.getFormationRuntimeStatus();
         const completion = runtime?.lastTransformCompletion;
+        const completionIsOlder = completion
+            && Number.isSafeInteger(completion.sourceTick)
+            && completion.sourceTick < targetFixedTick;
+        if ((!completion || completionIsOlder)
+            && runtime?.abiVersion === GPU_FORMATION_RUNTIME_ABI_VERSION
+            && runtime.state === 'ready'
+            && runtime.sessionGeneration
+                === expected.completionProtocol.sessionGeneration
+            && runtime.deviceGeneration
+                === expected.completionProtocol.deviceGeneration
+            && runtime.authoritativeEpoch
+                === expected.completionProtocol.authoritativeEpoch
+            && runtime.requiresRecovery === false
+            && runtime.failure === null
+            && runtime.pendingTransformReadbackCount === 1
+            && runtime.armedTransformCount === 0
+            && runtime.commitRequested === false) {
+            return Object.freeze({
+                accepted: false,
+                pending: true,
+                requiresRecovery: false,
+                targetFixedTick
+            });
+        }
         if (runtime?.abiVersion !== GPU_FORMATION_RUNTIME_ABI_VERSION
             || runtime.requiresRecovery === true
             || !completion

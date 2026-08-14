@@ -35,9 +35,19 @@ const {
     R2_ENEMY_SHOWCASE_TOWER_MACRO_CELL
 } = await loadGameModule('data/scene/game/r2_enemy_showcase_map_data.js');
 const {
+    PERFORMANCE_SERPENTINE_MAP_DATA
+} = await loadGameModule(
+    'data/scene/game/performance_serpentine_map_data.js'
+);
+const {
     R2_ENEMY_SHOWCASE_CONTENT_PLACEMENT,
     R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O,
+    R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS,
+    R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION,
+    R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS,
+    R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT,
     R2_ENEMY_SHOWCASE_STAGE_MANIFEST,
+    R2_ENEMY_SHOWCASE_WAVE_TWO_AUTHORED_SIMULTANEOUS_O,
     R2_ENEMY_SHOWCASE_WAVE_01_DATA,
     R2_ENEMY_SHOWCASE_WAVE_02_DATA,
     R2_ENEMY_SHOWCASE_WAVE_03_DATA,
@@ -96,7 +106,7 @@ test('showcase map은 two-route Cork graph와 radius-6 O 8-slot clear floor를 �
     }
 });
 
-test('세 showcase wave는 기초→고급→closure로 staged되고 첫 wave에 전부 동시 투입하지 않는다', () => {
+test('첫 showcase wave는 R2 10종 10,000개를 five-tick sequential performance stream으로 선언한다', () => {
     assert.equal(R2_ENEMY_SHOWCASE_WAVES.length, 3);
     assert.deepEqual(Array.from(
         R2_ENEMY_SHOWCASE_WAVES,
@@ -115,19 +125,43 @@ test('세 showcase wave는 기초→고급→closure로 staged되고 첫 wave에
         ({ waveId }) => waveId
     ), Array.from(R2_ENEMY_SHOWCASE_WAVES, ({ waveId }) => waveId));
 
-    const firstWaveSource = JSON.stringify(R2_ENEMY_SHOWCASE_WAVE_01_DATA);
-    for (const advanced of [
+    assert.equal(R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT, 10_000);
+    assert.equal(R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS, 5);
+    assert.deepEqual(Array.from(
+        R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS
+    ), [
+        BASIC_CIRCLE_ENEMY_DATA.id,
+        BASIC_TRIANGLE_ENEMY_DATA.id,
+        BASIC_ARROW_ENEMY_DATA.id,
+        BASIC_RHOM_ENEMY_DATA.id,
+        BASIC_PENTA_ENEMY_DATA.id,
         BASIC_HEXA_ENEMY_DATA.id,
         BASIC_OCTA_ENEMY_DATA.id,
         BASIC_JORANG_ENEMY_DATA.id,
         BASIC_RING_ENEMY_DATA.id,
         BASIC_CORK_ENEMY_DATA.id
-    ]) {
-        assert.equal(firstWaveSource.includes(advanced), false);
-    }
-    assert.ok(R2_ENEMY_SHOWCASE_WAVE_01_DATA.timeline.some(
-        ({ type }) => type === 'SPAWN_FORMATION'
+    ]);
+    assert.equal(Object.isFrozen(
+        R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS
+    ), true);
+    assert.equal(R2_ENEMY_SHOWCASE_WAVE_01_DATA.timeline.length, 2);
+    assert.ok(R2_ENEMY_SHOWCASE_WAVE_01_DATA.timeline.every(
+        ({ type }) => type === 'SPAWN_FOR_DURATION'
     ));
+    const performanceGroups = R2_ENEMY_SHOWCASE_WAVE_01_DATA.timeline.flatMap(
+        ({ spawnGroups }) => spawnGroups
+    );
+    assert.equal(performanceGroups.reduce(
+        (total, { count }) => total + count,
+        0
+    ), R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT);
+    assert.ok(performanceGroups.every(({ intervalTicks }) => (
+        intervalTicks === R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS
+    )));
+    assert.deepEqual({ ...R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION }, {
+        towerMaxHp: 20_000_000,
+        coreMaxIntegrity: 20_000_000
+    });
     assert.ok(R2_ENEMY_SHOWCASE_WAVE_02_DATA.timeline.some(
         ({ type }) => type === 'WAIT'
     ));
@@ -136,11 +170,17 @@ test('세 showcase wave는 기초→고급→closure로 staged되고 첫 wave에
     assert.equal(R2_ENEMY_SHOWCASE_WAVE_03_DATA.timeline[1].durationSeconds, 15);
 });
 
-test('showcase staged placement는 C/T/A/M/P/H→HX/O/J/R/Z와 formation을 전수 증명한다', () => {
+test('showcase placement는 stage-one 전 종류와 후속 capability wave를 전수 증명한다', () => {
     const collectAuthoredDefinitionIds = (wave) => new Set(
         wave.timeline.flatMap((entry) => {
+            if (entry.spawnGroups) {
+                return entry.spawnGroups.flatMap((group) => (
+                    group.enemyDefinitionIds ?? [group.enemyDefinitionId]
+                ));
+            }
             if (entry.spawnGroup) {
-                return [entry.spawnGroup.enemyDefinitionId];
+                return entry.spawnGroup.enemyDefinitionIds
+                    ?? [entry.spawnGroup.enemyDefinitionId];
             }
             return entry.formation
                 ? Object.values(entry.formation.symbolMap)
@@ -153,8 +193,13 @@ test('showcase staged placement는 C/T/A/M/P/H→HX/O/J/R/Z와 formation을 전�
     assert.deepEqual([...waveDefinitionIds[0]].sort(), [
         BASIC_ARROW_ENEMY_DATA.id,
         BASIC_CIRCLE_ENEMY_DATA.id,
+        BASIC_CORK_ENEMY_DATA.id,
+        BASIC_HEXA_ENEMY_DATA.id,
+        BASIC_JORANG_ENEMY_DATA.id,
+        BASIC_OCTA_ENEMY_DATA.id,
         BASIC_PENTA_ENEMY_DATA.id,
         BASIC_RHOM_ENEMY_DATA.id,
+        BASIC_RING_ENEMY_DATA.id,
         BASIC_TRIANGLE_ENEMY_DATA.id
     ].sort());
     assert.deepEqual([...waveDefinitionIds[1]].sort(), [
@@ -174,11 +219,15 @@ test('showcase staged placement는 C/T/A/M/P/H→HX/O/J/R/Z와 formation을 전�
     );
     assert.deepEqual(mechanicsByWave, [
         [
-            'baseline-c-t-pressure',
-            'arrow-charge-recoil',
+            'sequential-ten-thousand-all-r2-enemies',
+            'arrow-ease-out-expo-charge-recoil',
             'rhom-core-priority-fire',
             'penta-boost',
-            'formation-sequential-rows'
+            'hexa-group-merge-to-hx',
+            'octagon-orbit-directional-defense',
+            'jorang-split-regrowth',
+            'ring-projectile-capture',
+            'cork-route-closure'
         ],
         [
             'hexa-group-merge-to-hx',
@@ -200,7 +249,7 @@ test('showcase staged placement는 C/T/A/M/P/H→HX/O/J/R/Z와 formation을 전�
     );
 });
 
-test('showcase authored O는 8-slot 미만이고 overflow는 whole-batch normal rejection이다', () => {
+test('showcase O는 Stage 1 tail 1, Wave 2 동시 4이며 capacity 8 overflow는 whole-batch normal rejection이다', () => {
     const authoredOEntries = R2_ENEMY_SHOWCASE_WAVES.flatMap(({ timeline }) => (
         timeline.filter(({ spawnGroup }) => (
             spawnGroup?.enemyDefinitionId === BASIC_OCTA_ENEMY_DATA.id
@@ -208,8 +257,9 @@ test('showcase authored O는 8-slot 미만이고 overflow는 whole-batch normal 
     ));
     assert.equal(authoredOEntries.length, 1);
     assert.equal(authoredOEntries[0].spawnGroup.count,
-        R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O);
-    assert.equal(R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O, 4);
+        R2_ENEMY_SHOWCASE_WAVE_TWO_AUTHORED_SIMULTANEOUS_O);
+    assert.equal(R2_ENEMY_SHOWCASE_WAVE_TWO_AUTHORED_SIMULTANEOUS_O, 4);
+    assert.equal(R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O, 8);
     assert.ok(R2_ENEMY_SHOWCASE_MAX_AUTHORED_SIMULTANEOUS_O
         <= BASIC_OCTA_ORBIT_CAPACITY_POLICY.maximumSimultaneousActors);
     assert.deepEqual({
@@ -236,6 +286,70 @@ test('showcase waves는 실제 TileMap/WaveDirector compiler에서 bounded sched
         )));
         director.destroy();
     }
+
+    const performanceDirector = new WaveDirector({
+        waveDefinition: R2_ENEMY_SHOWCASE_WAVE_01_DATA
+    });
+    assert.equal(performanceDirector.init(
+        new TileMap(R2_ENEMY_SHOWCASE_MAP_DATA)
+    ), true);
+    const performanceSchedule = performanceDirector.schedule;
+    assert.equal(
+        performanceSchedule.length,
+        R2_ENEMY_SHOWCASE_STAGE_ONE_TOTAL_SPAWN_COUNT
+    );
+    assert.equal(performanceSchedule[0].targetFixedTick, 1);
+    assert.equal(performanceSchedule.at(-1).targetFixedTick, 49_996);
+    for (let index = 0; index < performanceSchedule.length; index++) {
+        const entry = performanceSchedule[index];
+        assert.equal(entry.spawnSequence, index);
+        if (index > 0) {
+            assert.equal(
+                entry.targetFixedTick
+                    - performanceSchedule[index - 1].targetFixedTick,
+                R2_ENEMY_SHOWCASE_STAGE_ONE_SPAWN_INTERVAL_TICKS
+            );
+        }
+    }
+    assert.deepEqual(
+        performanceSchedule.slice(0, 12).map(({ definition }) => definition.id),
+        [
+            BASIC_CIRCLE_ENEMY_DATA.id,
+            BASIC_TRIANGLE_ENEMY_DATA.id,
+            BASIC_ARROW_ENEMY_DATA.id,
+            BASIC_RHOM_ENEMY_DATA.id,
+            BASIC_PENTA_ENEMY_DATA.id,
+            BASIC_HEXA_ENEMY_DATA.id,
+            BASIC_OCTA_ENEMY_DATA.id,
+            BASIC_JORANG_ENEMY_DATA.id,
+            BASIC_RING_ENEMY_DATA.id,
+            BASIC_CORK_ENEMY_DATA.id,
+            BASIC_CIRCLE_ENEMY_DATA.id,
+            BASIC_TRIANGLE_ENEMY_DATA.id
+        ]
+    );
+    assert.deepEqual(
+        performanceSchedule.slice(0, 10).map(({ definition }) => definition.id),
+        Array.from(R2_ENEMY_SHOWCASE_STAGE_ONE_ENEMY_DEFINITION_IDS)
+    );
+    const definitionCounts = performanceSchedule.reduce((counts, entry) => {
+        const id = entry.definition.id;
+        counts.set(id, (counts.get(id) ?? 0) + 1);
+        return counts;
+    }, new Map());
+    assert.deepEqual(Object.fromEntries(definitionCounts), {
+        [BASIC_CIRCLE_ENEMY_DATA.id]: 1_429,
+        [BASIC_TRIANGLE_ENEMY_DATA.id]: 1_428,
+        [BASIC_ARROW_ENEMY_DATA.id]: 1_428,
+        [BASIC_RHOM_ENEMY_DATA.id]: 1_428,
+        [BASIC_PENTA_ENEMY_DATA.id]: 1_428,
+        [BASIC_HEXA_ENEMY_DATA.id]: 1_428,
+        [BASIC_JORANG_ENEMY_DATA.id]: 1_428,
+        [BASIC_OCTA_ENEMY_DATA.id]: 1,
+        [BASIC_RING_ENEMY_DATA.id]: 1,
+        [BASIC_CORK_ENEMY_DATA.id]: 1
+    });
+    performanceDirector.destroy();
 
     const hexaEntries = (() => {
         const director = new WaveDirector({
@@ -276,7 +390,10 @@ test('첫 production 카드가 showcase Wave 1을 열고 corridor 데이터 자�
     assert.deepEqual(Array.from(
         INGAME_MAP_DATA.MAPS,
         (map) => map.id
-    ), [CORRIDOR_EIGHT_MAP_DATA.id]);
+    ), [
+        CORRIDOR_EIGHT_MAP_DATA.id,
+        PERFORMANCE_SERPENTINE_MAP_DATA.id
+    ]);
 
     const source = await readFile(new URL(
         '../script/data/scene/game/r2_enemy_showcase_wave_data.js',

@@ -115,6 +115,43 @@ test('WorldRegistry transform token은 stale validation 첫 commit 시도에도 
     assert.equal(registry.has(unrelated), true);
 });
 
+test('same-boundary transform source ID는 backend submit 전 일반 spawn 예약에서 제외된다', () => {
+    const authority = Object.freeze({});
+    const registry = new WorldRegistry({
+        capacity: 4,
+        atomicTransformAuthority: authority
+    });
+    const sourceA = activate(registry, 'basic_hexa_01', 1);
+    const sourceB = activate(registry, 'basic_hexa_01', 1);
+    const preflight = registry.preflightAtomicTransformBatch(
+        transformRequest(sourceA, sourceB),
+        authority
+    );
+    const committed = registry.commitAtomicTransformBatch(
+        preflight.token,
+        authority
+    );
+    assert.equal(committed.committed, true);
+
+    const sameBoundarySpawn = registry.reserveEntity({
+        kindId: 'enemy',
+        definitionId: 'same-boundary-spawn',
+        createdAtTick: 2
+    }, {
+        excludedEntityIds: new Set([sourceB.entityId])
+    });
+    assert.notEqual(sameBoundarySpawn.entityId, sourceB.entityId);
+    assert.equal(registry.activateReserved(sameBoundarySpawn), true);
+
+    const nextBoundarySpawn = registry.reserveEntity({
+        kindId: 'enemy',
+        definitionId: 'next-boundary-spawn',
+        createdAtTick: 3
+    });
+    assert.equal(nextBoundarySpawn.entityId, sourceB.entityId);
+    assert.equal(nextBoundarySpawn.incarnation, sourceB.incarnation + 1);
+});
+
 test('overlap/stale batch preflight는 whole-batch zero-partial이다', () => {
     const authority = Object.freeze({});
     const registry = new WorldRegistry({ capacity: 4, atomicTransformAuthority: authority });
