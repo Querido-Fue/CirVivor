@@ -190,7 +190,7 @@ test('basic_cork_01은 common-C 수치와 ROUTE_CLOSURE profile/capability를 �
         bountyBudget: BASIC_CORK_ENEMY_DATA.bountyBudget
     }, {
         maxHealth: 1,
-        moveSpeedTilesPerSecond: 2.5,
+        moveSpeedTilesPerSecond: 5,
         collisionWeight: 1,
         towerContactDamage: 0.1,
         coreImpactDamage: 1,

@@ -153,7 +153,7 @@ test('Formation/HX render derivative는 data-dependent control flow 전에 계�
     const firstDataDependentControl = fragmentShader.indexOf(
         'if (length(input.local_position) > 1.0)'
     );
-    assert.equal(derivativeOffsets.length, 6);
+    assert.equal(derivativeOffsets.length, 5);
     assert.ok(firstDataDependentControl > 0);
     assert.ok(derivativeOffsets.every(
         (offset) => offset < firstDataDependentControl
@@ -161,7 +161,6 @@ test('Formation/HX render derivative는 data-dependent control flow 전에 계�
     for (const expression of [
         'let occupied_aa = max(fwidth(occupied_distance), 0.002);',
         'let link_aa = max(fwidth(link_distance), 0.002);',
-        'let empty_aa = max(fwidth(empty_distance), 0.002);',
         'let pulse_aa = max(fwidth(pulse_distance), 0.002);',
         'let bar_aa = max(fwidth(outer_distance), 0.002);',
         'let anti_alias_width = max(fwidth(distance), 0.002);'
@@ -174,6 +173,10 @@ test('Formation/HX render derivative는 data-dependent control flow 전에 계�
         /let fill_half_x = max\(0\.0, bar_half\.x \* input\.health_ratio\);/);
     assert.match(fragmentShader,
         /vec2f\(fill_half_x, bar_half\.y \* 0\.62\)/);
+    assert.match(fragmentShader,
+        /input\.formation_member_count > 1u/);
+    assert.doesNotMatch(fragmentShader,
+        /formation_empty_boundary_distance|empty_outline|FORMATION_FLAG_RESERVATION/);
 });
 
 test('모든 Formation compute/render profile은 실제 telemetry 기준 storage<=9다', () => {
@@ -485,9 +488,9 @@ test('H/HX primary fixture는 deterministic n1→n2→n4→n6 geometry를 고정
     const fixture = formationRunnerSource.slice(start, end);
     assert.ok(start >= 0 && end > start);
     assert.match(fixture, /tileMap\.tileToWorld\(7, 1, \{\}\)/);
-    assert.match(fixture, /pairBase\.y - 0\.45/);
-    assert.match(fixture, /pairBase\.y \+ 0\.25/);
-    assert.match(fixture, /pairBase\.y - 1\.15/);
+    assert.match(fixture, /pairBase\.y - 0\.4/);
+    assert.match(fixture, /pairBase\.y \+ 0\.3/);
+    assert.match(fixture, /pairBase\.y - 1\.1/);
     assert.match(fixture, /const pairHalfSeparation = 0\.325;/);
     assert.match(fixture,
         /mateDistance > solverMinimumDistance[\s\S]*?minimumCrossPairDistance < mergeCommitDistance/);
@@ -500,7 +503,7 @@ test('H/HX primary fixture는 deterministic n1→n2→n4→n6 geometry를 고정
     assert.match(fixture, /canonicalRadius: expectedGpuRadius/);
 });
 
-test('H/HX reservation fixture는 동일 flow texel의 pre-commit mutual pair를 쓴다', () => {
+test('H/HX reservation fixture는 동일 flow texel의 pre-commit mutual pair를 쓰되 빈 셀 guide를 그리지 않는다', () => {
     const start = formationRunnerSource.indexOf(
         'async function runReservationPresentationFixture('
     );
@@ -528,14 +531,10 @@ test('H/HX reservation fixture는 동일 flow texel의 pre-commit mutual pair를
     assert.match(fixture,
         /Hexa reservation flag was not materialized:[\s\S]*?diagnostics/);
     assert.match(fixture,
-        /\(pixel\.b \* 255\) >= \(190 \* pixel\.a\)/);
+        /reservationCyanPixelsBefore === 0[\s\S]*?reservationCyanPixelsAfter === 0/);
     assert.match(fixture,
-        /\(pixel\.g \* 255\) >= \(180 \* pixel\.a\)/);
-    assert.match(fixture,
-        /\(pixel\.r \* 255\) <= \(180 \* pixel\.a\)/);
-    assert.match(fixture,
-        /GPU_CIRCLE_BODY_ABI\.TEMPORARY\.PREVIOUS_X/);
-    assert.match(fixture,
+        /reservationCenterOpaque === true/);
+    assert.doesNotMatch(fixture,
         /beforeColors: summarizeRoiColors\([\s\S]*?afterColors: summarizeRoiColors\(/);
     assert.doesNotMatch(fixture, /pixel\.b >= 190/);
     assert.doesNotMatch(fixture, /origin\.x \+ 2\.5/);

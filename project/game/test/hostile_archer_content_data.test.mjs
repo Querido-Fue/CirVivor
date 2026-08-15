@@ -79,7 +79,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     assert.equal(ARCHER_ATTACK_DEFINITION_ID, 'archer_basic_shot_01');
     assert.equal(ARCHER_ENEMY_DATA.id, ARCHER_ENEMY_DEFINITION_ID);
     assert.equal(ARCHER_ENEMY_DATA.shapeType, 'arrow');
-    assert.equal(ARCHER_ENEMY_DATA.moveSpeedTilesPerSecond, 2.5);
+    assert.equal(ARCHER_ENEMY_DATA.moveSpeedTilesPerSecond, 5);
     assert.equal(
         ARCHER_ENEMY_DATA.collisionRadiusTiles,
         sharedEnemyData.MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES

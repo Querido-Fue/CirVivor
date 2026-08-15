@@ -445,12 +445,12 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
 test('n1..6 raw stats와 final-only f32/inverseMass/Core/bounty를 고정한다', () => {
     assert.equal(Object.isFrozen(BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT), true);
     const expected = [
-        [0.1, 2.5, 1, 1],
-        [0.12, 2.25, 2, 2],
-        [0.144, 2.025, 4, 4],
-        [0.1728, 1.8225, 8, 6],
-        [0.20736, 1.64025, 16, 8],
-        [0.248832, 1.476225, 32, 10]
+        [0.1, 5, 1, 1],
+        [0.12, 4.5, 2, 2],
+        [0.144, 4.05, 4, 4],
+        [0.1728, 3.645, 8, 6],
+        [0.20736, 3.2805, 16, 8],
+        [0.248832, 2.95245, 32, 10]
     ];
     for (let memberCount = 1; memberCount <= 6; memberCount++) {
         const raw = BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT[memberCount];

@@ -78,12 +78,12 @@ Only Tower contact attack scales, Core impact remains 1, and bounty is exact:
 
 | n | Tower contact | Speed | Weight | Core impact | Bounty budget |
 | ---: | ---: | ---: | ---: | ---: | ---: |
-| 1 | 0.1 | 2.5 | 1 | 1 | 1 |
-| 2 | 0.12 | 2.25 | 2 | 1 | 2 |
-| 3 | 0.144 | 2.025 | 4 | 1 | 4 |
-| 4 | 0.1728 | 1.8225 | 8 | 1 | 6 |
-| 5 | 0.20736 | 1.64025 | 16 | 1 | 8 |
-| 6 | 0.248832 | 1.476225 | 32 | 1 | 10 |
+| 1 | 0.1 | 5 | 1 | 1 | 1 |
+| 2 | 0.12 | 4.5 | 2 | 1 | 2 |
+| 3 | 0.144 | 4.05 | 4 | 1 | 4 |
+| 4 | 0.1728 | 3.645 | 8 | 1 | 6 |
+| 5 | 0.20736 | 3.2805 | 16 | 1 | 8 |
+| 6 | 0.248832 | 2.95245 | 32 | 1 | 10 |
 
 Final GPU-bound floating values are quantized once. Stats are not accumulated from source bodies at merge.
 
@@ -101,8 +101,9 @@ refreshes, or silently drops Boost. Prepared and actual `effectRekeyCount` must 
 accepted.
 
 One destination body owns authoritative transform, HP, stats, contact/Core interaction, and render identity.
-Occupied-cell/reservation presentation and the separate HX health bar/status derive from bounded Formation
-state; presentation never creates gameplay members.
+Natural n1 is rendered as one centered, normal-enemy-sized Hex body. Only n2..6 render their connected occupied
+cells; empty reservation cells and the former cyan grid guide are deliberately invisible. The separate HX
+health bar/status still derives from bounded Formation state, and presentation never creates gameplay members.
 
 ## Terminal, replacement, and checkpoint status
 

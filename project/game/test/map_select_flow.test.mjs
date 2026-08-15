@@ -84,6 +84,7 @@ const overlayRuntimeContext = vm.createContext({
     queueMicrotask
 });
 let capturedStartClick = null;
+const capturedMapOptionClicks = new Map();
 
 class TitleOverlayStub {
     constructor(titleScene) {
@@ -101,6 +102,10 @@ class TitleOverlayStub {
 
     close() {
         overlayRuntimeTrace.push('close-requested');
+    }
+
+    resize() {
+        this._generateLayout();
     }
 
     finishClose() {
@@ -127,6 +132,8 @@ class LayoutHandlerStub {
     onClick(callback) {
         if (this.currentItemId === 'map_select_start') {
             capturedStartClick = callback;
+        } else if (this.currentItemId?.startsWith('map_select_option_')) {
+            capturedMapOptionClicks.set(this.currentItemId, callback);
         }
         return this;
     }
@@ -188,7 +195,10 @@ const overlayRuntimeDependencies = new Map([
                     Panel: { Divider: '#fff' },
                     Control: { Inactive: '#000' },
                     Text: { Item: '#fff' },
-                    Button: { Cancel: '#000' }
+                    Button: {
+                        Cancel: '#000',
+                        Option: { Active: '#00f' }
+                    }
                 },
                 Title: { TextDark: '#fff' }
             });
@@ -284,6 +294,13 @@ const mapSelectOverlayRuntime = new MapSelectOverlayRuntime({
 });
 mapSelectOverlayRuntime._generateLayout();
 assert.equal(typeof capturedStartClick, 'function');
+assert.equal(capturedMapOptionClicks.size, GAME_MAP_DATA.MAPS.length);
+const performanceMap = GAME_MAP_DATA.MAPS[1];
+assert.ok(performanceMap, '맵 2 등록이 필요합니다.');
+capturedMapOptionClicks.get('map_select_option_1')();
+mapSelectOverlayRuntime._generateLayout();
+assert.equal(mapSelectOverlayRuntime.selectedMapId, performanceMap.id);
+assert.equal(capturedMapOptionClicks.size, GAME_MAP_DATA.MAPS.length);
 capturedStartClick();
 assert.deepEqual(titleStartCalls, []);
 assert.deepEqual(overlayRuntimeTrace, ['close-requested']);
@@ -295,11 +312,11 @@ assert.deepEqual(overlayRuntimeTrace, [
     'overlay-released'
 ]);
 await new Promise((resolve) => queueMicrotask(resolve));
-assert.deepEqual(titleStartCalls, [GAME_MAP_DATA.DEFAULT_MAP_ID]);
+assert.deepEqual(titleStartCalls, [performanceMap.id]);
 assert.deepEqual(overlayRuntimeTrace, [
     'close-requested',
     'overlay-released',
-    `game-start:${GAME_MAP_DATA.DEFAULT_MAP_ID}`
+    `game-start:${performanceMap.id}`
 ]);
 
 console.log('map select flow contract: ok');

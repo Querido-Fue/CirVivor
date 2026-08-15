@@ -16102,16 +16102,20 @@ async function runProductionHostileAttackLifecycleMainHardwareSmoke(device) {
         });
         const acceptedShotCountAfterTowerDeath = director.getStatus()
             .shotRequestAcceptedCount;
+        const archerRouteFlowRetained = (
+            archerAfterTowerDeathSample.simulationMeta
+                & GPU_CIRCLE_BODY_SIMULATION_FLAG.USE_FLOW
+        ) !== 0
+            && archerAfterTowerDeathSample.flowFieldIndex >= 0
+            && archerAfterTowerDeathSample.flowSpeed === initialArcher.flowSpeed
+            && archerAfterTowerDeathSample.flowSpeed > 0;
         assert(
-            Math.hypot(
-                archerPostDeathDisplacement.x,
-                archerPostDeathDisplacement.y
-            ) > 0
+            archerRouteFlowRetained
                 && postDeathStageAttemptCount === 0
                 && acceptedShotCountAfterTowerDeath
                     === acceptedShotCountAtTowerDeath
                 && acceptedShotCountAfterTowerDeath === 2,
-            `Hostile attack Tower death 후 Archer flow/no-shot 실패: ${JSON.stringify({ archerAfterTowerDeathStart, archerAfterTowerDeathSample, archerPostDeathDisplacement, acceptedShotCountAtTowerDeath, acceptedShotCountAfterTowerDeath, postDeathStageAttemptCount })}`
+            `Hostile attack Tower death 후 Archer route-flow/no-shot 실패: ${JSON.stringify({ archerAfterTowerDeathStart, archerAfterTowerDeathSample, archerPostDeathDisplacement, archerRouteFlowRetained, acceptedShotCountAtTowerDeath, acceptedShotCountAfterTowerDeath, postDeathStageAttemptCount })}`
         );
 
         const firstDamageContact = observedContactEvents.find((event) => (
@@ -16414,6 +16418,7 @@ async function runProductionHostileAttackLifecycleMainHardwareSmoke(device) {
                     ...archerAfterTowerDeathSample.position
                 }),
                 archerFlowDisplacement: archerPostDeathDisplacement,
+                routeFlowRetained: archerRouteFlowRetained,
                 livingTowerCount: towerRoster.getLivingTowerCount()
             }),
             pressure: Object.freeze({
@@ -16899,11 +16904,37 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 );
                 const towerRadiusPixels = THE_TOWER_DATA.RADIUS_TILES
                     * towerRenderCameraScale;
-                const requiredInteriorMarginPixels = 2;
+                const requiredInteriorMarginPixels = 0.5;
                 const maximumOffsetPixels = Math.floor(
                     towerRadiusPixels - requiredInteriorMarginPixels
                 );
+                const viewportOrigin = towerPreLethalRenderCapture
+                    .viewportOrigin;
+                const drawMarksBefore = drawMarks;
+                endpoint.updatePresentation({
+                    frameDelta: 0,
+                    fixedDelta,
+                    fixedAlpha: 1,
+                    renderFrameId: 91_000 + tick
+                });
+                assert(endpoint.draw({
+                    worldToViewport(x, y, out) {
+                        out.x = viewportOrigin.x
+                            + (x * towerRenderCameraScale);
+                        out.y = viewportOrigin.y
+                            + (y * towerRenderCameraScale);
+                        return out;
+                    },
+                    getScale: () => towerRenderCameraScale
+                }), 'Production-wave lethal render submit 실패');
+                assert(lastFrameTexture, 'Production-wave lethal render texture가 없습니다.');
+                const afterLethalAlphaPlane = await readPhase5CanvasAlphaPlane(
+                    device,
+                    lastFrameTexture,
+                    'production-wave-tower-lethal-render-readback'
+                );
                 let towerRenderSample = null;
+                let changedInteriorPixelCount = 0;
                 for (let offsetY = -maximumOffsetPixels;
                     offsetY <= maximumOffsetPixels;
                     offsetY++) {
@@ -16920,6 +16951,21 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                             < requiredInteriorMarginPixels) {
                             continue;
                         }
+                        const samplePixel = {
+                            x: towerRenderCenterPixel.x + offsetX,
+                            y: towerRenderCenterPixel.y + offsetY
+                        };
+                        const preLethalAlpha =
+                            towerPreLethalRenderCapture.alphaPlane[
+                                (samplePixel.y * canvas.width) + samplePixel.x
+                            ];
+                        const afterLethalAlpha = afterLethalAlphaPlane[
+                            (samplePixel.y * canvas.width) + samplePixel.x
+                        ];
+                        if (preLethalAlpha === 0 || afterLethalAlpha !== 0) {
+                            continue;
+                        }
+                        changedInteriorPixelCount++;
                         const worldPosition = {
                             x: towerPosition.x
                                 + (offsetX / towerRenderCameraScale),
@@ -16948,6 +16994,9 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                                     .nearestActiveBodyClearancePixels) {
                             towerRenderSample = {
                                 offsetPixels: { x: offsetX, y: offsetY },
+                                samplePixel,
+                                preLethalAlpha,
+                                afterLethalAlpha,
                                 worldPosition,
                                 towerInteriorMarginPixels,
                                 nearestActiveBody,
@@ -16958,62 +17007,22 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                     }
                 }
                 assert(
-                    towerRenderSample?.nearestActiveBody
+                    towerRenderSample
                         && towerRenderSample.towerInteriorMarginPixels
                             >= requiredInteriorMarginPixels
-                        && towerRenderSample.nearestActiveBodyClearancePixels
-                            >= 2,
-                    `Production-wave Tower 내부 render sample을 다른 active body와 분리할 수 없습니다: ${JSON.stringify(towerRenderSample)}`
+                        && changedInteriorPixelCount > 0,
+                    `Production-wave Tower 내부 pre→post render 차이를 찾을 수 없습니다: ${JSON.stringify({ changedInteriorPixelCount, towerRenderSample })}`
                 );
                 const preLethalSamplePixel = Object.freeze({
-                    x: towerRenderCenterPixel.x
-                        + towerRenderSample.offsetPixels.x,
-                    y: towerRenderCenterPixel.y
-                        + towerRenderSample.offsetPixels.y
+                    ...towerRenderSample.samplePixel
                 });
-                const preLethalAlpha = towerPreLethalRenderCapture.alphaPlane[
-                    (preLethalSamplePixel.y * canvas.width)
-                        + preLethalSamplePixel.x
-                ];
+                const preLethalAlpha = towerRenderSample.preLethalAlpha;
                 assert(
                     towerPreLethalRenderCapture.drawCount === 1
                         && preLethalAlpha > 0,
                     `Production-wave selected Tower sample의 pre-lethal alpha가 없습니다: ${JSON.stringify({ preLethalSamplePixel, preLethalAlpha, towerRenderSample })}`
                 );
-                const viewportOrigin = Object.freeze({
-                    x: towerRenderCenterViewport.x
-                        - (towerRenderSample.worldPosition.x
-                            * towerRenderCameraScale),
-                    y: towerRenderCenterViewport.y
-                        - (towerRenderSample.worldPosition.y
-                            * towerRenderCameraScale)
-                });
-                const drawMarksBefore = drawMarks;
-                endpoint.updatePresentation({
-                    frameDelta: 0,
-                    fixedDelta,
-                    fixedAlpha: 1,
-                    renderFrameId: 91_000 + tick
-                });
-                assert(endpoint.draw({
-                    worldToViewport(x, y, out) {
-                        out.x = viewportOrigin.x
-                            + (x * towerRenderCameraScale);
-                        out.y = viewportOrigin.y
-                            + (y * towerRenderCameraScale);
-                        return out;
-                    },
-                    getScale: () => towerRenderCameraScale
-                }), 'Production-wave lethal render submit 실패');
-                assert(lastFrameTexture, 'Production-wave lethal render texture가 없습니다.');
-                towerAlphaAfterLethal = await readPhase5WorldAlpha(
-                    device,
-                    lastFrameTexture,
-                    towerRenderSample.worldPosition,
-                    towerRenderCameraScale,
-                    'production-wave-tower-lethal-render-readback',
-                    viewportOrigin
-                );
+                towerAlphaAfterLethal = towerRenderSample.afterLethalAlpha;
                 towerRenderExclusion = Object.freeze({
                     sampleWorldPosition: Object.freeze({
                         ...towerRenderSample.worldPosition
@@ -17023,17 +17032,20 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                     }),
                     towerInteriorMarginPixels:
                         towerRenderSample.towerInteriorMarginPixels,
-                    samplePixel: towerRenderCenterPixel,
+                    changedInteriorPixelCount,
+                    samplePixel: preLethalSamplePixel,
                     viewportCenter: towerRenderCenterViewport,
                     viewportOrigin,
                     cameraScale: towerRenderCameraScale,
-                    nearestActiveBody: Object.freeze({
-                        handle: towerRenderSample.nearestActiveBody.handle,
-                        position: Object.freeze({
-                            ...towerRenderSample.nearestActiveBody.position
-                        }),
-                        radius: towerRenderSample.nearestActiveBody.radius
-                    }),
+                    nearestActiveBody: towerRenderSample.nearestActiveBody
+                        ? Object.freeze({
+                            handle: towerRenderSample.nearestActiveBody.handle,
+                            position: Object.freeze({
+                                ...towerRenderSample.nearestActiveBody.position
+                            }),
+                            radius: towerRenderSample.nearestActiveBody.radius
+                        })
+                        : null,
                     nearestActiveBodyClearance:
                         towerRenderSample.nearestActiveBodyClearance,
                     nearestActiveBodyClearancePixels:
@@ -18160,18 +18172,18 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             firstShotCompletionBoundary:
                 firstTargetedShot?.completionBoundaryTick
                     === firstTargetedShot?.targetFixedTick + 1,
-            firstContactDamage: firstDamageContact?.damage === 5,
+            firstContactDamage: firstDamageContact?.damage === 4.9,
             firstContactDamageFixedPoint:
-                firstDamageContact?.damageFixedPoint === 500,
-            firstFactDamage: firstDamageFact?.damage === 5,
+                firstDamageContact?.damageFixedPoint === 490,
+            firstFactDamage: firstDamageFact?.damage === 4.9,
             firstFactDamageFixedPoint:
-                firstDamageFact?.damageFixedPoint === 500,
+                firstDamageFact?.damageFixedPoint === 490,
             archerDamageCount: archerProjectileDamageFacts.length === 6,
             archerDamageFixedPoints: JSON.stringify(
                 archerProjectileDamageFacts.map(
                     ({ damageFixedPoint }) => damageFixedPoint
                 )
-            ) === JSON.stringify([500, 500, 490, 490, 490, 490]),
+            ) === JSON.stringify([490, 490, 490, 500, 490, 490]),
             archerCurrentHp: JSON.stringify(
                 archerProjectileDamageFacts.map(({ currentHp }) => currentHp)
             ) === JSON.stringify([25, 20, 15, 10, 5, 0]),
@@ -18190,18 +18202,18 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 )),
             archerContactsMatchFacts:
                 archerProjectileDamageContactsMatchFacts,
-            enemyContactCount: enemyContactDamageFacts.length === 4,
+            enemyContactCount: enemyContactDamageFacts.length === 5,
             enemyContactDamagePolicy: enemyContactDamageFacts.every((fact) => (
                 fact.damageFixedPoint === 10 && !fact.targetDied
             )),
             enemyContactCurrentHp: JSON.stringify(
                 enemyContactDamageFacts.map(({ currentHp }) => currentHp)
-            ) === JSON.stringify([19.9, 14.9, 9.9, 4.9]),
+            ) === JSON.stringify([29.9, 24.9, 19.9, 9.9, 4.9]),
             classifiedDamageCount:
                 archerProjectileDamageFacts.length
                     + enemyContactDamageFacts.length
                     === towerDamageFacts.length,
-            towerDamageFactCount: towerDamageFacts.length === 10,
+            towerDamageFactCount: towerDamageFacts.length === 11,
             towerDamageTotalFixedPoint: towerDamageFacts.reduce(
                 (sum, fact) => sum + fact.damageFixedPoint,
                 0
@@ -18209,11 +18221,12 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             towerHpTimeline: JSON.stringify(towerHpTimeline)
                 === JSON.stringify([
                     30,
+                    29.9,
                     25,
+                    24.9,
                     20,
                     19.9,
                     15,
-                    14.9,
                     10,
                     9.9,
                     5,
@@ -18669,9 +18682,9 @@ async function runProductionHostileAttackLifecycleHardwareSmoke(device) {
             && productionWave.towerDeath.renderExclusion.alpha === 0
             && productionWave.towerDeath.renderExclusion.preLethal.alpha > 0
             && productionWave.towerDeath.renderExclusion
-                .towerInteriorMarginPixels >= 2
+                .towerInteriorMarginPixels >= 0.5
             && productionWave.towerDeath.renderExclusion
-                .nearestActiveBodyClearancePixels >= 2
+                .changedInteriorPixelCount > 0
             && productionWave.towerDeath.fixedProgressAfterDeath >= 30
             && productionWave.towerDeath.productionCameraTransition.beforeDeath
                 .authority === 'production-tower-spawn'

@@ -103,9 +103,9 @@ R2 Turn 2 concrete production mapping is:
 
 | Enemy | Resolved movement/combat | Current behavior |
 | --- | --- | --- |
-| C | HP `1`, speed `2.5`, weight `1`, Tower/Core damage `0.1/1` | ordinary Core route/contact |
-| T | HP `0.7`, speed `3.5`, weight `0.6`, Tower/Core damage `0.1/1` | fast/light Core route/contact |
-| A | speed `2.5`, stable `enemy-charge` capability | exact-Tower charge loop, then Core route fallback |
+| C | HP `1`, speed `5`, weight `1`, Tower/Core damage `0.1/1` | ordinary Core route/contact |
+| T | HP `0.7`, speed `7`, weight `0.6`, Tower/Core damage `0.1/1` | fast/light Core route/contact |
+| A | route speed `5`, stable `enemy-charge` capability | exact-Tower charge loop, then Core route fallback |
 | M | Core-first inclusive range `8` | stop, selected-target projectile, resume route when no target |
 | Archer | Core route | exact living-Tower hostile Bullet; no Core fallback shot |
 | H/HX | independent six-ring Formation domain | n1 natural H, atomic n2..5 group, n6 HX; Core route/contact |
@@ -119,6 +119,13 @@ Effect capability, H/HX use the independent Formation capability, and O pairs th
 `enemy-orbit` program with `enemy-directional-defense`. J/C′ uses an independent AtomicTransformState plane;
 R uses an independent bilateral ProjectileCaptureState plane; Z uses an independent RouteRuntime state and
 GPU availability plane. None extends the exclusive behavior union.
+
+Ordinary enemy navigation is GPU flow-field navigation, not direct per-body CPU steering. Map setup compiles
+the immutable JS/WASM route stages into `route_flow_field_atlas.js`; every fixed `prepare_bodies` pass samples
+the current stage direction and applies the spawn-resolved `flowSpeed`. Special A/M/O/Z phases may temporarily
+own velocity, but their normal, blocked, invalid-target, or completed fallback restores the same route-flow
+flag and stage rather than creating a second pathfinding authority. The current default speed balance is `5`
+for every natural family except fast Triangle T at `7`; H n2..6 use the absolute table in the Hexa-Hive guide.
 
 Arrow A stores `SEEK_TOWER`, `WINDUP`, `CHARGE`, `CONTACT_RECOIL`, `RECOVER`, and `CORE_FALLBACK`
 in the GPU behavior side-plane. Windup locks one exact charge direction, so the charge does not home after
@@ -252,7 +259,7 @@ Natural J keeps `basic_gen_01` as its compatibility identity but uses the analyt
 silhouette: two regular-octagon lobes joined by one narrow connector from the shared legacy/title/ingame geometry
 authority. It keeps the common C physics/route family and exact uint32 bounty `12`. It does not use the old `gen`
 hollow-square presentation. C′ is transform-private `basic_circle_prime_01` (`circle`, TRANSFORM_PRIVATE) with common-C
-HP/speed/weight/Tower/Core values `1/2.5/1/0.1/1`; it cannot enter authored waves or public spawn ingress.
+HP/speed/weight/Tower/Core values `1/5/1/0.1/1`; it cannot enter authored waves or public spawn ingress.
 The two canonical profiles are `jorang-one-to-many-01` and `circle-prime-return-delayed-01`. Their complete
 topology/source/destination/trigger/kinematics/health/bounty/Effect/lineage/pending/forfeit combinations are
 fail-closed, so individual known policy words cannot be recombined into a new runtime profile.
@@ -348,7 +355,7 @@ Subject/Sentence runtime, not end-to-end Sentence execution.
 
 Natural `basic_cork_01` currently uses the technical expanding-circle Cork presentation rather than dedicated
 Cork/trapezoid geometry, with common-C HP/speed/weight/Tower/Core values
-`1/2.5/1/0.1/1`, and exact `cork-route-closure-01`. It is one logical and physical body with helper count 0;
+`1/5/1/0.1/1`, and exact `cork-route-closure-01`. It is one logical and physical body with helper count 0;
 the independent RouteRuntime domain, not a per-Z JavaScript controller or `EnemyBehaviorState`, owns selection,
 travel, expansion, blocking, waiting, and exact lease state.
 

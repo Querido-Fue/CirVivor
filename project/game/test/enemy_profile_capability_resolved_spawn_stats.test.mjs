@@ -412,7 +412,7 @@ test('Triangle T는 C baseline과 분리된 fast/light profile을 spawn 시 한 
     );
     assert.equal(triangleProfiles.physics.weight, 0.6);
     assert.equal(triangleProfiles.combat.maxHealth, 0.7);
-    assert.equal(triangleProfiles.behavior.moveSpeedTilesPerSecond, 3.5);
+    assert.equal(triangleProfiles.behavior.moveSpeedTilesPerSecond, 7);
     assert.equal(
         triangleProfiles.combat.towerContactDamage,
         ENEMY_PROFILE_CATALOG.combatById[BASIC_SQUARE_ENEMY_DATA.combatProfileId]
@@ -431,8 +431,8 @@ test('Triangle T는 C baseline과 분리된 fast/light profile을 spawn 시 한 
     });
     const resolvedWeight = Math.fround(0.6);
     assert.equal(intent.health, Math.fround(0.7));
-    assert.equal(intent.flowSpeed, Math.fround(3.5));
-    assert.equal(intent.velocity.x, Math.fround(3.5));
+    assert.equal(intent.flowSpeed, Math.fround(7));
+    assert.equal(intent.velocity.x, Math.fround(7));
     assert.equal(intent.velocity.y, 0);
     assert.equal(intent.weight, resolvedWeight);
     assert.equal(intent.inverseMass, Math.fround(1 / resolvedWeight));

@@ -5620,7 +5620,6 @@ const EFFECT_PRESENTATION_TAG_BOOST: u32 = 1u;
 const EFFECT_PRESENTATION_TAG_PULSE: u32 = 2u;
 const FORMATION_FLAG_ACTIVE: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.ACTIVE}u;
 const FORMATION_FLAG_MERGE_PULSE: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.PRESENTATION_MERGE_PULSE}u;
-const FORMATION_FLAG_RESERVATION: u32 = ${GPU_FORMATION_BODY_STATE_FLAG.PRESENTATION_RESERVATION}u;
 const FORMATION_OCCUPIED_MASK: u32 = 63u;
 const FORMATION_HEX_CELL_RADIUS: f32 = 0.285;
 const FORMATION_RING_RADIUS: f32 = 0.54;
@@ -5833,19 +5832,6 @@ fn formation_mask_distance(point: vec2f, mask: u32) -> f32 {
     for (var slot = 0u; slot < 6u; slot += 1u) {
         if ((mask & (1u << slot)) != 0u) {
             distance = min(distance, formation_cell_distance(point, slot));
-        }
-    }
-    return distance;
-}
-
-fn formation_empty_boundary_distance(point: vec2f, mask: u32) -> f32 {
-    var distance = 3.402823466e+38;
-    for (var slot = 0u; slot < 6u; slot += 1u) {
-        if ((mask & (1u << slot)) == 0u) {
-            distance = min(
-                distance,
-                abs(formation_cell_distance(point, slot))
-            );
         }
     }
     return distance;
@@ -6130,11 +6116,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
         input.formation_occupied_mask
     );
     let link_aa = max(fwidth(link_distance), 0.002);
-    let empty_distance = formation_empty_boundary_distance(
-        input.local_position,
-        input.formation_occupied_mask
-    );
-    let empty_aa = max(fwidth(empty_distance), 0.002);
     let pulse_distance = abs(length(input.local_position) - 0.92);
     let pulse_aa = max(fwidth(pulse_distance), 0.002);
     let bar_center = vec2f(0.0, 0.86);
@@ -6154,8 +6135,11 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     if (length(input.local_position) > 1.0) {
         discard;
     }
+    // A natural n=1 H uses the same centered, normal-sized hex silhouette as
+    // every other enemy. Only merged n=2..6 bodies use the occupied-cell
+    // cluster. Empty slots are simulation vocabulary, never a visible guide.
     if (input.shape_code == RENDER_SHAPE_HEXA
-        && input.formation_member_count > 0u) {
+        && input.formation_member_count > 1u) {
         let occupied_coverage = 1.0 - smoothstep(
             -occupied_aa,
             occupied_aa,
@@ -6178,26 +6162,6 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
             rgb = mix(rgb, vec3f(1.0, 0.78, 0.32), 0.46);
         }
         alpha = max(alpha, link * input.color.a * 0.78);
-
-        let empty_outline = 1.0 - smoothstep(
-            0.018 - empty_aa,
-            0.018 + empty_aa,
-            empty_distance
-        );
-        let reservation_active = (input.formation_presentation_flags
-            & FORMATION_FLAG_RESERVATION) != 0u;
-        let empty_alpha_scale = select(0.2, 0.72, reservation_active);
-        if (empty_outline * empty_alpha_scale > alpha) {
-            rgb = mix(
-                rgb,
-                vec3f(0.25, 0.95, 1.0),
-                select(0.28, 0.72, reservation_active)
-            );
-        }
-        alpha = max(
-            alpha,
-            empty_outline * input.color.a * empty_alpha_scale
-        );
 
         if ((input.formation_presentation_flags
                 & FORMATION_FLAG_MERGE_PULSE) != 0u) {

@@ -786,9 +786,11 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && presentation.reservationChangedPixels === true
             && presentation.reservationPixelDelta > 0
             && presentation.reservationBodyCount > 0
-            && presentation.reservationCyanPixelDelta > 0
-            && presentation.reservationCyanPixelsAfter
-                > presentation.reservationCyanPixelsBefore
+            && presentation.reservationGuideHidden === true
+            && presentation.reservationCenterOpaque === true
+            && presentation.reservationCyanPixelDelta === 0
+            && presentation.reservationCyanPixelsBefore === 0
+            && presentation.reservationCyanPixelsAfter === 0
             && presentation.hxHealthBarChangedPixels === true
             && presentation.hxHealthBarPixelDelta > 0
             && presentation.hxHealthBarRoiPixelDelta > 0
@@ -837,6 +839,8 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && replacement.respawnActiveHxCount === 0
             && replacement.respawnOldHandleCount === 0
             && replacement.respawnPresentationCount === 0
+            && replacement.respawnCenterOpaque === true
+            && replacement.respawnOpaquePixelCount > 100
             && (replacement.respawnEffectActivePoolIndex === 0
                 || replacement.respawnEffectActivePoolIndex === 1)
             && replacement.respawnAuthoritativeEffectPoolActiveCount === 0

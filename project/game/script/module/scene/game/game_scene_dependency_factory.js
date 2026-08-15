@@ -24,6 +24,9 @@ import { animate } from 'animation/animation_system.js';
 import {
     createGameSceneStatusRenderer
 } from './render/game_scene_status_renderer.js';
+import {
+    GPU_WORLD_RECOVERY_LOG_PORT
+} from './gpu_world_recovery_log.js';
 
 const GAME_SCENE_STATUS_RENDER_PORT = Object.freeze({
     createSession: createGameSceneStatusRenderer
@@ -106,6 +109,7 @@ export function createGameSceneDependencies() {
             getSnapshot: getGameViewportSnapshot
         },
         gameplayStatusRenderPort: GAME_SCENE_STATUS_RENDER_PORT,
+        recoveryLogPort: GPU_WORLD_RECOVERY_LOG_PORT,
         worldRenderPort: {
             drawCircle(options) {
                 circleRenderOptions.x = options.x;

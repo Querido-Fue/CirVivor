@@ -113,7 +113,7 @@ test('J/C′ immutable definitions preserve adopted IDs, policies, and authored 
     ]);
     assert.equal(BASIC_JORANG_ENEMY_CAPABILITY_MASK, 0x225);
     assert.equal(BASIC_JORANG_ENEMY_DATA.maxHealth, 1);
-    assert.equal(BASIC_JORANG_ENEMY_DATA.moveSpeedTilesPerSecond, 2.5);
+    assert.equal(BASIC_JORANG_ENEMY_DATA.moveSpeedTilesPerSecond, 5);
     assert.equal(BASIC_JORANG_ENEMY_DATA.collisionWeight, 1);
     assert.equal(BASIC_JORANG_ENEMY_DATA.towerContactDamage, 0.1);
     assert.equal(BASIC_JORANG_ENEMY_DATA.coreImpactDamage, 1);
@@ -125,7 +125,7 @@ test('J/C′ immutable definitions preserve adopted IDs, policies, and authored 
     assert.equal(circlePrime.atomicTransformProfileId,
         CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID);
     assert.equal(circlePrime.maxHealth, 1);
-    assert.equal(circlePrime.moveSpeedTilesPerSecond, 2.5);
+    assert.equal(circlePrime.moveSpeedTilesPerSecond, 5);
     assert.equal(circlePrime.collisionWeight, 1);
     assert.equal(circlePrime.towerContactDamage, 0.1);
     assert.equal(circlePrime.coreImpactDamage, 1);

@@ -12,6 +12,7 @@
 | `project/game/script/data/` | Declarative settings, content, balance, themes, localization, resource metadata |
 | `project/game/script/module/` | Runtime systems and feature code |
 | `project/game/test/` | Node/NW.js contract, parity, integration, and golden tests |
+| `project/logs/` | Ignored runtime-only GPU-world restart diagnostics (`reset_*.txt`) |
 
 ## Runtime modules
 
@@ -45,5 +46,7 @@
 - Benchmark CPU auxiliaries: global `ObjectSystem` advances only the benchmark player/boxes/projectiles. They are visual/stress helpers and have no collision bridge to GPU enemies.
 - Current gameplay data: `data/object/tower/`, `data/object/core/`, `data/scene/game/`.
 - Title menu behavior stays in `module/scene/title/menu/`; title data contains metadata and links only.
+- `scene/game/gpu_world_recovery_log.js` captures the old GPU-world failure before safe replacement and writes
+  it through the injected scene dependency; gameplay modules do not import Node filesystem APIs directly.
 
 Use import-map aliases from `index.html`. `game/` maps to `script/`, not `script/module/`.

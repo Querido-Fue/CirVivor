@@ -205,11 +205,36 @@ export class GameScene extends BaseScene {
         if (this.recoveryRestartGeneration === deviceGeneration) {
             return false;
         }
+        let recoveryDiagnostic = null;
+        try {
+            recoveryDiagnostic = this.dependencies.recoveryLogPort?.capture?.({
+                gameSystem: this.gameSystem,
+                mapId: this.mapId,
+                deviceGeneration,
+                sceneRecovery: this.getEnemyRecoveryStatus()
+            }) ?? null;
+        } catch (error) {
+            console.error('GPU world reset diagnostic capture failed:', error);
+        }
         if (!this.gameSystem.restartGpuWorldAtSafeWaveBoundary()) {
             return false;
         }
         this.recoveryRestartGeneration = deviceGeneration;
         this.recoveryRestartCount++;
+        if (recoveryDiagnostic) {
+            try {
+                this.dependencies.recoveryLogPort?.write?.(Object.freeze({
+                    ...recoveryDiagnostic,
+                    reset: Object.freeze({
+                        succeeded: true,
+                        deviceGeneration,
+                        restartCount: this.recoveryRestartCount
+                    })
+                }));
+            } catch (error) {
+                console.error('GPU world reset diagnostic write failed:', error);
+            }
+        }
         return true;
     }
 }

@@ -298,85 +298,6 @@ function countChangedPixelsInRoi(left, right, center, halfSize) {
     return count;
 }
 
-function summarizeRoiColors(frame, center, halfSize, format, targetColor) {
-    const minimumX = Math.max(0, Math.floor(center.x - halfSize.x));
-    const maximumX = Math.min(frame.width - 1, Math.ceil(center.x + halfSize.x));
-    const minimumY = Math.max(0, Math.floor(center.y - halfSize.y));
-    const maximumY = Math.min(frame.height - 1, Math.ceil(center.y + halfSize.y));
-    const frequencies = new Map();
-    let sampledPixelCount = 0;
-    let nonTransparentPixelCount = 0;
-    const maximumRaw = { r: 0, g: 0, b: 0, a: 0 };
-    const maximumUnpremultiplied = { r: 0, g: 0, b: 0 };
-    for (let y = minimumY; y <= maximumY; y++) {
-        for (let x = minimumX; x <= maximumX; x++) {
-            sampledPixelCount++;
-            const pixel = decodeRenderPixel(frame, x, y, format);
-            if (pixel.a === 0) { continue; }
-            nonTransparentPixelCount++;
-            maximumRaw.r = Math.max(maximumRaw.r, pixel.r);
-            maximumRaw.g = Math.max(maximumRaw.g, pixel.g);
-            maximumRaw.b = Math.max(maximumRaw.b, pixel.b);
-            maximumRaw.a = Math.max(maximumRaw.a, pixel.a);
-            const unpremultiplied = Object.freeze({
-                r: Math.min(255, Math.round((pixel.r * 255) / pixel.a)),
-                g: Math.min(255, Math.round((pixel.g * 255) / pixel.a)),
-                b: Math.min(255, Math.round((pixel.b * 255) / pixel.a))
-            });
-            maximumUnpremultiplied.r = Math.max(
-                maximumUnpremultiplied.r,
-                unpremultiplied.r
-            );
-            maximumUnpremultiplied.g = Math.max(
-                maximumUnpremultiplied.g,
-                unpremultiplied.g
-            );
-            maximumUnpremultiplied.b = Math.max(
-                maximumUnpremultiplied.b,
-                unpremultiplied.b
-            );
-            const key = `${pixel.r},${pixel.g},${pixel.b},${pixel.a}`;
-            const previous = frequencies.get(key);
-            if (previous) {
-                previous.count++;
-            } else {
-                frequencies.set(key, {
-                    raw: pixel,
-                    unpremultiplied,
-                    count: 1,
-                    targetDistanceSquared:
-                        ((unpremultiplied.r - targetColor.r) ** 2)
-                        + ((unpremultiplied.g - targetColor.g) ** 2)
-                        + ((unpremultiplied.b - targetColor.b) ** 2)
-                });
-            }
-        }
-    }
-    const colors = [...frequencies.values()];
-    const toEvidence = (entry) => Object.freeze({
-        raw: entry.raw,
-        unpremultiplied: entry.unpremultiplied,
-        count: entry.count,
-        targetDistanceSquared: entry.targetDistanceSquared
-    });
-    return Object.freeze({
-        bounds: Object.freeze({ minimumX, maximumX, minimumY, maximumY }),
-        sampledPixelCount,
-        nonTransparentPixelCount,
-        uniqueColorCount: colors.length,
-        maximumRaw: Object.freeze(maximumRaw),
-        maximumUnpremultiplied: Object.freeze(maximumUnpremultiplied),
-        mostFrequent: Object.freeze(colors.slice().sort((left, right) => (
-            right.count - left.count
-                || left.targetDistanceSquared - right.targetDistanceSquared
-        )).slice(0, 8).map(toEvidence)),
-        closestToTarget: Object.freeze(colors.slice().sort((left, right) => (
-            left.targetDistanceSquared - right.targetDistanceSquared
-                || right.count - left.count
-        )).slice(0, 8).map(toEvidence))
-    });
-}
-
 async function waitForFormationPrepare(backend, device, timeoutMs = 5_000) {
     await device.queue.onSubmittedWorkDone();
     const deadline = performance.now() + timeoutMs;
@@ -851,9 +772,9 @@ async function runPrimaryFormationFixture(device, format) {
     backend.init(tileMap);
     const pairBase = tileMap.tileToWorld(7, 1, {});
     const pairCenters = Object.freeze([
-        Object.freeze({ x: pairBase.x, y: pairBase.y - 0.45 }),
-        Object.freeze({ x: pairBase.x, y: pairBase.y + 0.25 }),
-        Object.freeze({ x: pairBase.x, y: pairBase.y - 1.15 })
+        Object.freeze({ x: pairBase.x, y: pairBase.y - 0.4 }),
+        Object.freeze({ x: pairBase.x, y: pairBase.y + 0.3 }),
+        Object.freeze({ x: pairBase.x, y: pairBase.y - 1.1 })
     ]);
     const pairHalfSeparation = 0.325;
     const positions = Object.freeze(pairCenters.flatMap((center) => ([
@@ -1629,6 +1550,26 @@ async function runPrimaryFormationFixture(device, format) {
     const replacementRespawnPresentationCount = replacementRespawnActive.filter(({
         state
     }) => state.presentationFlags !== 0).length;
+    const replacementRespawnFrame = await renderBackend(
+        backend,
+        device,
+        renderTexture,
+        camera,
+        3
+    );
+    const replacementRespawnCenterOpaque = patchHasPixel(
+        replacementRespawnFrame,
+        center.x,
+        center.y,
+        format,
+        (pixel) => pixel.a > 0,
+        1
+    );
+    const replacementRespawnOpaquePixelCount = countOpaquePixels(
+        replacementRespawnFrame,
+        center,
+        28
+    );
     assert(replacementRespawnResourcesPresent
         && replacementRespawnFormationStatus.authoritativeEpoch
             > replacementFormationStatus.authoritativeEpoch
@@ -1644,6 +1585,8 @@ async function runPrimaryFormationFixture(device, format) {
         && replacementRespawnOldHandleCount === 0
         && replacementRespawnActiveHxCount === 0
         && replacementRespawnPresentationCount === 0
+        && replacementRespawnCenterOpaque
+        && replacementRespawnOpaquePixelCount > 100
         && replacementRespawnEffectPools.poolA === 0
         && replacementRespawnEffectPools.poolB === 0
         && replacementRespawnEffectPools.authoritativeActiveCount === 0
@@ -1823,6 +1766,8 @@ async function runPrimaryFormationFixture(device, format) {
             respawnActiveHxCount: replacementRespawnActiveHxCount,
             respawnOldHandleCount: replacementRespawnOldHandleCount,
             respawnPresentationCount: replacementRespawnPresentationCount,
+            respawnCenterOpaque: replacementRespawnCenterOpaque,
+            respawnOpaquePixelCount: replacementRespawnOpaquePixelCount,
             respawnEffectActivePoolIndex:
                 replacementRespawnEffectPools.activePoolIndex,
             respawnAuthoritativeEffectPoolActiveCount:
@@ -2042,119 +1987,27 @@ async function runReservationPresentationFixture(device, format) {
         reservationCenter,
         reservationHalfSize
     );
-    if (changed <= 0
-        || reservationCyanPixelsAfter <= reservationCyanPixelsBefore) {
-        const temporaryBytes = await readGpuBufferBytes(
-            device,
-            backend.simulation.buffers.temporaries,
-            2 * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE,
-            'cirvivor-nw-hexa-reservation-temporary'
-        );
-        const temporaryView = new DataView(temporaryBytes);
-        const projectPosition = (position) => {
-            const projected = {};
-            camera.worldToViewport(position.x, position.y, projected);
-            return Object.freeze({ x: projected.x, y: projected.y });
-        };
-        const presentationPoses = reserved.map((entry) => {
-            const offset = entry.slot * GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE;
-            const previous = Object.freeze({
-                x: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_X,
-                    true
-                ),
-                y: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREVIOUS_Y,
-                    true
-                )
-            });
-            const predicted = Object.freeze({
-                x: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_X,
-                    true
-                ),
-                y: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.PREDICTED_Y,
-                    true
-                )
-            });
-            const delta = Object.freeze({
-                x: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_X,
-                    true
-                ),
-                y: temporaryView.getFloat32(
-                    offset + GPU_CIRCLE_BODY_ABI.TEMPORARY.DELTA_Y,
-                    true
-                )
-            });
-            return Object.freeze({
-                slot: entry.slot,
-                handle: Object.freeze({
-                    entityId: entry.state.entityId,
-                    incarnation: entry.state.incarnation
-                }),
-                velocity: entry.velocity,
-                current: entry.position,
-                previous,
-                predicted,
-                delta,
-                projected: Object.freeze({
-                    current: projectPosition(entry.position),
-                    previous: projectPosition(previous),
-                    predicted: projectPosition(predicted)
-                })
-            });
-        });
-        const reservationTargetColor = Object.freeze({
-            r: Math.round(0.25 * 255),
-            g: Math.round(0.95 * 255),
-            b: 255
-        });
-        const diagnostic = Object.freeze({
-            center: reservationCenter,
-            halfSize: reservationHalfSize,
-            presentationPoses: Object.freeze(presentationPoses),
-            changedPixelCount: changed,
-            roiChangedPixelCount: reservationRoiChangedPixels,
-            cyanPixelCountBefore: reservationCyanPixelsBefore,
-            cyanPixelCountAfter: reservationCyanPixelsAfter,
-            cyanPredicate: Object.freeze({
-                alphaPositive: true,
-                alphaAwareUnpremultiply: true,
-                minimumBlue: 190,
-                minimumGreen: 180,
-                maximumRed: 180
-            }),
-            reservationTargetColor,
-            beforeColors: summarizeRoiColors(
-                before,
-                reservationCenter,
-                reservationHalfSize,
-                format,
-                reservationTargetColor
-            ),
-            afterColors: summarizeRoiColors(
-                after,
-                reservationCenter,
-                reservationHalfSize,
-                format,
-                reservationTargetColor
-            )
-        });
-        assert(changed > 0,
-            `Hexa reservation did not change rendered pixels: ${
-                JSON.stringify(diagnostic)
-            }`);
-        assert(reservationCyanPixelsAfter > reservationCyanPixelsBefore,
-            `Hexa reservation cyan bounded ROI evidence missing: ${
-                JSON.stringify(diagnostic)
-            }`);
-    }
+    const reservationCenterOpaque = patchHasPixel(
+        after,
+        reservationCenter.x,
+        reservationCenter.y,
+        format,
+        (pixel) => pixel.a > 0,
+        1
+    );
+    assert(changed > 0,
+        `Hexa reservation motion did not change rendered pixels: ${changed}`);
+    assert(reservationCenterOpaque === true,
+        'Natural Hexa must render a centered normal-sized body');
+    assert(reservationCyanPixelsBefore === 0
+        && reservationCyanPixelsAfter === 0,
+    'Hexa reservation must not render empty-slot cyan grid guides');
     backend.destroy();
     texture.destroy();
     return Object.freeze({
         reservationChangedPixels: true,
+        reservationGuideHidden: true,
+        reservationCenterOpaque,
         reservationPixelDelta: changed,
         reservationBodyCount: reserved.length,
         reservationRoiPixelDelta: reservationRoiChangedPixels,

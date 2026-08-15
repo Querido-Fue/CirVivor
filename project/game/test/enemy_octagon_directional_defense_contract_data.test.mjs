@@ -147,7 +147,7 @@ test('O data는 exact RING_SLOTS/orbit/directional-defense 단일 authority다',
     );
     assert.strictEqual(profiles.behavior, BASIC_OCTA_ORBIT_BEHAVIOR_PROFILE);
     assert.equal(profiles.physics.weight, Math.fround(2.5));
-    assert.equal(profiles.behavior.moveSpeedTilesPerSecond, Math.fround(2.5));
+    assert.equal(profiles.behavior.moveSpeedTilesPerSecond, Math.fround(5));
     assert.deepEqual({ ...profiles.behavior.orbit }, {
         coordinateSystemId: FORMATION_COORDINATE_SYSTEM.RING_SLOTS,
         coordinateSystemCode: FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS,

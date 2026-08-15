@@ -16,7 +16,7 @@ export const BASIC_RHOM_BEHAVIOR_PROFILE_SOURCE = Object.freeze({
     id: BASIC_RHOM_BEHAVIOR_PROFILE_ID,
     navigationObjective: 'core-priority-ranged-with-route-fallback',
     navigationMode: 'gpu-core-priority-ranged',
-    moveSpeedTilesPerSecond: 2.5,
+    moveSpeedTilesPerSecond: 5,
     towerEngagement: 'projectile',
     towerTargetSelection:
         PROJECTILE_SELECTED_TARGET_POLICY_ID.CORE_FIRST_IN_RANGE_THEN_TOWER,

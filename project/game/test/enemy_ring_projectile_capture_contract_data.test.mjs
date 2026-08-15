@@ -270,7 +270,7 @@ test('basic_ring_01은 common-C stats와 capture bit/profile을 GPU definition c
         bountyBudget: BASIC_RING_ENEMY_DATA.bountyBudget
     }, {
         maxHealth: 1,
-        moveSpeedTilesPerSecond: 2.5,
+        moveSpeedTilesPerSecond: 5,
         collisionWeight: 1,
         towerContactDamage: 0.1,
         coreImpactDamage: 1,

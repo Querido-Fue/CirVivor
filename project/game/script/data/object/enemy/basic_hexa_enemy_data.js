@@ -51,7 +51,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 1,
         towerContactDamage: 0.1,
-        moveSpeedTilesPerSecond: 2.5,
+        moveSpeedTilesPerSecond: 5,
         weight: 1,
         bountyBudget: 1,
         coreImpactDamage: 1
@@ -59,7 +59,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 2,
         towerContactDamage: 0.12,
-        moveSpeedTilesPerSecond: 2.25,
+        moveSpeedTilesPerSecond: 4.5,
         weight: 2,
         bountyBudget: 2,
         coreImpactDamage: 1
@@ -67,7 +67,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 3,
         towerContactDamage: 0.144,
-        moveSpeedTilesPerSecond: 2.025,
+        moveSpeedTilesPerSecond: 4.05,
         weight: 4,
         bountyBudget: 4,
         coreImpactDamage: 1
@@ -75,7 +75,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 4,
         towerContactDamage: 0.1728,
-        moveSpeedTilesPerSecond: 1.8225,
+        moveSpeedTilesPerSecond: 3.645,
         weight: 8,
         bountyBudget: 6,
         coreImpactDamage: 1
@@ -83,7 +83,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 5,
         towerContactDamage: 0.20736,
-        moveSpeedTilesPerSecond: 1.64025,
+        moveSpeedTilesPerSecond: 3.2805,
         weight: 16,
         bountyBudget: 8,
         coreImpactDamage: 1
@@ -91,7 +91,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
     Object.freeze({
         memberCount: 6,
         towerContactDamage: 0.248832,
-        moveSpeedTilesPerSecond: 1.476225,
+        moveSpeedTilesPerSecond: 2.95245,
         weight: 32,
         bountyBudget: 10,
         coreImpactDamage: 1

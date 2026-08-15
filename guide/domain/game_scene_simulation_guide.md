@@ -59,4 +59,15 @@ benchmark/UI event → command builder → enqueue
 - GPU failure stays visible in the HUD; there is no silent CPU fallback. HUD status must not call body readback.
 - Benchmark rendering may combine the child GPU world with its CPU auxiliary overlay, but must never create or draw global CPU enemies.
 
+## Play GPU-world recovery evidence
+
+`GameScene` may replace only the restartable GPU World at a safe wave boundary; CPU run identity and the
+global fixed tick remain owned by `GameSystem`. Immediately before an accepted replacement, the scene captures
+the old endpoint/backend/lifecycle and independent director status. Only after replacement succeeds does the
+injected `gpu_world_recovery_log.js` port synchronously persist that immutable snapshot as
+`project/logs/reset_YYYY-MM-DD_HH-mm-ss-SSS.txt`. Collision-safe numeric suffixes handle same-millisecond
+restarts. The record contains the prioritized cause plus the complete pre-replacement diagnostic, so the
+replacement may not erase the first failure evidence. Logging failure is reported but never creates a second
+gameplay recovery. `project/logs/` is runtime evidence and is intentionally ignored by Git.
+
 See [`../ingame_plan/status.md`](../ingame_plan/status.md) before extending play.

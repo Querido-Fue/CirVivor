@@ -18,8 +18,10 @@ const MAP_SELECT_HEIGHT_WH_RATIO = 0.68;
 const MAP_SELECT_LAYOUT = Object.freeze({
     CONTENT_TOP_SPACE_WH: 2.4,
     HEADER_GAP_WW: 1,
+    MAP_BUTTONS_TOP_SPACE_WH: 1.2,
+    MAP_BUTTON_GAP_WW: 1,
     PREVIEW_TOP_SPACE_WH: 1.2,
-    PREVIEW_HEIGHT_WH: 25,
+    PREVIEW_HEIGHT_WH: 21,
     DESCRIPTION_TOP_SPACE_WH: 1.4,
     FOOTER_BOTTOM_SPACE_WH: 2.5,
     BUTTON_GAP_WW: 1
@@ -106,6 +108,25 @@ export class MapSelectOverlay extends TitleOverlay {
             .text(getLangString('title_map_select_selected'))
             .fill(previewColors.selectedStroke)
             .vAlign('center')
+            .endGroup()
+            .space('WH', MAP_SELECT_LAYOUT.MAP_BUTTONS_TOP_SPACE_WH)
+            .group('map_select_options')
+            .justifyContent('space-between', 'WW', MAP_SELECT_LAYOUT.MAP_BUTTON_GAP_WW)
+            .width('fill');
+
+        for (let index = 0; index < GAME_MAP_DATA.MAPS.length; index++) {
+            const map = GAME_MAP_DATA.MAPS[index];
+            handler
+                .item('button', `map_select_option_${index}`)
+                .buttonStyle(BUTTON_STYLE.OVERLAY_INTERACT)
+                .buttonText(getLangString(map.nameKey))
+                .onClick(() => this.#selectMap(map.id));
+            if (map.id === selectedMap?.id) {
+                handler.buttonColor(ColorSchemes.Overlay.Button.Option.Active);
+            }
+        }
+
+        handler
             .endGroup()
             .space('WH', MAP_SELECT_LAYOUT.PREVIEW_TOP_SPACE_WH)
             .item('button', MAP_PREVIEW_ITEM_ID)
