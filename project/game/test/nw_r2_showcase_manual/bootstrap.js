@@ -74,6 +74,9 @@ function installAutoSoakDiagnostics() {
         frameDeltaSecondsTotal: 0,
         rafTimestampDeltaMsTotal: 0,
         wallTimestampDeltaMsTotal: 0,
+        rafFrameDeltaMs: [],
+        wallFrameDeltaMs: [],
+        longFrameSamples: [],
         debugFrameModeHistogram: {},
         previousFrameCpuMs: [],
         scheduledFixedStepHistogram: {},
@@ -113,16 +116,32 @@ function installAutoSoakDiagnostics() {
         counters.renderFrameCount++;
         const rafTimestamp = Number(game.lastFrameTimestamp);
         const wallTimestamp = performance.now();
+        let rafDeltaMs = null;
+        let wallDeltaMs = null;
         if (Number.isFinite(rafTimestamp) && Number.isFinite(lastRafTimestamp)) {
-            counters.rafTimestampDeltaMsTotal += Math.max(
+            rafDeltaMs = Math.max(
                 0,
                 rafTimestamp - lastRafTimestamp
             );
+            counters.rafTimestampDeltaMsTotal += rafDeltaMs;
+            counters.rafFrameDeltaMs.push(rafDeltaMs);
         }
-        counters.wallTimestampDeltaMsTotal += Math.max(
+        wallDeltaMs = Math.max(
             0,
             wallTimestamp - lastWallTimestamp
         );
+        counters.wallTimestampDeltaMsTotal += wallDeltaMs;
+        counters.wallFrameDeltaMs.push(wallDeltaMs);
+        if (Math.max(rafDeltaMs ?? 0, wallDeltaMs) >= 50
+            && counters.longFrameSamples.length < 64) {
+            const fixedTick = Number(gameSystem.getFixedTick?.());
+            counters.longFrameSamples.push(Object.freeze({
+                fixedTick: Number.isInteger(fixedTick) ? fixedTick : null,
+                pulsePhase: Number.isInteger(fixedTick) ? fixedTick % 120 : null,
+                rafDeltaMs,
+                wallDeltaMs
+            }));
+        }
         lastRafTimestamp = rafTimestamp;
         lastWallTimestamp = wallTimestamp;
         const frameDeltaSeconds = Number(args[0]?.frameDeltaSeconds);
@@ -195,6 +214,9 @@ function installAutoSoakDiagnostics() {
             counters.frameDeltaSecondsTotal = 0;
             counters.rafTimestampDeltaMsTotal = 0;
             counters.wallTimestampDeltaMsTotal = 0;
+            counters.rafFrameDeltaMs.length = 0;
+            counters.wallFrameDeltaMs.length = 0;
+            counters.longFrameSamples.length = 0;
             counters.debugFrameModeHistogram = {};
             counters.previousFrameCpuMs.length = 0;
             counters.scheduledFixedStepHistogram = {};
@@ -312,7 +334,11 @@ async function runAutoSoak(api, durationMs, diagnostics) {
     );
     const schedulerDiagnostics = diagnostics.snapshot();
     const allFrameCpuValues = schedulerDiagnostics.previousFrameCpuMs;
+    const rafFrameDeltaValues = schedulerDiagnostics.rafFrameDeltaMs;
+    const wallFrameDeltaValues = schedulerDiagnostics.wallFrameDeltaMs;
     delete schedulerDiagnostics.previousFrameCpuMs;
+    delete schedulerDiagnostics.rafFrameDeltaMs;
+    delete schedulerDiagnostics.wallFrameDeltaMs;
     const activeSimulationSeconds = Math.max(
         Number.EPSILON,
         schedulerDiagnostics.frameDeltaSecondsTotal
@@ -373,6 +399,16 @@ async function runAutoSoak(api, durationMs, diagnostics) {
             p99: percentile(allFrameCpuValues, 0.99),
             maximum: allFrameCpuValues.length > 0
                 ? Math.max(...allFrameCpuValues)
+                : null
+        }),
+        frameGapMs: Object.freeze({
+            rafP99: percentile(rafFrameDeltaValues, 0.99),
+            rafMaximum: rafFrameDeltaValues.length > 0
+                ? Math.max(...rafFrameDeltaValues)
+                : null,
+            wallP99: percentile(wallFrameDeltaValues, 0.99),
+            wallMaximum: wallFrameDeltaValues.length > 0
+                ? Math.max(...wallFrameDeltaValues)
                 : null
         })
     });

@@ -18,6 +18,7 @@ const {
 const {
     PERFORMANCE_SERPENTINE_MACRO_COLUMNS,
     PERFORMANCE_SERPENTINE_MACRO_ROWS,
+    PERFORMANCE_SERPENTINE_FLOW_TRANSITION_RADIUS_TILES,
     PERFORMANCE_SERPENTINE_MAP_DATA,
     PERFORMANCE_SERPENTINE_MAP_ID,
     PERFORMANCE_SERPENTINE_PATH_WIDTH_TILES
@@ -47,7 +48,10 @@ test('두 번째 성능 map은 폭 10의 단일 116-waypoint ㄹ자 통로다', 
     assert.equal(PERFORMANCE_SERPENTINE_MACRO_ROWS, 17);
     assert.equal(PERFORMANCE_SERPENTINE_MACRO_COLUMNS, 12);
     assert.equal(PERFORMANCE_SERPENTINE_PATH_WIDTH_TILES, 10);
+    assert.equal(PERFORMANCE_SERPENTINE_FLOW_TRANSITION_RADIUS_TILES, 4.5);
     assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.pathWidthTiles, 10);
+    assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.flowTransitionRadiusTiles, 4.5);
+    assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.routeClosurePhysicalBlocking, false);
     assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.enemySpawnRoutes.length, 2);
 
     const route = PERFORMANCE_SERPENTINE_MAP_DATA.enemySpawnRoutes[0];
@@ -76,6 +80,8 @@ test('두 번째 성능 map은 폭 10의 단일 116-waypoint ㄹ자 통로다', 
     assert.equal(tileMap.getSpawnRoutes().length, 2);
     assert.equal(tileMap.getSpawnRoutes()[0].waypoints.length, 116);
     assert.equal(tileMap.getSpawnRoutes()[1].waypoints.length, 116);
+    assert.equal(tileMap.getFlowTransitionRadius(), 4.5);
+    assert.equal(tileMap.getRouteClosurePhysicalBlocking(), false);
     assert.ok(tileMap.getRouteGraph());
     assert.equal(tileMap.getRouteGraph().routeSets.length, 1);
     assert.equal(tileMap.getRouteGraph().closures.length, 2);

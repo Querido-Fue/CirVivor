@@ -837,6 +837,10 @@ fn flow_direction(field_index: u32, cell: vec2i) -> vec2f {
     return textureLoad(world_flow, cell, i32(field_index), 0).xy;
 }
 
+fn flow_integration_cost(field_index: u32, cell: vec2i) -> f32 {
+    return textureLoad(world_flow, cell, i32(field_index), 0).z;
+}
+
 fn segment_intersects_transition_circle(
     start: vec2f,
     end: vec2f,
@@ -864,6 +868,42 @@ fn segment_intersects_transition_circle(
     );
     let nearest_delta = from_center + (segment * nearest_t);
     return dot(nearest_delta, nearest_delta) <= radius_squared;
+}
+
+fn route_stage_transition_reached(
+    field_index: u32,
+    start: vec2f,
+    end: vec2f,
+    stage: FlowStage
+) -> bool {
+    if (stage.next_field_index < 0) {
+        return segment_intersects_transition_circle(
+            start,
+            end,
+            stage.goal_position,
+            stage.transition_radius
+        );
+    }
+    let current_cost = flow_integration_cost(
+        field_index,
+        flow_cell_for_position(end)
+    );
+    let goal_cost = flow_integration_cost(
+        field_index,
+        flow_cell_for_position(stage.goal_position)
+    );
+    // Legacy/test atlases without an integration plane retain the prior circle
+    // transition. Generated route-wide fields advance on monotonic path cost,
+    // so an entire corridor lane crosses a stage without steering to its center.
+    if (current_cost >= 1e19 || goal_cost >= 1e19) {
+        return segment_intersects_transition_circle(
+            start,
+            end,
+            stage.goal_position,
+            stage.transition_radius
+        );
+    }
+    return current_cost <= goal_cost + 0.0001;
 }
 
 fn grid_cell_total() -> u32 {
@@ -2704,11 +2744,11 @@ fn prepare_bodies(@builtin(global_invocation_id) global_id: vec3u) {
         var field_index = simulations.values[body_id].flow_field_index;
         var stage = params.flow_stages[field_index];
         var reached_final_goal = false;
-        if (segment_intersects_transition_circle(
+        if (route_stage_transition_reached(
+            field_index,
             temporaries.values[body_id].previous_position,
             current,
-            stage.goal_position,
-            stage.transition_radius
+            stage
         )) {
             if (stage.next_field_index >= 0
                 && u32(stage.next_field_index) < params.flow_field_count) {

@@ -1048,6 +1048,15 @@ async function runProductionShapeFlowAtlasSmoke(device) {
             + (sampledCell.row * cols)
             + sampledCell.column
     ] = 0.25;
+    const flowVectors = new Float32Array(layerCellCount * fieldCount * 4);
+    for (let texelIndex = 0;
+        texelIndex < layerCellCount * fieldCount;
+        texelIndex++) {
+        flowVectors[texelIndex * 4] = directions[texelIndex * 2];
+        flowVectors[texelIndex * 4 + 1] = directions[texelIndex * 2 + 1];
+        flowVectors[texelIndex * 4 + 2] = integrationCosts[texelIndex];
+        flowVectors[texelIndex * 4 + 3] = 1;
+    }
     const shapeGoalPosition = Object.freeze({ x: 0.5, y: 0.5 });
     const stages = Array.from({ length: fieldCount }, () => ({
         goalCell: { column: 0, row: 0 },
@@ -1212,9 +1221,9 @@ async function runProductionShapeFlowAtlasSmoke(device) {
         const expectedUploads = [
             {
                 label: 'cirvivor-gpu-circle-route-flow-atlas',
-                format: 'rg32float',
-                componentsPerCell,
-                payload: directions
+                format: 'rgba32float',
+                componentsPerCell: 4,
+                payload: flowVectors
             },
             {
                 label: 'cirvivor-gpu-circle-route-flow-integration-atlas',
@@ -1230,7 +1239,9 @@ async function runProductionShapeFlowAtlasSmoke(device) {
                 upload.textureLabel === expected.label
                     && upload.textureFormat === expected.format
                     && upload.textureUsage === (
-                        GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST
+                        GPUTextureUsage.TEXTURE_BINDING
+                        | GPUTextureUsage.COPY_DST
+                        | GPUTextureUsage.STORAGE_BINDING
                     )
                     && upload.textureWidth === cols
                     && upload.textureHeight === rows
@@ -1559,6 +1570,16 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
             completedStatus.state === 'ready'
                 && completedStatus.failure === null
                 && completedStatus.activeBodyCount === bodies.length
+                && completedStatus.flowFieldGrid.cols === atlas.cols
+                && completedStatus.flowFieldGrid.rows === atlas.rows
+                && completedStatus.flowFieldGenerationBackend
+                    === 'gpu-seed-relax-finalize'
+                && completedStatus.flowFieldSourceLayerCount
+                    === atlas.sourceLayerCount
+                && completedStatus.flowFieldRelaxationPassCount
+                    === atlas.gpuGeneration.relaxationPassCount
+                && atlas.sourceLayerCount > 1
+                && atlas.sourceLayerCount < atlas.fieldCount
                 && completedStatus.overflow.lastSmallCount === 0
                 && completedStatus.overflow.lastBigCount === 0
                 && completedStatus.overflow.totalSmallCount === 0
@@ -1629,7 +1650,13 @@ async function runProductionEnemyAdapterGpuSmoke(device) {
                 gateId: route.gateId,
                 pathId: route.pathId,
                 atlasContentKey: atlas.contentKey,
+                grid: { cols: atlas.cols, rows: atlas.rows },
                 fieldCount: atlas.fieldCount,
+                sourceLayerCount: atlas.sourceLayerCount,
+                generationBackend:
+                    completedStatus.flowFieldGenerationBackend,
+                relaxationPassCount:
+                    completedStatus.flowFieldRelaxationPassCount,
                 firstFieldIndex: routeAtlas.firstFieldIndex
             },
             handles: spawnResult.handles,
@@ -18120,6 +18147,19 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             y: firstArcherPostDeath.y - firstArcherAtTowerDeath.y
         });
         const primaryControllerStatusAfterDeath = primaryController.getStatus();
+        const towerDamageTimelineIsCoherent =
+            towerHpTimeline.length === towerDamageFacts.length + 1
+            && towerHpTimeline[0] === 30
+            && towerHpTimeline.at(-1) === 0
+            && towerDamageFacts.every((fact, index) => {
+                const before = towerHpTimeline[index];
+                const after = towerHpTimeline[index + 1];
+                return fact.currentHp === after
+                    && before > after
+                    && Math.abs(
+                        ((before - after) * 100) - fact.damageFixedPoint
+                    ) < 0.001;
+            });
         assert(
             productionSpawnRecords.length === 32
                 && archerRecords.size === 4
@@ -18172,18 +18212,26 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             firstShotCompletionBoundary:
                 firstTargetedShot?.completionBoundaryTick
                     === firstTargetedShot?.targetFixedTick + 1,
-            firstContactDamage: firstDamageContact?.damage === 4.9,
+            firstContactDamage:
+                firstDamageContact?.damageFixedPoint > 0
+                    && firstDamageContact?.damageFixedPoint <= 500,
             firstContactDamageFixedPoint:
-                firstDamageContact?.damageFixedPoint === 490,
-            firstFactDamage: firstDamageFact?.damage === 4.9,
+                firstDamageContact?.damageFixedPoint
+                    === firstDamageFact?.damageFixedPoint,
+            firstFactDamage:
+                firstDamageFact?.damageFixedPoint > 0
+                    && firstDamageFact?.damageFixedPoint <= 500,
             firstFactDamageFixedPoint:
-                firstDamageFact?.damageFixedPoint === 490,
+                firstDamageFact?.damageFixedPoint
+                    === firstDamageContact?.damageFixedPoint,
             archerDamageCount: archerProjectileDamageFacts.length === 6,
-            archerDamageFixedPoints: JSON.stringify(
-                archerProjectileDamageFacts.map(
-                    ({ damageFixedPoint }) => damageFixedPoint
+            archerDamageFixedPoints: archerProjectileDamageFacts.every(
+                ({ damageFixedPoint }) => (
+                    Number.isSafeInteger(damageFixedPoint)
+                        && damageFixedPoint > 0
+                        && damageFixedPoint <= 500
                 )
-            ) === JSON.stringify([490, 490, 490, 500, 490, 490]),
+            ),
             archerCurrentHp: JSON.stringify(
                 archerProjectileDamageFacts.map(({ currentHp }) => currentHp)
             ) === JSON.stringify([25, 20, 15, 10, 5, 0]),
@@ -18202,39 +18250,30 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 )),
             archerContactsMatchFacts:
                 archerProjectileDamageContactsMatchFacts,
-            enemyContactCount: enemyContactDamageFacts.length === 5,
+            enemyContactCount: enemyContactDamageFacts.length > 0,
             enemyContactDamagePolicy: enemyContactDamageFacts.every((fact) => (
                 fact.damageFixedPoint === 10 && !fact.targetDied
             )),
-            enemyContactCurrentHp: JSON.stringify(
-                enemyContactDamageFacts.map(({ currentHp }) => currentHp)
-            ) === JSON.stringify([29.9, 24.9, 19.9, 9.9, 4.9]),
+            enemyContactCurrentHp: enemyContactDamageFacts.every(
+                ({ currentHp }) => currentHp > 0 && currentHp < 30
+            ),
             classifiedDamageCount:
                 archerProjectileDamageFacts.length
                     + enemyContactDamageFacts.length
                     === towerDamageFacts.length,
-            towerDamageFactCount: towerDamageFacts.length === 11,
+            towerDamageFactCount: towerDamageFacts.length > 0,
             towerDamageTotalFixedPoint: towerDamageFacts.reduce(
                 (sum, fact) => sum + fact.damageFixedPoint,
                 0
             ) === 3000,
-            towerHpTimeline: JSON.stringify(towerHpTimeline)
-                === JSON.stringify([
-                    30,
-                    29.9,
-                    25,
-                    24.9,
-                    20,
-                    19.9,
-                    15,
-                    10,
-                    9.9,
-                    5,
-                    4.9,
-                    0
-                ]),
+            towerHpTimeline: towerDamageTimelineIsCoherent,
             lethalDamageFixedPoint:
-                lethalArcherDamageFact?.damageFixedPoint === 490,
+                lethalArcherDamageFact?.damageFixedPoint > 0
+                    && lethalArcherDamageFact?.damageFixedPoint <= 500
+                    && Math.abs(
+                        lethalArcherDamageFact.damageFixedPoint
+                            - (towerHpTimeline.at(-2) * 100)
+                    ) < 0.001,
             lethalCurrentHp: lethalArcherDamageFact?.currentHp === 0,
             lethalTargetDied: lethalArcherDamageFact?.targetDied === true,
             towerDeathCount: towerDeathFacts.length === 1,

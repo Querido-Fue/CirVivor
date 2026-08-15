@@ -1,0 +1,272 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+
+import { loadGameModule } from './support/source_module_loader.mjs';
+
+const {
+    GPU_ROUTE_FLOW_FIELD_GENERATOR_STORAGE_BUFFER_MAXIMUM,
+    GPU_ROUTE_FLOW_FIELD_GENERATOR_VERSION,
+    GPU_ROUTE_FLOW_FIELD_GENERATOR_WGSL,
+    generateGpuRouteFlowFieldTextures
+} = await loadGameModule(
+    'ingame/physics/gpu/gpu_route_flow_field_generator.js'
+);
+const simulationSource = await readFile(new URL(
+    '../script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
+    import.meta.url
+), 'utf8');
+const nwSupportSource = await readFile(new URL(
+    './support/run_nw_webgpu_capability.mjs',
+    import.meta.url
+), 'utf8');
+
+test('GPU route generator는 bounds-safe seed-relax-finalize와 hard-wall 계약을 가진다', () => {
+    const wgsl = GPU_ROUTE_FLOW_FIELD_GENERATOR_WGSL;
+
+    assert.equal(GPU_ROUTE_FLOW_FIELD_GENERATOR_VERSION, 2);
+    assert.equal(GPU_ROUTE_FLOW_FIELD_GENERATOR_STORAGE_BUFFER_MAXIMUM, 3);
+    for (const entryPoint of [
+        'seed_flow_cost',
+        'relax_flow_cost',
+        'finalize_flow_field'
+    ]) {
+        assert.match(wgsl, new RegExp(`fn\\s+${entryPoint}\\b`));
+    }
+    assert.match(
+        wgsl,
+        /id\.x >= params\.cols \|\| id\.y >= params\.rows/
+    );
+    assert.match(
+        wgsl,
+        /blocked_layers\[index\] != 0u[\s\S]*?cost_write\[index\] = COST_INFINITY;/
+    );
+    assert.match(
+        wgsl,
+        /fn diagonal_is_open\([\s\S]*?cell \+ vec2i\(offset\.x, 0\)[\s\S]*?cell \+ vec2i\(0, offset\.y\)/
+    );
+    assert.match(wgsl, /const CARDINAL_COST: u32 = 1000u;/);
+    assert.match(wgsl, /const DIAGONAL_COST: u32 = 1414u;/);
+    assert.match(wgsl, /neighbor_cost > COST_INFINITY - step_cost/);
+    assert.match(
+        wgsl,
+        /let source_layer = stage_layer_indices\[id\.z\];[\s\S]*?textureStore\(flow_output[\s\S]*?textureStore\(integration_output/
+    );
+    assert.doesNotMatch(wgsl, /512u|512\.0/);
+});
+
+test('GPU route 생성 texture와 NW 격리 manifest는 storage-write 경계를 보존한다', () => {
+    assert.match(
+        simulationSource,
+        /format: 'rgba32float',[\s\S]*?usage: textureUsage\.TEXTURE_BINDING[\s\S]*?textureUsage\.STORAGE_BINDING/
+    );
+    assert.match(
+        simulationSource,
+        /format: 'r32float',[\s\S]*?usage: textureUsage\.TEXTURE_BINDING[\s\S]*?textureUsage\.STORAGE_BINDING/
+    );
+    assert.match(
+        simulationSource,
+        /generateGpuRouteFlowFieldTextures\([\s\S]*?this\.flowTexture,[\s\S]*?this\.flowIntegrationTexture/
+    );
+    assert.match(
+        nwSupportSource,
+        /module\/ingame\/physics\/gpu\/gpu_route_flow_field_generator\.js/
+    );
+});
+
+test('GPU route generator는 pipeline을 device별 재사용하고 제출 완료 뒤 임시 buffer를 회수한다', async () => {
+    const previousBufferUsage = globalThis.GPUBufferUsage;
+    const previousTextureUsage = globalThis.GPUTextureUsage;
+    globalThis.GPUBufferUsage = Object.freeze({
+        COPY_DST: 1,
+        STORAGE: 2,
+        UNIFORM: 4
+    });
+    globalThis.GPUTextureUsage = Object.freeze({ STORAGE_BINDING: 8 });
+    const createdBuffers = [];
+    const counters = {
+        shaderModules: 0,
+        pipelines: 0,
+        submissions: 0
+    };
+    const pass = {
+        setPipeline() {},
+        setBindGroup() {},
+        dispatchWorkgroups() {},
+        end() {}
+    };
+    const device = {
+        limits: {
+            maxBufferSize: 1 << 20,
+            maxStorageBufferBindingSize: 1 << 20,
+            maxTextureDimension2D: 1024,
+            maxTextureArrayLayers: 256,
+            maxComputeWorkgroupsPerDimension: 65535
+        },
+        queue: {
+            writeBuffer() {},
+            submit() { counters.submissions++; },
+            onSubmittedWorkDone() { return Promise.resolve(); }
+        },
+        createBuffer(descriptor) {
+            const buffer = {
+                descriptor,
+                destroyCount: 0,
+                destroy() { this.destroyCount++; }
+            };
+            createdBuffers.push(buffer);
+            return buffer;
+        },
+        createShaderModule() {
+            counters.shaderModules++;
+            return {};
+        },
+        createComputePipeline(descriptor) {
+            counters.pipelines++;
+            return {
+                descriptor,
+                getBindGroupLayout() { return {}; }
+            };
+        },
+        createBindGroup(descriptor) { return descriptor; },
+        createCommandEncoder() {
+            return {
+                beginComputePass() { return pass; },
+                finish() { return {}; }
+            };
+        }
+    };
+    const atlas = {
+        cols: 2,
+        rows: 2,
+        fieldCount: 1,
+        gpuGeneration: {
+            version: 2,
+            sourceLayerCount: 1,
+            blockedLayers: new Uint32Array([0, 0, 0, 0]),
+            goalCellIndices: new Uint32Array([3]),
+            stageLayerIndices: new Uint32Array([0]),
+            relaxationPassCount: 4
+        }
+    };
+    const texture = { createView: (descriptor) => descriptor };
+
+    try {
+        const first = generateGpuRouteFlowFieldTextures(
+            device,
+            atlas,
+            texture,
+            texture
+        );
+        const second = generateGpuRouteFlowFieldTextures(
+            device,
+            atlas,
+            texture,
+            texture
+        );
+        await Promise.all([
+            first.retirementPromise,
+            second.retirementPromise
+        ]);
+
+        assert.equal(counters.shaderModules, 1);
+        assert.equal(counters.pipelines, 3);
+        assert.equal(counters.submissions, 2);
+        assert.equal(createdBuffers.length, 12);
+        assert.ok(createdBuffers.every((buffer) => buffer.destroyCount === 1));
+        first.destroy();
+        second.destroy();
+        assert.ok(createdBuffers.every((buffer) => buffer.destroyCount === 1));
+    } finally {
+        if (previousBufferUsage === undefined) {
+            delete globalThis.GPUBufferUsage;
+        } else {
+            globalThis.GPUBufferUsage = previousBufferUsage;
+        }
+        if (previousTextureUsage === undefined) {
+            delete globalThis.GPUTextureUsage;
+        } else {
+            globalThis.GPUTextureUsage = previousTextureUsage;
+        }
+    }
+});
+
+test('GPU route generator는 잘못된 recipe와 device limit를 allocation 전에 거절한다', () => {
+    const previousBufferUsage = globalThis.GPUBufferUsage;
+    const previousTextureUsage = globalThis.GPUTextureUsage;
+    globalThis.GPUBufferUsage = Object.freeze({
+        COPY_DST: 1,
+        STORAGE: 2,
+        UNIFORM: 4
+    });
+    globalThis.GPUTextureUsage = Object.freeze({ STORAGE_BINDING: 8 });
+    let allocationCount = 0;
+    const device = {
+        limits: {
+            maxBufferSize: 8,
+            maxStorageBufferBindingSize: 8,
+            maxTextureDimension2D: 1024,
+            maxTextureArrayLayers: 256,
+            maxComputeWorkgroupsPerDimension: 65535
+        },
+        queue: { writeBuffer() {}, submit() {} },
+        createBuffer() { allocationCount++; return {}; },
+        createShaderModule() { return {}; },
+        createComputePipeline() {
+            return { getBindGroupLayout() { return {}; } };
+        },
+        createBindGroup() { return {}; },
+        createCommandEncoder() { return {}; }
+    };
+    const texture = { createView() { return {}; } };
+    const validRecipe = {
+        version: 2,
+        sourceLayerCount: 1,
+        blockedLayers: new Uint32Array([0, 0, 0, 0]),
+        goalCellIndices: new Uint32Array([3]),
+        stageLayerIndices: new Uint32Array([0]),
+        relaxationPassCount: 4
+    };
+    try {
+        assert.throws(
+            () => generateGpuRouteFlowFieldTextures(
+                device,
+                { cols: 2, rows: 2, fieldCount: 1, gpuGeneration: validRecipe },
+                texture,
+                texture
+            ),
+            /storage 한도/
+        );
+        assert.equal(allocationCount, 0);
+        assert.throws(
+            () => generateGpuRouteFlowFieldTextures(
+                { ...device, limits: { ...device.limits, maxBufferSize: 1024,
+                    maxStorageBufferBindingSize: 1024 } },
+                {
+                    cols: 2,
+                    rows: 2,
+                    fieldCount: 1,
+                    gpuGeneration: {
+                        ...validRecipe,
+                        goalCellIndices: new Uint32Array([4])
+                    }
+                },
+                texture,
+                texture
+            ),
+            /goal은 범위 안/
+        );
+        assert.equal(allocationCount, 0);
+    } finally {
+        if (previousBufferUsage === undefined) {
+            delete globalThis.GPUBufferUsage;
+        } else {
+            globalThis.GPUBufferUsage = previousBufferUsage;
+        }
+        if (previousTextureUsage === undefined) {
+            delete globalThis.GPUTextureUsage;
+        } else {
+            globalThis.GPUTextureUsage = previousTextureUsage;
+        }
+    }
+});

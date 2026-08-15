@@ -2,10 +2,34 @@
 
 ## Navigation authority
 
-Existing TileMap routes, flow-field atlas, authored goal positions, and GPU route-stage progression
-remain authority. New AI policy chooses objectives/attacks without replacing the proven route data.
-Optional routeGraph v1 adds immutable route-set/switch/closure indices over that atlas; dynamic availability
-changes route selection and forward stage transitions only, never the TileMap/SDF/flow identity.
+Authored TileMap paths, final goal positions, and GPU route-stage progression remain authority. At GPU-world
+initialization, `route_flow_field_atlas.js` deduplicates non-self-intersecting logical stages by physical path
+and emits a compact route-cell mask plus final goal. A self-intersecting route instead retains distinct
+stage-goal sources so an unordered scalar integration field cannot shortcut the authored traversal.
+`gpu_route_flow_field_generator.js` then runs bounded seed → 8-neighbor
+ping-pong relaxation → finalize compute passes once per unique physical route. Walls are unreachable, diagonal
+corner cutting is rejected, and all dimensions come from content rather than a fixed reference texture size.
+Terrain SDF remains a separate tile-resolution collision snapshot. Deterministic JS/WASM generation is retained
+as the fallback/oracle, not as a second live navigation owner.
+
+Ordered stage metadata—including repeated crossing cells—remains intact for route selection, closure,
+Formation, and lineage contracts. Stage texture layers share a generated source only when mask and goal match.
+Intermediate stages advance when the actor's integration cost reaches the authored stage goal cost, preserving
+lane offset instead of steering every actor toward the waypoint center. Only the final Core stage uses the
+authored goal-circle test, and fixed motion samples the shared flow field in O(1) work per body.
+
+The performance serpentine map is one wide physical corridor represented by a `12×17` route-cell field rather
+than 230 independent `120×170` waypoint fields. Its 230 logical stages share one source and 116 bounded relaxation
+passes, keeping immutable navigation upload below 1 MiB. Its primary/fallback route IDs are logical availability aliases
+over that same physical geometry, so it also authors `routeClosurePhysicalBlocking:false`: Cork still acquires
+the lease, expands, and closes the logical primary route for future route selection, but topology word 13 prevents it
+from becoming a physical `ROUTE_BLOCKER` across the map's only corridor. Live actors ignore that nonphysical
+closure and retain their current flow instead of rerouting or entering clearance WAIT. Maps with genuine geometric bypasses
+default to physical blocking and retain the established Cork contract.
+
+The 2026-08-15 270-second NW load run reached 10,002 simultaneous GPU bodies (10,000 enemies plus Tower/Core),
+queued all requests, advanced at 59.14 fixed ticks per active simulation second, and recorded active-frame CPU
+p99 12.0 ms/max 22.9 ms with restart, recovery, and completion-protocol failure counts all zero.
 
 ## Enemy policies
 
@@ -158,8 +182,10 @@ route set, authenticates one exact `(entityId, incarnation, leaseGeneration)`, a
 closure entrance. A competing Z waits when no unleased candidate exists.
 
 At the entrance Z anchors and visibly expands for 60 fixed ticks to radius 3, equal to the six-tile route width,
-while physical pairing remains nonblocking. Only expansion completion publishes route `CLOSED` and enables
-`ROUTE_BLOCKER` together. Interaction metadata/Team keep BLOCKING Z a hostile Enemy noun. An upstream actor observes the availability version and changes path only
+while physical pairing remains nonblocking. Only expansion completion publishes route `CLOSED` and normally enables
+`ROUTE_BLOCKER` together. A map-level nonphysical-closure policy may keep the closed Cork on its nonblocking Enemy
+physical layer when all logical candidates share one real corridor; it does not bypass the lease, availability,
+or reopen protocol. Interaction metadata/Team keep BLOCKING Z a hostile Enemy noun. An upstream actor observes the availability version and changes path only
 at the next authored forward switch. An actor already beyond the switch advances to its clearance field and
 waits without reverse; route movement stops but independent attack, Effect, and Formation behavior continues.
 

@@ -362,6 +362,9 @@ fn closure_position(closure_index: u32) -> vec2f {
         bitcast<f32>(topology.values[base + 12u])
     );
 }
+fn closure_physically_blocks(closure_index: u32) -> bool {
+    return topology.values[closure_base(closure_index) + 13u] != 0u;
+}
 fn field_position(field_index: u32) -> vec2f {
     let base = field_base(field_index);
     return vec2f(
@@ -587,6 +590,12 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             (*state).observed_availability_version = availability.availability_version;
             return;
         }
+        if (!closure_physically_blocks(closure_index)) {
+            // Logical aliases over one physical corridor may steer future spawns to
+            // another path ID, but must never reroute or park live actors in place.
+            (*state).observed_availability_version = availability.availability_version;
+            return;
+        }
         let field_index = simulations.values[body_slot].flow_field_index;
         if (field_index >= topology.values[TOPOLOGY_FIELD_COUNT]) { return; }
         let field = field_base(field_index);
@@ -673,9 +682,14 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     if (phase == PHASE_BLOCKING) {
-        anchor_closer(body_slot, (*state).closure_index);
+        let closure_index = (*state).closure_index;
+        anchor_closer(body_slot, closure_index);
         physics.values[body_slot].radius = (*state).blocker_radius;
-        make_route_blocker(body_slot);
+        if (closure_physically_blocks(closure_index)) {
+            make_route_blocker(body_slot);
+        } else {
+            make_nonblocking_enemy(body_slot);
+        }
     }
 }
 
@@ -1096,7 +1110,11 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                 anchor_closer(action.body_slot, action.closure_index);
                 physics.values[action.body_slot].radius
                     = route_states.values[action.body_slot].blocker_radius;
-                make_route_blocker(action.body_slot);
+                if (closure_physically_blocks(action.closure_index)) {
+                    make_route_blocker(action.body_slot);
+                } else {
+                    make_nonblocking_enemy(action.body_slot);
+                }
             } else if (action.kind == ACTION_REOPENED) {
                 route_states.values[action.body_slot].observed_availability_version
                     = action.availability_version;

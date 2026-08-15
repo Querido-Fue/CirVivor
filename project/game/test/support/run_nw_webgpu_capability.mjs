@@ -99,6 +99,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
+    'module/ingame/physics/gpu/gpu_route_flow_field_generator.js',
     'module/ingame/physics/gpu/gpu_collision_shaders.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_shaders.js',

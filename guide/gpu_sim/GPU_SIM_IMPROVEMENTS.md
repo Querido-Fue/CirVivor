@@ -2,7 +2,16 @@
 
 ## 평가 범위
 
-복구된 GPU 시뮬레이션의 실행 의미를 기준으로 정리했다. 디컴파일 과정에서 바뀐 식별자와 코드 모양은 평가 대상에서 제외한다. 아래 항목은 원본 위험과 CirVivor adaptation 상태를 함께 기록한다. 현재 1~6과 bounded event readback 계약은 코드와 Node contract test에 반영됐고 실제 NW.js contact hardware smoke도 통과했다. 10k, 장시간 stress와 수동 시각 승인은 진행 중이다.
+복구된 GPU 시뮬레이션의 실행 의미를 기준으로 정리했다. 디컴파일 과정에서 바뀐 식별자와 코드 모양은 평가 대상에서 제외한다. 아래 항목은 원본 위험과 CirVivor adaptation 상태를 함께 기록한다. 현재 1~6과 bounded event readback 계약은 코드와 Node contract test에 반영됐고 실제 NW.js contact hardware smoke도 통과했다. 기존 10k 부하 경로도 통과했지만, 새 보조 런타임은 이번 작업에서 Node 계약만 검증했으며 요청에 따라 수동/GUI 검증은 수행하지 않았다.
+
+## 2026-08-15 참고 구현 이식
+
+- Flow Field setup은 recipe v2 전체-content hash, 경로 인접성/대각선 corner-cut/reachability 사전 검증, 비용 overflow guard, per-device pipeline cache를 적용했다.
+- 적 밀도는 `16×16`, 8틱 간격, 3-slot lossy ring의 표현 전용 스냅샷으로 축소했다. full-body readback이나 gameplay authority로 사용하지 않는다.
+- 사망 VFX는 GPU death event를 고정 2,048-record overwrite ring으로 직접 소비하고 CPU readback 없이 한 번의 indirect draw로 렌더한다.
+- VFX indirect args 기록과 indirect dispatch는 서로 다른 compute pass로 분리했다. 또한 밀도/VFX compute를 authoritative fixed command buffer 뒤 별도 제출로 격리해, 표현 validation 오류가 contact ABI를 0으로 남기고 GPU world를 프레임마다 재생성하던 회귀를 차단했다.
+
+구현 위치와 실패 정책은 [PRESENTATION_AUXILIARY_RUNTIME.md](PRESENTATION_AUXILIARY_RUNTIME.md)를 따른다.
 
 ## P1: 우선 수정
 
@@ -84,12 +93,12 @@ CirVivor 무기는 다른 규칙으로 만들 예정이므로 laser, Tesla, fire
 - public endpoint: enemy/projectile `1/1`에서 exact death 처리 후 next-fixed cleanup으로 `0/0`
 - 기존 physics/SDF/flow/render/stable-slot/fault/sparse/overflow probe: 모두 PASS
 
-남은 제품 작업은 swept CCD 여부 결정, Core arrival, 실제 weapon integration, `normal-10k-v1`, 장기 stress/churn과 수동 시각 QA다.
+남은 제품 작업은 swept CCD 여부 결정, 실제 weapon integration, 새 보조 런타임의 actual-WebGPU smoke, 장기 stress/churn과 수동 시각 QA다.
 
 ## 남은 검증 순서
 
 1. 과밀·대량 사망·readback 지연/overflow recovery 장시간 스트레스
 2. 실제 CirVivor weapon producer와 Core arrival 계약
 3. swept CCD 필요성 및 고속 tunneling fixture 결정
-4. `normal-10k-v1`/장기 stable-slot churn 승인
+4. 새 보조 런타임을 포함한 10k/장기 stable-slot churn 승인
 5. benchmark와 실제 게임의 수동 시각 QA

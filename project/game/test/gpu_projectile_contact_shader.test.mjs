@@ -464,7 +464,11 @@ assert.match(compute, /flow_stages: array<FlowStage, 256>,\s*max_contacts: u32,\
 assert.match(compute, /fn segment_intersects_transition_circle\(/);
 assert.match(
     compute,
-    /segment_intersects_transition_circle\([\s\S]*?temporaries\.values\[body_id\]\.previous_position,[\s\S]*?current,[\s\S]*?stage\.goal_position,[\s\S]*?stage\.transition_radius/
+    /fn route_stage_transition_reached\([\s\S]*?stage\.next_field_index < 0[\s\S]*?segment_intersects_transition_circle\([\s\S]*?stage\.goal_position,[\s\S]*?stage\.transition_radius[\s\S]*?flow_integration_cost\([\s\S]*?current_cost <= goal_cost \+ 0\.0001/
+);
+assert.match(
+    compute,
+    /route_stage_transition_reached\([\s\S]*?field_index,[\s\S]*?temporaries\.values\[body_id\]\.previous_position,[\s\S]*?current,[\s\S]*?stage/
 );
 assert.match(compute, /direction = stage\.goal_position - current;/);
 assert.doesNotMatch(compute, /goal_cell/);

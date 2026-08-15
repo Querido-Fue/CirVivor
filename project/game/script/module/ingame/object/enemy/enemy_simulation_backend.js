@@ -110,6 +110,13 @@ export class EnemySimulationBackend {
             = options.projectileCaptureReleasePreparationCapacity;
         this.projectileCaptureCleanupCapacity
             = options.projectileCaptureCleanupCapacity;
+        this.crowdDensityEnabled = options.crowdDensityEnabled !== false;
+        this.crowdDensitySampleIntervalTicks
+            = options.crowdDensitySampleIntervalTicks;
+        this.crowdDensityReadbackSlotCount
+            = options.crowdDensityReadbackSlotCount;
+        this.transientVfxEnabled = options.transientVfxEnabled !== false;
+        this.transientVfxCapacity = options.transientVfxCapacity;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -190,6 +197,13 @@ export class EnemySimulationBackend {
                 this.projectileCaptureReleasePreparationCapacity,
             projectileCaptureCleanupCapacity:
                 this.projectileCaptureCleanupCapacity,
+            crowdDensityEnabled: this.crowdDensityEnabled,
+            crowdDensitySampleIntervalTicks:
+                this.crowdDensitySampleIntervalTicks,
+            crowdDensityReadbackSlotCount:
+                this.crowdDensityReadbackSlotCount,
+            transientVfxEnabled: this.transientVfxEnabled,
+            transientVfxCapacity: this.transientVfxCapacity,
             sessionGeneration: this.sessionGeneration
         });
         this.state = 'gpu-deferred';
@@ -945,6 +959,11 @@ export class EnemySimulationBackend {
     /** @deprecated generic observed 명칭의 compatibility alias입니다. */
     getLatestTrackedPose() {
         return this.getObservedTrackedPose();
+    }
+
+    /** 오디오/표현 소비자용 lossy 적 밀도 snapshot입니다. */
+    getLatestCrowdDensitySnapshot() {
+        return this.simulation?.getLatestCrowdDensitySnapshot?.() ?? null;
     }
 
     /**

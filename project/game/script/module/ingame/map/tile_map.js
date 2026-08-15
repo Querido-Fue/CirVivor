@@ -67,6 +67,9 @@ function assertMapDefinition(definition) {
     const rows = definition?.macroRows;
     const columns = definition?.macroColumns;
     const pathWidth = definition?.pathWidthTiles;
+    const flowTransitionRadius = definition?.flowTransitionRadiusTiles;
+    const routeClosurePhysicalBlocking
+        = definition?.routeClosurePhysicalBlocking;
     if (typeof definition?.id !== 'string'
         || definition.id.length === 0
         || !Number.isInteger(rows)
@@ -76,6 +79,20 @@ function assertMapDefinition(definition) {
         || !Number.isInteger(pathWidth)
         || pathWidth <= 0) {
         throw new TypeError('인게임 맵의 ID·크기·pathWidthTiles가 유효해야 합니다.');
+    }
+    if (flowTransitionRadius !== undefined
+        && (!Number.isFinite(flowTransitionRadius)
+            || flowTransitionRadius <= 0
+            || flowTransitionRadius > pathWidth * 0.5)) {
+        throw new RangeError(
+            'flowTransitionRadiusTiles는 통로 반폭 이하의 양수여야 합니다.'
+        );
+    }
+    if (routeClosurePhysicalBlocking !== undefined
+        && typeof routeClosurePhysicalBlocking !== 'boolean') {
+        throw new TypeError(
+            'routeClosurePhysicalBlocking은 boolean이어야 합니다.'
+        );
     }
     if (!Array.isArray(definition.directionBlueprint)
         || definition.directionBlueprint.length !== rows) {
@@ -157,6 +174,10 @@ export class TileMap {
             label: `${definition.id}.enemyModifiers`
         });
         this.pathWidthTiles = definition.pathWidthTiles;
+        this.flowTransitionRadiusTiles
+            = definition.flowTransitionRadiusTiles ?? null;
+        this.routeClosurePhysicalBlocking
+            = definition.routeClosurePhysicalBlocking ?? true;
         this.tileSize = TILE_WORLD_SIZE;
         this.rows = definition.macroRows * this.pathWidthTiles;
         this.columns = definition.macroColumns * this.pathWidthTiles;
@@ -217,7 +238,7 @@ export class TileMap {
         assertTileNavigationSource(this);
     }
 
-    /** @returns {object} WASM/JS Flow Field가 공유할 고정 타일 grid입니다. */
+    /** @returns {object} SDF와 route-source 컴파일이 공유할 고정 타일 grid입니다. */
     getNavigationGrid() {
         return this.navigationGrid;
     }
@@ -225,6 +246,34 @@ export class TileMap {
     /** @returns {object[]} gate/path/waypoint를 포함한 복수 적 진입 route입니다. */
     getSpawnRoutes() {
         return this.spawnRoutes;
+    }
+
+    /**
+     * Route Flow Field가 실제 타일보다 큰 authored corridor cell을 사용할 때의
+     * 한 변 길이입니다. SDF/충돌 grid는 계속 1-tile 해상도를 유지합니다.
+     * @returns {number} 한 macro route cell의 실제 tile 수입니다.
+     */
+    getPathWidthTiles() {
+        return this.pathWidthTiles;
+    }
+
+    /**
+     * FlowStage ABI와 legacy/test atlas가 보존하는 authored 전환 반경입니다.
+     * 현재 route-wide GPU field의 중간 stage는 integration-cost plane으로
+     * 전환하며, 최종 Core stage만 기본 goal-circle 반경을 사용합니다.
+     * @returns {number|null} authored compatibility 전환 반경입니다.
+     */
+    getFlowTransitionRadius() {
+        return this.flowTransitionRadiusTiles;
+    }
+
+    /**
+     * Cork route closure가 닫힌 동안 물리 ROUTE_BLOCKER로 승격되는지 여부입니다.
+     * 단일 물리 corridor에서 논리 route만 복제한 성능 map은 false를 사용합니다.
+     * @returns {boolean} 물리 차단 여부입니다.
+     */
+    getRouteClosurePhysicalBlocking() {
+        return this.routeClosurePhysicalBlocking;
     }
 
     /**

@@ -727,6 +727,7 @@ export function createGpuRouteRuntimeTopology(flowFieldAtlas) {
         words[offset + 10] = downstreamMembership.progressOrdinal;
         words[offset + 11] = float32Bits(stage.goalPosition.x);
         words[offset + 12] = float32Bits(stage.goalPosition.y);
+        words[offset + 13] = closure.physicalBlocking === false ? 0 : 1;
         words[fieldOffset
             + closure.entranceFieldIndex * GPU_ROUTE_RUNTIME_ABI.FIELD.STRIDE_WORDS
             + 5] = closureIndex;

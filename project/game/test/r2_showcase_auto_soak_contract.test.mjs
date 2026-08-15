@@ -27,6 +27,11 @@ test('manual showcase 자동 soak는 명시적 환경 변수에서만 bounded te
     assert.match(bootstrapSource, /debugFrameModeHistogram/);
     assert.match(bootstrapSource, /catchUpMaximumStepHistogram/);
     assert.match(bootstrapSource, /allFrameCpuMs/);
+    assert.match(bootstrapSource, /rafFrameDeltaMs/);
+    assert.match(bootstrapSource, /wallFrameDeltaMs/);
+    assert.match(bootstrapSource, /longFrameSamples/);
+    assert.match(bootstrapSource, /pulsePhase: Number\.isInteger\(fixedTick\) \? fixedTick % 120/);
+    assert.match(bootstrapSource, /frameGapMs/);
     assert.match(bootstrapSource, /requestAutoSoakForeground/);
     assert.match(bootstrapSource, /fixedTicksPerActiveSimulationSecond/);
     assert.match(bootstrapSource, /foregroundCoverageRatio/);

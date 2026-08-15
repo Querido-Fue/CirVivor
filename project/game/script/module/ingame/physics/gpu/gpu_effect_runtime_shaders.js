@@ -624,6 +624,10 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
     if (atomicLoad(&grid_overflow.small_count) != 0u
         || atomicLoad(&grid_overflow.big_count) != 0u) {
         atomicOr(&pool_state.status, EFFECT_STATUS_GRID_OVERFLOW);
+        // A partial grid cannot authorize any pulse candidate. Avoid the
+        // serial per-cell identity ordering work: materialize_effect_batch
+        // seals the already-marked status as one zero-partial rejection.
+        return;
     }
     if (safe_program_count == 0u) {
         atomicStore(&pool_state.batch_accepted, 1u);
@@ -1142,7 +1146,11 @@ fn materialize_effect_contact_damage(@builtin(global_invocation_id) global_id: v
     contact_handlers.values[body_id].damage_other = base_damage * attack_multiplier;
 }
 
-fn cluster_member_count(center: vec2i, flow_field_index: u32) -> u32 {
+fn cluster_member_counts(
+    center: vec2i,
+    first_flow_field_index: u32,
+    last_flow_field_index: u32
+) -> array<u32, MAX_PENTA_ROUTE_LOOKAHEAD_FIELDS> {
     let center_position = (vec2f(center) + vec2f(0.5)) * params.grid_cell_size;
     let radius_cells = vec2i(ceil(
         vec2f(PENTA_CLUSTER_RADIUS_TILES) / params.grid_cell_size
@@ -1157,7 +1165,7 @@ fn cluster_member_count(center: vec2i, flow_field_index: u32) -> u32 {
         vec2i(0),
         vec2i(params.grid_cell_count) - vec2i(1)
     );
-    var count = 0u;
+    var counts_by_field: array<u32, MAX_PENTA_ROUTE_LOOKAHEAD_FIELDS>;
     for (var y = min_cell.y; y <= max_cell.y; y += 1) {
         for (var x = min_cell.x; x <= max_cell.x; x += 1) {
             let cell_index = u32(y) * params.grid_cell_count.x + u32(x);
@@ -1188,15 +1196,21 @@ fn cluster_member_count(center: vec2i, flow_field_index: u32) -> u32 {
                         ) == INTERACTION_LAYER_ENEMY
                         && gameplay_team_id(simulations.values[body_id].gameplay_meta)
                             == GAMEPLAY_TEAM_HOSTILE
-                        && temporaries.values[body_id].previous_flow_field_index
-                            == flow_field_index) {
-                        count += 1u;
+                        ) {
+                        let member_field_index = temporaries.values[body_id]
+                            .previous_flow_field_index;
+                        if (member_field_index >= first_flow_field_index
+                            && member_field_index <= last_flow_field_index) {
+                            counts_by_field[
+                                member_field_index - first_flow_field_index
+                            ] += 1u;
+                        }
                     }
                 }
             }
         }
     }
-    return count;
+    return counts_by_field;
 }
 
 fn sdf_value_at(texel: vec2i) -> f32 {
@@ -1386,6 +1400,14 @@ fn advance_penta_cluster_navigation(@builtin(global_invocation_id) global_id: ve
                 continue;
             }
             let cell_index = u32(y) * params.grid_cell_count.x + u32(x);
+            // The surrounding grid is independent of the candidate field.
+            // Scan it once and bucket all 32 bounded lookahead fields locally;
+            // the old field→grid nesting reread the same bodies up to 32 times.
+            let cluster_counts = cluster_member_counts(
+                vec2i(x, y),
+                flow_field_index,
+                candidate_field_end
+            );
             for (var candidate_field = flow_field_index;
                 candidate_field <= candidate_field_end;
                 candidate_field += 1u) {
@@ -1406,10 +1428,7 @@ fn advance_penta_cluster_navigation(@builtin(global_invocation_id) global_id: ve
                 ) < 0.0) {
                     continue;
                 }
-                let count = cluster_member_count(
-                    vec2i(x, y),
-                    candidate_field
-                );
+                let count = cluster_counts[candidate_field - flow_field_index];
                 if (count > best_count
                     || (count == best_count
                         && (best_cell_index == INVALID_IDENTITY_COMPONENT

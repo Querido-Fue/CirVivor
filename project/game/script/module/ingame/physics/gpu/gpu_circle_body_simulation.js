@@ -203,6 +203,11 @@ import {
     GPU_ROUTE_RUNTIME_WGSL
 } from './gpu_route_runtime_shaders.js';
 import {
+    generateGpuRouteFlowFieldTextures
+} from './gpu_route_flow_field_generator.js';
+import { GpuCrowdDensityRuntime } from './gpu_crowd_density_runtime.js';
+import { GpuTransientVfxRuntime } from './gpu_transient_vfx_runtime.js';
+import {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_TEAM_ID
 } from '../../contract/gameplay_team_contract.js';
@@ -875,9 +880,16 @@ function normalizeFlowFieldAtlas(atlas) {
             origin: Object.freeze({ x: 0, y: 0 }),
             cellSize: Object.freeze({ x: 1, y: 1 }),
             directions: new Float32Array([0, 0]),
+            flowVectors: new Float32Array([
+                0,
+                0,
+                FLOW_INTEGRATION_UNREACHABLE_COST,
+                0
+            ]),
             integrationCosts: new Float32Array([
                 FLOW_INTEGRATION_UNREACHABLE_COST
             ]),
+            gpuGeneration: null,
             stages: Object.freeze([]),
             contentKey: null,
             routeGraph: null
@@ -905,6 +917,18 @@ function normalizeFlowFieldAtlas(atlas) {
             throw new TypeError(`flow field 방향은 모두 유한해야 합니다: index=${index}`);
         }
     }
+    const sourceGeneration = atlas.gpuGeneration;
+    const gpuGeneration = sourceGeneration === undefined
+        || sourceGeneration === null
+        ? null
+        : Object.freeze({
+            version: Number(sourceGeneration.version),
+            sourceLayerCount: Number(sourceGeneration.sourceLayerCount),
+            stageLayerIndices: sourceGeneration.stageLayerIndices?.slice(),
+            blockedLayers: sourceGeneration.blockedLayers?.slice(),
+            goalCellIndices: sourceGeneration.goalCellIndices?.slice(),
+            relaxationPassCount: Number(sourceGeneration.relaxationPassCount)
+        });
     const sourceIntegrationCosts = atlas.integrationCosts;
     let integrationCosts;
     if (sourceIntegrationCosts === undefined) {
@@ -927,6 +951,18 @@ function normalizeFlowFieldAtlas(atlas) {
                 );
             }
         }
+    }
+    const flowVectors = new Float32Array(cols * rows * fieldCount * 4);
+    for (let texelIndex = 0;
+        texelIndex < cols * rows * fieldCount;
+        texelIndex++) {
+        flowVectors[texelIndex * 4] = directions[texelIndex * 2];
+        flowVectors[texelIndex * 4 + 1] = directions[texelIndex * 2 + 1];
+        flowVectors[texelIndex * 4 + 2] = integrationCosts[texelIndex];
+        flowVectors[texelIndex * 4 + 3]
+            = integrationCosts[texelIndex] < FLOW_INTEGRATION_UNREACHABLE_COST
+                ? 1
+                : 0;
     }
     if (!Array.isArray(atlas.stages) || atlas.stages.length !== fieldCount) {
         throw new TypeError('flow field stages는 fieldCount 길이의 배열이어야 합니다.');
@@ -993,7 +1029,9 @@ function normalizeFlowFieldAtlas(atlas) {
         origin: Object.freeze({ x: originX, y: originY }),
         cellSize,
         directions,
+        flowVectors,
         integrationCosts,
+        gpuGeneration,
         stages: Object.freeze(stages),
         contentKey: String(atlas.contentKey ?? ''),
         routeGraph: atlas.routeGraph ?? null
@@ -1430,6 +1468,18 @@ export class GpuCircleBodySimulation {
             profile: options.presentationProfile
                 ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION
         });
+        this.crowdDensityRuntime = options.crowdDensityEnabled === true
+            ? new GpuCrowdDensityRuntime({
+                worldSize: this.worldSize,
+                sampleIntervalTicks: options.crowdDensitySampleIntervalTicks,
+                readbackSlotCount: options.crowdDensityReadbackSlotCount
+            })
+            : null;
+        this.transientVfxRuntime = options.transientVfxEnabled === true
+            ? new GpuTransientVfxRuntime({
+                capacity: options.transientVfxCapacity
+            })
+            : null;
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
         this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
             this.capacity
@@ -1552,6 +1602,7 @@ export class GpuCircleBodySimulation {
         this.buffers = null;
         this.flowTexture = null;
         this.flowIntegrationTexture = null;
+        this.flowFieldGeneration = null;
         this.bindGroups = null;
         this.pipelines = null;
         this.state = 'idle';
@@ -7139,6 +7190,19 @@ export class GpuCircleBodySimulation {
             = this.atomicTransformPrepareReadbackLease;
         const atomicTransformLease = this.atomicTransformReadbackLease;
         const trackedPoseLease = this.trackedPoseReadbackLease;
+        let crowdDensitySlot = null;
+        if (!terminalFinalSubmit && this.crowdDensityRuntime) {
+            try {
+                crowdDensitySlot = this.crowdDensityRuntime.claimSample({
+                    sourceTick: resolvedSourceTick,
+                    submittedTick: tick,
+                    deviceGeneration: generation,
+                    authoritativeEpoch
+                });
+            } catch (error) {
+                this.crowdDensityRuntime.disable(error);
+            }
+        }
         let encoder;
         try {
             this.#writeComputeParams(delta, resolvedSourceTick);
@@ -8210,6 +8274,7 @@ export class GpuCircleBodySimulation {
             );
             this.#releaseClaimedRouteRuntimeReadbackSlot(routeRuntimeSlot);
             this.#releaseClaimedTrackedPoseReadbackSlot(trackedPoseSlot);
+            this.crowdDensityRuntime?.cancelSample(crowdDensitySlot);
             this.#releaseClaimedSpawnProgramReadbackSlot(
                 stagedPrograms?.readbackSlot ?? null
             );
@@ -8291,10 +8356,87 @@ export class GpuCircleBodySimulation {
             return false;
         }
 
+        let crowdDensitySubmitted = false;
+        const transientVfxReady = this.transientVfxRuntime?.state === 'ready';
+        if (!terminalFinalSubmit
+            && (transientVfxReady || crowdDensitySlot)) {
+            let auxiliaryScopePushed = false;
+            let auxiliaryStage = 'create-encoder';
+            try {
+                if (typeof device.pushErrorScope === 'function'
+                    && typeof device.popErrorScope === 'function') {
+                    device.pushErrorScope('validation');
+                    auxiliaryScopePushed = true;
+                }
+                const auxiliaryEncoder = device.createCommandEncoder({
+                    label: 'cirvivor-gpu-circle-presentation-auxiliary'
+                });
+                auxiliaryStage = 'transient-vfx';
+                const transientVfxEncoded = transientVfxReady
+                    && this.transientVfxRuntime.encodeFixedStep(
+                        auxiliaryEncoder,
+                        delta,
+                        resolvedSourceTick
+                    ) === true;
+                auxiliaryStage = 'crowd-density';
+                if (crowdDensitySlot) {
+                    this.crowdDensityRuntime.encodeSample(
+                        auxiliaryEncoder,
+                        crowdDensitySlot,
+                        this.buffers.dispatchIndirect
+                    );
+                    crowdDensitySubmitted = true;
+                }
+                auxiliaryStage = 'submit';
+                if (transientVfxEncoded || crowdDensitySubmitted) {
+                    // 표현용 validation 실패가 앞서 제출한 authoritative fixed
+                    // command buffer를 무효화하지 못하도록 별도 submit합니다.
+                    device.queue.submit([auxiliaryEncoder.finish()]);
+                }
+            } catch (error) {
+                crowdDensitySubmitted = false;
+                this.crowdDensityRuntime?.cancelSample(crowdDensitySlot);
+                if (auxiliaryStage === 'transient-vfx') {
+                    this.transientVfxRuntime?.disable(error);
+                } else if (auxiliaryStage === 'crowd-density') {
+                    this.crowdDensityRuntime?.disable(error);
+                } else {
+                    this.transientVfxRuntime?.disable(error);
+                    this.crowdDensityRuntime?.disable(error);
+                }
+            } finally {
+                if (auxiliaryScopePushed) {
+                    try {
+                        void device.popErrorScope().then((error) => {
+                            if (!error
+                                || this.device !== device
+                                || this.deviceGeneration !== generation
+                                || this.authoritativeEpoch !== authoritativeEpoch) {
+                                return;
+                            }
+                            // Async validation도 auxiliary status에만 귀속합니다.
+                            // authoritative simulation state/recovery는 건드리지 않습니다.
+                            this.transientVfxRuntime?.disable(error);
+                            this.crowdDensityRuntime?.disable(error);
+                        }).catch(() => {
+                            // Device retirement/loss 중 scope rejection은 기존
+                            // device lifecycle이 처리합니다.
+                        });
+                    } catch {
+                        // popErrorScope 자체가 실패해도 이미 제출된 authoritative
+                        // fixed step의 성공 여부는 바꾸지 않습니다.
+                    }
+                }
+            }
+        }
+
         this.submittedTickCount = tick;
         this.lastSubmittedSourceTick = resolvedSourceTick;
         this.hasGpuAuthoritativeState = true;
         this.presentationClock.advancePhysics(delta);
+        if (crowdDensitySubmitted) {
+            this.crowdDensityRuntime.beginReadback(crowdDensitySlot);
+        }
         if (overflowSlot) {
             this.lastOverflowSampleSubmittedTick = tick;
             this.overflowSampleOverdue = false;
@@ -8842,6 +8984,7 @@ export class GpuCircleBodySimulation {
                     pass.setBindGroup(0, this.bindGroups.renderBodies);
                     pass.setBindGroup(1, this.bindGroups.renderParams);
                     pass.drawIndirect(this.buffers.drawIndirect, 0);
+                    this.transientVfxRuntime?.encodeRender(pass);
                 })
             );
         }
@@ -8880,6 +9023,7 @@ export class GpuCircleBodySimulation {
         pass.setBindGroup(0, this.bindGroups.renderBodies);
         pass.setBindGroup(1, this.bindGroups.renderParams);
         pass.drawIndirect(this.buffers.drawIndirect, 0);
+        this.transientVfxRuntime?.encodeRender(pass);
         pass.end();
         this.device.queue.submit([encoder.finish()]);
         this.platform.markCanvasDrawn();
@@ -9093,6 +9237,17 @@ export class GpuCircleBodySimulation {
             sdfEnabled: this.sdf.enabled,
             flowFieldEnabled: this.flowFieldAtlas.enabled,
             flowFieldCount: this.flowFieldAtlas.fieldCount,
+            flowFieldGrid: Object.freeze({
+                cols: this.flowFieldAtlas.cols,
+                rows: this.flowFieldAtlas.rows
+            }),
+            flowFieldGenerationBackend: this.flowFieldGeneration?.backend
+                ?? 'cpu-upload',
+            flowFieldSourceLayerCount:
+                this.flowFieldGeneration?.sourceLayerCount
+                    ?? this.flowFieldAtlas.fieldCount,
+            flowFieldRelaxationPassCount:
+                this.flowFieldGeneration?.relaxationPassCount ?? 0,
             sourceWorldUnitScale: this.sourceWorldUnitScale,
             maximumBodyRadius: this.maximumBodyRadius,
             atomicTransformFirstHitBodyCount:
@@ -9275,8 +9430,19 @@ export class GpuCircleBodySimulation {
                 lastSampleSubmittedTick: this.lastOverflowSampleSubmittedTick,
                 lastSampleCompletedTick: this.lastOverflowSampleCompletedTick
             }),
+            crowdDensity: this.crowdDensityRuntime?.getStatus() ?? Object.freeze({
+                state: 'disabled'
+            }),
+            transientVfx: this.transientVfxRuntime?.getStatus() ?? Object.freeze({
+                state: 'disabled'
+            }),
             presentation: Object.freeze({ ...this.presentationClock.getClockState({}) })
         });
+    }
+
+    /** 오디오/표현 계층용 lossy GPU 적 밀도 snapshot입니다. gameplay에는 사용하지 않습니다. */
+    getLatestCrowdDensitySnapshot() {
+        return this.crowdDensityRuntime?.getLatestSnapshot() ?? null;
     }
 
     /** Facade가 readback envelope를 현재 session/device/epoch와 대조하는 작은 상태입니다. */
@@ -14154,8 +14320,10 @@ export class GpuCircleBodySimulation {
                 height: this.flowFieldAtlas.rows,
                 depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
             },
-            format: 'rg32float',
-            usage: textureUsage.TEXTURE_BINDING | textureUsage.COPY_DST
+            format: 'rgba32float',
+            usage: textureUsage.TEXTURE_BINDING
+                | textureUsage.COPY_DST
+                | this.#requireFlowTextureStorageUsage(textureUsage)
         });
         this.flowIntegrationTexture = device.createTexture({
             label: 'cirvivor-gpu-circle-route-flow-integration-atlas',
@@ -14165,7 +14333,9 @@ export class GpuCircleBodySimulation {
                 depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
             },
             format: 'r32float',
-            usage: textureUsage.TEXTURE_BINDING | textureUsage.COPY_DST
+            usage: textureUsage.TEXTURE_BINDING
+                | textureUsage.COPY_DST
+                | this.#requireFlowTextureStorageUsage(textureUsage)
         });
         const overflowLease = ++this.overflowReadbackLease;
         this.overflowReadbackSlots = Array.from(
@@ -15791,6 +15961,39 @@ export class GpuCircleBodySimulation {
                 entries: [{ binding: 0, resource: resource(this.buffers.renderParams) }]
             })
         };
+        if (this.crowdDensityRuntime) {
+            try {
+                this.crowdDensityRuntime.initialize(
+                    device,
+                    {
+                        counts: this.buffers.counts,
+                        physics: this.buffers.physics,
+                        simulation: this.buffers.simulation
+                    },
+                    {
+                        deviceGeneration: this.deviceGeneration,
+                        authoritativeEpoch: this.authoritativeEpoch
+                    }
+                );
+            } catch (error) {
+                this.crowdDensityRuntime.disable(error);
+            }
+        }
+        if (this.transientVfxRuntime) {
+            try {
+                this.transientVfxRuntime.initialize(device, format, {
+                    contactState: this.buffers.contactState,
+                    deathEvents: this.buffers.deathEvents,
+                    physics: this.buffers.physics,
+                    simulation: this.buffers.simulation,
+                    renderParams: this.buffers.renderParams,
+                    bodyCapacity: this.capacity,
+                    deathEventCapacity: this.deathEventCapacity
+                });
+            } catch (error) {
+                this.transientVfxRuntime.disable(error);
+            }
+        }
     }
 
     #uploadHostState() {
@@ -15987,32 +16190,43 @@ export class GpuCircleBodySimulation {
             );
         }
         queue.writeBuffer(this.buffers.sdf, 0, this.sdf.values);
-        queue.writeTexture(
-            { texture: this.flowTexture },
-            this.flowFieldAtlas.directions,
-            {
-                bytesPerRow: this.flowFieldAtlas.cols * 2 * FLOAT32_BYTES,
-                rowsPerImage: this.flowFieldAtlas.rows
-            },
-            {
-                width: this.flowFieldAtlas.cols,
-                height: this.flowFieldAtlas.rows,
-                depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
+        if (this.flowFieldAtlas.gpuGeneration) {
+            if (!this.flowFieldGeneration) {
+                this.flowFieldGeneration = generateGpuRouteFlowFieldTextures(
+                    this.device,
+                    this.flowFieldAtlas,
+                    this.flowTexture,
+                    this.flowIntegrationTexture
+                );
             }
-        );
-        queue.writeTexture(
-            { texture: this.flowIntegrationTexture },
-            this.flowFieldAtlas.integrationCosts,
-            {
-                bytesPerRow: this.flowFieldAtlas.cols * FLOAT32_BYTES,
-                rowsPerImage: this.flowFieldAtlas.rows
-            },
-            {
-                width: this.flowFieldAtlas.cols,
-                height: this.flowFieldAtlas.rows,
-                depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
-            }
-        );
+        } else {
+            queue.writeTexture(
+                { texture: this.flowTexture },
+                this.flowFieldAtlas.flowVectors,
+                {
+                    bytesPerRow: this.flowFieldAtlas.cols * 4 * FLOAT32_BYTES,
+                    rowsPerImage: this.flowFieldAtlas.rows
+                },
+                {
+                    width: this.flowFieldAtlas.cols,
+                    height: this.flowFieldAtlas.rows,
+                    depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
+                }
+            );
+            queue.writeTexture(
+                { texture: this.flowIntegrationTexture },
+                this.flowFieldAtlas.integrationCosts,
+                {
+                    bytesPerRow: this.flowFieldAtlas.cols * FLOAT32_BYTES,
+                    rowsPerImage: this.flowFieldAtlas.rows
+                },
+                {
+                    width: this.flowFieldAtlas.cols,
+                    height: this.flowFieldAtlas.rows,
+                    depthOrArrayLayers: Math.max(1, this.flowFieldAtlas.fieldCount)
+                }
+            );
+        }
         this.dispatchIndirectArgs[0] = Math.ceil(bodyCount / BODY_WORKGROUP_SIZE);
         this.dispatchIndirectArgs[1] = 1;
         this.dispatchIndirectArgs[2] = 1;
@@ -16336,8 +16550,21 @@ export class GpuCircleBodySimulation {
         pass.setBindGroup(0, this.bindGroups.projectileCaptureRelease);
     }
 
+    #requireFlowTextureStorageUsage(textureUsage) {
+        if (!this.flowFieldAtlas.gpuGeneration) {
+            return 0;
+        }
+        const storageBinding = Number(textureUsage.STORAGE_BINDING);
+        if (!Number.isSafeInteger(storageBinding) || storageBinding <= 0) {
+            throw new Error('GPU flow-field 생성에는 GPUTextureUsage.STORAGE_BINDING이 필요합니다.');
+        }
+        return storageBinding;
+    }
+
     #releaseGpuResources() {
         this.idleReleasePending = false;
+        this.crowdDensityRuntime?.retire('simulation-resource-retired');
+        this.transientVfxRuntime?.retire();
         this.overflowReadbackLease++;
         this.#cancelEventReadbacks();
         this.spawnProgramReadbackLease++;
@@ -16479,9 +16706,15 @@ export class GpuCircleBodySimulation {
         } catch {
             // already lost/destroyed texture needs no further recovery here
         }
+        try {
+            this.flowFieldGeneration?.destroy?.();
+        } catch {
+            // already lost/destroyed generator buffers need no further recovery here
+        }
         this.buffers = null;
         this.flowTexture = null;
         this.flowIntegrationTexture = null;
+        this.flowFieldGeneration = null;
         this.bindGroups = null;
         this.pipelines = null;
         this.device = null;
