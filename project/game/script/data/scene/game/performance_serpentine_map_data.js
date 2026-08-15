@@ -1,19 +1,6 @@
-import {
-    ENEMY_ROUTE_GRAPH_NODE_KIND,
-    ENEMY_ROUTE_GRAPH_NO_OPEN_ROUTE_POLICY,
-    ENEMY_ROUTE_GRAPH_ROUTE_SELECTION_POLICY,
-    ENEMY_ROUTE_GRAPH_SWITCH_SELECTION_POLICY,
-    ENEMY_ROUTE_GRAPH_VERSION,
-    normalizeEnemyRouteGraph
-} from 'ingame/contract/enemy_route_closure_contract.js';
-
 export const PERFORMANCE_SERPENTINE_MAP_ID = 'performance_serpentine_02';
 export const PERFORMANCE_SERPENTINE_GATE_ID = 'performance-west-gate';
 export const PERFORMANCE_SERPENTINE_PATH_ID = 'performance-serpentine-core';
-export const PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID
-    = 'performance-serpentine-core-fallback';
-export const PERFORMANCE_SERPENTINE_ROUTE_SET_ID
-    = 'performance-serpentine-route-set';
 export const PERFORMANCE_SERPENTINE_MACRO_ROWS = 17;
 export const PERFORMANCE_SERPENTINE_MACRO_COLUMNS = 12;
 export const PERFORMANCE_SERPENTINE_PATH_WIDTH_TILES = 10;
@@ -87,139 +74,9 @@ const PERFORMANCE_SERPENTINE_ROUTE = Object.freeze({
     pathId: PERFORMANCE_SERPENTINE_PATH_ID,
     macroCells: PERFORMANCE_SERPENTINE_MACRO_CELLS
 });
-const PERFORMANCE_SERPENTINE_FALLBACK_ROUTE = Object.freeze({
-    gateId: 'performance-west-fallback-gate',
-    pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-    macroCells: PERFORMANCE_SERPENTINE_MACRO_CELLS
-});
 const PERFORMANCE_SERPENTINE_ROUTES = Object.freeze([
-    PERFORMANCE_SERPENTINE_ROUTE,
-    PERFORMANCE_SERPENTINE_FALLBACK_ROUTE
+    PERFORMANCE_SERPENTINE_ROUTE
 ]);
-const PERFORMANCE_SERPENTINE_ROUTE_GRAPH = normalizeEnemyRouteGraph({
-    version: ENEMY_ROUTE_GRAPH_VERSION,
-    routeSets: [{
-        id: PERFORMANCE_SERPENTINE_ROUTE_SET_ID,
-        candidates: [
-            { pathId: PERFORMANCE_SERPENTINE_PATH_ID, priority: 0 },
-            { pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID, priority: 1 }
-        ],
-        selectionPolicyId:
-            ENEMY_ROUTE_GRAPH_ROUTE_SELECTION_POLICY
-                .LOWEST_OPEN_PRIORITY_THEN_PATH_ID,
-        noOpenRoutePolicyId:
-            ENEMY_ROUTE_GRAPH_NO_OPEN_ROUTE_POLICY.HOLD_AT_ENTRY
-    }],
-    nodes: [
-        {
-            id: 'performance-entry',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.ENTRANCE,
-            memberships: [
-                { pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                    waypointIndex: 0, progressOrdinal: 0 },
-                { pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                    waypointIndex: 0, progressOrdinal: 0 }
-            ]
-        },
-        {
-            id: 'performance-switch',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.SWITCH,
-            memberships: [
-                { pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                    waypointIndex: 1, progressOrdinal: 1 },
-                { pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                    waypointIndex: 1, progressOrdinal: 1 }
-            ]
-        },
-        {
-            id: 'performance-primary-clearance',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.CLEARANCE,
-            memberships: [{ pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                waypointIndex: 2, progressOrdinal: 2 }]
-        },
-        {
-            id: 'performance-primary-closure',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.CLOSURE_ENTRANCE,
-            memberships: [{ pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                waypointIndex: 3, progressOrdinal: 3 }]
-        },
-        {
-            id: 'performance-fallback-clearance',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.CLEARANCE,
-            memberships: [{ pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                waypointIndex: 2, progressOrdinal: 2 }]
-        },
-        {
-            id: 'performance-fallback-closure',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.CLOSURE_ENTRANCE,
-            memberships: [{ pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                waypointIndex: 3, progressOrdinal: 3 }]
-        },
-        {
-            id: 'performance-merge',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.MERGE,
-            memberships: [
-                { pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                    waypointIndex: 4, progressOrdinal: 4 },
-                { pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                    waypointIndex: 4, progressOrdinal: 4 }
-            ]
-        },
-        {
-            id: 'performance-core',
-            kind: ENEMY_ROUTE_GRAPH_NODE_KIND.CORE,
-            memberships: [
-                { pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                    waypointIndex: 115, progressOrdinal: 115 },
-                { pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                    waypointIndex: 115, progressOrdinal: 115 }
-            ]
-        }
-    ],
-    switches: [{
-        id: 'performance-forward-switch',
-        nodeId: 'performance-switch',
-        selectionPolicyId:
-            ENEMY_ROUTE_GRAPH_SWITCH_SELECTION_POLICY
-                .OPEN_FORWARD_LOWEST_PRIORITY_PATH_ID,
-        transitions: [
-            {
-                fromPathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                toPathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                targetWaypointIndex: 2,
-                priority: 1
-            },
-            {
-                fromPathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-                toPathId: PERFORMANCE_SERPENTINE_PATH_ID,
-                targetWaypointIndex: 2,
-                priority: 0
-            }
-        ]
-    }],
-    closures: [
-        {
-            id: 'performance-primary-cork',
-            pathId: PERFORMANCE_SERPENTINE_PATH_ID,
-            entranceNodeId: 'performance-primary-closure',
-            clearanceNodeId: 'performance-primary-clearance',
-            upstreamSwitchNodeId: 'performance-switch',
-            downstreamMergeNodeId: 'performance-merge',
-            priority: 0
-        },
-        {
-            id: 'performance-fallback-cork',
-            pathId: PERFORMANCE_SERPENTINE_FALLBACK_PATH_ID,
-            entranceNodeId: 'performance-fallback-closure',
-            clearanceNodeId: 'performance-fallback-clearance',
-            upstreamSwitchNodeId: 'performance-switch',
-            downstreamMergeNodeId: 'performance-merge',
-            priority: 1
-        }
-    ]
-}, {
-    routes: PERFORMANCE_SERPENTINE_ROUTES
-}, 'PERFORMANCE_SERPENTINE_MAP_DATA.routeGraph');
 
 /** 실제 10,000-body 성능 검증을 위한 두 번째 production map입니다. */
 export const PERFORMANCE_SERPENTINE_MAP_DATA = Object.freeze({
@@ -231,12 +88,10 @@ export const PERFORMANCE_SERPENTINE_MAP_DATA = Object.freeze({
     pathWidthTiles: PERFORMANCE_SERPENTINE_PATH_WIDTH_TILES,
     flowTransitionRadiusTiles:
         PERFORMANCE_SERPENTINE_FLOW_TRANSITION_RADIUS_TILES,
-    routeClosurePhysicalBlocking: false,
     directionBlueprint: DIRECTION_BLUEPRINT,
     previewTiles: PREVIEW_TILES,
     enemyModifiers: IDENTITY_ENEMY_MODIFIERS,
     coreMacroCell: Object.freeze([16, 11]),
     towerSpawnMacroCell: Object.freeze([16, 10]),
-    enemySpawnRoutes: PERFORMANCE_SERPENTINE_ROUTES,
-    routeGraph: PERFORMANCE_SERPENTINE_ROUTE_GRAPH
+    enemySpawnRoutes: PERFORMANCE_SERPENTINE_ROUTES
 });

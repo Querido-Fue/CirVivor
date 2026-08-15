@@ -158,12 +158,6 @@ export class WaveDirector {
             }
         });
         this.schedule = Object.freeze(schedule.map((entry) => {
-            if (entry.definition.routeClosureProfileId !== null
-                && entry.routeSetId === null) {
-                throw new RangeError(
-                    'route-closure Enemy spawn은 exact routeSet binding이 필요합니다.'
-                );
-            }
             return Object.freeze({
                 ...entry,
                 mapEnemyModifiers,

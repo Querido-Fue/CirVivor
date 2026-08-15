@@ -26,10 +26,10 @@ export const BASIC_CORK_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask(
     'BASIC_CORK_ENEMY_CAPABILITY_IDS'
 );
 
-/** Turn 8 Z는 helper body가 없는 단일 logical circle enemy입니다. */
+/** Z는 helper body가 없는 단일 logical cork-stopper enemy입니다. */
 export const BASIC_CORK_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_CORK_ENEMY_DEFINITION_ID,
-    'circle',
+    'cork',
     {
         behaviorProfileId: CORK_ROUTE_CLOSURE_BEHAVIOR_PROFILE_ID,
         routeClosureProfileId: CORK_ROUTE_CLOSURE_PROFILE_ID,

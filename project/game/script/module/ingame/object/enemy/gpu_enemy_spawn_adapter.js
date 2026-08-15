@@ -149,7 +149,8 @@ const GPU_ENEMY_RENDER_SHAPE_CODE_BY_TYPE = Object.freeze({
     rhom: GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM,
     octa: GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA,
     ring: GPU_CIRCLE_BODY_RENDER_SHAPE.RING,
-    jorang: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
+    jorang: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG,
+    cork: GPU_CIRCLE_BODY_RENDER_SHAPE.CORK
 });
 const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -296,7 +297,7 @@ function assertRouteClosureCapabilityDefinition(definition) {
             !== GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE.CORK_SINGLE_LOGICAL_CIRCLE
         || profile.expandedRadiusTiles * 2 !== profile.blockerDiameterTiles
         || profile.expansionDurationFixedTicks !== 60
-        || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE) {
+        || shapeCode !== GPU_CIRCLE_BODY_RENDER_SHAPE.CORK) {
         throw new RangeError(
             'enemy-route-closure capability에는 exact single-circle Cork profile이 필요합니다.'
         );
@@ -1193,9 +1194,6 @@ export function createGpuEnemySpawnIntent(options) {
     if ((routeSetId === null) !== (routeGraphContentKey === null)) {
         throw new TypeError('routeSetId/routeGraphContentKey는 함께 있거나 함께 null이어야 합니다.');
     }
-    if (hasRouteClosure && routeSetId === null) {
-        throw new TypeError('Cork route-closure spawn에는 dynamic routeSet snapshot이 필요합니다.');
-    }
     if (hasEffectEmitter
         && (!effectEmitterProfile
             || !effectDefinition
@@ -1347,7 +1345,10 @@ export function createGpuEnemySpawnIntent(options) {
  * 물질화합니다. Raw/public intent가 self identity, phase, lease를 선점하지 못하게
  * 별도 privileged lifecycle seam으로 유지합니다.
  */
-export function materializeNaturalCorkRouteClosureActivation(intent, handle) {
+export function materializeNaturalCorkRouteClosureActivation(
+    intent,
+    handle
+) {
     if (!intent || typeof intent !== 'object' || Array.isArray(intent)
         || Object.prototype.hasOwnProperty.call(intent, 'routeRuntimeState')) {
         throw new TypeError(
@@ -1367,19 +1368,22 @@ export function materializeNaturalCorkRouteClosureActivation(intent, handle) {
         || normalized.routeClosureProfileCode
             !== GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE.CORK_SINGLE_LOGICAL_CIRCLE
         || profile?.id !== CORK_ROUTE_CLOSURE_PROFILE_ID
-        || normalized.routeSetId === null
-        || normalized.routeGraphContentKey === null
+        || (normalized.routeSetId === null)
+            !== (normalized.routeGraphContentKey === null)
         || normalized.routeAvailabilityVersion <= 0
         || normalized.routeAvailabilityVersion === 0xffffffff) {
         throw new RangeError(
             'activation helper는 exact natural Cork route snapshot intent만 허용합니다.'
         );
     }
+    // 갈림길 graph가 없는 맵의 Cork는 외형과 전투 능력만 유지하고,
+    // route runtime state를 만들지 않는 완전한 normal enemy입니다.
+    if (normalized.routeSetId === null) return normalized;
     return Object.freeze({
         ...normalized,
         routeRuntimeState: Object.freeze({
             role: GPU_ROUTE_RUNTIME_ROLE.CLOSER,
-            phase: GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE,
+            phase: GPU_ROUTE_RUNTIME_PHASE.TRAVEL,
             selfEntityId: exactHandle.entityId,
             selfIncarnation: exactHandle.incarnation,
             currentPathIndex: 0xffffffff,

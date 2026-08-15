@@ -10,6 +10,12 @@ const {
     CORK_DUAL_ROUTE_MAP_DATA
 } = await loadGameModule('data/scene/game/cork_dual_route_map_data.js');
 const {
+    R2_ENEMY_SHOWCASE_MAP_DATA
+} = await loadGameModule('data/scene/game/r2_enemy_showcase_map_data.js');
+const {
+    BASIC_CORK_ENEMY_DATA
+} = await loadGameModule('data/object/enemy/basic_cork_enemy_data.js');
+const {
     GPU_EFFECT_RUNTIME_COMPUTE_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_shaders.js');
 const {
@@ -21,7 +27,12 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_route_runtime_shaders.js');
 const { TileMap } = await loadGameModule('ingame/map/tile_map.js');
 const {
-    createRouteFlowFieldAtlas
+    createGpuEnemySpawnIntent,
+    materializeNaturalCorkRouteClosureActivation
+} = await loadGameModule('ingame/object/enemy/gpu_enemy_spawn_adapter.js');
+const {
+    createRouteFlowFieldAtlas,
+    createRouteFlowFieldRebuildAtlas
 } = await loadGameModule('ingame/navigation/route_flow_field_atlas.js');
 
 test('성능 map은 하나의 coarse route field로 10-wide lane과 stage 순서를 함께 보존한다', () => {
@@ -112,37 +123,57 @@ test('성능 map은 하나의 coarse route field로 10-wide lane과 stage 순서
     }
 });
 
-test('단일 물리 corridor의 Cork는 route만 닫고 GPU 충돌 벽은 만들지 않는다', () => {
+test('단일 물리 corridor는 route graph가 없고 Cork를 normal enemy로 유지한다', () => {
     const map = new TileMap(PERFORMANCE_SERPENTINE_MAP_DATA);
     const atlas = createRouteFlowFieldAtlas(map);
-    assert.ok(atlas.routeGraph.closures.length > 0);
-    assert.ok(atlas.routeGraph.closures.every(
-        (closure) => closure.physicalBlocking === false
-    ));
-
     const topology = createGpuRouteRuntimeTopology(atlas);
-    const words = new Uint32Array(topology.buffer);
-    const closureOffsetIndex
-        = GPU_ROUTE_RUNTIME_ABI.TOPOLOGY_HEADER.CLOSURE_OFFSET_WORDS
-            / Uint32Array.BYTES_PER_ELEMENT;
-    const closureOffset = words[closureOffsetIndex];
-    for (let closureIndex = 0;
-        closureIndex < atlas.routeGraph.closures.length;
-        closureIndex++) {
-        const physicalBlocking = words[
-            closureOffset
-                + closureIndex * GPU_ROUTE_RUNTIME_ABI.CLOSURE.STRIDE_WORDS
-                + 13
-        ];
-        assert.equal(physicalBlocking, 0);
-    }
+    assert.equal(atlas.routeGraph, null);
+    assert.equal(topology.enabled, false);
+    assert.equal(topology.graph ?? null, null);
+    const singleRouteCorkIntent = createGpuEnemySpawnIntent({
+        definition: BASIC_CORK_ENEMY_DATA,
+        route: map.getSpawnRoutes()[0],
+        spawnSequence: 0
+    });
+    const singleRouteCorkActivation
+        = materializeNaturalCorkRouteClosureActivation(
+            singleRouteCorkIntent,
+            Object.freeze({ entityId: 1, incarnation: 1 })
+        );
+    assert.equal(singleRouteCorkIntent.routeSetId, null);
+    assert.equal(singleRouteCorkIntent.routeGraphContentKey, null);
+    assert.equal(
+        Object.prototype.hasOwnProperty.call(
+            singleRouteCorkActivation,
+            'routeRuntimeState'
+        ),
+        false,
+        '단일 경로 Cork는 RouteRuntime 역할 없이 normal enemy여야 합니다.'
+    );
 
     const dualRouteAtlas = createRouteFlowFieldAtlas(
         new TileMap(CORK_DUAL_ROUTE_MAP_DATA)
     );
     const dualRouteTopology = createGpuRouteRuntimeTopology(dualRouteAtlas);
     const dualRouteWords = new Uint32Array(dualRouteTopology.buffer);
+    const closureOffsetIndex
+        = GPU_ROUTE_RUNTIME_ABI.TOPOLOGY_HEADER.CLOSURE_OFFSET_WORDS
+            / Uint32Array.BYTES_PER_ELEMENT;
     const dualRouteClosureOffset = dualRouteWords[closureOffsetIndex];
+    const routeSetOffsetIndex
+        = GPU_ROUTE_RUNTIME_ABI.TOPOLOGY_HEADER.ROUTE_SET_OFFSET_WORDS
+            / Uint32Array.BYTES_PER_ELEMENT;
+    const dualRouteSetOffset = dualRouteWords[routeSetOffsetIndex];
+    const canonicalPath = dualRouteAtlas.routeGraph.paths[
+        dualRouteAtlas.routeGraph.routeCandidates[0].pathIndex
+    ];
+    assert.equal(
+        dualRouteWords[
+            dualRouteSetOffset
+                + GPU_ROUTE_RUNTIME_ABI.ROUTE_SET.CORE_FLOW_FIELD_WORD_OFFSET
+        ],
+        canonicalPath.firstFieldIndex + canonicalPath.fieldCount - 1
+    );
     assert.ok(dualRouteAtlas.routeGraph.closures.every(
         (closure) => closure.physicalBlocking === true
     ));
@@ -159,9 +190,74 @@ test('단일 물리 corridor의 Cork는 route만 닫고 GPU 충돌 벽은 만들
         );
     }
 
+    const blockedRebuild = createRouteFlowFieldRebuildAtlas(
+        dualRouteAtlas,
+        [0]
+    );
+    const blockedCell = dualRouteAtlas.gpuGeneration
+        .closureBlockCellIndices[0];
+    const routeSetIndex = dualRouteAtlas.gpuGeneration
+        .closureRouteSetIndices[0];
+    for (let layerIndex = 0;
+        layerIndex < dualRouteAtlas.sourceLayerCount;
+        layerIndex++) {
+        if (dualRouteAtlas.gpuGeneration.sourceLayerRouteSetIndices[layerIndex]
+            === routeSetIndex) {
+            assert.equal(
+                blockedRebuild.gpuGeneration.blockedLayers[
+                    (layerIndex * dualRouteAtlas.size) + blockedCell
+                ],
+                1
+            );
+        }
+    }
+
+    const showcaseAtlas = createRouteFlowFieldAtlas(
+        new TileMap(R2_ENEMY_SHOWCASE_MAP_DATA)
+    );
+    const showcaseGeneration = showcaseAtlas.gpuGeneration;
+    const showcaseBlockedCell
+        = showcaseGeneration.closureBlockCellIndices[0];
+    const showcaseRouteSetIndex
+        = showcaseGeneration.closureRouteSetIndices[0];
+    assert.ok(showcaseGeneration.goalCellIndices.some(
+        (goalCellIndex, layerIndex) => (
+            showcaseGeneration.sourceLayerRouteSetIndices[layerIndex]
+                === showcaseRouteSetIndex
+            && goalCellIndex === showcaseBlockedCell
+        )
+    ), 'showcase fixture는 closure cell 자체가 stage goal인 경우를 포함해야 합니다.');
+    const showcaseBlockedRebuild = createRouteFlowFieldRebuildAtlas(
+        showcaseAtlas,
+        [0]
+    );
+    const showcaseCoreGoal
+        = showcaseGeneration.routeSetCoreGoalCellIndices[
+            showcaseRouteSetIndex
+        ];
+    for (let layerIndex = 0;
+        layerIndex < showcaseAtlas.sourceLayerCount;
+        layerIndex++) {
+        if (showcaseGeneration.sourceLayerRouteSetIndices[layerIndex]
+            !== showcaseRouteSetIndex) {
+            continue;
+        }
+        assert.equal(
+            showcaseBlockedRebuild.gpuGeneration.goalCellIndices[layerIndex],
+            showcaseCoreGoal
+        );
+        assert.notEqual(showcaseCoreGoal, showcaseBlockedCell);
+        assert.equal(
+            showcaseBlockedRebuild.gpuGeneration.blockedLayers[
+                (layerIndex * showcaseAtlas.size) + showcaseBlockedCell
+            ],
+            1
+        );
+    }
+
     assert.match(
         GPU_ROUTE_RUNTIME_WGSL,
-        /fn closure_physically_blocks\(closure_index: u32\) -> bool \{[\s\S]*?closure_base\(closure_index\) \+ 13u[\s\S]*?!= 0u;/u
+        /fn closure_physically_blocks\(closure_index: u32\) -> bool \{[\s\S]*?flow_ready_availability_version[\s\S]*?changed_availability_version;/u
     );
     assert.match(
         GPU_ROUTE_RUNTIME_WGSL,
@@ -171,22 +267,13 @@ test('단일 물리 corridor의 Cork는 route만 닫고 GPU 충돌 벽은 만들
         GPU_ROUTE_RUNTIME_WGSL,
         /if \(closure_physically_blocks\(action\.closure_index\)\) \{[\s\S]*?make_route_blocker\(action\.body_slot\);[\s\S]*?else \{[\s\S]*?make_nonblocking_enemy\(action\.body_slot\);/u
     );
-    const actorStart = GPU_ROUTE_RUNTIME_WGSL.indexOf('if (role == ROLE_ACTOR)');
-    const closerStart = GPU_ROUTE_RUNTIME_WGSL.indexOf(
-        'if (role != ROLE_CLOSER)',
-        actorStart
-    );
-    const actorProgram = GPU_ROUTE_RUNTIME_WGSL.slice(actorStart, closerStart);
-    const nonphysicalReturn = actorProgram.indexOf(
-        'if (!closure_physically_blocks(closure_index))'
-    );
-    const clearanceWait = actorProgram.indexOf(
-        'let clearance_progress = topology.values[closure + 8u]'
-    );
-    assert.ok(nonphysicalReturn >= 0 && nonphysicalReturn < clearanceWait);
     assert.match(
-        actorProgram.slice(nonphysicalReturn, clearanceWait),
-        /observed_availability_version[\s\S]*?return;/u
+        GPU_ROUTE_RUNTIME_WGSL,
+        /open_candidate_count <= 1u[\s\S]*?ACTION_CLEANED[\s\S]*?pack_meta\(ROLE_NORMALIZED, PHASE_NONE, 0u\)/u
+    );
+    assert.match(
+        GPU_ROUTE_RUNTIME_WGSL,
+        /route_set_requires_core_flow[\s\S]*?route_set_core_flow_field[\s\S]*?FLAG_REROUTE_PENDING/u
     );
 });
 

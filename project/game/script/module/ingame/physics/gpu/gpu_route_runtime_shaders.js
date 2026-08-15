@@ -48,6 +48,7 @@ const BODY_LAYER_ROUTE_BLOCKER: u32 = ${w(GPU_CIRCLE_BODY_LAYER.ROUTE_BLOCKER)};
 const ROLE_NONE: u32 = ${w(GPU_ROUTE_RUNTIME_ROLE.NONE)};
 const ROLE_ACTOR: u32 = ${w(GPU_ROUTE_RUNTIME_ROLE.ACTOR)};
 const ROLE_CLOSER: u32 = ${w(GPU_ROUTE_RUNTIME_ROLE.CLOSER)};
+const ROLE_NORMALIZED: u32 = ${w(GPU_ROUTE_RUNTIME_ROLE.NORMALIZED)};
 const PHASE_NONE: u32 = ${w(GPU_ROUTE_RUNTIME_PHASE.NONE)};
 const PHASE_SELECT_ROUTE: u32 = ${w(GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE)};
 const PHASE_TRAVEL: u32 = ${w(GPU_ROUTE_RUNTIME_PHASE.TRAVEL)};
@@ -115,6 +116,7 @@ const TOPOLOGY_TRANSITION_OFFSET: u32 = 15u;
 const TOPOLOGY_CLOSURE_OFFSET: u32 = 16u;
 const PATH_STRIDE: u32 = 8u;
 const ROUTE_SET_STRIDE: u32 = 4u;
+const ROUTE_SET_CORE_FLOW_FIELD: u32 = 3u;
 const CANDIDATE_STRIDE: u32 = 4u;
 const FIELD_STRIDE: u32 = 12u;
 const SWITCH_STRIDE: u32 = 4u;
@@ -182,7 +184,7 @@ struct RouteAvailabilityRecord {
     owner_incarnation: u32,
     lease_generation: u32,
     changed_at_fixed_tick: u32,
-    reserved_0: u32,
+    changed_availability_version: u32,
     reserved_1: u32,
 }
 
@@ -201,7 +203,7 @@ struct RouteAvailabilityBuffer {
     next_lease_generation: u32,
     last_event_base: u32,
     last_event_count: u32,
-    reserved_0: u32,
+    flow_ready_availability_version: u32,
     reserved_1: u32,
     records: array<RouteAvailabilityRecord>,
 }
@@ -363,7 +365,9 @@ fn closure_position(closure_index: u32) -> vec2f {
     );
 }
 fn closure_physically_blocks(closure_index: u32) -> bool {
-    return topology.values[closure_base(closure_index) + 13u] != 0u;
+    return topology.values[closure_base(closure_index) + 13u] != 0u
+        && availability.flow_ready_availability_version
+            >= availability.records[closure_index].changed_availability_version;
 }
 fn field_position(field_index: u32) -> vec2f {
     let base = field_base(field_index);
@@ -407,6 +411,37 @@ fn choose_actor_path(route_set_index: u32) -> u32 {
         }
     }
     return selected;
+}
+fn route_set_requires_core_flow(route_set_index: u32, route_flags: u32) -> bool {
+    if (route_set_index >= topology.values[TOPOLOGY_ROUTE_SET_COUNT]) {
+        return false;
+    }
+    if ((route_flags & FLAG_REROUTE_PENDING) != 0u) { return true; }
+    let base = route_set_base(route_set_index);
+    let first = topology.values[base + 1u];
+    let count = topology.values[base + 2u];
+    for (var index = first; index < first + count; index++) {
+        let path_index = topology.values[candidate_base(index)];
+        let closure_index = path_closure(path_index);
+        if (closure_index == INVALID
+            || topology.values[closure_base(closure_index) + 13u] == 0u) {
+            continue;
+        }
+        let record = availability.records[closure_index];
+        if ((record.state == AVAILABILITY_CLOSED
+                && closure_physically_blocks(closure_index))
+            || (record.state == AVAILABILITY_OPEN
+                && record.changed_availability_version
+                    > availability.flow_ready_availability_version)) {
+            return true;
+        }
+    }
+    return false;
+}
+fn route_set_core_flow_field(route_set_index: u32) -> u32 {
+    return topology.values[
+        route_set_base(route_set_index) + ROUTE_SET_CORE_FLOW_FIELD
+    ];
 }
 fn first_path_field(path_index: u32) -> u32 {
     return topology.values[path_base(path_index) + 1u];
@@ -585,64 +620,42 @@ fn advance_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                 flags_of((*state).packed_meta) & ~FLAG_DEFERRED_FLOW_RESUME
             );
         }
-        if (phase != PHASE_TRAVEL || closure_index == INVALID
-            || availability.records[closure_index].state != AVAILABILITY_CLOSED) {
-            (*state).observed_availability_version = availability.availability_version;
-            return;
-        }
-        if (!closure_physically_blocks(closure_index)) {
-            // Logical aliases over one physical corridor may steer future spawns to
-            // another path ID, but must never reroute or park live actors in place.
-            (*state).observed_availability_version = availability.availability_version;
-            return;
-        }
-        let field_index = simulations.values[body_slot].flow_field_index;
-        if (field_index >= topology.values[TOPOLOGY_FIELD_COUNT]) { return; }
-        let field = field_base(field_index);
-        let progress = topology.values[field + 2u];
-        let switch_index = topology.values[field + 4u];
-        let closure = closure_base(closure_index);
-        let upstream_progress = topology.values[closure + 9u];
-        let clearance_progress = topology.values[closure + 8u];
-        let entrance_progress = topology.values[closure + 7u];
-        if (progress <= upstream_progress) {
+        if (phase == PHASE_TRAVEL
+            && route_set_requires_core_flow(
+                (*state).route_set_index,
+                flags_of((*state).packed_meta)
+            )) {
+            // 폐쇄 field 공개 뒤 또는 reopen 공개 대기 중인 actor는 route-set의
+            // canonical Core field에 고정됩니다. 따라서 self-intersection stage의
+            // 이전 goal로 되돌아가지 않고 같은 field index에서 새 texture를 받습니다.
+            simulations.values[body_slot].flow_field_index
+                = route_set_core_flow_field((*state).route_set_index);
+            (*state).pending_field_index = INVALID;
             set_route_flags(
                 state,
-                flags_of((*state).packed_meta) | FLAG_REROUTE_PENDING
+                (flags_of((*state).packed_meta) | FLAG_REROUTE_PENDING)
+                    & ~FLAG_WAITING_CLEARANCE
             );
-            if (switch_index != INVALID && at_field_goal(body_slot, field_index)) {
-                let selected = choose_open_transition(path_index, switch_index);
-                if (selected.x != INVALID) {
-                    set_actor_path(body_slot, selected.x, selected.y);
-                }
-            }
-            return;
         }
-        if (progress < entrance_progress) {
-            let clearance_field = topology.values[closure + 3u];
-            (*state).pending_field_index = clearance_field;
-            simulations.values[body_slot].flow_field_index = clearance_field;
-            set_route_flags(
-                state,
-                flags_of((*state).packed_meta) | FLAG_WAITING_CLEARANCE
-            );
-            if (progress >= clearance_progress && at_field_goal(body_slot, clearance_field)) {
-                enter_route_owned_wait(body_slot, state, clearance_field);
-            }
-        } else if (progress == entrance_progress) {
-            // Exact entrance is already inside the clearance→entrance segment:
-            // never reverse; route-owned wait keeps the current entrance field.
-            set_route_flags(
-                state,
-                flags_of((*state).packed_meta) | FLAG_WAITING_CLEARANCE
-            );
-            enter_route_owned_wait(body_slot, state, field_index);
-        }
+        (*state).observed_availability_version = availability.availability_version;
         return;
     }
     if (role != ROLE_CLOSER) { return; }
     if (phase == PHASE_TRAVEL) {
         let closure_index = (*state).closure_index;
+        // Cork는 spawn 시점에 갈림길을 고르지 않습니다. 현재 route의 flow field를
+        // normal enemy처럼 따라가다가 실제 switch goal에 도착한 순간만 요청합니다.
+        if (closure_index == INVALID) {
+            let field_index = simulations.values[body_slot].flow_field_index;
+            if (field_index >= topology.values[TOPOLOGY_FIELD_COUNT]) { return; }
+            let switch_index = topology.values[field_base(field_index) + 4u];
+            if (switch_index != INVALID && at_field_goal(body_slot, field_index)) {
+                (*state).pending_field_index = field_index;
+                (*state).phase_entered_fixed_tick = params.fixed_tick;
+                set_phase(state, PHASE_SELECT_ROUTE);
+            }
+            return;
+        }
         if (closure_index >= availability.closure_count) { return; }
         let record = availability.records[closure_index];
         if (record.state != AVAILABILITY_LEASED
@@ -861,56 +874,20 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
         virtual_lease[closure_index] = 0u;
     }
 
-    var closer_count = 0u;
-    var closer_slots: array<u32, 8>;
-    for (var body_slot = 0u; body_slot < counts.body_count; body_slot++) {
-        let state = route_states.values[body_slot];
-        if (role_of(state.packed_meta) == ROLE_CLOSER
-            && state.self_entity_id == simulations.values[body_slot].entity_id
-            && state.self_incarnation == simulations.values[body_slot].incarnation
-            && is_alive(body_slot)) {
-            if (closer_count >= MAX_CLOSERS) {
-                failure |= STATUS_CLOSER_CAPACITY;
-                break;
-            }
-            closer_slots[closer_count] = body_slot;
-            closer_count++;
-        }
-    }
-    for (var index = 1u; index < closer_count; index++) {
-        let key = closer_slots[index];
-        var cursor = index;
-        loop {
-            if (cursor == 0u) { break; }
-            let previous = closer_slots[cursor - 1u];
-            let key_entity = simulations.values[key].entity_id;
-            let key_incarnation = simulations.values[key].incarnation;
-            let previous_entity = simulations.values[previous].entity_id;
-            let previous_incarnation = simulations.values[previous].incarnation;
-            if (previous_entity < key_entity
-                || (previous_entity == key_entity
-                    && previous_incarnation <= key_incarnation)) { break; }
-            closer_slots[cursor] = previous;
-            cursor--;
-        }
-        closer_slots[cursor] = key;
-    }
-
     for (var closure_index = 0u;
         closure_index < closure_count && failure == 0u;
         closure_index++) {
         if (virtual_state[closure_index] == AVAILABILITY_OPEN) { continue; }
         var exact_alive = false;
-        for (var closer_index = 0u; closer_index < closer_count; closer_index++) {
-            let body_slot = closer_slots[closer_index];
+        let body_slot = virtual_owner_slot[closure_index];
+        if (body_slot < counts.body_count && is_alive(body_slot)) {
             let state = route_states.values[body_slot];
-            if (state.self_entity_id == virtual_owner_entity[closure_index]
+            if (role_of(state.packed_meta) == ROLE_CLOSER
+                && state.self_entity_id == virtual_owner_entity[closure_index]
                 && state.self_incarnation == virtual_owner_incarnation[closure_index]
                 && state.closure_index == closure_index
                 && state.lease_generation == virtual_lease[closure_index]) {
                 exact_alive = true;
-                virtual_owner_slot[closure_index] = body_slot;
-                break;
             }
         }
         if (!exact_alive) {
@@ -934,12 +911,17 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
     }
 
     if (params.terminal_final_submit == 0u) {
-        for (var closer_index = 0u;
-            closer_index < closer_count && failure == 0u;
-            closer_index++) {
-            let body_slot = closer_slots[closer_index];
+        for (var body_slot = 0u;
+            body_slot < counts.body_count && failure == 0u;
+            body_slot++) {
+            if (!is_alive(body_slot)) { continue; }
             let state = route_states.values[body_slot];
-            if (phase_of(state.packed_meta) != PHASE_READY_TO_CLOSE) { continue; }
+            if (role_of(state.packed_meta) != ROLE_CLOSER
+                || phase_of(state.packed_meta) != PHASE_READY_TO_CLOSE
+                || state.self_entity_id != simulations.values[body_slot].entity_id
+                || state.self_incarnation != simulations.values[body_slot].incarnation) {
+                continue;
+            }
             let closure_index = state.closure_index;
             if (closure_index >= closure_count
                 || virtual_state[closure_index] != AVAILABILITY_LEASED
@@ -969,12 +951,29 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
     }
 
     if (params.terminal_final_submit == 0u) {
-        for (var closer_index = 0u;
-            closer_index < closer_count && failure == 0u;
-            closer_index++) {
-            let body_slot = closer_slots[closer_index];
+        var active_lease_count = 0u;
+        for (var closure_index = 0u; closure_index < closure_count; closure_index++) {
+            if (virtual_lease[closure_index] != 0u) {
+                active_lease_count++;
+            }
+        }
+        if (active_lease_count > MAX_CLOSERS) {
+            failure |= STATUS_CLOSER_CAPACITY;
+        }
+        // Prospective Cork 수는 body capacity까지만 제한됩니다. 실제 차단 lease만
+        // MAX_CLOSERS로 제한하고, 갈림길에 먼저 도착한 순서대로 한 틱에 처리 가능한
+        // action만 처리합니다. 나머지는 SELECT 상태로 다음 틱을 기다립니다.
+        for (var body_slot = 0u;
+            body_slot < counts.body_count && failure == 0u;
+            body_slot++) {
+            if (!is_alive(body_slot)) { continue; }
             let state = route_states.values[body_slot];
-            if (phase_of(state.packed_meta) != PHASE_SELECT_ROUTE) { continue; }
+            if (role_of(state.packed_meta) != ROLE_CLOSER
+                || phase_of(state.packed_meta) != PHASE_SELECT_ROUTE
+                || state.self_entity_id != simulations.values[body_slot].entity_id
+                || state.self_incarnation != simulations.values[body_slot].incarnation) {
+                continue;
+            }
             if (state.route_set_index >= topology.values[TOPOLOGY_ROUTE_SET_COUNT]) {
                 failure |= STATUS_RECORD_INVALID;
                 break;
@@ -982,9 +981,23 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             let route_set = route_set_base(state.route_set_index);
             let first = topology.values[route_set + 1u];
             let count = topology.values[route_set + 2u];
+            let encountered_field = state.pending_field_index;
+            if (encountered_field >= topology.values[TOPOLOGY_FIELD_COUNT]) {
+                failure |= STATUS_RECORD_INVALID;
+                break;
+            }
+            let encountered_switch
+                = topology.values[field_base(encountered_field) + 4u];
+            if (encountered_switch >= topology.values[TOPOLOGY_SWITCH_COUNT]) {
+                failure |= STATUS_RECORD_INVALID;
+                break;
+            }
+            let encountered_switch_node
+                = topology.values[switch_base(encountered_switch) + 1u];
             var selected_path = INVALID;
             var selected_closure = INVALID;
             var selected_priority = INVALID;
+            var open_candidate_count = 0u;
             for (var candidate_index = first;
                 candidate_index < first + count;
                 candidate_index++) {
@@ -992,7 +1005,14 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                 let path_index = topology.values[candidate];
                 let priority = topology.values[candidate + 1u];
                 let closure_index = path_closure(path_index);
-                if (closure_index != INVALID
+                let belongs_to_encountered_switch = closure_index != INVALID
+                    && topology.values[closure_base(closure_index) + 4u]
+                        == encountered_switch_node;
+                if (belongs_to_encountered_switch
+                    && virtual_state[closure_index] == AVAILABILITY_OPEN) {
+                    open_candidate_count++;
+                }
+                if (belongs_to_encountered_switch
                     && virtual_state[closure_index] == AVAILABILITY_OPEN
                     && virtual_owner_slot[closure_index] == INVALID
                     && virtual_owner_entity[closure_index] == INVALID
@@ -1005,9 +1025,13 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                     selected_priority = priority;
                 }
             }
-            if (selected_closure == INVALID) { continue; }
-            if (version_cursor >= INT32_MAX_U32) {
-                failure |= STATUS_VERSION_EXHAUSTED;
+            // pending cleanup이 마지막 열린 record를 잠시 소유 중이면 다음 틱에 다시
+            // 판단합니다. 실제 열린/unowned 후보가 있을 때만 assignment 또는
+            // authenticated normal-fallback action을 발행합니다.
+            if (selected_closure == INVALID) {
+                continue;
+            }
+            if (action_count >= MAX_ACTIONS) {
                 break;
             }
             if (lease_cursor == 0u || lease_cursor == INVALID) {
@@ -1017,6 +1041,27 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             let assigned_lease = lease_cursor;
             lease_cursor++;
             if (lease_cursor == INVALID) { lease_cursor = 0u; }
+            // k개의 열린 길 중 최대 k-1개만 막습니다. 이미 하나만 남았거나
+            // global lease capacity가 찼으면 availability를 건드리지 않는 CLEANED
+            // proof로 이 Cork를 영구 normal enemy로 전환합니다.
+            if (open_candidate_count <= 1u
+                || active_lease_count >= MAX_CLOSERS) {
+                if (!push_action(&actions, &action_count, RouteAction(
+                    ACTION_CLEANED,
+                    body_slot,
+                    state.self_entity_id,
+                    state.self_incarnation,
+                    selected_closure,
+                    selected_path,
+                    assigned_lease,
+                    version_cursor
+                ))) { break; }
+                continue;
+            }
+            if (version_cursor >= INT32_MAX_U32) {
+                failure |= STATUS_VERSION_EXHAUSTED;
+                break;
+            }
             version_cursor++;
             if (!push_action(&actions, &action_count, RouteAction(
                 ACTION_ASSIGNED,
@@ -1033,6 +1078,7 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             virtual_owner_entity[selected_closure] = state.self_entity_id;
             virtual_owner_incarnation[selected_closure] = state.self_incarnation;
             virtual_lease[selected_closure] = assigned_lease;
+            active_lease_count++;
         }
     } else {
         for (var closure_index = 0u;
@@ -1084,12 +1130,15 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
             event_type_for_action(action.kind),
             closure_position(action.closure_index)
         );
+        availability.records[action.closure_index].changed_availability_version
+            = action.availability_version;
         if (action.body_slot < counts.body_count
             && exact_body_identity(action.body_slot, action.entity_id, action.incarnation)) {
             if (action.kind == ACTION_ASSIGNED) {
                 route_states.values[action.body_slot].current_path_index = action.path_index;
                 route_states.values[action.body_slot].closure_index = action.closure_index;
                 route_states.values[action.body_slot].lease_generation = action.lease_generation;
+                route_states.values[action.body_slot].pending_field_index = INVALID;
                 route_states.values[action.body_slot].observed_availability_version
                     = action.availability_version;
                 route_states.values[action.body_slot].phase_entered_fixed_tick
@@ -1124,6 +1173,28 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
                         & ~FLAG_BLOCKER_ACTIVE
                 );
                 set_phase(&route_states.values[action.body_slot], PHASE_DEAD);
+            } else if (action.kind == ACTION_CLEANED
+                && role_of(route_states.values[action.body_slot].packed_meta)
+                    == ROLE_CLOSER
+                && phase_of(route_states.values[action.body_slot].packed_meta)
+                    == PHASE_SELECT_ROUTE
+                && route_states.values[action.body_slot].closure_index == INVALID) {
+                // 갈림길에서 더 막을 수 없었던 살아 있는 Cork만 normal enemy로
+                // 전환합니다. lifecycle cleanup의 CLEANED는 이미 despawn된 body를
+                // 가리키므로 이 분기에 들어오지 않습니다.
+                route_states.values[action.body_slot].packed_meta
+                    = pack_meta(ROLE_NORMALIZED, PHASE_NONE, 0u);
+                route_states.values[action.body_slot].current_path_index = INVALID;
+                route_states.values[action.body_slot].closure_index = INVALID;
+                route_states.values[action.body_slot].pending_field_index = INVALID;
+                route_states.values[action.body_slot].lease_generation = 0u;
+                route_states.values[action.body_slot].observed_availability_version
+                    = action.availability_version;
+                simulations.values[action.body_slot].flow_field_index
+                    = route_set_core_flow_field(
+                        route_states.values[action.body_slot].route_set_index
+                    );
+                atomicOr(&simulations.values[action.body_slot].flags, BODY_FLAG_USE_FLOW);
             }
         }
     }

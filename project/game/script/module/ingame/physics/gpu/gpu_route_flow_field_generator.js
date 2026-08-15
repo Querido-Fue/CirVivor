@@ -15,8 +15,8 @@ struct GeneratorParams {
     source_layer_count: u32,
     stage_layer_count: u32,
     cell_count: u32,
-    reserved_0: u32,
-    reserved_1: u32,
+    row_offset: u32,
+    row_count: u32,
     reserved_2: u32,
 }
 
@@ -71,11 +71,13 @@ fn diagonal_is_open(layer: u32, cell: vec2i, offset: vec2i) -> bool {
 
 @compute @workgroup_size(8, 8, 1)
 fn seed_flow_cost(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= params.cols || id.y >= params.rows
+    let output_row = id.y + params.row_offset;
+    if (id.x >= params.cols || id.y >= params.row_count
+        || output_row >= params.rows
         || id.z >= params.source_layer_count) {
         return;
     }
-    let cell_index = id.y * params.cols + id.x;
+    let cell_index = output_row * params.cols + id.x;
     let index = id.z * params.cell_count + cell_index;
     if (blocked_layers[index] != 0u) {
         cost_write[index] = COST_INFINITY;
@@ -90,11 +92,13 @@ fn seed_flow_cost(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(8, 8, 1)
 fn relax_flow_cost(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= params.cols || id.y >= params.rows
+    let output_row = id.y + params.row_offset;
+    if (id.x >= params.cols || id.y >= params.row_count
+        || output_row >= params.rows
         || id.z >= params.source_layer_count) {
         return;
     }
-    let cell = vec2i(id.xy);
+    let cell = vec2i(i32(id.x), i32(output_row));
     let index = layer_cell_index(id.z, cell);
     if (blocked_layers[index] != 0u) {
         cost_write[index] = COST_INFINITY;
@@ -124,12 +128,14 @@ fn relax_flow_cost(@builtin(global_invocation_id) id: vec3u) {
 
 @compute @workgroup_size(8, 8, 1)
 fn finalize_flow_field(@builtin(global_invocation_id) id: vec3u) {
-    if (id.x >= params.cols || id.y >= params.rows
+    let output_row = id.y + params.row_offset;
+    if (id.x >= params.cols || id.y >= params.row_count
+        || output_row >= params.rows
         || id.z >= params.stage_layer_count) {
         return;
     }
     let source_layer = stage_layer_indices[id.z];
-    let output_cell = vec2i(id.xy);
+    let output_cell = vec2i(i32(id.x), i32(output_row));
     if (source_layer >= params.source_layer_count) {
         textureStore(flow_output, output_cell, i32(id.z),
             vec4f(0.0, 0.0, UNREACHABLE_FLOAT, 0.0));
@@ -372,6 +378,8 @@ export function generateGpuRouteFlowFieldTextures(
     paramsView.setUint32(8, generation.sourceLayerCount, LITTLE_ENDIAN);
     paramsView.setUint32(12, atlas.fieldCount, LITTLE_ENDIAN);
     paramsView.setUint32(16, atlas.cols * atlas.rows, LITTLE_ENDIAN);
+    paramsView.setUint32(20, 0, LITTLE_ENDIAN);
+    paramsView.setUint32(24, atlas.rows, LITTLE_ENDIAN);
     const buffers = [];
     let buffersDestroyed = false;
     const destroyBuffers = () => {
@@ -538,4 +546,355 @@ export function generateGpuRouteFlowFieldTextures(
         destroyBuffers();
         throw error;
     }
+}
+
+export const GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND = 0.30;
+const INCREMENTAL_BASE_DISPATCHES_PER_PUMP = 12;
+
+/**
+ * 활성 texture와 분리된 staging texture에서 rebuild를 조금씩 수행합니다.
+ * `pump()`의 30%/초 credit은 어떤 CPU에서도 누적되고, 직전 frame의 CPU
+ * headroom만 추가 credit으로 바뀝니다. 완성된 두 texture는 한 queue submission에서
+ * 통째로 복사된 뒤에만 caller의 publication callback을 실행합니다.
+ */
+export function createGpuRouteFlowFieldRebuildJob(
+    device,
+    atlas,
+    flowTexture,
+    integrationTexture,
+    options = {}
+) {
+    const generation = requireGeneration(atlas);
+    const usage = globalThis.GPUBufferUsage;
+    const textureUsage = globalThis.GPUTextureUsage;
+    if (!usage || !textureUsage
+        || !Number.isSafeInteger(textureUsage.STORAGE_BINDING)
+        || !Number.isSafeInteger(textureUsage.COPY_SRC)) {
+        throw new Error('incremental route flow rebuild GPU usage가 없습니다.');
+    }
+    const availabilityVersion = Number(options.availabilityVersion);
+    if (!Number.isSafeInteger(availabilityVersion)
+        || availabilityVersion <= 0
+        || availabilityVersion >= UINT32_MAXIMUM) {
+        throw new RangeError('rebuild availabilityVersion이 유효하지 않습니다.');
+    }
+    const onCommitted = options.onCommitted;
+    if (onCommitted !== undefined && typeof onCommitted !== 'function') {
+        throw new TypeError('rebuild onCommitted는 함수여야 합니다.');
+    }
+    const costByteSize = requireGpuCapabilities(device, generation, atlas);
+    const pipelines = getGeneratorPipelines(device);
+    const resources = [];
+    const params = device.createBuffer({
+        label: 'cirvivor-route-flow-rebuild-params',
+        size: PARAMS_BYTE_SIZE,
+        usage: usage.UNIFORM | usage.COPY_DST
+    });
+    resources.push(params);
+    const blocked = createStorageBuffer(
+        device,
+        usage,
+        'cirvivor-route-flow-rebuild-blocked',
+        generation.blockedLayers
+    );
+    const goals = createStorageBuffer(
+        device,
+        usage,
+        'cirvivor-route-flow-rebuild-goals',
+        generation.goalCellIndices
+    );
+    const stageLayers = createStorageBuffer(
+        device,
+        usage,
+        'cirvivor-route-flow-rebuild-stage-layers',
+        generation.stageLayerIndices
+    );
+    const costsA = device.createBuffer({
+        label: 'cirvivor-route-flow-rebuild-cost-a',
+        size: costByteSize,
+        usage: usage.STORAGE
+    });
+    const costsB = device.createBuffer({
+        label: 'cirvivor-route-flow-rebuild-cost-b',
+        size: costByteSize,
+        usage: usage.STORAGE
+    });
+    resources.push(blocked, goals, stageLayers, costsA, costsB);
+    const stagingFlowTexture = device.createTexture({
+        label: 'cirvivor-route-flow-rebuild-staging-flow',
+        size: {
+            width: atlas.cols,
+            height: atlas.rows,
+            depthOrArrayLayers: atlas.fieldCount
+        },
+        format: 'rgba32float',
+        usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
+    });
+    const stagingIntegrationTexture = device.createTexture({
+        label: 'cirvivor-route-flow-rebuild-staging-integration',
+        size: {
+            width: atlas.cols,
+            height: atlas.rows,
+            depthOrArrayLayers: atlas.fieldCount
+        },
+        format: 'r32float',
+        usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
+    });
+    resources.push(stagingFlowTexture, stagingIntegrationTexture);
+    const resource = (buffer) => ({ buffer });
+    const seedBindGroup = device.createBindGroup({
+        label: 'cirvivor-route-flow-rebuild-seed-bind-group',
+        layout: pipelines.seed.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: resource(params) },
+            { binding: 1, resource: resource(blocked) },
+            { binding: 2, resource: resource(goals) },
+            { binding: 5, resource: resource(costsA) }
+        ]
+    });
+    const makeRelaxBindGroup = (label, read, write) => device.createBindGroup({
+        label,
+        layout: pipelines.relax.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: resource(params) },
+            { binding: 1, resource: resource(blocked) },
+            { binding: 4, resource: resource(read) },
+            { binding: 5, resource: resource(write) }
+        ]
+    });
+    const relaxAB = makeRelaxBindGroup(
+        'cirvivor-route-flow-rebuild-relax-a-b',
+        costsA,
+        costsB
+    );
+    const relaxBA = makeRelaxBindGroup(
+        'cirvivor-route-flow-rebuild-relax-b-a',
+        costsB,
+        costsA
+    );
+    const finalCosts = generation.relaxationPassCount % 2 === 0
+        ? costsA
+        : costsB;
+    const finalizeBindGroup = device.createBindGroup({
+        label: 'cirvivor-route-flow-rebuild-finalize-bind-group',
+        layout: pipelines.finalize.getBindGroupLayout(0),
+        entries: [
+            { binding: 0, resource: resource(params) },
+            { binding: 1, resource: resource(blocked) },
+            { binding: 3, resource: resource(stageLayers) },
+            { binding: 4, resource: resource(finalCosts) },
+            {
+                binding: 6,
+                resource: stagingFlowTexture.createView({ dimension: '2d-array' })
+            },
+            {
+                binding: 7,
+                resource: stagingIntegrationTexture.createView({
+                    dimension: '2d-array'
+                })
+            }
+        ]
+    });
+    const totalWorkUnits = atlas.cols * atlas.rows * (
+        generation.sourceLayerCount * (1 + generation.relaxationPassCount)
+        + atlas.fieldCount
+    );
+    let completedWorkUnits = 0;
+    let credit = 0;
+    let stage = 'seed';
+    let relaxationPassIndex = 0;
+    let rowOffset = 0;
+    let complete = false;
+    let cancelled = false;
+    let retired = false;
+
+    const retire = () => {
+        if (retired) return;
+        retired = true;
+        for (const value of resources) {
+            try { value.destroy?.(); } catch { /* retired device */ }
+        }
+    };
+    const retireAfterQueue = () => {
+        if (typeof device.queue.onSubmittedWorkDone !== 'function') {
+            retire();
+            return;
+        }
+        try {
+            Promise.resolve(device.queue.onSubmittedWorkDone()).then(
+                retire,
+                retire
+            );
+        } catch {
+            retire();
+        }
+    };
+    const layerCountForStage = () => stage === 'finalize'
+        ? atlas.fieldCount
+        : generation.sourceLayerCount;
+    const writeParams = (stripeRowCount) => {
+        const bytes = new ArrayBuffer(PARAMS_BYTE_SIZE);
+        const view = new DataView(bytes);
+        view.setUint32(0, atlas.cols, LITTLE_ENDIAN);
+        view.setUint32(4, atlas.rows, LITTLE_ENDIAN);
+        view.setUint32(8, generation.sourceLayerCount, LITTLE_ENDIAN);
+        view.setUint32(12, atlas.fieldCount, LITTLE_ENDIAN);
+        view.setUint32(16, atlas.size, LITTLE_ENDIAN);
+        view.setUint32(20, rowOffset, LITTLE_ENDIAN);
+        view.setUint32(24, stripeRowCount, LITTLE_ENDIAN);
+        device.queue.writeBuffer(params, 0, bytes);
+    };
+    const advanceStage = () => {
+        rowOffset = 0;
+        if (stage === 'seed') {
+            stage = 'relax';
+            return;
+        }
+        if (stage === 'relax') {
+            relaxationPassIndex++;
+            if (relaxationPassIndex >= generation.relaxationPassCount) {
+                stage = 'finalize';
+            }
+            return;
+        }
+        stage = 'copy';
+    };
+    const submitStripe = (stripeRowCount) => {
+        writeParams(stripeRowCount);
+        const encoder = device.createCommandEncoder({
+            label: `cirvivor-route-flow-rebuild-${stage}`
+        });
+        const pass = encoder.beginComputePass({
+            label: `cirvivor-route-flow-rebuild-${stage}-pass`
+        });
+        if (stage === 'seed') {
+            pass.setPipeline(pipelines.seed);
+            pass.setBindGroup(0, seedBindGroup);
+        } else if (stage === 'relax') {
+            pass.setPipeline(pipelines.relax);
+            pass.setBindGroup(
+                0,
+                relaxationPassIndex % 2 === 0 ? relaxAB : relaxBA
+            );
+        } else {
+            pass.setPipeline(pipelines.finalize);
+            pass.setBindGroup(0, finalizeBindGroup);
+        }
+        pass.dispatchWorkgroups(
+            Math.ceil(atlas.cols / WORKGROUP_SIZE),
+            Math.ceil(stripeRowCount / WORKGROUP_SIZE),
+            layerCountForStage()
+        );
+        pass.end();
+        device.queue.submit([encoder.finish()]);
+        const spent = atlas.cols * stripeRowCount * layerCountForStage();
+        completedWorkUnits += spent;
+        credit -= spent;
+        rowOffset += stripeRowCount;
+        if (rowOffset >= atlas.rows) advanceStage();
+    };
+    const commitCopy = () => {
+        const encoder = device.createCommandEncoder({
+            label: 'cirvivor-route-flow-rebuild-atomic-publish'
+        });
+        const copySize = {
+            width: atlas.cols,
+            height: atlas.rows,
+            depthOrArrayLayers: atlas.fieldCount
+        };
+        encoder.copyTextureToTexture(
+            { texture: stagingFlowTexture },
+            { texture: flowTexture },
+            copySize
+        );
+        encoder.copyTextureToTexture(
+            { texture: stagingIntegrationTexture },
+            { texture: integrationTexture },
+            copySize
+        );
+        device.queue.submit([encoder.finish()]);
+        complete = true;
+        if (!cancelled) onCommitted?.(availabilityVersion);
+        retireAfterQueue();
+    };
+
+    return Object.freeze({
+        availabilityVersion,
+        totalWorkUnits,
+        pump({
+            elapsedSeconds,
+            previousFrameCpuSeconds,
+            targetFrameSeconds
+        } = {}) {
+            if (complete || cancelled) return this.getStatus();
+            const elapsed = Math.max(Number(elapsedSeconds) || 0, 0);
+            const target = Math.max(Number(targetFrameSeconds) || (1 / 60), 1e-6);
+            const previousCpu = Math.max(
+                Number(previousFrameCpuSeconds) || 0,
+                0
+            );
+            const headroomRatio = Math.min(
+                Math.max((target - previousCpu) / target, 0),
+                1
+            );
+            const rate = GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND
+                + ((1 - GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND)
+                    * headroomRatio);
+            credit = Math.min(
+                credit + (elapsed * totalWorkUnits * rate),
+                totalWorkUnits
+            );
+            // 저사양/저프레임에서도 실제 경과 1초당 최소 30% work가 encode되도록
+            // 고정 dispatch cap을 baseline 필요량만큼 확장합니다. CPU 여유분으로
+            // 생긴 추가 credit은 평상시 cap 안에서만 소비됩니다.
+            const stageCount = generation.relaxationPassCount + 2;
+            const minimumDispatchesForElapsed = Math.ceil(
+                elapsed
+                    * GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND
+                    * stageCount
+            ) + 2;
+            const dispatchBudget = Math.max(
+                INCREMENTAL_BASE_DISPATCHES_PER_PUMP,
+                minimumDispatchesForElapsed
+            );
+            let dispatchCount = 0;
+            while (stage !== 'copy'
+                && dispatchCount < dispatchBudget) {
+                const layerCount = layerCountForStage();
+                const affordableRows = Math.floor(
+                    credit / (atlas.cols * layerCount)
+                );
+                if (affordableRows < 1) break;
+                const stripeRowCount = Math.min(
+                    atlas.rows - rowOffset,
+                    affordableRows
+                );
+                submitStripe(stripeRowCount);
+                dispatchCount++;
+            }
+            if (stage === 'copy' && !cancelled) commitCopy();
+            return this.getStatus();
+        },
+        cancel() {
+            if (complete || cancelled) return false;
+            cancelled = true;
+            retireAfterQueue();
+            return true;
+        },
+        getStatus() {
+            return Object.freeze({
+                availabilityVersion,
+                complete,
+                cancelled,
+                stage,
+                relaxationPassIndex,
+                rowOffset,
+                progress: totalWorkUnits === 0
+                    ? 1
+                    : Math.min(completedWorkUnits / totalWorkUnits, 1),
+                minimumRatePerSecond:
+                    GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND
+            });
+        }
+    });
 }

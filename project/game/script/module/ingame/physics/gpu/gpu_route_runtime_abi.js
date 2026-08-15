@@ -9,7 +9,10 @@ export const GPU_ROUTE_RUNTIME_MAX_CLOSERS = 8;
 export const GPU_ROUTE_RUNTIME_ROLE = Object.freeze({
     NONE: 0,
     ACTOR: 1,
-    CLOSER: 2
+    CLOSER: 2,
+    // 갈림길에서 더 막을 수 없다고 판정된 Cork입니다. 물리/전투는 normal
+    // enemy 그대로 유지하되 exact lifecycle identity만 보존합니다.
+    NORMALIZED: 3
 });
 
 export const GPU_ROUTE_RUNTIME_PHASE = Object.freeze({
@@ -105,7 +108,10 @@ export const GPU_ROUTE_RUNTIME_ABI = Object.freeze({
         RESERVED_6: 92
     }),
     PATH: Object.freeze({ STRIDE_WORDS: 8 }),
-    ROUTE_SET: Object.freeze({ STRIDE_WORDS: 4 }),
+    ROUTE_SET: Object.freeze({
+        STRIDE_WORDS: 4,
+        CORE_FLOW_FIELD_WORD_OFFSET: 3
+    }),
     CANDIDATE: Object.freeze({ STRIDE_WORDS: 4 }),
     FIELD: Object.freeze({ STRIDE_WORDS: 12 }),
     SWITCH: Object.freeze({ STRIDE_WORDS: 4 }),
@@ -127,6 +133,7 @@ export const GPU_ROUTE_RUNTIME_ABI = Object.freeze({
         NEXT_LEASE_GENERATION: 44,
         LAST_EVENT_BASE: 48,
         LAST_EVENT_COUNT: 52,
+        FLOW_READY_AVAILABILITY_VERSION: 56,
         RESERVED_0: 56,
         RESERVED_1: 60
     }),
@@ -138,6 +145,7 @@ export const GPU_ROUTE_RUNTIME_ABI = Object.freeze({
         OWNER_INCARNATION: 12,
         LEASE_GENERATION: 16,
         CHANGED_AT_FIXED_TICK: 20,
+        CHANGED_AVAILABILITY_VERSION: 24,
         RESERVED_0: 24,
         RESERVED_1: 28
     }),
@@ -263,14 +271,22 @@ export function writeGpuRouteRuntimeState(buffer, capacity, index, source = null
     }
     const role = requireUint32(source.role ?? GPU_ROUTE_RUNTIME_ROLE.NONE, 'routeRuntime.role');
     if (role === GPU_ROUTE_RUNTIME_ROLE.NONE) return slot;
-    if (role !== GPU_ROUTE_RUNTIME_ROLE.ACTOR && role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+    if (role !== GPU_ROUTE_RUNTIME_ROLE.ACTOR
+        && role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER
+        && role !== GPU_ROUTE_RUNTIME_ROLE.NORMALIZED) {
         throw new RangeError('routeRuntime.role이 알려진 값이 아닙니다.');
     }
     const phase = requireUint32(
-        source.phase ?? GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE,
+        source.phase ?? (role === GPU_ROUTE_RUNTIME_ROLE.NORMALIZED
+            ? GPU_ROUTE_RUNTIME_PHASE.NONE
+            : GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE),
         'routeRuntime.phase'
     );
-    if (phase < GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE || phase > GPU_ROUTE_RUNTIME_PHASE.DEAD) {
+    if ((role === GPU_ROUTE_RUNTIME_ROLE.NORMALIZED
+            && phase !== GPU_ROUTE_RUNTIME_PHASE.NONE)
+        || (role !== GPU_ROUTE_RUNTIME_ROLE.NORMALIZED
+            && (phase < GPU_ROUTE_RUNTIME_PHASE.SELECT_ROUTE
+                || phase > GPU_ROUTE_RUNTIME_PHASE.DEAD))) {
         throw new RangeError('routeRuntime.phase가 알려진 값이 아닙니다.');
     }
     const flags = requireUint32(
@@ -520,6 +536,20 @@ export function createGpuRouteRuntimeTopology(flowFieldAtlas) {
         words[offset] = routeSetIndex;
         words[offset + 1] = first;
         words[offset + 2] = count;
+        const canonicalCandidate = candidates[first];
+        const canonicalPathIndex = requireIndex(
+            canonicalCandidate?.pathIndex,
+            paths.length,
+            'routeSet.corePathIndex'
+        );
+        const canonicalPath = paths[canonicalPathIndex];
+        words[offset
+            + GPU_ROUTE_RUNTIME_ABI.ROUTE_SET.CORE_FLOW_FIELD_WORD_OFFSET]
+            = requireIndex(
+                canonicalPath.firstFieldIndex + canonicalPath.fieldCount - 1,
+                fieldCount,
+                'routeSet.coreFlowFieldIndex'
+            );
     }
     for (let index = 0; index < candidates.length; index++) {
         const candidate = candidates[index];
@@ -779,12 +809,18 @@ export function createGpuRouteAvailabilityBuffer(topology, protocol = {}) {
         LITTLE_ENDIAN
     );
     view.setUint32(abi.NEXT_LEASE_GENERATION, 1, LITTLE_ENDIAN);
+    view.setUint32(abi.FLOW_READY_AVAILABILITY_VERSION, 1, LITTLE_ENDIAN);
     for (let index = 0; index < closureCount; index++) {
         const offset = abi.STRIDE + index * recordAbi.STRIDE;
         view.setUint32(offset + recordAbi.STATE, GPU_ROUTE_AVAILABILITY_STATE.OPEN, LITTLE_ENDIAN);
         view.setUint32(offset + recordAbi.OWNER_SLOT, UINT32_MAX, LITTLE_ENDIAN);
         view.setUint32(offset + recordAbi.OWNER_ENTITY_ID, UINT32_MAX, LITTLE_ENDIAN);
         view.setUint32(offset + recordAbi.OWNER_INCARNATION, UINT32_MAX, LITTLE_ENDIAN);
+        view.setUint32(
+            offset + recordAbi.CHANGED_AVAILABILITY_VERSION,
+            1,
+            LITTLE_ENDIAN
+        );
     }
     return buffer;
 }

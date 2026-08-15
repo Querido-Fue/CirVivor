@@ -303,12 +303,11 @@ function normalizeOptionalEnemyRouteClosureMetadata(
     const byCode = ENEMY_ROUTE_CLOSURE_PROFILE_BY_CODE[profileCode];
     if (definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
         || capabilityMask !== BASIC_CORK_ENEMY_CAPABILITY_MASK
-        || routeSetId === null
         || !byId
         || byId !== byCode
         || byId.definitionCode !== profileCode) {
         throw new RangeError(
-            'natural Cork route profile/snapshot이 exact catalog와 다릅니다.'
+            'natural Cork route profile이 exact catalog와 다릅니다.'
         );
     }
     return Object.freeze({

@@ -239,7 +239,8 @@ export const GPU_CIRCLE_BODY_RENDER_SHAPE = Object.freeze({
     RHOM: 7,
     OCTA: 8,
     RING: 9,
-    JORANG: 10
+    JORANG: 10,
+    CORK: 11
 });
 
 export const GPU_CIRCLE_BODY_SIMULATION_FLAG = Object.freeze({
@@ -886,6 +887,7 @@ export function normalizeGpuCircleBodyRenderShapeCode(
         case GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.RING:
         case GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG:
+        case GPU_CIRCLE_BODY_RENDER_SHAPE.CORK:
             return shapeCode;
         default:
             throw new RangeError(`${fieldName}에 지원하지 않는 shape code가 있습니다: ${shapeCode}`);

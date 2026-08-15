@@ -686,6 +686,95 @@ test('lease를 아직 얻지 못한 duplicate-wait Cork는 lifecycle cleanup을 
     assert.equal(director.getStatus().terminal.rosterSealed, true);
 });
 
+test('갈림길 normal-fallback CLEANED는 lease 없이 lifecycle identity를 보존한다', () => {
+    const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
+    const atlas = createRouteFlowFieldAtlas(tileMap);
+    const handle = Object.freeze({ entityId: 66, incarnation: 3 });
+    const director = new CorkRouteClosureDirector({
+        routeGraph: tileMap.getRouteGraph(),
+        graphContentKey: atlas.contentKey,
+        sessionGeneration: 1,
+        deviceGeneration: 0,
+        authoritativeEpoch: 0,
+        capacity: 8,
+        runtimeStatus: createRuntimeStatus(atlas)
+    });
+    director.observeFixedCommit({ fixedTick: 1 }, 1);
+    director.observeLifecycle({
+        fixedTick: 1,
+        recoveryRequired: false,
+        routeLifecycle: Object.freeze([
+            createLifecycleEntry('spawn', handle, 1, 45)
+        ]),
+        routeRuntimeBinding: createBinding(atlas, { rosterCount: 1 })
+    }, 1);
+    assert.equal(director.observeCompletedPrograms(createCompletion(atlas, {
+        cleanups: Object.freeze([createRouteRecord({
+            handle,
+            sourceTick: 1,
+            availabilityVersion: 1,
+            leaseGeneration: 5
+        })])
+    })).accepted, true);
+    assert.equal(director.getStatus().rosterCount, 0);
+    assert.equal(director.getStatus().pendingAssignmentCount, 0);
+    assert.equal(director.getStatus().assignedLeaseCount, 0);
+    assert.equal(director.getStatus().normalFallbackCount, 1);
+    assert.equal(director.observeRuntimeStatus(createRuntimeStatus(atlas, {
+        completedThroughTick: 1
+    })).recoveryRequired, false);
+
+    director.closeForTerminal(2, 'normalized-terminal');
+    director.observeFixedCommit({ fixedTick: 2 }, 2);
+    director.observeLifecycle({
+        fixedTick: 2,
+        recoveryRequired: false,
+        routeLifecycle: Object.freeze([
+            createLifecycleEntry('cleanup', handle, 2, 46)
+        ]),
+        routeRuntimeBinding: createBinding(atlas, { rosterCount: 0 })
+    }, 2);
+    assert.equal(director.getStatus().normalFallbackCount, 0);
+    assert.equal(director.observeCompletedPrograms(createCompletion(atlas, {
+        sourceTick: 2,
+        completedThroughTick: 2,
+        batchIdFingerprint: 306
+    })).accepted, true);
+    assert.equal(director.getStatus().terminal.rosterSealed, true);
+});
+
+test('prospective Cork 수는 blocker lease capacity와 독립적으로 body 범위까지 허용된다', () => {
+    const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
+    const atlas = createRouteFlowFieldAtlas(tileMap);
+    const director = new CorkRouteClosureDirector({
+        routeGraph: tileMap.getRouteGraph(),
+        graphContentKey: atlas.contentKey,
+        sessionGeneration: 1,
+        deviceGeneration: 0,
+        authoritativeEpoch: 0,
+        capacity: 8,
+        runtimeStatus: createRuntimeStatus(atlas)
+    });
+    const handles = Array.from({ length: 9 }, (_, index) => Object.freeze({
+        entityId: 100 + index,
+        incarnation: 1
+    }));
+    director.observeFixedCommit({ fixedTick: 1 }, 1);
+    director.observeLifecycle({
+        fixedTick: 1,
+        recoveryRequired: false,
+        routeLifecycle: Object.freeze(handles.map((handle, index) => (
+            createLifecycleEntry('spawn', handle, 1, 100 + index)
+        ))),
+        routeRuntimeBinding: createBinding(atlas, { rosterCount: 9 })
+    }, 1);
+    assert.equal(director.getStatus().rosterCount, 9);
+    assert.equal(director.getStatus().pendingAssignmentCount, 9);
+    assert.equal(director.observeRuntimeStatus(createRuntimeStatus(atlas, {
+        rosterCount: 9
+    })).recoveryRequired, false);
+});
+
 test('확장 전 LEASED Cork terminal cleanup은 REOPEN과 CLEANUP을 같은 completion에서 수용한다', () => {
     const tileMap = new TileMap(CORK_DUAL_ROUTE_MAP_DATA);
     const atlas = createRouteFlowFieldAtlas(tileMap);

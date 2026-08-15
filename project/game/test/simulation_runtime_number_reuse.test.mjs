@@ -234,7 +234,7 @@ assert.equal(
         .replace(copyMousePositionSource, '')
         .replace(copyWheelTotalsSource, '')
         .match(/\bresolveFiniteNumber\s*\(/g)?.length,
-    20,
+    23,
     'viewport·pointer·wheel 동기화 호출은 모두 공용 함수와 명시적 fallback을 사용해야 합니다.'
 );
 assert.equal(

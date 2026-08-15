@@ -15,6 +15,7 @@ const {
     ENEMY_ROUTE_CLOSURE_REOPEN_POLICY,
     ENEMY_ROUTE_CLOSURE_ROUTE_SELECTION_POLICY,
     ENEMY_ROUTE_CLOSURE_TRAPPED_POLICY,
+    normalizeEnemyRouteGraph,
     normalizeEnemyRouteClosureProfile,
     normalizeEnemyRouteClosureProfileCatalog
 } = await loadGameModule('ingame/contract/enemy_route_closure_contract.js');
@@ -33,6 +34,9 @@ const {
     INGAME_ENEMY_DEFINITIONS,
     INGAME_ENEMY_DEFINITION_BY_ID
 } = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const {
+    CORK_DUAL_ROUTE_MAP_DATA
+} = await loadGameModule('data/scene/game/cork_dual_route_map_data.js');
 const {
     CORK_BLOCKER_DIAMETER_TILES,
     CORK_EXPANDED_RADIUS_TILES,
@@ -73,7 +77,7 @@ function definitionSource(definition, overrides = {}) {
     };
 }
 
-test('Z route-closure profile은 path-width 6 단일 circle과 exact policy를 고정한다', () => {
+test('Z route-closure profile은 path-width 6 단일 logical body와 exact policy를 고정한다', () => {
     assert.deepEqual(GPU_ENEMY_ROUTE_CLOSURE_PROFILE_CODE, {
         NONE: 0,
         CORK_SINGLE_LOGICAL_CIRCLE: 1
@@ -106,7 +110,8 @@ test('Z route-closure profile은 path-width 6 단일 circle과 exact policy를 �
         closureActivationPolicyId:
             ENEMY_ROUTE_CLOSURE_ACTIVATION_POLICY.CLOSE_ON_EXPANSION_COMPLETE,
         noAvailableRoutePolicyId:
-            ENEMY_ROUTE_CLOSURE_NO_AVAILABLE_ROUTE_POLICY.WAIT_AT_ROUTE_ENTRY,
+            ENEMY_ROUTE_CLOSURE_NO_AVAILABLE_ROUTE_POLICY
+                .CONTINUE_AS_NORMAL_ENEMY,
         reopenPolicyId: ENEMY_ROUTE_CLOSURE_REOPEN_POLICY.EXACT_OWNER_DEATH,
         trappedPolicyId:
             ENEMY_ROUTE_CLOSURE_TRAPPED_POLICY
@@ -117,6 +122,28 @@ test('Z route-closure profile은 path-width 6 단일 circle과 exact policy를 �
     });
     assert.equal('helperCount' in CORK_ROUTE_CLOSURE_PROFILE, false);
     assert.equal('thicknessTiles' in CORK_ROUTE_CLOSURE_PROFILE, false);
+});
+
+test('route graph는 실제 갈림 구간의 self-intersection과 물리 중첩을 거절한다', () => {
+    const graph = JSON.parse(JSON.stringify(CORK_DUAL_ROUTE_MAP_DATA.routeGraph));
+    const routes = JSON.parse(JSON.stringify(
+        CORK_DUAL_ROUTE_MAP_DATA.enemySpawnRoutes
+    ));
+    const repeatedRoutes = JSON.parse(JSON.stringify(routes));
+    repeatedRoutes[1].macroCells[4] = [...repeatedRoutes[1].macroCells[2]];
+    assert.throws(() => normalizeEnemyRouteGraph(
+        graph,
+        { routes: repeatedRoutes },
+        'repeatedRouteGraph'
+    ), /self-intersection/);
+
+    const overlappingRoutes = JSON.parse(JSON.stringify(routes));
+    overlappingRoutes[1].macroCells[3] = [...overlappingRoutes[0].macroCells[3]];
+    assert.throws(() => normalizeEnemyRouteGraph(
+        graph,
+        { routes: overlappingRoutes },
+        'overlappingRouteGraph'
+    ), /물리적으로 겹칩니다/);
 });
 
 test('route-closure profile normalizer는 accessor, extra, invalid geometry와 duplicate code를 거절한다', () => {
@@ -161,7 +188,7 @@ test('basic_cork_01은 common-C 수치와 ROUTE_CLOSURE profile/capability를 �
         BASIC_CORK_ENEMY_DATA
     );
     assert.equal(INGAME_ENEMY_DEFINITIONS.includes(BASIC_CORK_ENEMY_DATA), true);
-    assert.equal(BASIC_CORK_ENEMY_DATA.shapeDefinitionId, 'circle');
+    assert.equal(BASIC_CORK_ENEMY_DATA.shapeDefinitionId, 'cork');
     assert.equal(
         BASIC_CORK_ENEMY_DATA.behaviorProfileId,
         CORK_ROUTE_CLOSURE_BEHAVIOR_PROFILE_ID
@@ -204,12 +231,15 @@ test('basic_cork_01은 common-C 수치와 ROUTE_CLOSURE profile/capability를 �
         assert.equal(forbidden in BASIC_CORK_ENEMY_DATA, false);
     }
 
-    // 신규 GPU-only content는 CPU legacy pool shape roster를 확장하지 않습니다.
     assert.deepEqual(ENEMY_SHAPE_TYPES, [
         'square', 'triangle', 'arrow', 'hexa',
         'penta', 'rhom', 'octa', 'gen', 'jorang'
     ]);
-    assert.equal(ENEMY_SHAPE_TYPES.includes('cork'), false);
+    assert.equal(
+        ENEMY_SHAPE_TYPES.includes('cork'),
+        false,
+        'GPU-only Cork를 legacy CPU pool roster에 넣지 않습니다.'
+    );
 });
 
 test('ROUTE_CLOSURE capability와 routeClosureProfileId는 양방향이며 공통 capability를 요구한다', () => {

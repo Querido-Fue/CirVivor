@@ -202,7 +202,13 @@ function hashBlockedPlane(blocked) {
  * TileMap은 macro route cell을 GPU flow 해상도로 사용합니다. 일반 navigation
  * source(benchmark/fixture)는 기존 1-cell grid를 그대로 유지합니다.
  */
-function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
+function createRouteFlowLayerSource(
+    tileMap,
+    baseGrid,
+    routes,
+    worldBounds,
+    routeGraph
+) {
     const origin = Object.freeze({
         x: Number(worldBounds?.minX ?? 0),
         y: Number(worldBounds?.minY ?? 0)
@@ -230,6 +236,19 @@ function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
     const layers = [];
     const routeStageLayerIndices = new Array(routes.length);
     const routeCells = new Array(routes.length);
+    const routeIndexByPathId = new Map(
+        routes.map((route, routeIndex) => [route.pathId, routeIndex])
+    );
+    const routeSetIndexByPathId = new Map();
+    if (routeGraph !== null) {
+        for (let routeSetIndex = 0;
+            routeSetIndex < routeGraph.routeSets.length;
+            routeSetIndex++) {
+            for (const candidate of routeGraph.routeSets[routeSetIndex].candidates) {
+                routeSetIndexByPathId.set(candidate.pathId, routeSetIndex);
+            }
+        }
+    }
 
     const validateRouteCells = (route, cells, blocked) => {
         for (let cellIndex = 0; cellIndex < cells.length; cellIndex++) {
@@ -290,8 +309,8 @@ function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
         }
         return true;
     };
-    const ensureLayer = (blocked, goalCell) => {
-        const layerKey = `${goalCell.row}:${goalCell.column}:${hashBlockedPlane(blocked)}`;
+    const ensureLayer = (blocked, goalCell, routeSetIndex) => {
+        const layerKey = `${routeSetIndex}:${goalCell.row}:${goalCell.column}:${hashBlockedPlane(blocked)}`;
         const candidateIndices = layerIndicesByKey.get(layerKey) ?? [];
         for (const candidateIndex of candidateIndices) {
             if (blockedPlanesEqual(layers[candidateIndex].grid.blocked, blocked)) {
@@ -322,6 +341,7 @@ function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
             layerIndex,
             grid,
             goalCell,
+            routeSetIndex,
             field,
             walkableCellCount: blocked.reduce(
                 (count, value) => count + Number(value === 0),
@@ -335,21 +355,45 @@ function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
 
     for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
         const route = routes[routeIndex];
-        const cells = route.waypoints.map((waypoint, waypointIndex) => (
+        routeCells[routeIndex] = Object.freeze(route.waypoints.map(
+            (waypoint, waypointIndex) => (
             flowCellForPosition(
                 waypoint,
                 { cols, rows, cellSize: flowCellSize },
                 origin,
                 `route ${route.pathId}/${waypointIndex}`
             )
-        ));
-        routeCells[routeIndex] = Object.freeze(cells);
+        )));
+    }
+
+    for (let routeIndex = 0; routeIndex < routes.length; routeIndex++) {
+        const route = routes[routeIndex];
+        const cells = routeCells[routeIndex];
+        const routeSetIndex = routeSetIndexByPathId.get(route.pathId) ?? -1;
         const blocked = usesMacroRouteGrid
             ? new Uint8Array(size).fill(1)
             : baseGrid.blocked.slice();
         if (usesMacroRouteGrid) {
-            for (const cell of cells) {
-                blocked[(cell.row * cols) + cell.column] = 0;
+            const routeSet = routeSetIndex >= 0
+                ? routeGraph.routeSets[routeSetIndex]
+                : null;
+            const walkableRouteIndices = routeSet === null
+                ? [routeIndex]
+                : routeSet.candidates.map((candidate) => {
+                    const candidateRouteIndex = routeIndexByPathId.get(
+                        candidate.pathId
+                    );
+                    if (candidateRouteIndex === undefined) {
+                        throw new RangeError(
+                            `routeSet candidate route가 없습니다: ${candidate.pathId}`
+                        );
+                    }
+                    return candidateRouteIndex;
+                });
+            for (const walkableRouteIndex of walkableRouteIndices) {
+                for (const cell of routeCells[walkableRouteIndex]) {
+                    blocked[(cell.row * cols) + cell.column] = 0;
+                }
             }
         }
         validateRouteCells(route, cells, blocked);
@@ -372,10 +416,14 @@ function createRouteFlowLayerSource(tileMap, baseGrid, routes, worldBounds) {
                 waypointIndex < cells.length;
                 waypointIndex++) {
                 stageLayerIndices[waypointIndex - 1]
-                    = ensureLayer(blocked, cells[waypointIndex]);
+                    = ensureLayer(blocked, cells[waypointIndex], routeSetIndex);
             }
         } else {
-            stageLayerIndices.fill(ensureLayer(blocked, cells[cells.length - 1]));
+            stageLayerIndices.fill(ensureLayer(
+                blocked,
+                cells[cells.length - 1],
+                routeSetIndex
+            ));
         }
         validateRouteReachability(route, cells, stageLayerIndices);
         routeStageLayerIndices[routeIndex] = stageLayerIndices;
@@ -655,7 +703,8 @@ export function createRouteFlowFieldAtlas(tileMap) {
         tileMap,
         navigationGrid,
         routes,
-        worldBounds
+        worldBounds,
+        routeGraph
     );
     const defaultTransitionRadius = navigationCellSize * 0.75;
     const authoredTransitionRadius = typeof tileMap.getFlowTransitionRadius
@@ -786,6 +835,8 @@ export function createRouteFlowFieldAtlas(tileMap) {
         flowSource.layers.length * flowSource.size
     );
     const goalCellIndices = new Uint32Array(flowSource.layers.length);
+    const sourceLayerRouteSetIndices = new Uint32Array(flowSource.layers.length);
+    sourceLayerRouteSetIndices.fill(0xffffffff);
     let relaxationPassCount = 1;
     for (const layer of flowSource.layers) {
         const layerOffset = layer.layerIndex * flowSource.size;
@@ -795,10 +846,59 @@ export function createRouteFlowFieldAtlas(tileMap) {
         }
         goalCellIndices[layer.layerIndex]
             = (layer.goalCell.row * flowSource.cols) + layer.goalCell.column;
+        if (layer.routeSetIndex >= 0) {
+            sourceLayerRouteSetIndices[layer.layerIndex] = layer.routeSetIndex;
+        }
         relaxationPassCount = Math.max(
             relaxationPassCount,
             layer.walkableCellCount
         );
+    }
+    const closureCount = compiledRouteGraph?.closures.length ?? 0;
+    const closureBlockCellIndices = new Uint32Array(closureCount);
+    const closureRouteSetIndices = new Uint32Array(closureCount);
+    const routeSetCoreGoalCellIndices = new Uint32Array(
+        compiledRouteGraph?.routeSets.length ?? 0
+    );
+    if (compiledRouteGraph !== null) {
+        const routeSetIndexByPathIndex = new Map();
+        for (const routeSet of compiledRouteGraph.routeSets) {
+            for (let candidateIndex = routeSet.candidateOffset;
+                candidateIndex < routeSet.candidateOffset + routeSet.candidateCount;
+                candidateIndex++) {
+                routeSetIndexByPathIndex.set(
+                    compiledRouteGraph.routeCandidates[candidateIndex].pathIndex,
+                    routeSet.routeSetIndex
+                );
+            }
+            let commonCoreGoalCellIndex = null;
+            for (let candidateIndex = routeSet.candidateOffset;
+                candidateIndex < routeSet.candidateOffset + routeSet.candidateCount;
+                candidateIndex++) {
+                const candidate
+                    = compiledRouteGraph.routeCandidates[candidateIndex];
+                const candidateRoute = compiledRoutes[candidate.pathIndex];
+                const finalFieldIndex = candidateRoute.firstFieldIndex
+                    + candidateRoute.fieldCount - 1;
+                const coreGoalCellIndex = stages[finalFieldIndex]?.goalIndex;
+                if (!Number.isSafeInteger(coreGoalCellIndex)
+                    || (commonCoreGoalCellIndex !== null
+                        && commonCoreGoalCellIndex !== coreGoalCellIndex)) {
+                    throw new RangeError(
+                        `routeSet ${routeSet.id}의 candidate Core goal이 일치하지 않습니다.`
+                    );
+                }
+                commonCoreGoalCellIndex ??= coreGoalCellIndex;
+            }
+            routeSetCoreGoalCellIndices[routeSet.routeSetIndex]
+                = commonCoreGoalCellIndex;
+        }
+        for (const closure of compiledRouteGraph.closures) {
+            closureBlockCellIndices[closure.closureIndex]
+                = stages[closure.entranceFieldIndex].goalIndex;
+            closureRouteSetIndices[closure.closureIndex]
+                = routeSetIndexByPathIndex.get(closure.pathIndex);
+        }
     }
     const gpuGeneration = Object.freeze({
         version: ROUTE_FLOW_FIELD_GENERATION_VERSION,
@@ -806,6 +906,10 @@ export function createRouteFlowFieldAtlas(tileMap) {
         stageLayerIndices,
         blockedLayers,
         goalCellIndices,
+        sourceLayerRouteSetIndices,
+        closureBlockCellIndices,
+        closureRouteSetIndices,
+        routeSetCoreGoalCellIndices,
         relaxationPassCount
     });
 
@@ -830,5 +934,74 @@ export function createRouteFlowFieldAtlas(tileMap) {
         stages: Object.freeze(stages),
         routes: Object.freeze(compiledRoutes),
         routeGraph: compiledRouteGraph
+    });
+}
+
+/**
+ * 현재 closure snapshot을 반영한 GPU rebuild recipe를 만듭니다. 기존 atlas와
+ * 활성 texture는 건드리지 않으며, 같은 route-set의 모든 source layer에 실제
+ * 마개 cell을 obstacle로 추가합니다.
+ */
+export function createRouteFlowFieldRebuildAtlas(
+    atlas,
+    closedClosureIndices
+) {
+    if (!atlas?.routeGraph || !atlas?.gpuGeneration) {
+        return atlas;
+    }
+    const closed = [...closedClosureIndices];
+    const generation = atlas.gpuGeneration;
+    const blockedLayers = generation.blockedLayers.slice();
+    const goalCellIndices = generation.goalCellIndices.slice();
+    const seen = new Set();
+    const affectedRouteSetIndices = new Set();
+    for (const rawClosureIndex of closed) {
+        const closureIndex = Number(rawClosureIndex);
+        if (!Number.isSafeInteger(closureIndex)
+            || closureIndex < 0
+            || closureIndex >= generation.closureBlockCellIndices.length
+            || seen.has(closureIndex)) {
+            throw new RangeError('flow rebuild closure index가 유효하지 않습니다.');
+        }
+        seen.add(closureIndex);
+        const routeSetIndex = generation.closureRouteSetIndices[closureIndex];
+        affectedRouteSetIndices.add(routeSetIndex);
+    }
+    for (let layerIndex = 0;
+        layerIndex < generation.sourceLayerCount;
+        layerIndex++) {
+        const routeSetIndex
+            = generation.sourceLayerRouteSetIndices[layerIndex];
+        if (affectedRouteSetIndices.has(routeSetIndex)) {
+            goalCellIndices[layerIndex]
+                = generation.routeSetCoreGoalCellIndices[routeSetIndex];
+        }
+    }
+    for (const closureIndex of seen) {
+        const routeSetIndex = generation.closureRouteSetIndices[closureIndex];
+        const blockedCellIndex
+            = generation.closureBlockCellIndices[closureIndex];
+        for (let layerIndex = 0;
+            layerIndex < generation.sourceLayerCount;
+            layerIndex++) {
+            if (generation.sourceLayerRouteSetIndices[layerIndex]
+                !== routeSetIndex) {
+                continue;
+            }
+            if (goalCellIndices[layerIndex] === blockedCellIndex) {
+                throw new RangeError(
+                    'closure obstacle과 flow goal이 같은 cell일 수 없습니다.'
+                );
+            }
+            blockedLayers[(layerIndex * atlas.size) + blockedCellIndex] = 1;
+        }
+    }
+    return Object.freeze({
+        ...atlas,
+        gpuGeneration: Object.freeze({
+            ...generation,
+            blockedLayers,
+            goalCellIndices
+        })
     });
 }

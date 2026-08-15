@@ -338,7 +338,8 @@ assert.deepEqual({ ...GPU_CIRCLE_BODY_RENDER_SHAPE }, {
     RHOM: 7,
     OCTA: 8,
     RING: 9,
-    JORANG: 10
+    JORANG: 10,
+    CORK: 11
 });
 assert.equal(
     normalizeGpuCircleBodyRenderShapeCode(),
@@ -355,6 +356,10 @@ assert.equal(
 assert.equal(
     normalizeGpuCircleBodyRenderShapeCode(GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG),
     GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
+);
+assert.equal(
+    normalizeGpuCircleBodyRenderShapeCode(GPU_CIRCLE_BODY_RENDER_SHAPE.CORK),
+    GPU_CIRCLE_BODY_RENDER_SHAPE.CORK
 );
 
 // V7에서도 physical/interaction/gameplay metadata와 flags word는 서로 독립입니다.
@@ -1407,7 +1412,7 @@ assertThrowsNamed(() => writeGpuCircleBodySpawn(storage, 0, {
 assertThrowsNamed(() => packGpuCirclePhysicsMeta(0x10000, 1), 'RangeError');
 assertThrowsNamed(() => packGpuCircleInteractionMeta(1, 0x10000), 'RangeError');
 assertThrowsNamed(() => packGpuCircleSimulationMeta(-1), 'RangeError');
-assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(11), 'RangeError');
+assertThrowsNamed(() => normalizeGpuCircleBodyRenderShapeCode(12), 'RangeError');
 assertThrowsNamed(() => normalizeGpuCircleBodyLifetime(-2), 'RangeError');
 assertThrowsNamed(
     () => normalizeGpuCircleBodyLifetime(Number.POSITIVE_INFINITY),

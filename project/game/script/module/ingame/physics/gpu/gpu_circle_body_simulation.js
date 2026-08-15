@@ -185,6 +185,7 @@ import {
     GPU_ROUTE_RUNTIME_ABI_VERSION,
     GPU_ROUTE_RUNTIME_INVALID_INDEX,
     GPU_ROUTE_RUNTIME_MAX_CLOSERS,
+    GPU_ROUTE_RUNTIME_PHASE,
     GPU_ROUTE_RUNTIME_ROLE,
     GPU_ROUTE_RUNTIME_STATUS,
     copyGpuRouteRuntimeStateSlot,
@@ -203,8 +204,15 @@ import {
     GPU_ROUTE_RUNTIME_WGSL
 } from './gpu_route_runtime_shaders.js';
 import {
+    createGpuRouteFlowFieldRebuildJob,
     generateGpuRouteFlowFieldTextures
 } from './gpu_route_flow_field_generator.js';
+import {
+    createRouteFlowFieldRebuildAtlas
+} from '../../navigation/route_flow_field_atlas.js';
+import {
+    getSimulationPerformanceSnapshot
+} from '../../../simulation/simulation_runtime.js';
 import { GpuCrowdDensityRuntime } from './gpu_crowd_density_runtime.js';
 import { GpuTransientVfxRuntime } from './gpu_transient_vfx_runtime.js';
 import {
@@ -876,7 +884,9 @@ function normalizeFlowFieldAtlas(atlas) {
             enabled: false,
             cols: 1,
             rows: 1,
+            size: 1,
             fieldCount: 0,
+            sourceLayerCount: 0,
             origin: Object.freeze({ x: 0, y: 0 }),
             cellSize: Object.freeze({ x: 1, y: 1 }),
             directions: new Float32Array([0, 0]),
@@ -927,6 +937,14 @@ function normalizeFlowFieldAtlas(atlas) {
             stageLayerIndices: sourceGeneration.stageLayerIndices?.slice(),
             blockedLayers: sourceGeneration.blockedLayers?.slice(),
             goalCellIndices: sourceGeneration.goalCellIndices?.slice(),
+            sourceLayerRouteSetIndices:
+                sourceGeneration.sourceLayerRouteSetIndices?.slice(),
+            closureBlockCellIndices:
+                sourceGeneration.closureBlockCellIndices?.slice(),
+            closureRouteSetIndices:
+                sourceGeneration.closureRouteSetIndices?.slice(),
+            routeSetCoreGoalCellIndices:
+                sourceGeneration.routeSetCoreGoalCellIndices?.slice(),
             relaxationPassCount: Number(sourceGeneration.relaxationPassCount)
         });
     const sourceIntegrationCosts = atlas.integrationCosts;
@@ -1025,7 +1043,9 @@ function normalizeFlowFieldAtlas(atlas) {
         enabled: true,
         cols,
         rows,
+        size: cols * rows,
         fieldCount,
+        sourceLayerCount: gpuGeneration?.sourceLayerCount ?? 0,
         origin: Object.freeze({ x: originX, y: originY }),
         cellSize,
         directions,
@@ -1603,6 +1623,11 @@ export class GpuCircleBodySimulation {
         this.flowTexture = null;
         this.flowIntegrationTexture = null;
         this.flowFieldGeneration = null;
+        this.flowFieldRebuildJob = null;
+        this.flowFieldRebuildToken = 0;
+        this.flowReadyAvailabilityVersion = 1;
+        this.publishedFlowClosureKey = '';
+        this.pendingFlowClosureKey = null;
         this.bindGroups = null;
         this.pipelines = null;
         this.state = 'idle';
@@ -2106,6 +2131,12 @@ export class GpuCircleBodySimulation {
         this.routeRuntimeCompletedThroughTick = 0;
         this.lastRouteRuntimeSourceTick = 0;
         this.lastRouteAvailabilityVersion = 1;
+        this.flowFieldRebuildToken++;
+        this.flowFieldRebuildJob?.cancel();
+        this.flowFieldRebuildJob = null;
+        this.flowReadyAvailabilityVersion = 1;
+        this.publishedFlowClosureKey = '';
+        this.pendingFlowClosureKey = null;
         this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
         this.stagedRouteCleanupBatch = null;
         this.routeLifecycleReservations.clear();
@@ -5640,10 +5671,27 @@ export class GpuCircleBodySimulation {
                     new Uint8Array(this.hostRouteAvailability).set(
                         new Uint8Array(entry.readbackBytes)
                     );
+                    const hostAvailabilityView = new DataView(
+                        this.hostRouteAvailability
+                    );
+                    this.flowReadyAvailabilityVersion = Math.max(
+                        this.flowReadyAvailabilityVersion,
+                        entry.completion.flowReadyAvailabilityVersion ?? 1
+                    );
+                    hostAvailabilityView.setUint32(
+                        GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER
+                            .FLOW_READY_AVAILABILITY_VERSION,
+                        this.flowReadyAvailabilityVersion,
+                        LITTLE_ENDIAN
+                    );
                     this.routeRuntimeCompletedThroughTick = entry.sourceTick;
                     this.lastRouteAvailabilityVersion
                         = entry.completion.availabilityVersion;
                     this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
+                    this.#requestRouteFlowFieldRebuild(
+                        entry.completion.availabilityVersion,
+                        entry.completion.closedPathIndices
+                    );
                     if (entry.expectedTerminalFinalSubmit
                         && this.terminalRouteAvailabilityProgramCancelStatus
                             ?.state === 'submitted') {
@@ -5933,15 +5981,15 @@ export class GpuCircleBodySimulation {
             despawnPlans = request.despawnPlans ?? [];
             if (!Array.isArray(spawnPlans) || !Array.isArray(despawnPlans)
                 || (spawnPlans.length === 0) === (despawnPlans.length === 0)
-                || spawnPlans.length > GPU_ROUTE_RUNTIME_MAX_CLOSERS
-                || despawnPlans.length > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
+                || spawnPlans.length > this.capacity
+                || despawnPlans.length > this.capacity) {
                 throw new RangeError('route lifecycle은 exact 단일 sub-batch여야 합니다.');
             }
         } catch (error) {
             return reject(`route-lifecycle-contract:${error.message}`);
         }
         const kind = spawnPlans.length > 0 ? 'spawn' : 'despawn';
-        const normalizedPlans = [];
+        let normalizedPlans = [];
         const cleanupRecords = [];
         const seenHandles = new Set();
         const seenCommandFingerprints = new Set();
@@ -5988,6 +6036,16 @@ export class GpuCircleBodySimulation {
                         || this.handleToSlot.has(handleKey)) {
                         throw new RangeError('route lifecycle spawn plan이 canonical하지 않습니다.');
                     }
+                    const routeSetId = String(plan.routeSetId ?? '');
+                    const routeSetIndex
+                        = this.routeRuntimeTopology.routeSetIndexById[
+                            routeSetId
+                        ];
+                    if (!Number.isSafeInteger(routeSetIndex)) {
+                        throw new RangeError(
+                            'route lifecycle spawn routeSetId가 current graph에 없습니다.'
+                        );
+                    }
                     normalizedPlans.push(Object.freeze({
                         commandId: String(plan.commandId),
                         commandIdFingerprint,
@@ -5995,12 +6053,16 @@ export class GpuCircleBodySimulation {
                         definitionId: plan.definitionId,
                         routeClosureProfileId: plan.routeClosureProfileId,
                         routeClosureProfileCode: plan.routeClosureProfileCode,
+                        routeSetId,
+                        routeSetIndex,
                         handle: Object.freeze({ ...exactHandle })
                     }));
                 } else {
                     const exactBody = this.resolveExactRouteBodySlot(exactHandle);
                     if (!exactBody
-                        || exactBody.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                        || (exactBody.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                            && exactBody.role
+                                !== GPU_ROUTE_RUNTIME_ROLE.NORMALIZED)) {
                         throw new RangeError('despawn 대상이 active exact Cork가 아닙니다.');
                     }
                     normalizedPlans.push(Object.freeze({
@@ -6029,22 +6091,10 @@ export class GpuCircleBodySimulation {
         } catch (error) {
             return reject(`route-lifecycle-contract:${error.message}`);
         }
-        if (kind === 'spawn') {
-            let pendingSpawnCount = 0;
-            for (const reservation of this.routeLifecycleReservations.values()) {
-                if (reservation.kind === 'spawn') {
-                    pendingSpawnCount += reservation.plans.length;
-                }
-            }
-            if (this.routeRuntimeRosterCount
-                + pendingSpawnCount + normalizedPlans.length
-                > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
-                return reject('route-roster-capacity');
-            }
-        } else if (this.stagedRouteCleanupBatch !== null
+        if (kind === 'despawn' && (this.stagedRouteCleanupBatch !== null
             || [...this.routeLifecycleReservations.values()].some(
                 (reservation) => reservation.kind === 'despawn'
-            )) {
+            ))) {
             return reject('route-cleanup-reservation-busy');
         }
         const receipt = Object.freeze({
@@ -6139,10 +6189,6 @@ export class GpuCircleBodySimulation {
                         || exactBody.profileCode !== plan.routeClosureProfileCode) {
                         throw new RangeError('spawned Cork body binding mismatch');
                     }
-                }
-                if (this.routeRuntimeRosterCount
-                    > GPU_ROUTE_RUNTIME_MAX_CLOSERS) {
-                    throw new RangeError('route roster capacity exceeded after publication');
                 }
             } else {
                 for (const plan of reservation.plans) {
@@ -8854,8 +8900,57 @@ export class GpuCircleBodySimulation {
         if (!out || typeof out.push !== 'function') {
             throw new TypeError('event batch 출력 대상은 push 가능한 배열이어야 합니다.');
         }
+        let normalizedRouteFallback = false;
         while (this.eventBatchQueue[0]?.completed === true) {
             const entry = this.eventBatchQueue.shift();
+            for (const event of entry.events) {
+                if (event?.type !== 'route'
+                    || event.eventType !== 'route-cleaned') {
+                    continue;
+                }
+                const handle = Object.freeze({
+                    entityId: event.entityId,
+                    incarnation: event.incarnation
+                });
+                const bodySlot = this.handleToSlot.get(entityHandleKey(handle));
+                if (bodySlot === undefined || this.slotActive[bodySlot] !== 1) {
+                    // 실제 lifecycle cleanup은 body 제거 뒤 도착하므로 host mirror를
+                    // 바꾸지 않습니다. 살아 있는 exact CLOSER의 CLEANED만 갈림길
+                    // normal-fallback proof입니다.
+                    continue;
+                }
+                const state = readGpuRouteRuntimeState(
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    bodySlot
+                );
+                if (state.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                    || state.selfEntityId !== handle.entityId
+                    || state.selfIncarnation !== handle.incarnation) {
+                    continue;
+                }
+                writeGpuRouteRuntimeState(
+                    this.hostRouteRuntimeStates,
+                    this.capacity,
+                    bodySlot,
+                    {
+                        role: GPU_ROUTE_RUNTIME_ROLE.NORMALIZED,
+                        phase: GPU_ROUTE_RUNTIME_PHASE.NONE,
+                        flags: 0,
+                        selfEntityId: handle.entityId,
+                        selfIncarnation: handle.incarnation,
+                        currentPathIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+                        routeSetIndex: state.routeSetIndex,
+                        closureIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+                        observedAvailabilityVersion: event.availabilityVersion,
+                        phaseEnteredFixedTick: entry.sourceTick,
+                        pendingFieldIndex: GPU_ROUTE_RUNTIME_INVALID_INDEX,
+                        leaseGeneration: 0,
+                        profileCode: state.profileCode
+                    }
+                );
+                normalizedRouteFallback = true;
+            }
             out.push(Object.freeze({
                 sessionGeneration: entry.sessionGeneration,
                 previousSourceTick: entry.previousSourceTick,
@@ -8883,12 +8978,109 @@ export class GpuCircleBodySimulation {
                 events: entry.events
             }));
         }
+        if (normalizedRouteFallback) {
+            this.#refreshHostBodyDerivedState();
+        }
         this.#completeDeferredIdleRelease();
         return out;
     }
 
+    #publishRouteFlowReadyVersion(availabilityVersion) {
+        if (!Number.isSafeInteger(availabilityVersion)
+            || availabilityVersion <= this.flowReadyAvailabilityVersion
+            || availabilityVersion >= UINT32_MAX) {
+            return;
+        }
+        this.flowReadyAvailabilityVersion = availabilityVersion;
+        new DataView(this.hostRouteAvailability).setUint32(
+            GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER
+                .FLOW_READY_AVAILABILITY_VERSION,
+            availabilityVersion,
+            LITTLE_ENDIAN
+        );
+        if (this.device && this.buffers?.routeAvailability) {
+            this.device.queue.writeBuffer(
+                this.buffers.routeAvailability,
+                GPU_ROUTE_RUNTIME_ABI.AVAILABILITY_HEADER
+                    .FLOW_READY_AVAILABILITY_VERSION,
+                new Uint32Array([availabilityVersion])
+            );
+        }
+    }
+
+    #requestRouteFlowFieldRebuild(availabilityVersion, closedPathIndices) {
+        if (!this.routeRuntimeTopology.enabled
+            || !this.flowFieldAtlas.gpuGeneration
+            || !this.device
+            || !this.flowTexture
+            || !this.flowIntegrationTexture) {
+            return;
+        }
+        const closedPathSet = new Set(closedPathIndices);
+        const closedClosureIndices = this.routeRuntimeTopology.graph.closures
+            .filter((closure) => closedPathSet.has(closure.pathIndex))
+            .map((closure) => closure.closureIndex)
+            .sort((left, right) => left - right);
+        const closureKey = closedClosureIndices.join(',');
+        if (closureKey === this.publishedFlowClosureKey) {
+            this.flowFieldRebuildToken++;
+            this.flowFieldRebuildJob?.cancel();
+            this.flowFieldRebuildJob = null;
+            this.pendingFlowClosureKey = null;
+            this.#publishRouteFlowReadyVersion(availabilityVersion);
+            return;
+        }
+        if (this.flowFieldRebuildJob
+            && this.pendingFlowClosureKey === closureKey) {
+            return;
+        }
+        this.flowFieldRebuildToken++;
+        const token = this.flowFieldRebuildToken;
+        this.flowFieldRebuildJob?.cancel();
+        this.pendingFlowClosureKey = closureKey;
+        const rebuildAtlas = createRouteFlowFieldRebuildAtlas(
+            this.flowFieldAtlas,
+            closedClosureIndices
+        );
+        this.flowFieldRebuildJob = createGpuRouteFlowFieldRebuildJob(
+            this.device,
+            rebuildAtlas,
+            this.flowTexture,
+            this.flowIntegrationTexture,
+            {
+                availabilityVersion,
+                onCommitted: (committedVersion) => {
+                    if (token !== this.flowFieldRebuildToken) return;
+                    this.publishedFlowClosureKey = closureKey;
+                    this.#publishRouteFlowReadyVersion(committedVersion);
+                    this.flowFieldRebuildJob = null;
+                    this.pendingFlowClosureKey = null;
+                }
+            }
+        );
+    }
+
+    #pumpRouteFlowFieldRebuild(frame) {
+        const job = this.flowFieldRebuildJob;
+        if (!job) return;
+        const performanceSnapshot = getSimulationPerformanceSnapshot();
+        job.pump({
+            elapsedSeconds: Number.isFinite(frame?.frameDelta)
+                ? Math.max(0, frame.frameDelta)
+                : performanceSnapshot.frameDeltaSeconds,
+            previousFrameCpuSeconds: Number.isFinite(
+                frame?.previousFrameCpuSeconds
+            )
+                ? Math.max(0, frame.previousFrameCpuSeconds)
+                : performanceSnapshot.previousFrameCpuSeconds,
+            targetFrameSeconds: Number.isFinite(frame?.targetFrameSeconds)
+                ? Math.max(1e-6, frame.targetFrameSeconds)
+                : performanceSnapshot.targetFrameSeconds
+        });
+    }
+
     /**
-     * 물리와 독립적인 presentation clock만 진행합니다.
+     * 물리와 독립적인 presentation clock과 여유 예산 navigation rebuild를 진행합니다.
      * @param {{frameDelta?:number,fixedDelta?:number,fixedAlpha?:number,renderFrameId?:number}} frame - 렌더 프레임 값입니다.
      * @returns {object} 셰이더 표현 상태입니다.
      */
@@ -8901,7 +9093,9 @@ export class GpuCircleBodySimulation {
         if (Number(frame.frameDelta) === 0 || this.requiresAuthoritativeRebuild) {
             this.presentationClock.synchronize(frame.renderFrameId);
         }
-        return this.presentationClock.advanceRender(scratch);
+        const presentation = this.presentationClock.advanceRender(scratch);
+        this.#pumpRouteFlowFieldRebuild(frame);
+        return presentation;
     }
 
     /**
@@ -9645,6 +9839,10 @@ export class GpuCircleBodySimulation {
             header.AVAILABILITY_VERSION,
             LITTLE_ENDIAN
         );
+        const flowReadyAvailabilityVersion = view.getUint32(
+            header.FLOW_READY_AVAILABILITY_VERSION,
+            LITTLE_ENDIAN
+        );
         const closureCount = view.getUint32(header.CLOSURE_COUNT, LITTLE_ENDIAN);
         const records = [];
         const closedPathIds = [];
@@ -9691,12 +9889,17 @@ export class GpuCircleBodySimulation {
                 changedAtFixedTick: view.getUint32(
                     offset + recordAbi.CHANGED_AT_FIXED_TICK,
                     LITTLE_ENDIAN
+                ),
+                changedAvailabilityVersion: view.getUint32(
+                    offset + recordAbi.CHANGED_AVAILABILITY_VERSION,
+                    LITTLE_ENDIAN
                 )
             }));
         }
         closedPathIds.sort();
         return Object.freeze({
             availabilityVersion,
+            flowReadyAvailabilityVersion,
             records: Object.freeze(records),
             closedPathIds: Object.freeze(closedPathIds),
             leaseCount
@@ -9743,8 +9946,20 @@ export class GpuCircleBodySimulation {
                 || explicit.observedAvailabilityVersion !== availabilityVersion) {
                 throw new RangeError(`${label}.routeRuntimeState identity/version이 다릅니다.`);
             }
+            const authoredPathIndex = this.routeRuntimeTopology.pathIndexById[
+                body.pathId
+            ];
+            const currentPathIndex = explicit.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                    && explicit.phase === GPU_ROUTE_RUNTIME_PHASE.TRAVEL
+                    && explicit.currentPathIndex === GPU_ROUTE_RUNTIME_INVALID_INDEX
+                ? authoredPathIndex
+                : explicit.currentPathIndex;
+            if (!Number.isSafeInteger(currentPathIndex)) {
+                throw new RangeError(`${label}.pathId가 current route graph에 없습니다.`);
+            }
             return Object.freeze({
                 ...explicit,
+                currentPathIndex,
                 routeSetIndex
             });
         }
@@ -9887,7 +10102,8 @@ export class GpuCircleBodySimulation {
                 this.capacity,
                 slot
             );
-            if (routeState.role !== GPU_ROUTE_RUNTIME_ROLE.NONE) {
+            if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.ACTOR
+                || routeState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
                 this.slotRouteRuntimeDomain[slot] = 1;
                 if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
                     routeRuntimeRosterCount++;
@@ -12758,6 +12974,10 @@ export class GpuCircleBodySimulation {
                     header.LAST_EVENT_COUNT,
                     LITTLE_ENDIAN
                 );
+                const flowReadyAvailabilityVersion = view.getUint32(
+                    header.FLOW_READY_AVAILABILITY_VERSION,
+                    LITTLE_ENDIAN
+                );
                 const expectedClosureCount
                     = this.routeRuntimeTopology.graph?.closures?.length ?? 0;
                 if (abiVersion !== GPU_ROUTE_RUNTIME_ABI_VERSION
@@ -12778,7 +12998,8 @@ export class GpuCircleBodySimulation {
                     || nextLeaseGeneration === UINT32_MAX
                     || lastEventBase > this.eventCapacity
                     || lastEventCount > this.eventCapacity - lastEventBase
-                    || view.getUint32(header.RESERVED_0, LITTLE_ENDIAN) !== 0
+                    || flowReadyAvailabilityVersion === 0
+                    || flowReadyAvailabilityVersion > availabilityVersion
                     || view.getUint32(header.RESERVED_1, LITTLE_ENDIAN) !== 0) {
                     throw new RangeError(
                         'route availability readback header 인증에 실패했습니다.'
@@ -12813,14 +13034,17 @@ export class GpuCircleBodySimulation {
                         offset + recordAbi.CHANGED_AT_FIXED_TICK,
                         LITTLE_ENDIAN
                     );
-                    if (view.getUint32(
-                        offset + recordAbi.RESERVED_0,
+                    const changedAvailabilityVersion = view.getUint32(
+                        offset + recordAbi.CHANGED_AVAILABILITY_VERSION,
                         LITTLE_ENDIAN
-                    ) !== 0 || view.getUint32(
+                    );
+                    if (changedAvailabilityVersion === 0
+                        || changedAvailabilityVersion > availabilityVersion
+                        || view.getUint32(
                         offset + recordAbi.RESERVED_1,
                         LITTLE_ENDIAN
                     ) !== 0) {
-                        throw new RangeError('route availability reserved word가 0이 아닙니다.');
+                        throw new RangeError('route availability flow version이 유효하지 않습니다.');
                     }
                     const isOpen = state === GPU_ROUTE_AVAILABILITY_STATE.OPEN;
                     const isUnowned = ownerSlot === UINT32_MAX
@@ -12862,7 +13086,8 @@ export class GpuCircleBodySimulation {
                         ownerSlot: isOpen ? null : ownerSlot,
                         ownerHandle,
                         leaseGeneration,
-                        changedAtFixedTick
+                        changedAtFixedTick,
+                        changedAvailabilityVersion
                     }));
                 }
                 closedPathIndices.sort((left, right) => left - right);
@@ -12875,6 +13100,7 @@ export class GpuCircleBodySimulation {
                     sourceTick,
                     completedThroughTick,
                     availabilityVersion,
+                    flowReadyAvailabilityVersion,
                     graphContentFingerprint,
                     terminal: terminalFlags === 1,
                     readbackBypassed: false,
@@ -13179,6 +13405,12 @@ export class GpuCircleBodySimulation {
         this.routeRuntimeCompletedThroughTick = 0;
         this.lastRouteRuntimeSourceTick = 0;
         this.lastRouteAvailabilityVersion = 1;
+        this.flowFieldRebuildToken++;
+        this.flowFieldRebuildJob?.cancel();
+        this.flowFieldRebuildJob = null;
+        this.flowReadyAvailabilityVersion = 1;
+        this.publishedFlowClosureKey = '';
+        this.pendingFlowClosureKey = null;
         this.lastRouteRuntimeStatus = GPU_ROUTE_RUNTIME_STATUS.OK;
         this.routeRuntimeRosterCount = 0;
         this.routeRuntimeProjectileThreatBodyCount = 0;
@@ -16563,6 +16795,10 @@ export class GpuCircleBodySimulation {
 
     #releaseGpuResources() {
         this.idleReleasePending = false;
+        this.flowFieldRebuildToken++;
+        this.flowFieldRebuildJob?.cancel();
+        this.flowFieldRebuildJob = null;
+        this.pendingFlowClosureKey = null;
         this.crowdDensityRuntime?.retire('simulation-resource-retired');
         this.transientVfxRuntime?.retire();
         this.overflowReadbackLease++;

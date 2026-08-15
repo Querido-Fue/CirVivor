@@ -23,6 +23,7 @@ export const ENEMY_ASPECT_RATIO = Object.freeze({
     penta: 1.0,
     rhom: 0.81,
     octa: 1.0,
+    cork: 1.0,
     jorang: 1.0,
     gen: 1.05
 });
@@ -36,6 +37,7 @@ export const ENEMY_HEIGHT_SCALE = Object.freeze({
     penta: 1.0,
     rhom: 1.0,
     octa: 1.0,
+    cork: 1.0,
     jorang: 1.0,
     gen: 1.0
 });
@@ -123,6 +125,16 @@ export const ENEMY_SHAPE_GEOMETRY = Object.freeze({
     ]),
     octa: createShapeGeometry([
         createRegularPolygonPath(8, 0.47, Math.PI / 8)
+    ]),
+    // 코르크 마개의 정면도입니다. 위쪽이 넓고 아래쪽이 좁은 사다리꼴로,
+    // 이동 방향과 무관하게 화면에 고정된 실루엣을 사용합니다.
+    cork: createShapeGeometry([
+        createPolygonPath([
+            freezePoint(-0.48, -0.46),
+            freezePoint(0.48, -0.46),
+            freezePoint(0.34, 0.46),
+            freezePoint(-0.34, 0.46)
+        ])
     ]),
     // 두 둥근 떡 덩이를 좁은 허리가 잇는 조랭이떡 실루엣입니다.
     // Legacy SVG와 GPU analytic SDF는 이 두 8각 lobe와 connector를 함께 사용합니다.
@@ -243,6 +255,9 @@ export const ENEMY_NORMALIZED_RENDER_GEOMETRY = Object.freeze({
     }),
     octa: Object.freeze({
         points: normalizePolygon('octa', ENEMY_SHAPE_GEOMETRY.octa.paths[0], true)
+    }),
+    cork: Object.freeze({
+        points: normalizePolygon('cork', ENEMY_SHAPE_GEOMETRY.cork.paths[0])
     }),
     jorang: Object.freeze({
         lobes: Object.freeze(

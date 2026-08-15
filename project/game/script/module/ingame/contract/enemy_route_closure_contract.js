@@ -14,7 +14,7 @@ export const ENEMY_ROUTE_CLOSURE_ACTIVATION_POLICY = Object.freeze({
 });
 
 export const ENEMY_ROUTE_CLOSURE_NO_AVAILABLE_ROUTE_POLICY = Object.freeze({
-    WAIT_AT_ROUTE_ENTRY: 'wait-at-route-entry'
+    CONTINUE_AS_NORMAL_ENEMY: 'continue-as-normal-enemy'
 });
 
 export const ENEMY_ROUTE_CLOSURE_REOPEN_POLICY = Object.freeze({
@@ -380,6 +380,7 @@ function snapshotRouteSources(source, label) {
         throw new TypeError(`${label}에는 둘 이상의 authored route가 필요합니다.`);
     }
     const routesByPathId = new Map();
+    const physicalRouteSignatures = new Map();
     for (let index = 0; index < routes.length; index++) {
         const route = routes[index];
         const pathId = route.pathId;
@@ -387,6 +388,16 @@ function snapshotRouteSources(source, label) {
             || route.macroCells.length < 2) {
             throw new RangeError(`${label}[${index}] path/macroCells가 유효하지 않습니다.`);
         }
+        const physicalSignature = route.macroCells
+            .map(([row, column]) => `${row}:${column}`)
+            .join('|');
+        const aliasedPathId = physicalRouteSignatures.get(physicalSignature);
+        if (aliasedPathId !== undefined) {
+            throw new RangeError(
+                `${label}[${index}]는 ${aliasedPathId}와 같은 물리 경로를 다른 pathId로 위장합니다.`
+            );
+        }
+        physicalRouteSignatures.set(physicalSignature, pathId);
         routesByPathId.set(pathId, route);
     }
     return routesByPathId;
@@ -727,6 +738,108 @@ export function normalizeEnemyRouteGraph(
             throw new RangeError(`${label}.closures에 중복 ID가 있습니다: ${closure.id}`);
         }
         closureIds.add(closure.id);
+    }
+
+    for (const routeSet of routeSets) {
+        const candidatePathIds = routeSet.candidates.map(({ pathId }) => pathId);
+        const candidateClosures = candidatePathIds.map((pathId) => (
+            closures.find((closure) => closure.pathId === pathId) ?? null
+        ));
+        if (candidateClosures.some((closure) => closure === null)) {
+            throw new RangeError(
+                `${label} routeSet ${routeSet.id}의 모든 갈래에는 closure가 필요합니다.`
+            );
+        }
+        const upstreamSwitchNodeId = candidateClosures[0].upstreamSwitchNodeId;
+        const downstreamMergeNodeId = candidateClosures[0].downstreamMergeNodeId;
+        if (candidateClosures.some((closure) => (
+            closure.upstreamSwitchNodeId !== upstreamSwitchNodeId
+            || closure.downstreamMergeNodeId !== downstreamMergeNodeId
+        ))) {
+            throw new RangeError(
+                `${label} routeSet ${routeSet.id}은 하나의 실제 switch에서 갈라져 같은 merge로 합쳐져야 합니다.`
+            );
+        }
+        let sharedPrefix = null;
+        let sharedCoreSuffix = null;
+        const occupiedBranchCells = new Map();
+        for (const pathId of candidatePathIds) {
+            const closure = candidateClosures.find((entry) => entry.pathId === pathId);
+            const route = routesByPathId.get(pathId);
+            const switchMembership = findNodeMembership(
+                nodeById.get(upstreamSwitchNodeId),
+                pathId
+            );
+            const mergeMembership = findNodeMembership(
+                nodeById.get(downstreamMergeNodeId),
+                pathId
+            );
+            if (!closure || !route || !switchMembership || !mergeMembership) {
+                throw new RangeError(
+                    `${label} routeSet ${routeSet.id}/${pathId}의 switch/merge/closure membership가 유효하지 않습니다.`
+                );
+            }
+            const coreMembership = nodes
+                .filter((node) => node.kind === ENEMY_ROUTE_GRAPH_NODE_KIND.CORE)
+                .map((node) => findNodeMembership(node, pathId))
+                .find((membership) => membership !== null
+                    && membership.progressOrdinal
+                        > mergeMembership.progressOrdinal) ?? null;
+            if (!coreMembership) {
+                throw new RangeError(
+                    `${label} routeSet ${routeSet.id}/${pathId}는 merge 이후 Core까지 이어져야 합니다.`
+                );
+            }
+            const routeCellKeys = route.macroCells.map(
+                ([row, column]) => `${row}:${column}`
+            );
+            const prefix = routeCellKeys.slice(
+                0,
+                switchMembership.progressOrdinal + 1
+            );
+            const coreSuffix = routeCellKeys.slice(
+                mergeMembership.progressOrdinal,
+                coreMembership.progressOrdinal + 1
+            );
+            if (sharedPrefix !== null
+                && (sharedPrefix.length !== prefix.length
+                    || sharedPrefix.some((cell, index) => cell !== prefix[index]))) {
+                throw new RangeError(
+                    `${label} routeSet ${routeSet.id}은 선언한 switch까지 하나의 공통 진입 경로여야 합니다.`
+                );
+            }
+            if (sharedCoreSuffix !== null
+                && (sharedCoreSuffix.length !== coreSuffix.length
+                    || sharedCoreSuffix.some(
+                        (cell, index) => cell !== coreSuffix[index]
+                    ))) {
+                throw new RangeError(
+                    `${label} routeSet ${routeSet.id}은 merge부터 Core까지 하나의 공통 경로여야 합니다.`
+                );
+            }
+            sharedPrefix ??= prefix;
+            sharedCoreSuffix ??= coreSuffix;
+            const branchCells = routeCellKeys.slice(
+                switchMembership.progressOrdinal + 1,
+                mergeMembership.progressOrdinal
+            );
+            const sharedCells = new Set([...prefix, ...coreSuffix]);
+            if (new Set(branchCells).size !== branchCells.length
+                || branchCells.some((cell) => sharedCells.has(cell))) {
+                throw new RangeError(
+                    `${label} routeSet ${routeSet.id}/${pathId}의 실제 갈림 구간은 self-intersection할 수 없습니다.`
+                );
+            }
+            for (const cell of branchCells) {
+                const ownerPathId = occupiedBranchCells.get(cell);
+                if (ownerPathId !== undefined) {
+                    throw new RangeError(
+                        `${label} routeSet ${routeSet.id}의 ${pathId}/${ownerPathId} 갈림 구간이 ${cell}에서 물리적으로 겹칩니다.`
+                    );
+                }
+                occupiedBranchCells.set(cell, pathId);
+            }
+        }
     }
 
     return Object.freeze({

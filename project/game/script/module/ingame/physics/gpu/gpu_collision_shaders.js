@@ -5643,6 +5643,7 @@ const RENDER_SHAPE_RHOM: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RHOM}u;
 const RENDER_SHAPE_OCTA: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.OCTA}u;
 const RENDER_SHAPE_RING: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.RING}u;
 const RENDER_SHAPE_JORANG: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG}u;
+const RENDER_SHAPE_CORK: u32 = ${GPU_CIRCLE_BODY_RENDER_SHAPE.CORK}u;
 const PROJECTILE_CAPTURE_ROLE_CAPTOR: u32 = ${GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR}u;
 const PROJECTILE_CAPTURE_ROLE_MASK: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_MASK}u;
 const PROJECTILE_CAPTURE_ROLE_SHIFT: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.ROLE_SHIFT}u;
@@ -5680,6 +5681,7 @@ const PENTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.penta.points)};
 const HEXA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.hexa.points)};
 const RHOM_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.rhom.points)};
 const OCTA_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.octa.points)};
+const CORK_POINTS = ${toWgslPointArray(ENEMY_RENDER_GEOMETRY.cork.points)};
 const RING_OUTER_RADIUS: f32 = ${toWgslFloat(
     ENEMY_RENDER_GEOMETRY.ring.outerRadius
 )};
@@ -5836,6 +5838,9 @@ fn shape_distance(point: vec2f, velocity: vec2f, shape_code: u32) -> f32 {
             OCTA_POINTS,
             8u
         );
+    }
+    if (shape_code == RENDER_SHAPE_CORK) {
+        return polygon_distance(point, CORK_POINTS, 4u);
     }
     if (shape_code == RENDER_SHAPE_GEN) {
         return generator_distance(point);

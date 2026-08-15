@@ -159,6 +159,7 @@ export class CorkRouteClosureDirector {
         }
         this.rosterByHandleKey = new Map();
         this.pendingAssignmentByHandleKey = new Map();
+        this.normalFallbackByHandleKey = new Map();
         this.pendingCleanupByHandleKey = new Map();
         this.completedFingerprintBySourceTick = new Map();
         this.lastLeaseGenerationByClosureId = new Map();
@@ -291,6 +292,9 @@ export class CorkRouteClosureDirector {
             const nextRoster = new Map(this.rosterByHandleKey);
             const nextPendingAssignments = new Map(
                 this.pendingAssignmentByHandleKey
+            );
+            const nextNormalFallbacks = new Map(
+                this.normalFallbackByHandleKey
             );
             const nextPendingCleanups = new Map(this.pendingCleanupByHandleKey);
             const nextLastLeaseGenerationByClosureId = new Map(
@@ -448,11 +452,43 @@ export class CorkRouteClosureDirector {
                 const current = nextPendingCleanups.get(
                     normalized.key
                 );
-                this.#assertSameLease(current, normalized, 'cleanup');
-                if (current.closed && !current.reopened) {
-                    throw new RangeError('closed route owner cleanup 전에 reopen이 필요합니다.');
+                if (current) {
+                    this.#assertSameLease(current, normalized, 'cleanup');
+                    if (current.closed && !current.reopened) {
+                        throw new RangeError(
+                            'closed route owner cleanup 전에 reopen이 필요합니다.'
+                        );
+                    }
+                    nextPendingCleanups.delete(normalized.key);
+                    return;
                 }
-                nextPendingCleanups.delete(normalized.key);
+                const pendingHandle = nextPendingAssignments.get(normalized.key);
+                if (!sameHandle(pendingHandle, normalized.ownerHandle)
+                    || nextRoster.has(normalized.key)
+                    || nextNormalFallbacks.has(normalized.key)) {
+                    throw new RangeError(
+                        'route cleanup이 lease cleanup도 branch normal-fallback도 아닙니다.'
+                    );
+                }
+                const lastLeaseGeneration
+                    = nextLastLeaseGenerationByClosureId.get(
+                        normalized.closureId
+                    );
+                if (lastLeaseGeneration !== undefined
+                    && normalized.leaseGeneration <= lastLeaseGeneration) {
+                    throw new RangeError(
+                        'normal-fallback proof가 closure ABA history를 전진하지 않았습니다.'
+                    );
+                }
+                nextLastLeaseGenerationByClosureId.set(
+                    normalized.closureId,
+                    normalized.leaseGeneration
+                );
+                nextPendingAssignments.delete(normalized.key);
+                nextNormalFallbacks.set(
+                    normalized.key,
+                    normalized.ownerHandle
+                );
             });
             for (const actions of actionsByHandleKey.values()) {
                 if (actions.size > 1
@@ -474,8 +510,8 @@ export class CorkRouteClosureDirector {
                     );
                 }
             }
-            if (nextRoster.size + nextPendingAssignments.size > this.capacity) {
-                throw new RangeError('Cork route completion roster capacity를 초과했습니다.');
+            if (nextRoster.size > this.capacity) {
+                throw new RangeError('Cork active blocker lease capacity를 초과했습니다.');
             }
             const nextAvailability = normalizeRouteAvailabilitySelectionSnapshot(
                 {
@@ -517,6 +553,7 @@ export class CorkRouteClosureDirector {
 
             this.rosterByHandleKey = nextRoster;
             this.pendingAssignmentByHandleKey = nextPendingAssignments;
+            this.normalFallbackByHandleKey = nextNormalFallbacks;
             this.pendingCleanupByHandleKey = nextPendingCleanups;
             this.lastLeaseGenerationByClosureId
                 = nextLastLeaseGenerationByClosureId;
@@ -600,8 +637,8 @@ export class CorkRouteClosureDirector {
             if (status.capacity !== this.capacity
                 || typeof status.commitRequested !== 'boolean'
                 || typeof status.ingressOpen !== 'boolean'
-                || rosterCount > this.capacity
                 || rosterCount !== this.#getLogicalRosterCount()
+                || this.rosterByHandleKey.size > this.capacity
                 || leaseCount !== this.rosterByHandleKey.size
                     + this.pendingCleanupByHandleKey.size) {
                 throw new RangeError('route runtime/Director roster cardinality가 다릅니다.');
@@ -698,6 +735,7 @@ export class CorkRouteClosureDirector {
             || this.pending
             || this.rosterByHandleKey.size !== 0
             || this.pendingAssignmentByHandleKey.size !== 0
+            || this.normalFallbackByHandleKey.size !== 0
             || this.pendingCleanupByHandleKey.size !== 0
             || this.availabilitySnapshot.closedPathIds.length !== 0) {
             return false;
@@ -767,6 +805,7 @@ export class CorkRouteClosureDirector {
             rosterCount: this.#getLogicalRosterCount(),
             assignedLeaseCount: this.rosterByHandleKey.size,
             pendingAssignmentCount: this.pendingAssignmentByHandleKey.size,
+            normalFallbackCount: this.normalFallbackByHandleKey.size,
             pendingCleanupCount: this.pendingCleanupByHandleKey.size,
             capacity: this.capacity,
             pending: this.pending,
@@ -789,6 +828,7 @@ export class CorkRouteClosureDirector {
         this.destroyed = true;
         this.rosterByHandleKey.clear();
         this.pendingAssignmentByHandleKey.clear();
+        this.normalFallbackByHandleKey.clear();
         this.pendingCleanupByHandleKey.clear();
         this.completedFingerprintBySourceTick.clear();
         this.lastLeaseGenerationByClosureId.clear();
@@ -846,6 +886,9 @@ export class CorkRouteClosureDirector {
         const nextPendingAssignments = new Map(
             this.pendingAssignmentByHandleKey
         );
+        const nextNormalFallbacks = new Map(
+            this.normalFallbackByHandleKey
+        );
         const nextPendingCleanups = new Map(this.pendingCleanupByHandleKey);
         const seen = new Set();
         for (let index = 0; index < entries.length; index++) {
@@ -873,6 +916,7 @@ export class CorkRouteClosureDirector {
             if (entry.action === 'spawn') {
                 if (nextRoster.has(key)
                     || nextPendingAssignments.has(key)
+                    || nextNormalFallbacks.has(key)
                     || nextPendingCleanups.has(key)) {
                     throw new RangeError('route spawn owner identity가 이미 사용 중입니다.');
                 }
@@ -884,34 +928,44 @@ export class CorkRouteClosureDirector {
             }
             const current = nextRoster.get(key);
             const pendingAssignment = nextPendingAssignments.get(key);
+            const normalFallback = nextNormalFallbacks.get(key);
             if (nextPendingCleanups.has(key)
-                || (current === undefined && pendingAssignment === undefined)
+                || (current === undefined
+                    && pendingAssignment === undefined
+                    && normalFallback === undefined)
                 || (current !== undefined
                     && !sameHandle(current.ownerHandle, handle))
                 || (pendingAssignment !== undefined
                     && !sameHandle(pendingAssignment, handle))
-                || (current !== undefined && pendingAssignment !== undefined)) {
+                || (normalFallback !== undefined
+                    && !sameHandle(normalFallback, handle))
+                || Number(current !== undefined)
+                    + Number(pendingAssignment !== undefined)
+                    + Number(normalFallback !== undefined) !== 1) {
                 throw new RangeError(
-                    'route cleanup은 exact active lease만 허용합니다.'
+                    'route cleanup은 exact Cork lifecycle identity만 허용합니다.'
                 );
             }
             if (current) {
                 nextRoster.delete(key);
                 nextPendingCleanups.set(key, current);
-            } else {
-                // SELECT_ROUTE duplicate-wait owner는 아직 GPU lease/action이 없으므로
+            } else if (pendingAssignment) {
+                // 갈림길 도착 전 prospective Cork는 아직 GPU lease/action이 없으므로
                 // authenticated lifecycle cleanup 자체가 exact no-op publication proof입니다.
                 nextPendingAssignments.delete(key);
+            } else {
+                nextNormalFallbacks.delete(key);
             }
         }
         const logicalRosterCount = nextRoster.size
             + nextPendingAssignments.size;
         if (logicalRosterCount !== binding.rosterCount
-            || logicalRosterCount > this.capacity) {
+            || nextRoster.size > this.capacity) {
             throw new RangeError('route lifecycle roster delta가 runtime binding과 다릅니다.');
         }
         this.rosterByHandleKey = nextRoster;
         this.pendingAssignmentByHandleKey = nextPendingAssignments;
+        this.normalFallbackByHandleKey = nextNormalFallbacks;
         this.pendingCleanupByHandleKey = nextPendingCleanups;
         this.sessionGeneration = binding.sessionGeneration;
         this.deviceGeneration = binding.deviceGeneration;
@@ -951,9 +1005,7 @@ export class CorkRouteClosureDirector {
             binding.rosterCount,
             `${label}.rosterCount`
         );
-        if (rosterCount > this.capacity) {
-            throw new RangeError(`${label}.rosterCount가 capacity를 초과했습니다.`);
-        }
+        void rosterCount;
     }
 
     #getLogicalRosterCount() {
@@ -974,6 +1026,7 @@ export class CorkRouteClosureDirector {
             && !this.pending
             && this.rosterByHandleKey.size === 0
             && this.pendingAssignmentByHandleKey.size === 0
+            && this.normalFallbackByHandleKey.size === 0
             && this.pendingCleanupByHandleKey.size === 0
             && this.availabilitySnapshot.closedPathIds.length === 0
             && this.completedThroughTick >= this.terminal.finalFixedTick;

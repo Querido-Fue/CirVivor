@@ -18,6 +18,11 @@ const DEFAULT_VIEWPORT = Object.freeze({
     uiww: 0,
     uiOffsetX: 0
 });
+const DEFAULT_PERFORMANCE = Object.freeze({
+    previousFrameCpuSeconds: 1 / 60,
+    targetFrameSeconds: 1 / 60,
+    frameDeltaSeconds: 0
+});
 const EMPTY_SIMULATION_RECORD = Object.freeze({});
 
 let simulationRuntimeInstance = null;
@@ -108,6 +113,30 @@ function cloneSettingsSnapshot(settings = {}) {
     }
 
     return { ...settings };
+}
+
+function clonePerformanceSnapshot(performanceSnapshot = {}) {
+    return {
+        previousFrameCpuSeconds: Math.max(0, resolveFiniteNumber(
+            performanceSnapshot.previousFrameCpuSeconds,
+            DEFAULT_PERFORMANCE.previousFrameCpuSeconds
+        )),
+        targetFrameSeconds: Math.max(1e-6, resolveFiniteNumber(
+            performanceSnapshot.targetFrameSeconds,
+            DEFAULT_PERFORMANCE.targetFrameSeconds
+        )),
+        frameDeltaSeconds: Math.max(0, resolveFiniteNumber(
+            performanceSnapshot.frameDeltaSeconds,
+            DEFAULT_PERFORMANCE.frameDeltaSeconds
+        ))
+    };
+}
+
+function syncPerformanceSnapshotInto(target, source = {}) {
+    const snapshot = clonePerformanceSnapshot(source);
+    target.previousFrameCpuSeconds = snapshot.previousFrameCpuSeconds;
+    target.targetFrameSeconds = snapshot.targetFrameSeconds;
+    target.frameDeltaSeconds = snapshot.frameDeltaSeconds;
 }
 
 /**
@@ -217,6 +246,7 @@ export class SimulationRuntime {
         this.viewport = cloneViewportSnapshot();
         this.input = cloneInputSnapshot();
         this.settings = cloneSettingsSnapshot();
+        this.performance = clonePerformanceSnapshot();
     }
 
     /**
@@ -235,6 +265,9 @@ export class SimulationRuntime {
         }
         if (snapshot.settings !== undefined) {
             syncSettingsSnapshotInto(this.settings, snapshot.settings);
+        }
+        if (snapshot.performance !== undefined) {
+            syncPerformanceSnapshotInto(this.performance, snapshot.performance);
         }
     }
 
@@ -270,8 +303,13 @@ export class SimulationRuntime {
         return {
             viewport: this.getViewportSnapshot(),
             input: this.getInputSnapshot(),
-            settings: this.getSettingsSnapshot()
+            settings: this.getSettingsSnapshot(),
+            performance: this.getPerformanceSnapshot()
         };
+    }
+
+    getPerformanceSnapshot() {
+        return clonePerformanceSnapshot(this.performance);
     }
 }
 
@@ -312,6 +350,10 @@ export function getSimulationRuntime() {
  */
 export function getSimulationRuntimeSnapshot() {
     return ensureSimulationRuntime().createSnapshot();
+}
+
+export function getSimulationPerformanceSnapshot() {
+    return clonePerformanceSnapshot(simulationRuntimeInstance?.performance);
 }
 
 /**

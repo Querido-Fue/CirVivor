@@ -8,6 +8,8 @@ const {
     GPU_ROUTE_FLOW_FIELD_GENERATOR_STORAGE_BUFFER_MAXIMUM,
     GPU_ROUTE_FLOW_FIELD_GENERATOR_VERSION,
     GPU_ROUTE_FLOW_FIELD_GENERATOR_WGSL,
+    GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND,
+    createGpuRouteFlowFieldRebuildJob,
     generateGpuRouteFlowFieldTextures
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_route_flow_field_generator.js'
@@ -35,8 +37,10 @@ test('GPU route generator는 bounds-safe seed-relax-finalize와 hard-wall 계약
     }
     assert.match(
         wgsl,
-        /id\.x >= params\.cols \|\| id\.y >= params\.rows/
+        /id\.x >= params\.cols \|\| id\.y >= params\.row_count[\s\S]*?output_row >= params\.rows/
     );
+    assert.match(wgsl, /row_offset: u32,[\s\S]*?row_count: u32,/);
+    assert.equal(GPU_ROUTE_FLOW_FIELD_MINIMUM_REBUILD_RATE_PER_SECOND, 0.30);
     assert.match(
         wgsl,
         /blocked_layers\[index\] != 0u[\s\S]*?cost_write\[index\] = COST_INFINITY;/
@@ -268,5 +272,137 @@ test('GPU route generator는 잘못된 recipe와 device limit를 allocation 전�
         } else {
             globalThis.GPUTextureUsage = previousTextureUsage;
         }
+    }
+});
+
+test('incremental rebuild는 CPU 포화 시 30%/초 credit을 보장하고 여유분만 가속한다', () => {
+    const previousBufferUsage = globalThis.GPUBufferUsage;
+    const previousTextureUsage = globalThis.GPUTextureUsage;
+    globalThis.GPUBufferUsage = Object.freeze({
+        COPY_DST: 1,
+        STORAGE: 2,
+        UNIFORM: 4
+    });
+    globalThis.GPUTextureUsage = Object.freeze({
+        STORAGE_BINDING: 8,
+        COPY_SRC: 16
+    });
+    const counters = { copies: 0, commits: 0 };
+    const pass = {
+        setPipeline() {},
+        setBindGroup() {},
+        dispatchWorkgroups() {},
+        end() {}
+    };
+    const texture = {
+        createView(descriptor) { return descriptor; },
+        destroy() {}
+    };
+    const device = {
+        limits: {
+            maxBufferSize: 1 << 20,
+            maxStorageBufferBindingSize: 1 << 20,
+            maxTextureDimension2D: 1024,
+            maxTextureArrayLayers: 256,
+            maxComputeWorkgroupsPerDimension: 65535
+        },
+        queue: {
+            writeBuffer() {},
+            submit() {},
+            onSubmittedWorkDone() { return Promise.resolve(); }
+        },
+        createBuffer() { return { destroy() {} }; },
+        createTexture() { return { ...texture }; },
+        createShaderModule() { return {}; },
+        createComputePipeline() {
+            return { getBindGroupLayout() { return {}; } };
+        },
+        createBindGroup(descriptor) { return descriptor; },
+        createCommandEncoder() {
+            return {
+                beginComputePass() { return pass; },
+                copyTextureToTexture() { counters.copies++; },
+                finish() { return {}; }
+            };
+        }
+    };
+    const atlas = {
+        cols: 1,
+        rows: 10,
+        size: 10,
+        fieldCount: 1,
+        gpuGeneration: {
+            version: 2,
+            sourceLayerCount: 1,
+            blockedLayers: new Uint32Array(10),
+            goalCellIndices: new Uint32Array([9]),
+            stageLayerIndices: new Uint32Array([0]),
+            relaxationPassCount: 1
+        }
+    };
+    try {
+        const saturated = createGpuRouteFlowFieldRebuildJob(
+            device,
+            atlas,
+            texture,
+            texture,
+            { availabilityVersion: 2 }
+        );
+        let saturatedStatus;
+        for (let index = 0; index < 4; index++) {
+            saturatedStatus = saturated.pump({
+                elapsedSeconds: 0.25,
+                previousFrameCpuSeconds: 1 / 60,
+                targetFrameSeconds: 1 / 60
+            });
+        }
+        assert.ok(saturatedStatus.progress >= 0.26);
+        assert.ok(saturatedStatus.progress <= 0.34);
+        assert.equal(saturatedStatus.complete, false);
+        saturated.cancel();
+
+        const oneSecondSaturated = createGpuRouteFlowFieldRebuildJob(
+            device,
+            atlas,
+            texture,
+            texture,
+            { availabilityVersion: 3 }
+        );
+        const oneSecondStatus = oneSecondSaturated.pump({
+            elapsedSeconds: 1,
+            previousFrameCpuSeconds: 1 / 60,
+            targetFrameSeconds: 1 / 60
+        });
+        assert.ok(oneSecondStatus.progress >= 0.30);
+        assert.ok(oneSecondStatus.progress <= 0.34);
+        assert.equal(oneSecondStatus.complete, false);
+        oneSecondSaturated.cancel();
+
+        const spare = createGpuRouteFlowFieldRebuildJob(
+            device,
+            atlas,
+            texture,
+            texture,
+            {
+                availabilityVersion: 4,
+                onCommitted() { counters.commits++; }
+            }
+        );
+        let spareStatus;
+        for (let index = 0; index < 4; index++) {
+            spareStatus = spare.pump({
+                elapsedSeconds: 0.25,
+                previousFrameCpuSeconds: 0,
+                targetFrameSeconds: 1 / 60
+            });
+        }
+        assert.equal(spareStatus.complete, true);
+        assert.equal(counters.commits, 1);
+        assert.equal(counters.copies, 2);
+    } finally {
+        if (previousBufferUsage === undefined) delete globalThis.GPUBufferUsage;
+        else globalThis.GPUBufferUsage = previousBufferUsage;
+        if (previousTextureUsage === undefined) delete globalThis.GPUTextureUsage;
+        else globalThis.GPUTextureUsage = previousTextureUsage;
     }
 });

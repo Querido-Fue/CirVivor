@@ -39,6 +39,7 @@ export const ENEMY_DEFAULT_WEIGHT = Object.freeze({
     hexa: 1.5,
     penta: 1.2,
     octa: 2.5,
+    cork: 4,
     gen: 4,
     jorang: 4
 });
@@ -91,6 +92,11 @@ export const ENEMY_COLLISION_RADIUS_DATA = Object.freeze({
             vectors: Object.freeze([
                 Object.freeze({ x: 0.9238795325112867, y: 0.3826834323650898 }),
                 Object.freeze({ x: 0.3826834323650898, y: 0.9238795325112867 })
+            ])
+        }),
+        cork: Object.freeze({
+            vectors: Object.freeze([
+                Object.freeze({ x: 0.48, y: 0.46 })
             ])
         }),
         gen: Object.freeze({

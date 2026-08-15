@@ -4310,7 +4310,9 @@ export class GpuEnemySimulationEndpoint {
             if (view?.definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
                 || view.metadata?.routeClosureProfileId
                     !== CORK_ROUTE_CLOSURE_PROFILE_ID
-                || exactRouteBody?.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                || (exactRouteBody?.role !== GPU_ROUTE_RUNTIME_ROLE.CLOSER
+                    && exactRouteBody?.role
+                        !== GPU_ROUTE_RUNTIME_ROLE.NORMALIZED)) {
                 continue;
             }
             const requestedCommandId = [

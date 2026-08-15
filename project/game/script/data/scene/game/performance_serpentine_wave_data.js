@@ -14,8 +14,9 @@ import {
     AUTHORED_WAVE_TIMELINE_COMMAND_TYPE
 } from 'ingame/flow/authored_wave_timeline_contract.js';
 import {
+    PERFORMANCE_SERPENTINE_GATE_ID,
     PERFORMANCE_SERPENTINE_MAP_DATA,
-    PERFORMANCE_SERPENTINE_ROUTE_SET_ID
+    PERFORMANCE_SERPENTINE_PATH_ID
 } from './performance_serpentine_map_data.js';
 
 export const PERFORMANCE_SERPENTINE_WAVE_01_ID
@@ -49,7 +50,8 @@ const PERFORMANCE_BULK_DEFINITION_IDS = Object.freeze([
     BASIC_ARROW_ENEMY_DATA.id
 ]);
 const PERFORMANCE_ROUTE_BINDING = Object.freeze({
-    routeSetId: PERFORMANCE_SERPENTINE_ROUTE_SET_ID
+    gateId: PERFORMANCE_SERPENTINE_GATE_ID,
+    pathId: PERFORMANCE_SERPENTINE_PATH_ID
 });
 export const PERFORMANCE_SERPENTINE_LANE_OFFSETS_TILES = Object.freeze([
     -4,

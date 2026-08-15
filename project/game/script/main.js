@@ -197,6 +197,7 @@ class App {
 
             const completedFixedStepCount = this.systemHandler.tick({
                 frameDeltaSeconds,
+                previousFrameCpuSeconds: this.lastFrameCpuSeconds,
                 fixedStepSeconds: this.fixedStepSeconds,
                 fixedStepCount,
                 fixedAlpha,

@@ -59,7 +59,8 @@ test('RouteRuntime ABI v1은 독립 64-byte body/availability/cleanup plane을 �
     assert.deepEqual(GPU_ROUTE_RUNTIME_ROLE, {
         NONE: 0,
         ACTOR: 1,
-        CLOSER: 2
+        CLOSER: 2,
+        NORMALIZED: 3
     });
     assert.deepEqual(GPU_ROUTE_RUNTIME_PHASE, {
         NONE: 0,
@@ -88,7 +89,24 @@ test('Z expansion/closure는 immutable graph 위의 exact one-owner action이다
         /ACTION_REOPENED[\s\S]*ACTION_CLEANED/);
 });
 
-test('EXPAND는 nonblocking이고 finalize 한 submit이 BLOCKING과 route close를 함께 확정한다', () => {
+test('모든 Cork는 갈림길에서 판단하고 실제 lease만 k-1/8개로 제한한다', () => {
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /open_candidate_count\+\+;[\s\S]*open_candidate_count <= 1u[\s\S]*active_lease_count >= MAX_CLOSERS[\s\S]*ACTION_CLEANED/);
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /pack_meta\(ROLE_NORMALIZED, PHASE_NONE, 0u\)[\s\S]*route_set_core_flow_field/);
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /body_slot < counts\.body_count[\s\S]*PHASE_SELECT_ROUTE/);
+    assert.doesNotMatch(SIMULATION_SOURCE,
+        /planGpuRouteClosureSpecializationAdmission|normalFallbackCommandIdFingerprints/);
+    assert.match(SIMULATION_SOURCE,
+        /spawnPlans\.length > this\.capacity/);
+    assert.match(RUNNER_SOURCE, /branchSpecializationLimit: 1/);
+    assert.match(RUNNER_SOURCE, /excessCorksSpawnedAsNormal/);
+    assert.match(RUNNER_SOURCE, /ninthSpawnedAsNormal/);
+    assert.match(RUNNER_SOURCE, /prospectiveDeathReleasedAdmission/);
+});
+
+test('EXPAND/재계산 중 Cork는 고정·비충돌이며 flow 공개 뒤에만 blocker가 된다', () => {
     assert.match(GPU_ROUTE_RUNTIME_WGSL,
         /phase == PHASE_EXPAND \|\| phase == PHASE_READY_TO_CLOSE[\s\S]*make_nonblocking_enemy\(body_slot\)/);
     const finalizeStart = GPU_ROUTE_RUNTIME_WGSL.indexOf(
@@ -99,18 +117,28 @@ test('EXPAND는 nonblocking이고 finalize 한 submit이 BLOCKING과 route close
     const blockingIndex = finalizeSource.indexOf(
         'set_phase(&route_states.values[action.body_slot], PHASE_BLOCKING)'
     );
+    const anchorIndex = finalizeSource.indexOf(
+        'anchor_closer(action.body_slot, action.closure_index)'
+    );
+    const readinessIndex = finalizeSource.indexOf(
+        'if (closure_physically_blocks(action.closure_index))'
+    );
     const blockerIndex = finalizeSource.indexOf(
         'make_route_blocker(action.body_slot)'
     );
-    const availabilityIndex = finalizeSource.indexOf(
-        'availability.records[closure_index].state = virtual_state[closure_index]'
-    );
     assert.ok(blockingIndex >= 0
-        && blockerIndex > blockingIndex
-        && availabilityIndex > blockerIndex,
-    'BLOCKING/ROUTE_BLOCKER/availability close는 같은 finalize 함수에 있어야 합니다.');
+        && anchorIndex > blockingIndex
+        && readinessIndex > anchorIndex
+        && blockerIndex > readinessIndex,
+    'BLOCKING Cork는 anchor 뒤 flow readiness gate를 통과해야만 blocker가 되어야 합니다.');
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /fn anchor_closer[\s\S]*inverse_mass = 0\.0[\s\S]*~BODY_FLAG_USE_FLOW/);
+    assert.match(GPU_ROUTE_RUNTIME_WGSL,
+        /fn closure_physically_blocks[\s\S]*flow_ready_availability_version[\s\S]*changed_availability_version/);
     assert.match(RUNNER_SOURCE, /precloseExpandNonblockingOpen/);
-    assert.match(RUNNER_SOURCE, /atomicCloseBlockingAndClosed/);
+    assert.match(RUNNER_SOURCE, /stagedCloseAnchoredNonblocking/);
+    assert.match(RUNNER_SOURCE, /flowPublishedBlocking/);
+    assert.match(RUNNER_SOURCE, /pumpRouteFlowFieldUntilReady/);
     assert.match(RUNNER_SOURCE, /closeCompletion\.sourceTick/);
     assert.match(RUNNER_SOURCE, /closeCompletedVersionMatch/);
     assert.match(RUNNER_SOURCE, /readRouteAvailabilityGpuEvidence/);
@@ -151,11 +179,13 @@ test('formation mid-spawn 계약은 폐쇄 backlog와 원래 route의 whole-row 
     assert.match(RUNNER_SOURCE, /member-1-0,member-1-1/);
 });
 
-test('Cork actual runner는 A/M/O WAIT와 R/J/H 독립 side-plane 보존을 GPU readback으로 증명한다', () => {
+test('Cork actual runner는 A/M/O/R/J/H가 멈추지 않고 새 flow를 쓰며 독립 side-plane을 보존함을 증명한다', () => {
     for (const marker of [
-        'WAITING_BEHAVIOR_ACTORS',
-        'REROUTE_OR_WAIT_ACTORS',
+        'BRANCH_REROUTE_BEHAVIOR_ACTORS',
+        'BRANCH_REROUTE_SIDE_PLANE_ACTORS',
         'routeEntryFor(tick63Evidence',
+        'routeNavigationRemainsActive',
+        'behaviorActorsAvoidedWait',
         'body.enemyBehaviorState?.programId',
         'readProjectileCaptureState',
         'simulation.buffers.projectileCaptureStates',
@@ -169,10 +199,9 @@ test('Cork actual runner는 A/M/O WAIT와 R/J/H 독립 side-plane 보존을 GPU 
     ]) {
         assert.ok(RUNNER_SOURCE.includes(marker), `cross-system marker 누락: ${marker}`);
     }
-    assert.match(RUNNER_SOURCE,
-        /after\?\.routeState\.phase === GPU_ROUTE_RUNTIME_PHASE\.WAITING/);
-    assert.match(RUNNER_SOURCE,
-        /after\?\.routeState\.currentPathIndex === lowerPathIndex/);
+    assert.doesNotMatch(RUNNER_SOURCE, /GPU_ROUTE_RUNTIME_PHASE\.WAITING/);
+    assert.match(RUNNER_SOURCE, /blockedBranchActorDidNotWait/);
+    assert.match(RUNNER_SOURCE, /activeActorFollowedRebuiltFlow/);
     assert.match(RUNNER_SOURCE, /const MAIN_HARNESS_CAPACITY = 20/);
     assert.match(RUNNER_SOURCE, /const MAIN_EXPECTED_PEAK_ACTIVE_COUNT = 13/);
     assert.match(RUNNER_SOURCE, /peakActiveCount === MAIN_EXPECTED_PEAK_ACTIVE_COUNT/);
@@ -185,6 +214,7 @@ test('route blocker는 Enemy/Tower만 물리 차단하고 projectile interaction
         /BODY_LAYER_ROUTE_BLOCKER[\s\S]{0,100}BODY_LAYER_PROJECTILE/);
     assert.match(RUNNER_SOURCE, /projectilePhysicallyPassed/);
     assert.match(RUNNER_SOURCE, /projectileDamagedCork/);
+    assert.match(RUNNER_SOURCE, /blockingCorkInverseMass/);
     assert.match(RUNNER_SOURCE, /projectilePenetrationRemaining/);
 });
 

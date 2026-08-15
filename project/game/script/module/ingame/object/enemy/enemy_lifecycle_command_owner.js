@@ -77,8 +77,7 @@ import {
     BASIC_CORK_ENEMY_DEFINITION_ID
 } from 'data/object/enemy/basic_cork_enemy_data.js';
 import {
-    ROUTE_AVAILABILITY_ABI_VERSION,
-    ROUTE_AVAILABILITY_MAX_CORK_ROSTER
+    ROUTE_AVAILABILITY_ABI_VERSION
 } from '../../contract/route_availability_contract.js';
 import {
     GPU_ROUTE_LIFECYCLE_ABI_VERSION
@@ -89,9 +88,6 @@ const DEFAULT_COMMAND_HISTORY_CAPACITY = 65536;
 export const ENEMY_ORBIT_SLOT_CAPACITY_REJECTION_CODE = 'orbit-slot-capacity';
 export const ENEMY_ORBIT_SLOT_METADATA_CORRUPTION_CODE = (
     'orbit-slot-metadata-corruption'
-);
-export const ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE = (
-    'route-roster-capacity'
 );
 export const ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION = (
     'cork-route-terminal-cleanup'
@@ -231,7 +227,7 @@ function snapshotRouteRuntimeBinding(source, label) {
         || !Number.isSafeInteger(source.availabilityVersion)
         || source.availabilityVersion <= 0
         || source.availabilityVersion >= INVALID_HANDLE_COMPONENT
-        || rosterCount > ROUTE_AVAILABILITY_MAX_CORK_ROSTER) {
+        || rosterCount >= INVALID_HANDLE_COMPONENT) {
         throw new RangeError(`${label} route runtime binding이 canonical 범위를 벗어났습니다.`);
     }
     return Object.freeze({
@@ -2280,12 +2276,14 @@ export class EnemyLifecycleCommandOwner {
                     `despawn ${command.commandId}`
                 );
                 if (view?.definitionId === BASIC_CORK_ENEMY_DEFINITION_ID
+                    && view?.metadata?.routeSetId !== null
                     && profile === null) {
                     throw new RangeError(
                         'active Cork registry metadata에 route profile이 없습니다.'
                     );
                 }
-                if (profile === null) {
+                if (profile === null
+                    || view?.metadata?.routeSetId === null) {
                     continue;
                 }
                 routePlans.push(Object.freeze({
@@ -3695,7 +3693,8 @@ export class EnemyLifecycleCommandOwner {
                     reservation.activationIntent,
                     `spawn ${reservation.command.commandId}`
                 );
-                if (profile === null) {
+                if (profile === null
+                    || reservation.activationIntent.routeSetId === null) {
                     continue;
                 }
                 routeReservations.push(Object.freeze({
@@ -3709,6 +3708,7 @@ export class EnemyLifecycleCommandOwner {
                         definitionId: reservation.activationIntent.definitionId,
                         routeClosureProfileId: profile.id,
                         routeClosureProfileCode: profile.definitionCode,
+                        routeSetId: reservation.activationIntent.routeSetId,
                         handle: reservation.handle
                     })
                 }));
@@ -3765,44 +3765,23 @@ export class EnemyLifecycleCommandOwner {
             }
             if (preflight?.abiVersion !== GPU_ROUTE_LIFECYCLE_ABI_VERSION
                 || preflight?.accepted !== true) {
-                if (preflight?.abiVersion === GPU_ROUTE_LIFECYCLE_ABI_VERSION
-                    && preflight?.requiresRecovery !== true
-                    && preflight?.reason
-                        === ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE) {
-                    const rejectedCommandIds = new Set(
-                        routeReservations.map((entry) => (
-                            entry.reservation.command.commandId
-                        ))
-                    );
-                    for (const entry of routeReservations) {
-                        this.registry.cancelReservation(entry.reservation.handle);
-                        result.rejected.push({
-                            commandId: entry.reservation.command.commandId,
-                            code: ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE
-                        });
-                        consumedCommandIds.add(entry.reservation.command.commandId);
-                    }
-                    reservations = reservations.filter((reservation) => (
-                        !rejectedCommandIds.has(reservation.command.commandId)
-                    ));
-                } else {
-                    for (const reservation of reservations) {
-                        this.registry.cancelReservation(reservation.handle);
-                    }
-                    result.state = 'failed';
-                    result.recoveryRequired = true;
-                    result.rejected.push({
-                        commandId: routeReservations[0].plan.commandId,
-                        code: 'route-spawn-preflight',
-                        message: preflight?.reason ?? 'route-spawn-preflight-rejected'
-                    });
-                    return;
+                for (const reservation of reservations) {
+                    this.registry.cancelReservation(reservation.handle);
                 }
+                result.state = 'failed';
+                result.recoveryRequired = true;
+                result.rejected.push({
+                    commandId: routeReservations[0].plan.commandId,
+                    code: 'route-spawn-preflight',
+                    message: preflight?.reason ?? 'route-spawn-preflight-rejected'
+                });
+                return;
             } else {
                 if (preflight.requiresRecovery === true
                     || preflight.targetFixedTick !== targetFixedTick
                     || preflight.batchIdFingerprint !== batchIdFingerprint
-                    || preflight.spawnReservationCount !== plans.length
+                    || preflight.spawnReservationCount
+                        !== plans.length
                     || preflight.cleanupReservationCount !== 0
                     || !preflight.receipt
                     || typeof preflight.receipt !== 'object') {

@@ -2330,6 +2330,7 @@ export class GameObjectSystem {
                     && routeAvailabilityRosterEvidence.rosterCount === 0
                     && routeAvailabilityRosterEvidence.assignedLeaseCount === 0
                     && routeAvailabilityRosterEvidence.pendingAssignmentCount === 0
+                    && routeAvailabilityRosterEvidence.normalFallbackCount === 0
                     && routeAvailabilityRosterEvidence.pendingCleanupCount === 0
                     && routeAvailabilityRosterEvidence.pending === false
                     && routeAvailabilityRosterEvidence.closedPathIds.length === 0

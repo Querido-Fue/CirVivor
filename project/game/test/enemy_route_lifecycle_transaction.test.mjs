@@ -24,7 +24,6 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_route_runtime_abi.js');
 const { WaveDirector } = await loadGameModule('ingame/flow/wave_director.js');
 const {
-    ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE,
     ENEMY_ROUTE_TERMINAL_CLEANUP_DISPOSITION,
     EnemyLifecycleCommandOwner
 } = await loadGameModule(
@@ -190,15 +189,6 @@ function createRoutePort(log, atlas, options = {}) {
                 request.spawnPlans.length > 0,
                 request.despawnPlans.length > 0
             );
-            if (options.capacityRejected === true
-                && request.spawnPlans.length > 0) {
-                return Object.freeze({
-                    abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
-                    accepted: false,
-                    requiresRecovery: false,
-                    reason: ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE
-                });
-            }
             if (options.preflightRecovery === true) {
                 return Object.freeze({
                     abiVersion: GPU_ROUTE_LIFECYCLE_ABI_VERSION,
@@ -215,7 +205,9 @@ function createRoutePort(log, atlas, options = {}) {
                 batchIdFingerprint: request.batchIdFingerprint,
                 spawnReservationCount: request.spawnPlans.length,
                 cleanupReservationCount: request.despawnPlans.length,
-                receipt: Object.freeze({ request })
+                receipt: Object.freeze({
+                    request
+                })
             });
         },
         commitRouteLifecycleBatch(receipt, publication) {
@@ -352,40 +344,40 @@ test('Cork spawn/despawn은 reserve-preflight-publication-route-commit 순서를
     ]);
 });
 
-test('route cap reject는 Cork만 소비하고 같은 spawn sub-batch의 non-Cork를 보존한다', () => {
+test('실제 blocker cap보다 많은 Cork도 모두 prospective route body로 생성된다', () => {
     const { atlas, requests } = collectAuthoredRequests();
     const corkRequest = requests.find(
         ({ intent }) => intent.definitionId === BASIC_CORK_ENEMY_DEFINITION_ID
     );
-    const nonCorkRequest = requests.find(
-        ({ intent }) => intent.definitionId !== BASIC_CORK_ENEMY_DEFINITION_ID
-    );
-    const targetFixedTick = 1;
-    const mixed = [
-        Object.freeze({ ...corkRequest, targetFixedTick, commandId: 'mixed:cork' }),
-        Object.freeze({ ...nonCorkRequest, targetFixedTick, commandId: 'mixed:plain' })
-    ];
     const log = [];
     const registry = new FakeRegistry(log);
     const backend = new FakeBackend(log);
-    const routePort = createRoutePort(log, atlas, { capacityRejected: true });
+    const routePort = createRoutePort(log, atlas);
     const owner = new EnemyLifecycleCommandOwner(backend, registry, {
         routeLifecyclePort: routePort
     });
 
-    assert.equal(owner.requestSpawnBatch(mixed).accepted, true);
-    const result = owner.commitAtFixedBoundary(targetFixedTick);
-    assert.equal(result.recoveryRequired, false);
-    assert.equal(result.spawned.length, 1);
-    assert.equal(result.spawned[0].commandId, 'mixed:plain');
-    assert.equal(result.routeLifecycle.length, 0);
-    assert.equal(result.routeRuntimeBinding, null);
-    assert.deepEqual(result.rejected, [{
-        commandId: 'mixed:cork',
-        code: ENEMY_ROUTE_ROSTER_CAPACITY_REJECTION_CODE
-    }]);
-    assert.equal(backend.bodies.size, 1);
-    assert.ok(log.includes('registry-cancel:1:1'));
+    const candidateCount = 9;
+    const batch = Array.from({ length: candidateCount }, (_, index) => (
+        Object.freeze({
+            ...corkRequest,
+            commandId: `prospective-cork:${index}`
+        })
+    ));
+    owner.requestSpawnBatch(batch);
+    const spawnResult = owner.commitAtFixedBoundary(1);
+    assert.equal(spawnResult.recoveryRequired, false);
+    assert.equal(spawnResult.spawned.length, candidateCount);
+    assert.equal(spawnResult.routeLifecycle.length, candidateCount);
+    assert.equal(spawnResult.routeRuntimeBinding.rosterCount, candidateCount);
+    assert.equal(spawnResult.rejected.length, 0);
+    assert.equal(routePort.preflights[0].spawnPlans.length, candidateCount);
+    for (const { handle } of spawnResult.spawned) {
+        const body = backend.bodies.get(keyOf(handle));
+        assert.equal(body.routeRuntimeState.selfEntityId, handle.entityId);
+        assert.equal(body.routeRuntimeState.selfIncarnation, handle.incarnation);
+        assert.equal(body.routeSetId, corkRequest.intent.routeSetId);
+    }
 });
 
 test('route commit proof mismatch는 이미 게시된 registry/backend를 sticky recovery로 봉인한다', () => {

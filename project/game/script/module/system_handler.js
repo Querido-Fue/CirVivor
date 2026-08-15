@@ -118,7 +118,12 @@ export class SystemHandler {
                 actionStates: {},
                 keys: {}
             },
-            settings: {}
+            settings: {},
+            performance: {
+                previousFrameCpuSeconds: 1 / 60,
+                targetFrameSeconds: 1 / 60,
+                frameDeltaSeconds: 0
+            }
         };
     }
     /**
@@ -341,6 +346,19 @@ export class SystemHandler {
         if (debugFrameMode === 'paused' && typeof timeHandler?.freezeFrameDelta === 'function') {
             timeHandler.freezeFrameDelta();
         }
+        this.simulationRuntimeSnapshot.performance.previousFrameCpuSeconds
+            = Number.isFinite(frameContext.previousFrameCpuSeconds)
+                ? Math.max(0, frameContext.previousFrameCpuSeconds)
+                : 1 / 60;
+        this.simulationRuntimeSnapshot.performance.targetFrameSeconds
+            = Number.isFinite(frameContext.fixedStepSeconds)
+                && frameContext.fixedStepSeconds > 0
+                ? frameContext.fixedStepSeconds
+                : 1 / 60;
+        this.simulationRuntimeSnapshot.performance.frameDeltaSeconds
+            = Number.isFinite(frameContext.frameDeltaSeconds)
+                ? Math.max(0, frameContext.frameDeltaSeconds)
+                : 0;
         this.#syncSimulationRuntime();
         const frameDeltaSeconds = executionPolicy.runFrameTimeUpdate
             && Number.isFinite(frameContext.frameDeltaSeconds)

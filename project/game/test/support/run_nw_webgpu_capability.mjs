@@ -101,6 +101,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
     'module/ingame/physics/gpu/gpu_route_flow_field_generator.js',
     'module/ingame/physics/gpu/gpu_collision_shaders.js',
+    'module/ingame/physics/gpu/gpu_crowd_density_runtime.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_fixed_primitive_abi.js',
@@ -111,6 +112,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_route_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_route_runtime_shaders.js',
     'module/ingame/physics/gpu/gpu_signed_distance_field.js',
+    'module/ingame/physics/gpu/gpu_transient_vfx_runtime.js',
     'module/object/enemy/_hexa_hive_layout.js',
     'module/object/enemy/_hexa_hive_layout_accessors.js',
     'module/object/enemy/_hexa_hive_layout_constants.js',
@@ -124,6 +126,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/object/enemy/ai/wasm/_enemy_ai_flow_field_wasm_runtime.js',
     'module/scene/benchmark/gpu_benchmark_enemy_spawn_adapter.js',
     'module/scene/benchmark/gpu_benchmark_navigation_source.js',
+    'module/simulation/simulation_runtime.js',
     'util/math_util.js',
     'util/number_util.js'
 ]);
@@ -2232,18 +2235,27 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && lifecycle.assigned === true
             && lifecycle.expanded === true
             && lifecycle.precloseExpandNonblockingOpen === true
-            && lifecycle.atomicCloseBlockingAndClosed === true
+            && lifecycle.stagedCloseAnchoredNonblocking === true
+            && lifecycle.flowPublishedBlocking === true
             && lifecycle.closed === true
             && lifecycle.reopened === true
             && lifecycle.exactOwnerDeath === true
             && route?.futureSpawnSelectedAlternative === true
-            && route.activeActorReroutedForward === true
-            && route.trappedActorWaitedAtClearance === true
-            && route.waitingActorResumedAfterReopen === true
+            && route.activeActorFollowedRebuiltFlow === true
+            && route.blockedBranchActorDidNotWait === true
+            && route.blockedBranchActorStayedTraveling === true
             && route.closeSourceTick === 62
             && Number.isSafeInteger(route.closeAvailabilityVersion)
             && route.closeAvailabilityVersion >= 2
             && route.closeCompletedVersionMatch === true
+            && route.closeFlowReadyVersionMatch === true
+            && Number.isSafeInteger(route.closeFlowPublicationFrameCount)
+            && route.closeFlowPublicationFrameCount > 0
+            && route.closeFlowPublicationFrameCount <= 240
+            && route.reopenFlowReadyVersionMatch === true
+            && Number.isSafeInteger(route.reopenFlowPublicationFrameCount)
+            && route.reopenFlowPublicationFrameCount > 0
+            && route.reopenFlowPublicationFrameCount <= 240
             && route.precloseGpuSourceTick === 61
             && route.precloseGpuAvailabilityState === 1
             && route.closeSubmitGpuSourceTick === 62
@@ -2269,24 +2281,26 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && formation.partialRowCount === 0
             && formation.arbitraryRowSplit === false
             && formation.finalBacklogMemberCount === 0
-            && crossSystem?.arrowRhomOctagonRouteOwnedWait === true
-            && crossSystem.waitingBehaviorActors?.length === 3
-            && crossSystem.waitingBehaviorActors.map(({ key }) => key).join(',')
+            && crossSystem?.behaviorActorsAvoidedWait === true
+            && crossSystem.behaviorRerouteActors?.length === 3
+            && crossSystem.behaviorRerouteActors.map(({ key }) => key).join(',')
                 === 'arrow,rhom,octagon'
-            && crossSystem.waitingBehaviorActors.map(
+            && crossSystem.behaviorRerouteActors.map(
                 ({ programId }) => programId
             ).join(',') === '1,2,3'
-            && crossSystem.waitingBehaviorActors.every((entry) => (
-                entry.routePhase === 6
-                && entry.routeOwnedWait === true
-                && entry.velocityMagnitude <= 0.001
+            && crossSystem.behaviorRerouteActors.every((entry) => (
+                entry.routePhase === 2
+                && entry.routeOwnedWait === false
+                && entry.navigationActive === true
                 && entry.recoveryRequired === false
             ))
-            && crossSystem.rerouteOrWaitActors?.length === 3
-            && crossSystem.rerouteOrWaitActors.map(({ key }) => key).join(',')
+            && crossSystem.flowRerouteActors?.length === 3
+            && crossSystem.flowRerouteActors.map(({ key }) => key).join(',')
                 === 'ring,jorang,hexa'
-            && crossSystem.rerouteOrWaitActors.every((entry) => (
-                (entry.rerouted === true || entry.waited === true)
+            && crossSystem.flowRerouteActors.every((entry) => (
+                entry.routePhase === 2
+                && entry.navigationActive === true
+                && entry.waited === false
                 && entry.recoveryRequired === false
             ))
             && crossSystem.ringCaptureRole === 1
@@ -2301,10 +2315,15 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && interaction?.towerBlocked === true
             && interaction.projectilePhysicallyPassed === true
             && interaction.projectileDamagedCork === true
+            && interaction.blockingCorkInverseMass === 0
             && interaction.projectilePenetrationRemaining === true
             && capacity?.maximumCloserCount === 8
-            && capacity.ninthRejectedWholeBatch === true
-            && capacity.ninthRejectionRecoveryRequired === false
+            && capacity.branchSpecializationLimit === 1
+            && capacity.excessCorksSpawnedAsNormal === true
+            && capacity.ninthSpawnedAsNormal === true
+            && capacity.prospectiveDeathReleasedAdmission === true
+            && capacity.normalFallbackRecoveryRequired === false
+            && capacity.activeCloserCount === 1
             && capacity.leaseGenerationAdvanced === true
             && capacity.abaOldIncarnationDidNotReopen === true
             && terminal?.allOpen === true

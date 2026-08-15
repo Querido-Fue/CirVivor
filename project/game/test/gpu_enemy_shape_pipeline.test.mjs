@@ -121,8 +121,8 @@ const EXPECTED_ARCHETYPES = Object.freeze([
     }),
     Object.freeze({
         definition: BASIC_CORK_ENEMY_DATA,
-        shapeType: 'circle',
-        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+        shapeType: 'cork',
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CORK
     })
 ]);
 const EXPECTED_PRODUCTION_WAVE_ARCHETYPES = Object.freeze([
@@ -323,6 +323,7 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
     assert.equal(ENEMY_HEIGHT_SCALE.arrow, 0.9);
     assert.equal(ENEMY_ASPECT_RATIO.gen, 1.05);
     assert.equal(ENEMY_ASPECT_RATIO.jorang, 1);
+    assert.equal(ENEMY_ASPECT_RATIO.cork, 1);
     assert.equal(Object.isFrozen(ENEMY_SHAPE_GEOMETRY), true);
     assert.equal(Object.isFrozen(ENEMY_NORMALIZED_RENDER_GEOMETRY), true);
 
@@ -380,6 +381,13 @@ test('legacy SVG raw path와 GPU normalized geometry는 단일 data 권위를 �
         normalized.octa.points[0].x,
         normalized.octa.points[0].y
     ), 0.7121575439093085);
+    assert.deepEqual(toPointTuples(ENEMY_SHAPE_GEOMETRY.cork.paths[0].points), [
+        [-0.48, -0.46],
+        [0.48, -0.46],
+        [0.34, 0.46],
+        [-0.34, 0.46]
+    ]);
+    assert.equal(normalized.cork.points.length, 4);
     assertClose(normalized.gen.outerBox.halfSize.x, 0.47729707730091964);
     assertClose(normalized.gen.outerBox.halfSize.y, 0.45456864504849487);
     assertClose(normalized.gen.innerBox.halfSize.x, 0.35001785668734103);
@@ -857,6 +865,10 @@ test('render WGSL은 32-byte style의 shape code만 사용하고 compute WGSL을
     assert.doesNotMatch(GPU_COLLISION_RENDER_WGSL, /JORANG_BOX_/);
     assert.match(GPU_COLLISION_RENDER_WGSL,
         /shape_code == RENDER_SHAPE_JORANG[\s\S]*return jorang_distance\(point\)/);
+    assert.match(
+        GPU_COLLISION_RENDER_WGSL,
+        /shape_code == RENDER_SHAPE_CORK[\s\S]*polygon_distance\(point, CORK_POINTS, 4u\)/
+    );
     assert.equal(BASIC_GEN_ENEMY_DATA.shapeDefinitionId, 'jorang');
     assert.notEqual(
         GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG,
