@@ -216,6 +216,8 @@ test('route blocker는 Enemy/Tower만 물리 차단하고 projectile interaction
     assert.match(RUNNER_SOURCE, /projectileDamagedCork/);
     assert.match(RUNNER_SOURCE, /blockingCorkInverseMass/);
     assert.match(RUNNER_SOURCE, /projectilePenetrationRemaining/);
+    assert.match(RUNNER_SOURCE, /towerSurfaceContactDamaged/);
+    assert.match(RUNNER_SOURCE, /projectileTickReadbackBypassed/);
 });
 
 test('dedicated actual-hardware stage는 production Endpoint/Director/body readback만 사용한다', () => {

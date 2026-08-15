@@ -117,7 +117,7 @@ const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
 const FIXED_DELTA = 1 / 60;
 const CORK_EXPANSION_CLOSE_SUBMIT_TICK = 62;
 const CORK_CLOSE_COMPLETION_TICK = 63;
-const TOWER_BLOCKER_PROBE_START_DISTANCE = 3.2;
+const TOWER_BLOCKER_PROBE_START_DISTANCE = 3.51;
 const PENTA_BLOCKING_PROBE_DISTANCE = 4.5;
 const MAIN_HARNESS_CAPACITY = 20;
 const MAIN_EXPECTED_PEAK_ACTIVE_COUNT = 13;
@@ -1383,6 +1383,7 @@ async function runClosureRoutingAndInteraction(device, format) {
     let effectStage = null;
     let effectCompletion = null;
     let corkEffectSummary = null;
+    let towerSurfaceContactEvent = null;
     let towerBeforeBlock = null;
     let futureSpawnSelectedAlternative = false;
     let registryCountAtClose = 0;
@@ -1958,7 +1959,15 @@ async function runClosureRoutingAndInteraction(device, format) {
             harness,
             tick: projectileSubmitTick,
             label: `Cork projectile crossing T${projectileSubmitTick}`,
-            beforeCommit() {
+            beforeCommit(boundary) {
+                towerSurfaceContactEvent = boundary.events.events.find(
+                    (event) => event.eventType === 'damage-applied'
+                        && event.entityId === corkHandle.entityId
+                        && event.incarnation === corkHandle.incarnation
+                        && event.otherEntityId === towerHandle.entityId
+                        && event.otherIncarnation === towerHandle.incarnation
+                        && event.damageFixedPoint > 0
+                ) ?? null;
                 const projectilePosition = Object.freeze({
                     x: closurePosition.x - direction.x * 4,
                     y: closurePosition.y - direction.y * 4
@@ -2000,6 +2009,16 @@ async function runClosureRoutingAndInteraction(device, format) {
             tick64Evidence.bodies,
             projectileHandle
         );
+        const projectileRouteRuntimeStatus
+            = endpoint.getRouteAvailabilityRuntimeStatus();
+        assert(projectileRouteRuntimeStatus.projectileThreatBodyCount > 0,
+            'player projectile route-runtime diagnostic count가 발행되지 않았습니다.');
+        assert(towerSurfaceContactEvent
+            && towerBeforeBlock
+            && towerAfterBlock
+            && towerAfterBlock.healthFixedPoint
+                < towerBeforeBlock.healthFixedPoint,
+        'physical tangent의 Cork/Tower surface contact가 Tower 피해를 발행하지 않았습니다.');
         const deathCommit = await advanceTick({
             harness,
             tick: deathCommitTick,
@@ -2052,12 +2071,19 @@ async function runClosureRoutingAndInteraction(device, format) {
         const exactDeathDespawn = deathCommit.lifecycle.despawned.find(
             (entry) => exactHandle(entry.handle, corkHandle)
         );
-        const reopened = reopenCompletion.reopens.find(
+        const reopened = cleanupCompletion.reopens.find(
             ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
         );
         const cleaned = cleanupCompletion.cleanups.find(
             ({ ownerHandle }) => exactHandle(ownerHandle, corkHandle)
         );
+        const projectileRouteReadbackBypassed
+            = projectileRouteRuntimeStatus.projectileThreatBodyCount > 0
+                && reopenCompletion.readbackBypassed === true
+                && reopenCompletion.reopens.length === 0
+                && reopenCompletion.cleanups.length === 0;
+        assert(projectileRouteReadbackBypassed,
+            'player projectile가 closed RouteRuntime readback fast-path를 해제했습니다.');
         const routeActorCountAtClose = tick62Evidence.entries.filter(
             ({ routeState }) => routeState.role !== GPU_ROUTE_RUNTIME_ROLE.NONE
         ).length;
@@ -2263,6 +2289,10 @@ async function runClosureRoutingAndInteraction(device, format) {
                         === reopenSubmitGpuAvailability.availabilityVersion,
                 reopenFlowPublicationFrameCount:
                     reopenFlowPublication.frameCount,
+                projectileTickReadbackBypassed:
+                    projectileRouteReadbackBypassed,
+                projectileThreatBodyCount:
+                    projectileRouteRuntimeStatus.projectileThreatBodyCount,
                 precloseGpuSourceTick: precloseGpuAvailability.sourceTick,
                 precloseGpuAvailabilityState:
                     precloseGpuAvailability.records[
@@ -2292,11 +2322,16 @@ async function runClosureRoutingAndInteraction(device, format) {
             }),
             crossSystem: crossSystemEvidence,
             interaction: Object.freeze({
+                towerSurfaceContactDamaged: Boolean(
+                    towerSurfaceContactEvent
+                        && towerAfterBlock.healthFixedPoint
+                            < towerBeforeBlock.healthFixedPoint
+                ),
                 towerBlocked: Boolean(
                     towerBeforeBlock
                     && towerAfterBlock
                     && TOWER_BLOCKER_PROBE_START_DISTANCE
-                        < minimumTowerSeparation
+                        > minimumTowerSeparation
                     && towerDistanceAlongRoute
                         <= -minimumTowerSeparation + 0.15
                     && towerDistanceAlongRoute < 0

@@ -363,12 +363,17 @@ class FakeGpuDevice {
                 let currentPipeline = null;
                 const currentBindGroups = [];
                 device.computePasses.push(operations);
-                const captureOperation = (mode, workgroups = null) => {
+                const captureOperation = (
+                    mode,
+                    workgroups = null,
+                    indirectOffset = null
+                ) => {
                     const bindGroupCount = currentPipeline.layout.bindGroupLayouts.length;
                     operations.push({
                         entryPoint: currentEntryPoint,
                         mode,
                         ...(workgroups === null ? {} : { workgroups }),
+                        ...(indirectOffset === null ? {} : { indirectOffset }),
                         pipelineLayout: currentPipeline.layout.label,
                         bindGroups: currentBindGroups
                             .slice(0, bindGroupCount)
@@ -386,8 +391,8 @@ class FakeGpuDevice {
                     dispatchWorkgroups(workgroups) {
                         captureOperation('direct', workgroups);
                     },
-                    dispatchWorkgroupsIndirect() {
-                        captureOperation('indirect');
+                    dispatchWorkgroupsIndirect(_buffer, offset) {
+                        captureOperation('indirect', null, offset);
                     },
                     end: () => {}
                 };
@@ -1143,7 +1148,7 @@ test('frame delta 0은 pause 안전 규칙으로 reference prediction age를 제
     simulation.updatePresentation({ frameDelta: 0.05, renderFrameId: 1 });
     assert.equal(
         simulation.getStatus().presentation.predictionDelta,
-        Math.fround(0.05)
+        1 / 60
     );
 
     simulation.updatePresentation({ frameDelta: 0, renderFrameId: 2 });
@@ -2871,7 +2876,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         const contactStart = operations.findIndex(({ entryPoint }) => (
             entryPoint === 'clear_contact_state'
         ));
-        const contactOperations = operations.slice(contactStart, contactStart + 14);
+        const contactOperations = operations.slice(contactStart, contactStart + 15);
         assert.deepEqual(
             contactOperations.map((operation) => operation.entryPoint),
             [
@@ -2879,6 +2884,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'emit_enemy_charge_telegraphs',
                 'generate_body_contacts',
                 'generate_world_contacts',
+                'update_contact_indirect_args',
                 'classify_directional_defense_contacts',
                 'handle_contacts',
                 'resolve_enemy_charge_contacts',
@@ -2891,12 +2897,22 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'mark_dead'
             ]
         );
-        for (const index of [0, 4, 5, 6, 7, 9, 10, 11]) {
+        for (const index of [0, 4, 10, 11]) {
             assert.equal(contactOperations[index].mode, 'direct');
             assert.equal(contactOperations[index].workgroups, 1);
         }
-        for (const index of [1, 2, 3, 8, 12, 13]) {
+        for (const index of [1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14]) {
             assert.equal(contactOperations[index].mode, 'indirect');
+        }
+        for (const index of [5, 6, 7, 8, 12]) {
+            assert.equal(
+                contactOperations[index].indirectOffset,
+                12,
+                `${contactOperations[index].entryPoint}는 실제 contact_count command를 사용합니다.`
+            );
+        }
+        for (const index of [1, 2, 3, 9, 13, 14]) {
+            assert.equal(contactOperations[index].indirectOffset, 0);
         }
         assert.deepEqual(
             contactOperations.map(({ pipelineLayout }) => pipelineLayout),
@@ -2905,6 +2921,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
                 'cirvivor-gpu-circle-compute-body-contacts-pipeline-layout',
                 'cirvivor-gpu-circle-compute-world-contacts-pipeline-layout',
+                'cirvivor-gpu-circle-indirect-pipeline-layout',
                 'cirvivor-gpu-circle-compute-directional-defense-classifier-pipeline-layout',
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout',
                 'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
@@ -2930,50 +2947,53 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
         assert.deepEqual(contactOperations[4].bindGroups, [
+            'cirvivor-gpu-circle-indirect'
+        ]);
+        assert.deepEqual(contactOperations[5].bindGroups, [
             'cirvivor-gpu-circle-compute-directional-defense-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-directional-defense-events'
         ]);
-        assert.deepEqual(contactOperations[5].bindGroups, [
+        assert.deepEqual(contactOperations[6].bindGroups, [
             'cirvivor-gpu-circle-compute-contact-handling-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-all-events'
         ]);
-        assert.deepEqual(contactOperations[6].bindGroups, [
+        assert.deepEqual(contactOperations[7].bindGroups, [
             'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
             'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-enemy-behavior-events'
         ]);
-        assert.deepEqual(contactOperations[7].bindGroups, [
+        assert.deepEqual(contactOperations[8].bindGroups, [
             'cirvivor-gpu-circle-compute-core-damage-request-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
-        assert.deepEqual(contactOperations[8].bindGroups, [
+        assert.deepEqual(contactOperations[9].bindGroups, [
             'cirvivor-gpu-circle-compute-maximum-damage-window-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
         assert.deepEqual(
-            contactOperations[9].bindGroups,
-            contactOperations[7].bindGroups
-        );
-        assert.deepEqual(
             contactOperations[10].bindGroups,
             contactOperations[8].bindGroups
         );
         assert.deepEqual(
             contactOperations[11].bindGroups,
-            contactOperations[7].bindGroups
+            contactOperations[9].bindGroups
         );
         assert.deepEqual(
             contactOperations[12].bindGroups,
             contactOperations[8].bindGroups
+        );
+        assert.deepEqual(
+            contactOperations[13].bindGroups,
+            contactOperations[9].bindGroups
         );
         assert.equal(
             operations.filter((operation) => operation.entryPoint === 'solve_body_body').length,

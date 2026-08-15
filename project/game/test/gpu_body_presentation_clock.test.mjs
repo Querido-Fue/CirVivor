@@ -34,6 +34,20 @@ test('reference clock은 원본처럼 fixed에서 동기화하고 렌더 frame�
     assert.equal(clock.getClockState().renderTime, clock.getClockState().simulationTime);
 });
 
+test('reference clock은 발사 프레임이 길어져도 물리 한 틱보다 앞서 예측하지 않는다', () => {
+    const clock = new GpuBodyPresentationClock();
+    clock.advancePhysics(1 / 60, 20);
+
+    const stalledFrame = clock.advanceRender({
+        frameDelta: 0.05,
+        renderFrameId: 21,
+        fixedAlpha: 0
+    });
+
+    assert.equal(stalledFrame.predictionDelta, 1 / 60);
+    assert.equal(clock.getClockState().renderTime > clock.getClockState().simulationTime, true);
+});
+
 test('capped accumulator profile은 alpha와 fixed delta 범위를 넘지 않는다', () => {
     const clock = new GpuBodyPresentationClock({
         profile: GPU_BODY_PRESENTATION_PROFILE.CAPPED_ACCUMULATOR_EXTRAPOLATION
@@ -74,7 +88,7 @@ test('synchronize는 pause/teleport 이후 예측 age를 제거한다', () => {
     const clock = new GpuBodyPresentationClock();
     clock.advancePhysics(1 / 60, 1);
     clock.advanceRender({ frameDelta: 0.05, renderFrameId: 2 });
-    assert.equal(clock.getShaderState().predictionDelta, Math.fround(0.05));
+    assert.equal(clock.getShaderState().predictionDelta, 1 / 60);
 
     clock.synchronize(2);
     assert.equal(clock.getShaderState().predictionDelta, 0);

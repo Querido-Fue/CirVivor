@@ -1549,6 +1549,8 @@ export class GameObjectSystem {
                     currentFixedTick: this.lastCompletedEnemyFixedTick,
                     fixedAlpha: alpha,
                     fixedDelta,
+                    presentationProfile: gpuStatus.presentation?.profile,
+                    predictionDelta: gpuStatus.presentation?.predictionDelta,
                     sessionGeneration: endpointStatus.sessionGeneration,
                     deviceGeneration: gpuStatus.deviceGeneration,
                     authoritativeEpoch: gpuStatus.authoritativeEpoch

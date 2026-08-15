@@ -874,41 +874,10 @@ fn finalize_route_runtime(@builtin(global_invocation_id) global_id: vec3u) {
         virtual_lease[closure_index] = 0u;
     }
 
-    for (var closure_index = 0u;
-        closure_index < closure_count && failure == 0u;
-        closure_index++) {
-        if (virtual_state[closure_index] == AVAILABILITY_OPEN) { continue; }
-        var exact_alive = false;
-        let body_slot = virtual_owner_slot[closure_index];
-        if (body_slot < counts.body_count && is_alive(body_slot)) {
-            let state = route_states.values[body_slot];
-            if (role_of(state.packed_meta) == ROLE_CLOSER
-                && state.self_entity_id == virtual_owner_entity[closure_index]
-                && state.self_incarnation == virtual_owner_incarnation[closure_index]
-                && state.closure_index == closure_index
-                && state.lease_generation == virtual_lease[closure_index]) {
-                exact_alive = true;
-            }
-        }
-        if (!exact_alive) {
-            if (version_cursor >= INT32_MAX_U32) {
-                failure |= STATUS_VERSION_EXHAUSTED;
-                break;
-            }
-            version_cursor++;
-            if (!push_action(&actions, &action_count, RouteAction(
-                ACTION_REOPENED,
-                virtual_owner_slot[closure_index],
-                virtual_owner_entity[closure_index],
-                virtual_owner_incarnation[closure_index],
-                closure_index,
-                topology.values[closure_base(closure_index) + 1u],
-                virtual_lease[closure_index],
-                version_cursor
-            ))) { failure |= STATUS_RECORD_INVALID; break; }
-            virtual_state[closure_index] = AVAILABILITY_OPEN;
-        }
-    }
+    // 일반 submit에서는 body liveness만 보고 availability를 바꾸지 않습니다.
+    // Contact/death readback을 거친 exact lifecycle cleanup record가 위 블록에서
+    // REOPENED + CLEANED를 함께 발행하는 유일한 사망 재개방 권위입니다.
+    // 따라서 projectile 존재만으로 closed steady-state readback을 열 필요가 없습니다.
 
     if (params.terminal_final_submit == 0u) {
         for (var body_slot = 0u;

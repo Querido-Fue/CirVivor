@@ -30,7 +30,9 @@ export function createGpuCoreProxySpawnIntent(options) {
         allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.EXPLICIT_OVERRIDE,
         position: requireFinitePosition(options?.position),
         velocity: Object.freeze({ x: 0, y: 0 }),
-        radius: THE_CORE_DATA.RADIUS_TILES,
+        // Core는 물리 해소에 참여하지 않습니다. Enemy 원이 이 가상원에
+        // 닿는 즉시 enter contact가 발행되도록 접촉 반경만 1% 확장합니다.
+        radius: THE_CORE_DATA.ENEMY_IMPACT_RADIUS_TILES,
         inverseMass: 0,
         bodyLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE,
         collisionMask: 0,

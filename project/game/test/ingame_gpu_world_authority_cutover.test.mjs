@@ -51,6 +51,10 @@ class PrimitiveGpuBackend {
         this.gameplayTargetClearAccepted = true;
         this.trackingAccepted = true;
         this.recoveryRequired = false;
+        this.presentation = Object.freeze({
+            profile: 'reference-clock-extrapolation',
+            predictionDelta: 0
+        });
         this.destroyed = false;
     }
 
@@ -204,6 +208,13 @@ class PrimitiveGpuBackend {
                 fixedAlpha: frame.fixedAlpha
             }
         });
+        this.presentation = Object.freeze({
+            profile: 'reference-clock-extrapolation',
+            predictionDelta: Math.min(
+                frame.fixedDelta,
+                Math.max(0, frame.frameDelta)
+            )
+        });
         return true;
     }
 
@@ -235,6 +246,7 @@ class PrimitiveGpuBackend {
             sessionGeneration: this.eventProtocol?.sessionGeneration ?? 1,
             deviceGeneration: this.eventProtocol?.deviceGeneration ?? 0,
             authoritativeEpoch: this.eventProtocol?.authoritativeEpoch ?? 0,
+            presentation: this.presentation,
             marker: 'phase4-primitive-backend'
         });
     }
@@ -680,6 +692,13 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
     ));
     gameSystem.update();
     assert.equal(tower.isCameraFollowEnabled(), true);
+    assert.ok(
+        Math.abs(
+            tower.copyCameraFollowPositionInto({}).x
+                - (27 + (1 / 120))
+        ) <= 1e-12,
+        'camera pose는 backend GPU presentation prediction과 같은 시간축을 사용한다.'
+    );
 
     viewport.ww = 1280;
     viewport.wh = 720;
@@ -720,7 +739,8 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
         reason: 'pause-resume-gap'
     }));
     gameSystem.update();
-    assert.equal(tower.isCameraFollowEnabled(), false);
+    assert.equal(tower.isCameraFollowEnabled(), true);
+    assert.equal(tower.getStatus().lastPoseRejection, 'pause-resume-gap');
     backend.setTrackedPose(createTrackedPose(
         protocol,
         actorStatus.towerHandle,
@@ -736,7 +756,7 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
         assert.equal(gameSystem.getFixedTick(), expectedTick);
     }
     gameSystem.update();
-    assert.equal(tower.isCameraFollowEnabled(), false);
+    assert.equal(tower.isCameraFollowEnabled(), true);
     assert.equal(tower.getStatus().lastPoseRejection, 'stale-sample');
 
     backend.setTrackedPose(createTrackedPose(
@@ -776,7 +796,7 @@ test('GPU_WORLD는 Tower/Core lifecycle, control, tracking, raw event와 draw �
     assert.equal(gameSystem.fixedUpdate(), false);
     assert.equal(gameSystem.getFixedTick(), 8);
     gameSystem.update();
-    assert.equal(tower.isCameraFollowEnabled(), false);
+    assert.equal(tower.isCameraFollowEnabled(), true);
     assert.equal(tower.getStatus().lastPoseRejection, 'gpu-world-paused');
     assert.equal(countCalls(backend, 'fixedUpdate'), 8);
 

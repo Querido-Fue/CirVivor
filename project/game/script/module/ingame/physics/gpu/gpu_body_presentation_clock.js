@@ -100,10 +100,17 @@ export class GpuBodyPresentationClock {
                 this.renderTime += normalizeNonNegativeFinite(frame.frameDelta, 0);
                 this.lastRenderedFrame = frameId;
             }
-            this.predictionDelta = differenceU32Milliseconds(
+            const elapsedSincePhysics = differenceU32Milliseconds(
                 this.renderTime,
                 this.simulationTime
             );
+            const fixedDelta = normalizeNonNegativeFinite(
+                frame.fixedDelta,
+                this.fixedDelta
+            );
+            this.predictionDelta = fixedDelta > 0
+                ? Math.min(fixedDelta, elapsedSincePhysics)
+                : 0;
         } else if (
             this.profile
             === GPU_BODY_PRESENTATION_PROFILE.CAPPED_ACCUMULATOR_EXTRAPOLATION

@@ -16,6 +16,9 @@ const {
     BASIC_CORK_ENEMY_DATA
 } = await loadGameModule('data/object/enemy/basic_cork_enemy_data.js');
 const {
+    THE_CORE_DATA
+} = await loadGameModule('data/object/core/the_core_data.js');
+const {
     GPU_EFFECT_RUNTIME_COMPUTE_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_shaders.js');
 const {
@@ -62,7 +65,10 @@ test('성능 map은 하나의 coarse route field로 10-wide lane과 stage 순서
     for (const stage of stages.slice(0, -1)) {
         assert.equal(stage.transitionRadius, 4.5);
     }
-    assert.equal(stages.at(-1).transitionRadius, 0.75);
+    assert.equal(
+        stages.at(-1).transitionRadius,
+        THE_CORE_DATA.ENEMY_IMPACT_RADIUS_TILES
+    );
     assert.ok(
         stages[0].transitionRadius >= 4,
         'lane offset ±4가 waypoint 중심으로 압축되지 않아야 합니다.'

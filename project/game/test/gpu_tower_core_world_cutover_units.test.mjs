@@ -35,6 +35,11 @@ const {
     'ingame/object/tower/gpu_tower_actor_facade.js'
 );
 const {
+    GPU_BODY_PRESENTATION_PROFILE
+} = await loadGameModule(
+    'ingame/physics/gpu/gpu_body_presentation_clock.js'
+);
+const {
     CorePresentationFacade
 } = await loadGameModule(
     'ingame/object/core/core_presentation_facade.js'
@@ -169,6 +174,9 @@ function createPoseFrame(overrides = {}) {
         currentFixedTick: 10,
         fixedAlpha: 0.25,
         fixedDelta: 0.1,
+        presentationProfile:
+            GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION,
+        predictionDelta: 0.025,
         ...overrides
     };
 }
@@ -587,7 +595,7 @@ test('committed Tower death는 facade control/binding/tracking을 영구 비활�
     tower.destroy();
 });
 
-test('tracked pose는 exact identity/generation과 4-tick bound를 검증하고 valid sample로 회복한다', () => {
+test('tracked pose는 GPU 표현 시각과 같은 위치를 쓰고 지연 중에도 follow를 유지한다', () => {
     const tower = new GpuTowerActorFacade();
     tower.bindGpuBody({ entityId: 41, incarnation: 3 }, 7);
     const baseFrame = createPoseFrame();
@@ -610,9 +618,9 @@ test('tracked pose는 exact identity/generation과 4-tick bound를 검증하고 
 
     assert.equal(tower.updateObservedPose(createPose(), baseFrame), true);
     assert.equal(tower.isCameraFollowEnabled(), true);
-    const interpolated = tower.copyCameraFollowPositionInto({});
-    assertNearlyEqual(interpolated.x, 9.25);
-    assertNearlyEqual(interpolated.y, 19.25);
+    const extrapolated = tower.copyCameraFollowPositionInto({});
+    assertNearlyEqual(extrapolated.x, 10.1);
+    assertNearlyEqual(extrapolated.y, 19.95);
 
     assert.equal(tower.updateObservedPose(createPose({
         sourceTick: 9,
@@ -623,18 +631,29 @@ test('tracked pose는 exact identity/generation과 4-tick bound를 검증하고 
     assert.equal(GPU_TOWER_TRACKED_POSE_MAX_AGE_TICKS, 4);
     assert.equal(tower.updateObservedPose(
         createPose(),
-        createPoseFrame({ currentFixedTick: 14, fixedAlpha: 0.5 })
+        createPoseFrame({
+            currentFixedTick: 14,
+            fixedAlpha: 0.5,
+            predictionDelta: 0.05
+        })
     ), true, 'age 4는 freshness boundary 안이다.');
     const ageFourPrediction = tower.copyCameraFollowPositionInto({});
-    assertNearlyEqual(ageFourPrediction.x, 11.4);
-    assertNearlyEqual(ageFourPrediction.y, 19.3);
+    assertNearlyEqual(ageFourPrediction.x, 11.8);
+    assertNearlyEqual(ageFourPrediction.y, 19.1);
 
     assert.equal(tower.updateObservedPose(
         createPose(),
         createPoseFrame({ currentFixedTick: 15 })
     ), false, 'age 5부터 stale이다.');
-    assert.equal(tower.isCameraFollowEnabled(), false);
+    assert.equal(
+        tower.isCameraFollowEnabled(),
+        true,
+        'readback 지연은 카메라 follow를 map center로 되돌리지 않는다.'
+    );
     assert.equal(tower.getStatus().lastPoseRejection, 'stale-sample');
+    const stalePrediction = tower.copyCameraFollowPositionInto({});
+    assertNearlyEqual(stalePrediction.x, 12.1);
+    assertNearlyEqual(stalePrediction.y, 18.95);
 
     const recoveredPose = createPose({
         sourceTick: 11,
@@ -647,12 +666,27 @@ test('tracked pose는 exact identity/generation과 4-tick bound를 검증하고 
         recoveredPose,
         createPoseFrame({
             currentFixedTick: 13,
-            fixedAlpha: 0.5
+            fixedAlpha: 0.5,
+            predictionDelta: 0.05
         })
     ), true);
     assert.equal(tower.isCameraFollowEnabled(), true);
     assert.equal(tower.getStatus().lastPoseRejection, null);
     const recovered = tower.copyCameraFollowPositionInto({});
-    assertNearlyEqual(recovered.x, 20.3);
-    assertNearlyEqual(recovered.y, 29.4);
+    assertNearlyEqual(recovered.x, 20.5);
+    assertNearlyEqual(recovered.y, 29);
+});
+
+test('strict interpolation profile은 previous/current 보간 계약을 그대로 보존한다', () => {
+    const tower = new GpuTowerActorFacade();
+    tower.bindGpuBody({ entityId: 41, incarnation: 3 }, 7);
+
+    assert.equal(tower.updateObservedPose(createPose(), createPoseFrame({
+        presentationProfile: GPU_BODY_PRESENTATION_PROFILE.STRICT_INTERPOLATION,
+        predictionDelta: 0
+    })), true);
+
+    const position = tower.copyCameraFollowPositionInto({});
+    assertNearlyEqual(position.x, 9.25);
+    assertNearlyEqual(position.y, 19.25);
 });

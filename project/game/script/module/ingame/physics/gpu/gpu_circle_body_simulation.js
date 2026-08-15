@@ -307,7 +307,8 @@ const CONTACT_RECORD_BYTE_SIZE = 32;
 const APPLIED_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.APPLIED_EVENT.STRIDE;
 const DEATH_EVENT_BYTE_SIZE = GPU_CIRCLE_BODY_ABI.DEATH_EVENT.STRIDE;
 const EVENT_READBACK_HEADER_BYTE_SIZE = 256;
-const DISPATCH_INDIRECT_BYTE_SIZE = 12;
+const CONTACT_DISPATCH_INDIRECT_BYTE_OFFSET = 12;
+const DISPATCH_INDIRECT_BYTE_SIZE = 24;
 const DRAW_INDIRECT_BYTE_SIZE = 16;
 const BODY_RENDER_STYLE_STRIDE = GPU_CIRCLE_BODY_ABI.RENDER_STYLE.STRIDE;
 const BODY_CONTROL_STATE_STRIDE
@@ -5751,7 +5752,6 @@ export class GpuCircleBodySimulation {
             && snapshot.closedPathIds.length === this.routeRuntimeRosterCount;
         const readbackBypassEligible = this.routeRuntimeTopology.enabled
             && closedSteadyState
-            && this.routeRuntimeProjectileThreatBodyCount === 0
             && this.stagedRouteCleanupBatch === null
             && terminal?.state !== 'armed';
         return Object.freeze({
@@ -7097,7 +7097,6 @@ export class GpuCircleBodySimulation {
             = this.routeRuntimeTopology.enabled
                 && !terminalFinalSubmit
                 && this.routeRuntimeRosterCount > 0
-                && this.routeRuntimeProjectileThreatBodyCount === 0
                 && stagedRouteCleanup === null
                 && terminalRouteAvailabilityCancel?.state !== 'armed'
                 && routeAvailabilitySnapshot.leaseCount
@@ -7815,6 +7814,12 @@ export class GpuCircleBodySimulation {
                     COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS
                 );
                 this.#dispatchBodies(pass, 'generate_world_contacts');
+                // 참고 GPU 구현과 동일하게 이번 틱의 실제 contact_count를
+                // 후속 contact/capture pass의 indirect 명령으로 변환합니다.
+                // 예약 contact capacity는 overflow 상한일 뿐 정상 작업량이 아닙니다.
+                pass.setPipeline(this.pipelines.updateContactIndirectArgs);
+                pass.setBindGroup(0, this.bindGroups.indirect);
+                pass.dispatchWorkgroups(1);
                 if (needsProjectileCaptureReadback
                     && this.projectileCaptureRetryState === null) {
                     for (const entryPoint of [
@@ -7827,25 +7832,19 @@ export class GpuCircleBodySimulation {
                         GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.PREFLIGHT_CAPTURE
                     ]) {
                         this.#setProjectileCaptureEntry(pass, entryPoint);
-                        pass.dispatchWorkgroups(Math.ceil(
-                            this.contactCapacity / BODY_WORKGROUP_SIZE
-                        ));
+                        this.#dispatchContacts(pass);
                     }
                     this.#setProjectileCaptureEntry(
                         pass,
                         GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
                             .SHIELD_CAPTURE_CONTACTS
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                     this.#setProjectileCaptureEntry(
                         pass,
                         GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT.MARK_CORE_IMPACTS
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                 } else if (needsProjectileCaptureReadback) {
                     // Rejected exact-pair/fairness tokens persist, but this
                     // contact pass rebuilds capture authority from current
@@ -7856,9 +7855,7 @@ export class GpuCircleBodySimulation {
                         GPU_PROJECTILE_CAPTURE_RUNTIME_ENTRY_POINT
                             .SHIELD_CAPTURE_CONTACTS
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                 }
                 this.#setComputeProfile(
                     pass,
@@ -7867,9 +7864,7 @@ export class GpuCircleBodySimulation {
                 pass.setPipeline(
                     this.pipelines.compute.classify_directional_defense_contacts
                 );
-                pass.dispatchWorkgroups(Math.ceil(
-                    this.contactCapacity / BODY_WORKGROUP_SIZE
-                ));
+                this.#dispatchContacts(pass);
                 if (this.atomicTransformFirstHitBodyCount > 0) {
                     this.#setComputeProfile(
                         pass,
@@ -7882,15 +7877,11 @@ export class GpuCircleBodySimulation {
                     pass.setPipeline(
                         this.pipelines.compute.select_atomic_transform_first_hit_source
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                     pass.setPipeline(
                         this.pipelines.compute.resolve_atomic_transform_first_hit_contact
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                     pass.setPipeline(
                         this.pipelines.compute.seal_atomic_transform_first_hits
                     );
@@ -7906,18 +7897,14 @@ export class GpuCircleBodySimulation {
                     pass.setPipeline(
                         this.pipelines.compute.shield_atomic_transform_first_hit_contacts
                     );
-                    pass.dispatchWorkgroups(Math.ceil(
-                        this.contactCapacity / BODY_WORKGROUP_SIZE
-                    ));
+                    this.#dispatchContacts(pass);
                 }
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING
                 );
                 pass.setPipeline(this.pipelines.compute.handle_contacts);
-                pass.dispatchWorkgroups(Math.ceil(
-                    this.contactCapacity / BODY_WORKGROUP_SIZE
-                ));
+                this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR
@@ -7925,9 +7912,7 @@ export class GpuCircleBodySimulation {
                 pass.setPipeline(
                     this.pipelines.compute.resolve_enemy_charge_contacts
                 );
-                pass.dispatchWorkgroups(Math.ceil(
-                    this.contactCapacity / BODY_WORKGROUP_SIZE
-                ));
+                this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST
@@ -7935,9 +7920,7 @@ export class GpuCircleBodySimulation {
                 pass.setPipeline(
                     this.pipelines.compute.preflight_core_damage_requests
                 );
-                pass.dispatchWorkgroups(Math.ceil(
-                    this.contactCapacity / BODY_WORKGROUP_SIZE
-                ));
+                this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW
@@ -7966,9 +7949,7 @@ export class GpuCircleBodySimulation {
                 pass.setPipeline(
                     this.pipelines.compute.resolve_core_damage_requests
                 );
-                pass.dispatchWorkgroups(Math.ceil(
-                    this.contactCapacity / BODY_WORKGROUP_SIZE
-                ));
+                this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
                     COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW
@@ -8045,9 +8026,7 @@ export class GpuCircleBodySimulation {
                             0
                         );
                     } else {
-                        pass.dispatchWorkgroups(Math.ceil(
-                            this.contactCapacity / BODY_WORKGROUP_SIZE
-                        ));
+                        this.#dispatchContacts(pass);
                     }
                 }
             }
@@ -10061,9 +10040,9 @@ export class GpuCircleBodySimulation {
                 this.slotEventProducing[slot] = 1;
                 eventProducingBodyCount++;
             }
-            // Hostile M/A projectile은 PLAYER_DAMAGEABLE/CORE 전용이므로
-            // 닫힌 Cork의 availability를 바꿀 수 없습니다. ENEMY contact를
-            // 실제로 허용한 player projectile만 reopen 위협으로 셉니다.
+            // RouteRuntime fast-path 성립 여부와 무관한 진단 수치입니다.
+            // Cork 재개방은 authenticated lifecycle cleanup만 수행하므로
+            // ENEMY를 때릴 수 있는 projectile도 매-tick route readback을 열지 않습니다.
             if (physics.bodyLayer
                     === GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
                 && (interaction.interactionMask
@@ -14943,7 +14922,9 @@ export class GpuCircleBodySimulation {
             entries: [
                 { binding: 0, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
                 { binding: 1, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-                { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'storage' } }
+                { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+                { binding: 3, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+                { binding: 4, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } }
             ]
         });
         const renderBodyStorageBindings = Object.freeze([
@@ -15560,6 +15541,14 @@ export class GpuCircleBodySimulation {
                 layout: indirectPipelineLayout,
                 compute: { module: indirectModule, entryPoint: 'update_indirect_args' }
             }),
+            updateContactIndirectArgs: device.createComputePipeline({
+                label: 'cirvivor-gpu-circle-update-contact-indirect-args',
+                layout: indirectPipelineLayout,
+                compute: {
+                    module: indirectModule,
+                    entryPoint: 'update_contact_indirect_args'
+                }
+            }),
             render: device.createRenderPipeline({
                 label: 'cirvivor-gpu-circle-render',
                 layout: renderPipelineLayout,
@@ -16166,7 +16155,9 @@ export class GpuCircleBodySimulation {
                 entries: [
                     { binding: 0, resource: resource(this.buffers.counts) },
                     { binding: 1, resource: resource(this.buffers.dispatchIndirect) },
-                    { binding: 2, resource: resource(this.buffers.drawIndirect) }
+                    { binding: 2, resource: resource(this.buffers.drawIndirect) },
+                    { binding: 3, resource: resource(this.buffers.contactState) },
+                    { binding: 4, resource: resource(this.buffers.contacts) }
                 ]
             }),
             renderBodies: device.createBindGroup({
@@ -16707,6 +16698,13 @@ export class GpuCircleBodySimulation {
     #dispatchBodies(pass, entryPoint) {
         pass.setPipeline(this.pipelines.compute[entryPoint]);
         pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+    }
+
+    #dispatchContacts(pass) {
+        pass.dispatchWorkgroupsIndirect(
+            this.buffers.dispatchIndirect,
+            CONTACT_DISPATCH_INDIRECT_BYTE_OFFSET
+        );
     }
 
     #setEffectEntry(pass, entryPoint) {

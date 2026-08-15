@@ -3,6 +3,9 @@ import {
     PLAYER_ACTION_TYPES,
     PLAYER_CONTROL_CONTEXTS
 } from '../../contract/player_controllable_contract.js';
+import {
+    GPU_BODY_PRESENTATION_PROFILE
+} from '../../physics/gpu/gpu_body_presentation_clock.js';
 
 export const GPU_TOWER_TRACKED_POSE_MAX_AGE_TICKS = 4;
 
@@ -42,6 +45,10 @@ export class GpuTowerActorFacade {
         this.lastControlTick = 0;
         this.lastControlReceipt = null;
         this.lastObservedSourceTick = 0;
+        this.hasObservedPose = false;
+        this.observedPosition = { x: 0, y: 0 };
+        this.observedPreviousPosition = { x: 0, y: 0 };
+        this.observedVelocity = { x: 0, y: 0 };
         this.followPosition = { x: 0, y: 0 };
         this.followEnabled = false;
         this.lastPoseRejection = 'unbound';
@@ -88,6 +95,7 @@ export class GpuTowerActorFacade {
         this.lastControlTick = 0;
         this.lastControlReceipt = null;
         this.lastObservedSourceTick = 0;
+        this.hasObservedPose = false;
         this.followEnabled = false;
         this.lastPoseRejection = 'awaiting-sample';
         return this.bodyHandle;
@@ -100,6 +108,7 @@ export class GpuTowerActorFacade {
         this.lastControlTick = 0;
         this.lastControlReceipt = null;
         this.lastObservedSourceTick = 0;
+        this.hasObservedPose = false;
         this.followEnabled = false;
         this.lastPoseRejection = 'unbound';
     }
@@ -153,12 +162,80 @@ export class GpuTowerActorFacade {
         return receipt;
     }
 
+    /** 마지막 exact observed pose를 GPU draw와 같은 presentation 시각으로 투영합니다. */
+    #projectObservedPose(frame) {
+        if (!this.hasObservedPose) {
+            return false;
+        }
+        const currentFixedTick = Number(frame?.currentFixedTick);
+        if (!Number.isSafeInteger(currentFixedTick)
+            || currentFixedTick < this.lastObservedSourceTick) {
+            return false;
+        }
+        const rawAlpha = Number(frame?.fixedAlpha);
+        const alpha = Number.isFinite(rawAlpha)
+            ? Math.max(0, Math.min(1, rawAlpha))
+            : 0;
+        const rawFixedDelta = Number(frame?.fixedDelta);
+        const fixedDelta = Number.isFinite(rawFixedDelta) && rawFixedDelta > 0
+            ? rawFixedDelta
+            : 0;
+        const ageTicks = currentFixedTick - this.lastObservedSourceTick;
+        const profile = frame?.presentationProfile
+            ?? GPU_BODY_PRESENTATION_PROFILE.REFERENCE_CLOCK_EXTRAPOLATION;
+
+        if (profile === GPU_BODY_PRESENTATION_PROFILE.STRICT_INTERPOLATION) {
+            if (ageTicks === 0) {
+                this.followPosition.x = this.observedPreviousPosition.x
+                    + ((this.observedPosition.x - this.observedPreviousPosition.x) * alpha);
+                this.followPosition.y = this.observedPreviousPosition.y
+                    + ((this.observedPosition.y - this.observedPreviousPosition.y) * alpha);
+            } else {
+                const predictionSeconds = (ageTicks - 1 + alpha) * fixedDelta;
+                this.followPosition.x = this.observedPosition.x
+                    + (this.observedVelocity.x * predictionSeconds);
+                this.followPosition.y = this.observedPosition.y
+                    + (this.observedVelocity.y * predictionSeconds);
+            }
+        } else {
+            const rawPredictionDelta = Number(frame?.predictionDelta);
+            const fallbackPredictionDelta = alpha * fixedDelta;
+            const predictionDelta = Number.isFinite(rawPredictionDelta)
+                ? Math.max(0, Math.min(fixedDelta, rawPredictionDelta))
+                : fallbackPredictionDelta;
+            const predictionSeconds = (ageTicks * fixedDelta) + predictionDelta;
+            this.followPosition.x = this.observedPosition.x
+                + (this.observedVelocity.x * predictionSeconds);
+            this.followPosition.y = this.observedPosition.y
+                + (this.observedVelocity.y * predictionSeconds);
+        }
+        if (!Number.isFinite(this.followPosition.x)
+            || !Number.isFinite(this.followPosition.y)) {
+            return false;
+        }
+        this.followEnabled = true;
+        return true;
+    }
+
+    /** reject 중에도 기존 exact pose를 전진시켜 카메라 authority 토글을 막습니다. */
+    #rejectObservedPose(reason, frame) {
+        this.lastPoseRejection = reason;
+        this.#projectObservedPose(frame);
+        return false;
+    }
+
     /** observed pose를 exact protocol/freshness로 검증해 camera 전용 좌표로 투영합니다. */
     updateObservedPose(pose, frame) {
-        this.followEnabled = false;
-        if (!this.active || !this.bodyHandle || pose?.valid !== true) {
+        if (!this.active || !this.bodyHandle) {
+            this.followEnabled = false;
             this.lastPoseRejection = pose?.reason ?? 'invalid-sample';
             return false;
+        }
+        if (pose?.valid !== true) {
+            return this.#rejectObservedPose(
+                pose?.reason ?? 'invalid-sample',
+                frame
+            );
         }
         const expectedSession = Number(frame?.sessionGeneration);
         const expectedDevice = Number(frame?.deviceGeneration);
@@ -172,8 +249,10 @@ export class GpuTowerActorFacade {
                 && pose.deviceGeneration !== expectedDevice)
             || (Number.isSafeInteger(expectedEpoch)
                 && pose.authoritativeEpoch !== expectedEpoch)) {
-            this.lastPoseRejection = 'identity-or-generation-mismatch';
-            return false;
+            return this.#rejectObservedPose(
+                'identity-or-generation-mismatch',
+                frame
+            );
         }
         const sourceTick = Number(pose.sourceTick);
         const observedThroughTick = Number(pose.observedThroughTick);
@@ -184,39 +263,34 @@ export class GpuTowerActorFacade {
             || !Number.isSafeInteger(currentFixedTick)
             || currentFixedTick < observedThroughTick
             || sourceTick < this.lastObservedSourceTick) {
-            this.lastPoseRejection = 'invalid-or-out-of-order-tick';
-            return false;
+            return this.#rejectObservedPose(
+                'invalid-or-out-of-order-tick',
+                frame
+            );
         }
         const ageTicks = currentFixedTick - observedThroughTick;
         if (ageTicks > GPU_TOWER_TRACKED_POSE_MAX_AGE_TICKS) {
-            this.lastPoseRejection = 'stale-sample';
-            return false;
+            return this.#rejectObservedPose('stale-sample', frame);
         }
         const position = finitePoint(pose.position);
         const previous = finitePoint(pose.previousPosition);
         const velocity = finitePoint(pose.velocity);
         if (!position || !previous || !velocity) {
-            this.lastPoseRejection = 'non-finite-pose';
-            return false;
-        }
-        const rawAlpha = Number(frame?.fixedAlpha);
-        const alpha = Number.isFinite(rawAlpha)
-            ? Math.max(0, Math.min(1, rawAlpha))
-            : 0;
-        const rawFixedDelta = Number(frame?.fixedDelta);
-        const fixedDelta = Number.isFinite(rawFixedDelta) && rawFixedDelta > 0
-            ? rawFixedDelta
-            : 0;
-        if (ageTicks === 0) {
-            this.followPosition.x = previous.x + ((position.x - previous.x) * alpha);
-            this.followPosition.y = previous.y + ((position.y - previous.y) * alpha);
-        } else {
-            const predictionSeconds = (ageTicks - 1 + alpha) * fixedDelta;
-            this.followPosition.x = position.x + (velocity.x * predictionSeconds);
-            this.followPosition.y = position.y + (velocity.y * predictionSeconds);
+            return this.#rejectObservedPose('non-finite-pose', frame);
         }
         this.lastObservedSourceTick = sourceTick;
-        this.followEnabled = true;
+        this.observedPosition.x = position.x;
+        this.observedPosition.y = position.y;
+        this.observedPreviousPosition.x = previous.x;
+        this.observedPreviousPosition.y = previous.y;
+        this.observedVelocity.x = velocity.x;
+        this.observedVelocity.y = velocity.y;
+        this.hasObservedPose = true;
+        if (!this.#projectObservedPose(frame)) {
+            this.followEnabled = false;
+            this.lastPoseRejection = 'non-finite-presentation';
+            return false;
+        }
         this.lastPoseRejection = null;
         return true;
     }

@@ -1,6 +1,7 @@
 import {
     buildEnemyAIFlowFieldForGridGoal
 } from 'object/enemy/ai/_enemy_ai_navigation.js';
+import { THE_CORE_DATA } from '../../../data/object/core/the_core_data.js';
 import { GPU_CIRCLE_BODY_FLOW } from '../physics/gpu/gpu_circle_body_abi.js';
 import {
     ROUTE_GRAPH_NODE_KIND_CODE
@@ -776,7 +777,7 @@ export function createRouteFlowFieldAtlas(tileMap) {
                 nextFieldIndex: ROUTE_FLOW_FIELD_NO_NEXT_LAYER,
                 transitionRadius: waypointIndex + 1 < route.waypoints.length
                     ? intermediateTransitionRadius
-                    : defaultTransitionRadius
+                    : THE_CORE_DATA.ENEMY_IMPACT_RADIUS_TILES
             });
             fieldIndices.push(fieldIndex);
         }
