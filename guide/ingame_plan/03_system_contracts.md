@@ -52,6 +52,17 @@
 > for Ring/Cork. Both WASM checks, flow stress, audited golden, two title GPU smokes, diff hygiene, and three stable single-device/session mixed-churn cycles passed. Manual showcase
 > remains `automatedResult:false` because no human interactive visual/pause-resume session was executed.
 
+> **2026-08-16 R3 Enemy Entity Word complete**
+>
+> `GameSystem` now owns the CPU run-domain `WordSystem`, five Sentence slots, `SentenceSlotController`, and
+> `GoldLedger`. `GameObjectSystem` owns GPU-world-scoped `AbilityRuntime`, `ActorPayloadMaterializer`,
+> `SentenceRuntimeEstimator`, `BountyRewardDirector`, and `HostileParticipationTracker`. Q executes
+> `The Tower shoots Enemies`; E executes `Enemies shoot Enemies`. Subject selection is an aggregate-only GPU
+> snapshot and Enemy actor creation is exact 0/N prelease/materialization. Gold requires matching authenticated
+> lethal PLAYER evidence plus same-boundary `PLAYER_KILL` lifecycle publication. Recovery preserves CPU words,
+> slots/cooldowns, and Gold while canceling transient R3 GPU execution. Tower Payload, Tower Share, Merge,
+> Overtime, full Shop/editor UI, and save remain future work.
+
 # 03. GameSystem and Subsystem Contracts
 
 ## 1. 상속이 아닌 조합
@@ -155,6 +166,10 @@ Formation/H/HX, Atomic J/C′, and Projectile Capture R rosters, pools, timers, 
 prepared/armed work, readbacks, and presentation summaries are reset. RouteRuntime body/availability state,
 Z lease roster, route readbacks, and Wave availability binding reset to all-open too; stale ports are revoked. 같은 device generation에서 replacement tick이
 성공하기 전에는 재시작을 반복하지 않는다.
+
+R3의 `WordSystem`, 다섯 slot/cooldown, `SentenceSlotController`, `GoldLedger`도 같은 CPU run domain에 남는다.
+반면 old endpoint에 묶인 subject snapshot, actor-payload prelease/materialization, bounty pending proof,
+hostile aggregate mirror는 취소/폐기하고 새 `GameObjectSystem` owner에 다시 바인딩한다.
 
 `GPU_WORLD`의 primary-pointer/LMB action은 `GpuPrimaryProjectileController`가 소비한다.
 controller는 exact Tower GPU handle과 world aim만 next-fixed source-relative request로
@@ -265,12 +280,20 @@ ICompiledAbilityView
 - 불변 CompiledAbility 생성·캐시
 - subject snapshot, target/action/spawn 계획
 - cooldown과 generation/work budget
+- 다섯 slot의 원자 loadout/개별 sentence assignment와 bounded presentation view
+- semantic activation request를 fixed boundary까지 보존하고 final execution outcome에서만 cooldown 확정
 
 금지:
 
 - raw input polling
 - Canvas 텍스트 생성
 - CollisionHandler 내부 호출
+- raw GPU slot/subject record 또는 per-child 결과 readback
+
+R3 ownership split에서 compiler/slot/cooldown은 `GameSystem`의 CPU `WordSystem`에 남는다. GPU subject
+snapshot과 persistent actor materialization은 `GameObjectSystem`의 `AbilityRuntime`과
+`ActorPayloadMaterializer`가 endpoint public seam으로 수행한다. `SentenceRuntimeEstimator`는 같은 selector/
+capacity/hostile aggregate 공식을 preview에 제공하며 별도 UI 산술을 만들지 않는다.
 
 ### 5.5 GameUISystem
 
@@ -400,6 +423,21 @@ despawn reclamation. Terminal success requires fixed/lifecycle observation, zero
 and an all-open snapshot. Replacement is allowed only from the exact idle/all-open boundary and revokes the old
 director/runtime binding.
 
+### R3 Ability, reward, and participation owners
+
+`AbilityRuntime`은 `WordSystem`의 fixed activation request를 하나의 typed execution으로 바꾸고 endpoint의
+aggregate GPU Subject snapshot만 소비한다. `ActorPayloadMaterializer`는 snapshot identity를 그대로 묶어
+exact N prelease와 one lifecycle publication/GPU materialization을 수행한다. true body capacity는 zero-partial
+normal rejection이고 cooldown을 쓰지 않는다. event/telemetry backpressure는 같은 snapshot을 보존한 retry이며,
+protocol/identity/generation mismatch만 recovery다. GPU가 child generation `source + 1`의 유일한 권위이고 CPU
+registry는 authority/provenance metadata만 게시한다.
+
+`BountyRewardDirector`는 exact PLAYER source가 HOSTILE Enemy에 준 authenticated lethal evidence와 같은
+boundary의 exact `PLAYER_KILL` lifecycle result를 모두 확인한 뒤 `GoldLedger`에 idempotent transaction을
+credit한다. Core impact, ordinary despawn, transform consume, non-Player kill, duplicate, replay, ABA mismatch는
+지급하지 않는다. `HostileParticipationTracker`는 live/pending hostile count, sentence-created count, bounty
+potential, Siege Weight를 bounded scalar로 게시한다. 이 tracker는 Wave timer/Overtime DOT owner가 아니다.
+
 ### ShopCoordinator
 
 offer 생성, 가격, transaction, WordSystem 재컴파일 무효화를 조정한다.
@@ -491,6 +529,8 @@ completed fixed/SpawnProgram outcomes
 → authenticated CORE_IMPACT cleanup stage
 → Core depletion / RunOutcome transition
 → if RUNNING: WaveDirector, initial Tower/Core, Tower control, Arrow/M control, projectile/hostile requests
+→ if RUNNING: WordSystem fixed activation drain → aggregate GPU Subject snapshot
+→ if RUNNING: ActorPayloadMaterializer exact 0/N prelease and lifecycle request
 → if DEFEATED: close ingress; version-cancel exact reserved/submitted/readback-pending fixed programs
 → if DEFEATED: tombstone destination/control set and retire its leases before terminal tick
 → if DEFEATED: cancel exact Effect programs/readbacks and observe the final P lifecycle removal
@@ -498,6 +538,7 @@ completed fixed/SpawnProgram outcomes
 → if DEFEATED: cancel exact Atomic Transform and Projectile Capture unpublished work, clean unpublished held projectiles, observe final J/R rosters
 → if DEFEATED: close Route Runtime ingress, reopen/cleanup exact Z leases, settle readback, observe all-open roster
 → lifecycle command commit
+→ R3 actor-payload GPU materialization commit and aggregate completion
 → fixed command commit / source-control program stage
 → if RUNNING: stage/commit one whole-tick Pentagon pulse batch
 → if RUNNING: stage one whole-tick Formation prepare batch; publish only on-time N→N+1 transforms

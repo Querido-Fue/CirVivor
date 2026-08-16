@@ -1,5 +1,13 @@
 # 04. Input and Control
 
+## R3 current binding (2026-08-16)
+
+The five-slot Sentence input contract is live. The production showcase binds Q to
+`The Tower shoots Enemies` and E to `Enemies shoot Enemies`; Shift/Space and the remaining slot stay available
+for later loadouts. `InputActionMapper` emits one semantic pressed edge, `SentenceSlotController` maps it to a
+slot, and `WordSystem` queues the fixed-boundary activation. Duplicate edges, wrong phase, empty/invalid slot,
+cooldown, zero subject, and atomic capacity rejection never fabricate execution or consume cooldown.
+
 ## Semantic actions
 
 Physical input is converted before gameplay consumption.
@@ -32,6 +40,10 @@ Each Tower resolves attacks from its own authoritative position to the shared Ai
 ## Sentence controls with zero Towers
 
 Skill availability is based on the compiled Subject selector, not Tower count.
+
+In current R3, Q therefore has zero subjects after Tower death while E remains executable whenever hostile
+Enemies exist. `Enemies shoot The Tower` in the examples below is a future Tower Payload sentence, not current
+R3 production behavior.
 
 ```text
 The Tower shoots Fireballs → disabled if no Tower

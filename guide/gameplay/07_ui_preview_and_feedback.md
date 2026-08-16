@@ -1,5 +1,16 @@
 # 07. UI Preview and Sandbox Feedback
 
+## R3 implementation status (2026-08-16)
+
+R3 exposes bounded, deep-frozen runtime preview/status data for the five Sentence slots, exact subject/generated
+counts, required/available body capacity, hostile result count, bounty potential, Siege Weight, danger warning,
+cooldown, Gold, and live/pending hostile participation. Preview and execution share the same selector and actor
+payload budget formulas; a danger warning does not disable an otherwise valid execution.
+
+This is a presentation seam, not the full Shop/editor/HUD product. The current visible GameScene status renderer
+still renders the existing Tower/Core lines. Five-offer Shop cards, Sentence editing, rich preview panels, and
+large Tower-group HUD visualization remain future UI work.
+
 ## 1. UI principle
 
 The UI explains consequences without censoring valid sentences.
@@ -30,6 +41,9 @@ Preview and runtime must share:
 No duplicated UI-only arithmetic.
 
 ## 3. Examples
+
+Only the Enemy-payload examples that do not create Towers are current R3 runtime examples. The
+`Enemies shoot The Tower` preview remains a future Tower Payload/Tower Share target.
 
 ### The Tower shoots Enemies
 
@@ -137,6 +151,9 @@ Execution unavailable: atomic world capacity exceeded.
 Capacity is a technical validity reason. The UI must not quietly create 412 of 500.
 
 ## 10. Shop card
+
+R3 provides this ordinary Enemy offer metadata to future Shop UI; it does not implement purchase/reroll/editor
+transactions.
 
 Enemy card is an ordinary word offer. Card metadata should explain:
 

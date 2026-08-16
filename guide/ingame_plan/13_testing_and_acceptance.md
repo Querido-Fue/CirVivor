@@ -55,6 +55,44 @@ Static tests must fail if production guides/contracts silently reintroduce:
 - a dangerous valid sentence remains executable.
 - atomic world-capacity failure creates zero result bodies.
 
+### R3 Enemy Entity Word completion evidence (2026-08-16)
+
+R3's current executable subset is `The Tower shoots Enemies` and `Enemies shoot Enemies`. Tower Payload,
+`Enemies shoot The Tower`, Tower Share/group control, and Merge remain later gates even though their design
+acceptance rows are retained above.
+
+- Focused R3 Node: `42/42` PASS; full Node: `1540/1540` PASS, fail 0.
+- Changed production JS/MJS syntax: `28/28` PASS.
+- Tower 1→Enemy 1 completes exact states `REQUESTED → SUBJECT_SNAPSHOT_PENDING →
+  DESTINATION_PRELEASE_PENDING → GPU_MATERIALIZATION_PENDING → COMMITTED`; source death after snapshot does not
+  change the frozen set, and cooldown is consumed only at committed completion.
+- Tower 0 returns `ZERO_SUBJECT`, generated 0, cooldown 0. Exact-capacity succeeds; one-short returns
+  `REJECTED_CAPACITY`, generated 0, cooldown 0, and reservation 0.
+- Enemy recursion is inter-execution only: actual GPU counts `10→20→40`, with generated `10,20`; children from
+  one execution do not enter that execution's Subject set.
+- Actual GPU fanout 256 produces active 512; the final-run snapshot/materialization latency is `6.3/100.9 ms`,
+  body high-water 512, prelease high-water 256, one prelease transaction, hostile/Siege 512, protocol failures
+  0, recovery false.
+- Actual GPU fanout 1000 produces active 2000; the final-run snapshot/materialization latency is `6.0/1366.4
+  ms`, body high-water 2000, prelease high-water 1000, one prelease transaction, hostile/Siege 2000, protocol
+  failures 0, recovery false. Both fanouts hold ability-command/readback and payload-command/readback high-water
+  at `1/1/1/1`, with payload stage retries 0.
+- Repeated capacity-1000 doubling reaches counts `[10,20,40,80,160,320,640]`; generated counts are
+  `[10,20,40,80,160,320,0]`. The 640-child request rejects atomically with cooldown 0 and reserved count 0.
+- Every R3 actual-GPU path reports storage maximum 9, `uncapturedErrorCount=0`, and teardown
+  `deviceLostReason=destroyed`. The independent default WebGPU capability gate also passes on NVIDIA Lovelace
+  with adapter storage limit 10.
+- The current R3 worktree also passes all exact nine R2 routed hardware stages: Arrow charge, Maximum Damage
+  Window, Rhom priority, Pentagon Effect, Hexa Formation, Octagon defense, Jorang split, Ring capture, and Cork
+  closure. The supplemental Rhom source-death projectile stage passes as well. Final integration updated stale
+  fixture cadence/geometry/ABI expectations without weakening production fail-closed policy.
+- Exact Player-kill dual proof, natural and sentence-created bounty, Core/transform zero-payout, replay/ABA
+  rejection, live/pending hostile and Siege participation, shared preview formula, and recovery preservation of
+  words/slots/Gold are covered by the focused suite.
+- Both WASM reproducibility checks, default WebGPU capability, render golden 10 surfaces/3 cases with SHA
+  `3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf`, and diff hygiene pass.
+- Manual interactive GameScene smoke: NOT EXECUTED. Automated GPU PASS is not a manual visual PASS.
+
 ## 5. Team, targeting, and enemy AI
 
 - Player projectiles do not damage Player Towers.
@@ -378,6 +416,9 @@ final cumulative runner, this section records R2 COMPLETE while preserving the e
 
 ## 6. Wave and Overtime
 
+R3 implements the player-created Enemy bounty and live/pending hostile/Siege participation inputs in the list
+below. Timer expiry, Overtime transition/DOT, Wave Clear, and final victory consumption remain future acceptance.
+
 - timer expiry with live/pending hostiles enters Overtime once.
 - player-created enemies count toward hostile cleanup and Siege Pressure.
 - player-created enemy kill grants ordinary bounty exactly once.
@@ -408,6 +449,9 @@ final cumulative runner, this section records R2 COMPLETE while preserving the e
 - save failure never reapplies settlement, reward, or shop transaction.
 
 ## 9. GPU acceptance
+
+R3 completes the Enemy-only actor child allocation rows. Tower group movement/share and Tower actor-payload
+allocation rows remain R4/R5 gates.
 
 - team/target/share metadata host/WGSL compatibility.
 - GPU Tower HP/death and hostile projectile contact on actual NW.js/WebGPU.

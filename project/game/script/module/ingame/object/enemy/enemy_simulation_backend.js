@@ -34,13 +34,34 @@ import {
 } from '../../physics/gpu/gpu_projectile_capture_runtime_shaders.js';
 import {
     GPU_ROUTE_LIFECYCLE_ABI_VERSION,
+    GPU_ROUTE_RUNTIME_ABI,
     GPU_ROUTE_RUNTIME_ABI_VERSION,
     GPU_ROUTE_RUNTIME_MAX_CLOSERS
 } from '../../physics/gpu/gpu_route_runtime_abi.js';
+import {
+    GpuAbilitySubjectSnapshotRuntime
+} from '../../physics/gpu/gpu_ability_subject_snapshot_runtime.js';
+import {
+    GpuActorPayloadMaterializationRuntime
+} from '../../physics/gpu/gpu_actor_payload_materialization_runtime.js';
+import {
+    GPU_CIRCLE_BODY_ABI,
+    GPU_CIRCLE_BODY_META,
+    GPU_CIRCLE_BODY_SIMULATION_FLAG
+} from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    BASIC_CIRCLE_ENEMY_DATA
+} from 'data/object/enemy/basic_circle_enemy_data.js';
+import {
+    createGpuEnemySpawnIntent
+} from './gpu_enemy_spawn_adapter.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
 const DEFAULT_BODY_CAPACITY = 16384;
+const LITTLE_ENDIAN = true;
+const ABILITY_PAYLOAD_FNV_OFFSET = 0x811c9dc5;
+const ABILITY_PAYLOAD_FNV_PRIME = 0x01000193;
 const TERMINAL_WEBGPU_PLATFORM_STATUSES = new Set([
     'unsupported',
     'destroyed'
@@ -75,6 +96,59 @@ function readDiagnosticPositiveInteger(value) {
     } catch {
         return 0;
     }
+}
+
+function hashAbilityPayloadWord(current, value) {
+    return Math.imul(
+        (current ^ (Number(value) >>> 0)) >>> 0,
+        ABILITY_PAYLOAD_FNV_PRIME
+    ) >>> 0;
+}
+
+function abilityPayloadHandleKey(handle) {
+    return `${Number(handle?.entityId)}:${Number(handle?.incarnation)}`;
+}
+
+function isRetryableActorPayloadBodySpawnReason(reason) {
+    return reason === 'telemetry-backpressure'
+        || reason === 'event-backpressure'
+        || reason === 'gpu-backpressure'
+        || reason === 'idle'
+        || reason === 'gpu-deferred'
+        || reason === 'not-ready';
+}
+
+function uploadActorPayloadPreleaseRanges(simulation, records, stride) {
+    const slots = records
+        .map(({ slot }) => slot)
+        .sort((left, right) => left - right);
+    const uploadRange = (firstSlot, lastSlot) => {
+        const byteOffset = firstSlot * stride;
+        const byteLength = (lastSlot - firstSlot + 1) * stride;
+        const bytes = new Uint8Array(
+            simulation.hostStorage.simulationBuffer,
+            byteOffset,
+            byteLength
+        );
+        simulation.device.queue.writeBuffer(
+            simulation.buffers.simulation,
+            byteOffset,
+            bytes
+        );
+    };
+    let firstSlot = slots[0];
+    let lastSlot = firstSlot;
+    for (let index = 1; index < slots.length; index++) {
+        const slot = slots[index];
+        if (slot === lastSlot + 1) {
+            lastSlot = slot;
+            continue;
+        }
+        uploadRange(firstSlot, lastSlot);
+        firstSlot = slot;
+        lastSlot = slot;
+    }
+    uploadRange(firstSlot, lastSlot);
 }
 
 /**
@@ -117,14 +191,41 @@ export class EnemySimulationBackend {
             = options.crowdDensityReadbackSlotCount;
         this.transientVfxEnabled = options.transientVfxEnabled !== false;
         this.transientVfxCapacity = options.transientVfxCapacity;
+        this.abilitySubjectCommandCapacity
+            = options.abilitySubjectCommandCapacity;
+        this.abilitySubjectCapacity = options.abilitySubjectCapacity;
+        this.abilitySubjectReadbackSlotCount
+            = options.abilitySubjectReadbackSlotCount;
+        this.actorPayloadCommandCapacity
+            = options.actorPayloadCommandCapacity;
+        this.actorPayloadReadbackSlotCount
+            = options.actorPayloadReadbackSlotCount;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
         );
+        this.abilitySubjectSnapshotRuntime
+            = new GpuAbilitySubjectSnapshotRuntime({
+                capacity: this.capacity,
+                sessionGeneration: this.sessionGeneration,
+                commandCapacity: this.abilitySubjectCommandCapacity,
+                subjectCapacity: this.abilitySubjectCapacity,
+                readbackSlotCount: this.abilitySubjectReadbackSlotCount
+            });
+        this.actorPayloadMaterializationRuntime
+            = new GpuActorPayloadMaterializationRuntime({
+                sessionGeneration: this.sessionGeneration,
+                commandCapacity: this.actorPayloadCommandCapacity,
+                readbackSlotCount: this.actorPayloadReadbackSlotCount
+            });
+        this.actorPayloadBodyPreleases = new Map();
+        this.actorPayloadPreleaseHighWater = 0;
+        this.actorPayloadPreleaseFailure = null;
         this.navigationGrid = null;
         this.signedDistanceField = null;
         this.flowFieldAtlas = null;
         this.flowRouteByPathId = new Map();
+        this.defaultPlayerCreatedHostileRoute = null;
         this.simulation = null;
         this.state = 'idle';
         this.initialized = false;
@@ -148,6 +249,8 @@ export class EnemySimulationBackend {
         this.navigationGrid = tileMap.getNavigationGrid();
         this.signedDistanceField = createGpuSignedDistanceField(this.navigationGrid);
         if (typeof tileMap.getSpawnRoutes === 'function') {
+            const spawnRoutes = tileMap.getSpawnRoutes();
+            this.defaultPlayerCreatedHostileRoute = spawnRoutes[0] ?? null;
             this.flowFieldAtlas = createRouteFlowFieldAtlas(tileMap);
             for (const route of this.flowFieldAtlas.routes) {
                 this.flowRouteByPathId.set(route.pathId, route);
@@ -284,6 +387,540 @@ export class EnemySimulationBackend {
     /** @param {object} handle - entityId/incarnation handle입니다. */
     hasBody(handle) {
         return this.simulation?.hasBody(handle) ?? false;
+    }
+
+    /** Ability metadata plane이 사용할 exact private stable slot을 한정합니다. */
+    resolveExactAbilityBodySlot(handle) {
+        const entityId = Number(handle?.entityId);
+        const incarnation = Number(handle?.incarnation);
+        if (!Number.isSafeInteger(entityId) || entityId <= 0
+            || !Number.isSafeInteger(incarnation) || incarnation <= 0
+            || !this.simulation?.hasBody?.({ entityId, incarnation })) {
+            return null;
+        }
+        const slot = this.simulation.handleToSlot?.get(
+            `${entityId}:${incarnation}`
+        );
+        if (!Number.isSafeInteger(slot)
+            || slot < 0 || slot >= this.capacity
+            || this.simulation.slotActive?.[slot] !== 1
+            || this.simulation.slotHandles?.[slot]?.entityId !== entityId
+            || this.simulation.slotHandles?.[slot]?.incarnation
+                !== incarnation) {
+            return null;
+        }
+        return Object.freeze({ slot, entityId, incarnation });
+    }
+
+    synchronizeAbilityEntityMetadata(entries) {
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'ability-subject-runtime-unavailable'
+            });
+        }
+        return this.abilitySubjectSnapshotRuntime
+            .synchronizeEntityMetadata(entries);
+    }
+
+    stageAbilityExecutionCommand(command) {
+        return this.abilitySubjectSnapshotRuntime.stageExecution(command);
+    }
+
+    submitAbilitySubjectSnapshots(sourceTick) {
+        const pendingCommandCount = this.abilitySubjectSnapshotRuntime
+            .getStatus().pendingCommandCount;
+        if (pendingCommandCount === 0) {
+            return Object.freeze({ submittedCount: 0, deferredCount: 0 });
+        }
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()) {
+            return Object.freeze({
+                submittedCount: 0,
+                deferredCount: pendingCommandCount,
+                reason: 'ability-subject-runtime-unavailable'
+            });
+        }
+        return this.abilitySubjectSnapshotRuntime
+            .submitPendingForFixedTick(sourceTick);
+    }
+
+    drainCompletedAbilitySubjectSnapshots(out = []) {
+        return this.abilitySubjectSnapshotRuntime.drainCompleted(out);
+    }
+
+    getAbilitySubjectSnapshotGpuBinding(token) {
+        return this.abilitySubjectSnapshotRuntime
+            .getSnapshotGpuBinding(token);
+    }
+
+    releaseAbilitySubjectSnapshot(token) {
+        return this.abilitySubjectSnapshotRuntime.releaseSnapshot(token);
+    }
+
+    cancelPendingAbilityExecutions(reason = 'cancelled') {
+        return this.abilitySubjectSnapshotRuntime.cancelAll(reason);
+    }
+
+    getAbilitySubjectSnapshotStatus() {
+        return this.abilitySubjectSnapshotRuntime.getStatus();
+    }
+
+    /** R3 data order의 첫 route를 player-created hostile default로 고정합니다. */
+    createAbilityEnemyPayloadSpawnTemplate(executionOrdinal) {
+        if (!this.defaultPlayerCreatedHostileRoute) {
+            throw new RangeError(
+                'player-created hostile default route가 없습니다.'
+            );
+        }
+        const spawnSequence = Number(executionOrdinal);
+        if (!Number.isSafeInteger(spawnSequence) || spawnSequence <= 0) {
+            throw new RangeError('payload spawnSequence는 양의 정수여야 합니다.');
+        }
+        return createGpuEnemySpawnIntent({
+            definition: BASIC_CIRCLE_ENEMY_DATA,
+            route: this.defaultPlayerCreatedHostileRoute,
+            spawnSequence,
+            policyId: 'player-created-hostile-default-route.v1'
+        });
+    }
+
+    getAvailableActorPayloadBodyCapacity() {
+        const simulation = this.simulation;
+        if (!simulation) return 0;
+        return Math.max(
+            0,
+            this.capacity
+                - Number(simulation.activeBodyCount ?? 0)
+                - Number(simulation.pendingBodyCount ?? 0)
+        );
+    }
+
+    canStageActorPayloadMaterialization() {
+        return this.#ensureActorPayloadMaterializationRuntime(null)
+            && this.actorPayloadMaterializationRuntime.canAccept();
+    }
+
+    /**
+     * Registry handle batch와 같은 rank의 stable body slot을 pending(2)로
+     * prelease합니다. GPU flags의 ALIVE를 즉시 내려 외부에는 보이지
+     * 않으며, 전체 batch를 수용할 수 없으면 0개만 반영합니다.
+     */
+    preleaseActorPayloadBodies(request = {}) {
+        const handles = request.handles;
+        const spawnTemplate = request.spawnTemplate;
+        if (!Array.isArray(handles) || handles.length === 0) {
+            throw new TypeError('actor payload handles는 비어 있지 않은 배열이어야 합니다.');
+        }
+        if (!spawnTemplate || typeof spawnTemplate !== 'object') {
+            throw new TypeError('actor payload spawn template이 필요합니다.');
+        }
+        if (!this.simulation
+            || handles.length > this.getAvailableActorPayloadBodyCapacity()) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-body-capacity',
+                requestedCount: handles.length,
+                preleasedCount: 0,
+                requiresRecovery: false
+            });
+        }
+        const keys = new Set();
+        for (const handle of handles) {
+            const entityId = Number(handle?.entityId);
+            const incarnation = Number(handle?.incarnation);
+            const key = abilityPayloadHandleKey(handle);
+            if (!Number.isSafeInteger(entityId) || entityId <= 0
+                || !Number.isSafeInteger(incarnation) || incarnation <= 0
+                || keys.has(key)) {
+                throw new RangeError('actor payload destination handle이 잘못됐습니다.');
+            }
+            keys.add(key);
+        }
+        const resolvedTemplate = this.#resolveBodyFlow(spawnTemplate, 0);
+        const bodies = handles.map((handle) => ({
+            ...resolvedTemplate,
+            entityId: handle.entityId,
+            incarnation: handle.incarnation
+        }));
+        const result = this.simulation.spawnBodies(bodies);
+        const full = result?.accepted === handles.length
+            && result?.rejected === 0
+            && handles.every((handle) => this.simulation.hasBody(handle));
+        if (!full) {
+            const any = handles.filter((handle) => this.simulation.hasBody(handle));
+            if (any.length > 0) {
+                try { this.simulation.despawnBodies(any); } catch { /* recovery below */ }
+                this.actorPayloadPreleaseFailure = Object.freeze({
+                    stage: 'actor-payload-body-prelease-partial',
+                    message: 'body prelease가 partial result를 반환했습니다.'
+                });
+            }
+            this.#syncState();
+            const capacityRejected = result?.reason === 'capacity';
+            const retryable = any.length === 0
+                && result?.requiresRecovery !== true
+                && isRetryableActorPayloadBodySpawnReason(result?.reason);
+            return Object.freeze({
+                accepted: false,
+                reason: result?.reason ?? 'actor-payload-body-prelease',
+                capacityRejected,
+                retryable,
+                requestedCount: handles.length,
+                preleasedCount: 0,
+                requiresRecovery: any.length > 0
+                    || (result?.requiresRecovery === true && !retryable)
+            });
+        }
+
+        const simulation = this.simulation;
+        const simulationView = new DataView(
+            simulation.hostStorage.simulationBuffer
+        );
+        const routeView = new DataView(simulation.hostRouteRuntimeStates);
+        const bodyLayout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+        const routeLayout = GPU_ROUTE_RUNTIME_ABI.BODY_STATE;
+        const records = [];
+        for (let index = 0; index < handles.length; index++) {
+            const handle = handles[index];
+            const key = abilityPayloadHandleKey(handle);
+            const slot = simulation.handleToSlot.get(key);
+            if (!Number.isSafeInteger(slot)
+                || simulation.slotActive[slot] !== 1
+                || simulation.slotHandles[slot]?.entityId !== handle.entityId
+                || simulation.slotHandles[slot]?.incarnation
+                    !== handle.incarnation) {
+                this.actorPayloadPreleaseFailure = Object.freeze({
+                    stage: 'actor-payload-slot-prelease',
+                    message: `spawned body slot을 exact handle로 찾지 못했습니다: ${key}`
+                });
+                try { simulation.despawnBodies(handles); } catch { /* fail closed */ }
+                this.#syncState();
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'actor-payload-slot-identity',
+                    requestedCount: handles.length,
+                    preleasedCount: 0,
+                    requiresRecovery: true
+                });
+            }
+            const simulationOffset = slot * bodyLayout.STRIDE;
+            const routeOffset = slot * routeLayout.STRIDE;
+            records.push({
+                slot,
+                handle,
+                key,
+                baselineFlags: simulationView.getUint32(
+                    simulationOffset + bodyLayout.FLAGS,
+                    LITTLE_ENDIAN
+                ),
+                defaultRouteMeta: routeView.getUint32(
+                    routeOffset + routeLayout.META,
+                    LITTLE_ENDIAN
+                ),
+                defaultRouteProfileCode: routeView.getUint32(
+                    routeOffset + routeLayout.PROFILE_CODE,
+                    LITTLE_ENDIAN
+                ),
+                defaultCurrentPathIndex: routeView.getUint32(
+                    routeOffset + routeLayout.CURRENT_PATH_INDEX,
+                    LITTLE_ENDIAN
+                ),
+                defaultRouteSetIndex: routeView.getUint32(
+                    routeOffset + routeLayout.ROUTE_SET_INDEX,
+                    LITTLE_ENDIAN
+                )
+            });
+        }
+
+        const token = Object.freeze({});
+        const record = {
+            token,
+            handles: Object.freeze(handles.map((handle) => Object.freeze({
+                entityId: handle.entityId,
+                incarnation: handle.incarnation
+            }))),
+            records: Object.freeze(records.map((entry) => Object.freeze({
+                ...entry,
+                handle: Object.freeze({ ...entry.handle })
+            }))),
+            resolvedTemplate,
+            state: 'preleased'
+        };
+        try {
+            for (const entry of record.records) {
+                simulation.handleToSlot.delete(entry.key);
+                simulation.slotHandles[entry.slot] = null;
+                simulation.slotActive[entry.slot] = 2;
+                simulation.pendingSlotHandles[entry.slot] = entry.handle;
+                simulation.pendingHandleToSlot.set(entry.key, entry.slot);
+                simulation.activeBodyCount--;
+                simulation.pendingBodyCount++;
+                const deadFlags = entry.baselineFlags
+                    & ~GPU_CIRCLE_BODY_META.ALIVE_BIT;
+                simulationView.setUint32(
+                    entry.slot * bodyLayout.STRIDE + bodyLayout.FLAGS,
+                    deadFlags,
+                    LITTLE_ENDIAN
+                );
+            }
+            uploadActorPayloadPreleaseRanges(
+                simulation,
+                record.records,
+                bodyLayout.STRIDE
+            );
+            this.actorPayloadBodyPreleases.set(token, record);
+            this.actorPayloadPreleaseHighWater = Math.max(
+                this.actorPayloadPreleaseHighWater,
+                this.actorPayloadBodyPreleases.size
+            );
+        } catch (error) {
+            this.actorPayloadPreleaseFailure = Object.freeze({
+                stage: 'actor-payload-prelease-upload',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            this.#rollbackUntrackedActorPayloadPrelease(record);
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-upload',
+                requestedCount: handles.length,
+                preleasedCount: 0,
+                requiresRecovery: true
+            });
+        }
+        this.#syncState();
+        return Object.freeze({
+            accepted: true,
+            token,
+            requestedCount: handles.length,
+            preleasedCount: handles.length,
+            requiresRecovery: false
+        });
+    }
+
+    stageActorPayloadMaterialization(request = {}) {
+        const prelease = this.actorPayloadBodyPreleases.get(
+            request.preleaseToken
+        );
+        if (!prelease || prelease.state !== 'preleased') {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-token'
+            });
+        }
+        const snapshotBinding = request.snapshotBinding;
+        if (!this.#ensureActorPayloadMaterializationRuntime(snapshotBinding)) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-runtime-unavailable'
+            });
+        }
+        let destinationFingerprint = hashAbilityPayloadWord(
+            ABILITY_PAYLOAD_FNV_OFFSET,
+            request.command?.fingerprint
+        );
+        const destinationLeases = prelease.records.map((entry, index) => {
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                entry.slot
+            );
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                entry.handle.entityId
+            );
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                entry.handle.incarnation
+            );
+            return Object.freeze({
+                destinationSlot: entry.slot,
+                destinationEntityId: entry.handle.entityId,
+                destinationIncarnation: entry.handle.incarnation,
+                snapshotRank: index,
+                baselineFlags: entry.baselineFlags,
+                defaultRouteMeta: entry.defaultRouteMeta,
+                defaultRouteProfileCode: entry.defaultRouteProfileCode
+            });
+        });
+        const first = prelease.records[0];
+        const result = this.actorPayloadMaterializationRuntime.stage({
+            ...request,
+            destinationLeases,
+            destinationFingerprint,
+            sdf: Object.freeze({
+                enabled: this.simulation.sdf?.enabled === true,
+                cols: this.simulation.sdf?.cols ?? 1,
+                rows: this.simulation.sdf?.rows ?? 1,
+                worldWidth: this.simulation.worldSize.x,
+                worldHeight: this.simulation.worldSize.y
+            }),
+            defaultRoute: Object.freeze({
+                flowFieldIndex: prelease.resolvedTemplate.flowFieldIndex ?? 0,
+                currentPathIndex: first.defaultCurrentPathIndex,
+                routeSetIndex: first.defaultRouteSetIndex
+            })
+        });
+        if (result?.accepted === true) {
+            prelease.state = 'materialization-pending';
+            prelease.transactionId = request.transactionId;
+        }
+        return result;
+    }
+
+    submitActorPayloadMaterializations(sourceTick) {
+        return this.actorPayloadMaterializationRuntime
+            .submitPendingForFixedTick(sourceTick);
+    }
+
+    drainCompletedActorPayloadMaterializations(out = []) {
+        return this.actorPayloadMaterializationRuntime.drainCompleted(out);
+    }
+
+    commitActorPayloadBodyPrelease(token) {
+        const prelease = this.actorPayloadBodyPreleases.get(token);
+        if (!prelease || prelease.state !== 'materialization-pending') {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-token',
+                committedCount: 0,
+                requiresRecovery: false
+            });
+        }
+        const simulation = this.simulation;
+        const layout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+        const view = new DataView(simulation.hostStorage.simulationBuffer);
+        for (const entry of prelease.records) {
+            if (simulation.slotActive[entry.slot] !== 2
+                || simulation.pendingHandleToSlot.get(entry.key)
+                    !== entry.slot
+                || simulation.pendingSlotHandles[entry.slot]?.entityId
+                    !== entry.handle.entityId
+                || simulation.pendingSlotHandles[entry.slot]?.incarnation
+                    !== entry.handle.incarnation) {
+                this.actorPayloadPreleaseFailure = Object.freeze({
+                    stage: 'actor-payload-prelease-commit',
+                    message: `pending destination identity가 다릅니다: ${entry.key}`
+                });
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'actor-payload-prelease-identity',
+                    committedCount: 0,
+                    requiresRecovery: true
+                });
+            }
+        }
+        try {
+            for (const entry of prelease.records) {
+                const publishFlags = entry.baselineFlags
+                    | GPU_CIRCLE_BODY_META.ALIVE_BIT
+                    | GPU_CIRCLE_BODY_SIMULATION_FLAG.CONTROLLED_THIS_TICK
+                    | GPU_CIRCLE_BODY_SIMULATION_FLAG
+                        .EXTERNAL_MOTION_OWNER_THIS_TICK;
+                view.setUint32(
+                    entry.slot * layout.STRIDE + layout.FLAGS,
+                    publishFlags,
+                    LITTLE_ENDIAN
+                );
+                const flagBytes = new ArrayBuffer(4);
+                new DataView(flagBytes).setUint32(
+                    0,
+                    publishFlags,
+                    LITTLE_ENDIAN
+                );
+                simulation.device.queue.writeBuffer(
+                    simulation.buffers.simulation,
+                    entry.slot * layout.STRIDE + layout.FLAGS,
+                    flagBytes
+                );
+            }
+            for (const entry of prelease.records) {
+                simulation.pendingHandleToSlot.delete(entry.key);
+                simulation.pendingSlotHandles[entry.slot] = null;
+                simulation.slotActive[entry.slot] = 1;
+                simulation.slotHandles[entry.slot] = entry.handle;
+                simulation.handleToSlot.set(entry.key, entry.slot);
+                simulation.pendingBodyCount--;
+                simulation.activeBodyCount++;
+            }
+            prelease.state = 'committed';
+            this.actorPayloadBodyPreleases.delete(token);
+            this.#syncState();
+            return Object.freeze({
+                accepted: true,
+                committedCount: prelease.records.length,
+                handles: prelease.handles,
+                requiresRecovery: false
+            });
+        } catch (error) {
+            this.actorPayloadPreleaseFailure = Object.freeze({
+                stage: 'actor-payload-prelease-commit-upload',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-commit-upload',
+                committedCount: 0,
+                requiresRecovery: true
+            });
+        }
+    }
+
+    cancelActorPayloadBodyPrelease(token, reason = 'cancelled') {
+        const prelease = this.actorPayloadBodyPreleases.get(token);
+        if (!prelease) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-token',
+                cancelledCount: 0,
+                requiresRecovery: false
+            });
+        }
+        const cancelled = this.#rollbackUntrackedActorPayloadPrelease(
+            prelease
+        );
+        this.actorPayloadBodyPreleases.delete(token);
+        this.#syncState();
+        return Object.freeze({
+            accepted: cancelled,
+            reason: String(reason || 'cancelled'),
+            cancelledCount: cancelled ? prelease.records.length : 0,
+            requiresRecovery: !cancelled
+        });
+    }
+
+    cancelAllActorPayloadMaterializations(reason = 'cancelled') {
+        const runtime = this.actorPayloadMaterializationRuntime
+            .cancelAll(reason);
+        let cancelledPreleaseCount = 0;
+        let requiresRecovery = false;
+        for (const [token, prelease] of [...this.actorPayloadBodyPreleases]) {
+            const result = this.cancelActorPayloadBodyPrelease(token, reason);
+            cancelledPreleaseCount += result.cancelledCount;
+            requiresRecovery ||= result.requiresRecovery === true;
+            void prelease;
+        }
+        return Object.freeze({
+            cancelledExecutionCount: runtime.cancelledCount,
+            cancelledPreleaseCount,
+            requiresRecovery,
+            reason: String(reason || 'cancelled')
+        });
+    }
+
+    getActorPayloadMaterializationStatus() {
+        return Object.freeze({
+            ...this.actorPayloadMaterializationRuntime.getStatus(),
+            bodyPreleaseCount: this.actorPayloadBodyPreleases.size,
+            bodyPreleaseHighWater: this.actorPayloadPreleaseHighWater,
+            preleaseFailure: this.actorPayloadPreleaseFailure,
+            availableBodyCapacity:
+                this.getAvailableActorPayloadBodyCapacity(),
+            requiresRecovery:
+                this.actorPayloadPreleaseFailure !== null
+                || this.actorPayloadMaterializationRuntime.requiresRecovery()
+        });
     }
 
     canControlBody(handle) {
@@ -974,9 +1611,20 @@ export class EnemySimulationBackend {
         if (!this.simulation) {
             return false;
         }
+        const hadActiveBodies = this.simulation.getActiveBodyCount() > 0;
+        const payloadSubmission = Number.isSafeInteger(Number(sourceTick))
+            && Number(sourceTick) >= 0
+            ? this.submitActorPayloadMaterializations(sourceTick)
+            : Object.freeze({ submittedCount: 0, deferredCount: 0 });
+        const abilitySubmission = Number.isSafeInteger(Number(sourceTick))
+            && Number(sourceTick) >= 0
+            ? this.submitAbilitySubjectSnapshots(sourceTick)
+            : Object.freeze({ submittedCount: 0, deferredCount: 0 });
         const submitted = this.simulation.fixedUpdate(delta, sourceTick);
         this.#syncState();
-        return submitted;
+        return submitted || (!hadActiveBodies
+            && (abilitySubmission.submittedCount > 0
+                || payloadSubmission.submittedCount > 0));
     }
 
     /**
@@ -1038,6 +1686,12 @@ export class EnemySimulationBackend {
             navigationSize: this.navigationGrid?.size ?? 0,
             flowFieldCount: this.flowFieldAtlas?.fieldCount ?? 0,
             events: gpu?.events ?? null,
+            ...(this.simulation ? {
+                abilitySubjectSnapshots:
+                    this.abilitySubjectSnapshotRuntime.getStatus(),
+                actorPayloadMaterializations:
+                    this.getActorPayloadMaterializationStatus()
+            } : {}),
             gpu
         });
     }
@@ -1095,7 +1749,10 @@ export class EnemySimulationBackend {
             || this.state === 'gpu-overflow-degraded'
             || this.state === 'gpu-backpressure'
             || this.state === 'gpu-terminal-unavailable'
-            || this.state === 'gpu-failed';
+            || this.state === 'gpu-failed'
+            || this.abilitySubjectSnapshotRuntime.requiresRecovery()
+            || this.actorPayloadMaterializationRuntime.requiresRecovery()
+            || this.actorPayloadPreleaseFailure !== null;
     }
 
     /** 반복 호출 가능한 session teardown입니다. */
@@ -1104,11 +1761,15 @@ export class EnemySimulationBackend {
             return;
         }
         this.destroyed = true;
+        this.cancelAllActorPayloadMaterializations('destroyed');
+        this.actorPayloadMaterializationRuntime.destroy();
+        this.abilitySubjectSnapshotRuntime.destroy();
         this.simulation?.destroy();
         this.simulation = null;
         this.signedDistanceField = null;
         this.flowFieldAtlas = null;
         this.flowRouteByPathId.clear();
+        this.defaultPlayerCreatedHostileRoute = null;
         this.navigationGrid = null;
         this.initialized = false;
         this.state = 'destroyed';
@@ -1143,6 +1804,118 @@ export class EnemySimulationBackend {
             default:
                 this.state = classifyUnavailablePlatformState(this.webGpuPlatformPort);
                 break;
+        }
+    }
+
+    #ensureAbilitySubjectSnapshotRuntime() {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.simulation.device || !this.simulation.buffers) {
+            this.simulation.init();
+        }
+        const simulation = this.simulation;
+        if (!simulation.device || !simulation.buffers) return false;
+        try {
+            return this.abilitySubjectSnapshotRuntime.initialize(
+                simulation.device,
+                {
+                    counts: simulation.buffers.counts,
+                    physics: simulation.buffers.physics,
+                    simulation: simulation.buffers.simulation,
+                    contactHandlers: simulation.buffers.contactHandlers,
+                    enemyBehaviorStates:
+                        simulation.buffers.enemyBehaviorStates,
+                    routeRuntimeStates: simulation.buffers.routeRuntimeStates
+                },
+                {
+                    deviceGeneration: simulation.deviceGeneration,
+                    authoritativeEpoch: simulation.authoritativeEpoch
+                }
+            );
+        } catch {
+            return false;
+        }
+    }
+
+    #ensureActorPayloadMaterializationRuntime(snapshotBinding) {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()) return false;
+        const snapshotBuffer = snapshotBinding?.buffer
+            ?? this.abilitySubjectSnapshotRuntime.buffers?.output;
+        const simulation = this.simulation;
+        if (!snapshotBuffer
+            || !simulation.device
+            || !simulation.buffers
+            || !this.abilitySubjectSnapshotRuntime.buffers?.metadata) {
+            return false;
+        }
+        try {
+            return this.actorPayloadMaterializationRuntime.initialize(
+                simulation.device,
+                {
+                    snapshot: snapshotBuffer,
+                    physics: simulation.buffers.physics,
+                    simulation: simulation.buffers.simulation,
+                    abilityMetadata:
+                        this.abilitySubjectSnapshotRuntime.buffers.metadata,
+                    routeRuntimeStates:
+                        simulation.buffers.routeRuntimeStates,
+                    enemyBehaviorStates:
+                        simulation.buffers.enemyBehaviorStates,
+                    sdf: simulation.buffers.sdf
+                },
+                {
+                    deviceGeneration: simulation.deviceGeneration,
+                    authoritativeEpoch: simulation.authoritativeEpoch
+                }
+            );
+        } catch (error) {
+            this.actorPayloadPreleaseFailure = Object.freeze({
+                stage: 'actor-payload-runtime-initialize',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            return false;
+        }
+    }
+
+    #rollbackUntrackedActorPayloadPrelease(prelease) {
+        const simulation = this.simulation;
+        if (!simulation || !prelease?.records) return false;
+        try {
+            let restoredCount = 0;
+            for (const entry of prelease.records) {
+                if (simulation.slotActive[entry.slot] === 2
+                    && simulation.pendingHandleToSlot.get(entry.key)
+                        === entry.slot) {
+                    simulation.pendingHandleToSlot.delete(entry.key);
+                    simulation.pendingSlotHandles[entry.slot] = null;
+                    simulation.slotActive[entry.slot] = 1;
+                    simulation.slotHandles[entry.slot] = entry.handle;
+                    simulation.handleToSlot.set(entry.key, entry.slot);
+                    restoredCount++;
+                }
+            }
+            if (restoredCount > 0) {
+                simulation.pendingBodyCount -= restoredCount;
+                simulation.activeBodyCount += restoredCount;
+            }
+            const result = simulation.despawnBodies(prelease.handles);
+            const clean = result?.removed === prelease.records.length
+                && result?.rejected === 0;
+            if (!clean) {
+                this.actorPayloadPreleaseFailure = Object.freeze({
+                    stage: 'actor-payload-prelease-rollback',
+                    message: 'pending body prelease를 전체 회수하지 못했습니다.'
+                });
+            }
+            return clean;
+        } catch (error) {
+            this.actorPayloadPreleaseFailure = Object.freeze({
+                stage: 'actor-payload-prelease-rollback',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            return false;
         }
     }
 

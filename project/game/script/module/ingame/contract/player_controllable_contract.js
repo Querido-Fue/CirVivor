@@ -19,6 +19,10 @@ export const PLAYER_CONTROL_CONTEXTS = Object.freeze({
 export const PLAYER_ACTION_TYPES = Object.freeze({
     MOVE_VECTOR: 'moveVector',
     PRIMARY_POINTER_FIRE: 'primaryPointerFire',
+    SKILL_SHIFT: 'skillShift',
+    SKILL_SPACE: 'skillSpace',
+    SKILL_Q: 'skillQ',
+    SKILL_E: 'skillE',
     CAMERA_ZOOM: 'cameraZoom'
 });
 

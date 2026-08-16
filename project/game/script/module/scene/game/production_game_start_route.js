@@ -13,6 +13,9 @@ import {
     PERFORMANCE_SERPENTINE_SESSION,
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
+import {
+    R3_SHOWCASE_SENTENCE_LOADOUT
+} from 'data/word/r3_word_catalog_data.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
 /** 타이틀 맵 선택의 첫 production 카드가 유지하는 preview/selection identity입니다. */
@@ -36,7 +39,10 @@ function createPlayableSessionOptions(mapData, waveDefinition, session) {
         enemyRecoveryEnabled: true,
         towerMaxHp: session.towerMaxHp,
         coreMaxIntegrity: session.coreMaxIntegrity,
-        waveDefinition
+        waveDefinition,
+        wordSystemOptions: Object.freeze({
+            loadout: R3_SHOWCASE_SENTENCE_LOADOUT
+        })
     };
 }
 

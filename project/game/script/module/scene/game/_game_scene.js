@@ -19,7 +19,7 @@ export const GAME_SCENE_MODES = Object.freeze({
 export class GameScene extends BaseScene {
     /**
      * @param {object} sceneHandler - 상위 SceneSystem입니다.
-     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number}} [options={}] - 플레이 진입 옵션입니다.
+     * @param {{mapId?:string,dependencies?:object,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,enemyRecoveryEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number,wordSystemOptions?:object}} [options={}] - 플레이 진입 옵션입니다.
      */
     constructor(sceneHandler, options = {}) {
         super(sceneHandler);
@@ -35,6 +35,7 @@ export class GameScene extends BaseScene {
         this.initialCameraZoom = options.initialCameraZoom;
         this.towerMaxHp = options.towerMaxHp;
         this.coreMaxIntegrity = options.coreMaxIntegrity;
+        this.wordSystemOptions = options.wordSystemOptions;
         this.recoveryRestartGeneration = null;
         this.recoveryRestartCount = 0;
         this.destroyed = false;
@@ -183,7 +184,8 @@ export class GameScene extends BaseScene {
             enemyPresentationProfile: this.enemyPresentationProfile,
             initialCameraZoom: this.initialCameraZoom,
             towerMaxHp: this.towerMaxHp,
-            coreMaxIntegrity: this.coreMaxIntegrity
+            coreMaxIntegrity: this.coreMaxIntegrity,
+            wordSystemOptions: this.wordSystemOptions
         });
         gameSystem.enter();
         return gameSystem;

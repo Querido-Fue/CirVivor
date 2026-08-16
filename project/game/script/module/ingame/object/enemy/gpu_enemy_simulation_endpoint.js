@@ -12,6 +12,22 @@ import {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
 import {
+    ABILITY_CREATION_ORIGIN_CODE,
+    createAbilityEntityMetadata
+} from '../../contract/ability_execution_contract.js';
+import {
+    ACTOR_PAYLOAD_MATERIALIZATION_STATUS,
+    R3_ENEMY_ACTOR_PAYLOAD_DEFINITION,
+    normalizeActorPayloadDefinition
+} from '../../contract/actor_payload_contract.js';
+import { GAMEPLAY_TEAM_ID } from '../../contract/gameplay_team_contract.js';
+import {
+    evaluateActorPayloadCapacity
+} from '../../word/actor_payload_budget.js';
+import {
+    GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION
+} from '../../physics/gpu/gpu_ability_subject_snapshot_abi.js';
+import {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG,
@@ -139,6 +155,28 @@ const ROUTE_AVAILABILITY_BACKEND_METHODS = Object.freeze([
     'getTerminalRouteAvailabilityProgramCancelStatus',
     'getRouteLifecyclePortStatus'
 ]);
+const ABILITY_SUBJECT_BACKEND_METHODS = Object.freeze([
+    'resolveExactAbilityBodySlot',
+    'synchronizeAbilityEntityMetadata',
+    'stageAbilityExecutionCommand',
+    'drainCompletedAbilitySubjectSnapshots',
+    'getAbilitySubjectSnapshotGpuBinding',
+    'releaseAbilitySubjectSnapshot',
+    'cancelPendingAbilityExecutions',
+    'getAbilitySubjectSnapshotStatus'
+]);
+const ACTOR_PAYLOAD_BACKEND_METHODS = Object.freeze([
+    'createAbilityEnemyPayloadSpawnTemplate',
+    'getAvailableActorPayloadBodyCapacity',
+    'canStageActorPayloadMaterialization',
+    'preleaseActorPayloadBodies',
+    'stageActorPayloadMaterialization',
+    'drainCompletedActorPayloadMaterializations',
+    'commitActorPayloadBodyPrelease',
+    'cancelActorPayloadBodyPrelease',
+    'cancelAllActorPayloadMaterializations',
+    'getActorPayloadMaterializationStatus'
+]);
 let nextGpuSimulationSessionGeneration = 1;
 const CORE_IMPACT_CLEANUP_OPTIONS = Object.freeze({
     disposition: ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
@@ -174,6 +212,66 @@ function toNonNegativeSafeInteger(value, fallback = 0) {
 function toPositiveSafeInteger(value, fallback = 0) {
     const number = Number(value);
     return Number.isSafeInteger(number) && number > 0 ? number : fallback;
+}
+
+function createActorPayloadRegistryMetadata(template, command, snapshotRank) {
+    const metadata = Object.create(null);
+    for (const [key, value] of Object.entries(template ?? {})) {
+        if (value === null
+            || typeof value === 'string'
+            || typeof value === 'number'
+            || typeof value === 'boolean') {
+            metadata[key] = value;
+        }
+    }
+    metadata.definitionId = template.definitionId;
+    metadata.enemyDefinitionId = template.enemyDefinitionId;
+    metadata.creationOrigin = 'PLAYER_SENTENCE';
+    metadata.abilityCreationOriginCode
+        = ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD;
+    metadata.sourceAbilityId = command.compiledAbility.compiledAbilityId;
+    metadata.sourceAbilityCode = command.compiledAbilityCode;
+    metadata.sourceExecutionId = command.executionId;
+    metadata.sourceExecutionFingerprint = command.executionIdFingerprint;
+    metadata.sourceExecutionOrdinal = command.executionOrdinal;
+    metadata.executionOrdinal = command.executionOrdinal;
+    metadata.visibleFromExecutionOrdinal = command.executionOrdinal + 1;
+    metadata.sourceSnapshotRank = snapshotRank;
+    metadata.sourceSubjectIdentityAuthority = 'GPU_SUBJECT_SNAPSHOT';
+    metadata.generation = null;
+    metadata.generationAuthority = 'GPU_ABILITY_METADATA';
+    metadata.generationRule = 'SOURCE_GENERATION_PLUS_ONE';
+    metadata.rewardEligible = true;
+    metadata.countsTowardHostile = true;
+    metadata.countsTowardSiege = true;
+    metadata.siegeWeight = Number(template.weight ?? 0);
+    return metadata;
+}
+
+function isAuthenticatedPlayerLethalEvent(event, registry) {
+    if (event?.type !== 'contact'
+        || event.eventType !== 'damage-applied'
+        || (event.flags & GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED) === 0
+        || !event.other) {
+        return false;
+    }
+    const source = registry.copyEntityView(event, {});
+    const target = registry.copyEntityView(event.other, {});
+    return source?.metadata?.teamId === GAMEPLAY_TEAM_ID.PLAYER
+        && target?.kindId === 'enemy'
+        && target.metadata?.teamId === GAMEPLAY_TEAM_ID.HOSTILE
+        && target.metadata?.rewardEligible !== false;
+}
+
+function playerLethalTargetKey(handle, event) {
+    return [
+        event.sessionGeneration,
+        event.deviceGeneration,
+        event.authoritativeEpoch,
+        event.sourceTick,
+        handle.entityId,
+        handle.incarnation
+    ].join(':');
 }
 
 function projectileCaptureHandleKey(handle) {
@@ -766,7 +864,7 @@ export class GpuEnemySimulationEndpoint {
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number,abilitySubjectCommandCapacity?:number,abilitySubjectCapacity?:number,abilitySubjectReadbackSlotCount?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         if (dependencies.coreImpactCleanupPortReceiver !== undefined
@@ -836,6 +934,15 @@ export class GpuEnemySimulationEndpoint {
                 options.projectileCaptureReleasePreparationCapacity,
             projectileCaptureCleanupCapacity:
                 options.projectileCaptureCleanupCapacity,
+            abilitySubjectCommandCapacity:
+                options.abilitySubjectCommandCapacity,
+            abilitySubjectCapacity: options.abilitySubjectCapacity,
+            abilitySubjectReadbackSlotCount:
+                options.abilitySubjectReadbackSlotCount,
+            actorPayloadCommandCapacity:
+                options.actorPayloadCommandCapacity,
+            actorPayloadReadbackSlotCount:
+                options.actorPayloadReadbackSlotCount,
             sessionGeneration: this.sessionGeneration
         };
         const injectedBackend = typeof backendFactory
@@ -889,6 +996,22 @@ export class GpuEnemySimulationEndpoint {
             = ROUTE_AVAILABILITY_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
+        this.abilitySubjectBackendSupported
+            = ABILITY_SUBJECT_BACKEND_METHODS.every(
+                (methodName) => typeof this.backend?.[methodName] === 'function'
+            );
+        this.actorPayloadBackendSupported
+            = ACTOR_PAYLOAD_BACKEND_METHODS.every(
+                (methodName) => typeof this.backend?.[methodName] === 'function'
+            );
+        this.actorPayloadTransactions = new Map();
+        this.actorPayloadCompleted = [];
+        this.actorPayloadFailure = null;
+        this.actorPayloadCommittedCount = 0;
+        this.actorPayloadRejectedCount = 0;
+        this.actorPayloadCapacityRejectedCount = 0;
+        this.actorPayloadPreleaseHighWater = 0;
+        this.pendingHostileSpawnEntries = [];
         const routeLifecyclePort = this.routeAvailabilityBackendSupported
             ? Object.freeze({
                 preflightRouteLifecycleBatch: (request) => this.backend
@@ -1533,11 +1656,15 @@ export class GpuEnemySimulationEndpoint {
         if (rejected) {
             return rejected;
         }
-        return this.lifecycleCommandOwner.requestSpawn(
+        const receipt = this.lifecycleCommandOwner.requestSpawn(
             intent,
             targetFixedTick,
             commandId
         );
+        if (receipt.accepted === true) {
+            this.#rememberPendingHostileSpawn(intent, receipt.targetFixedTick);
+        }
+        return receipt;
     }
 
     /** 다음 fixed 경계들에 적용할 spawn batch를 ingress에서 원자적으로 예약합니다. */
@@ -1550,7 +1677,16 @@ export class GpuEnemySimulationEndpoint {
         if (rejected) {
             return rejected;
         }
-        return this.lifecycleCommandOwner.requestSpawnBatch(requests);
+        const receipt = this.lifecycleCommandOwner.requestSpawnBatch(requests);
+        if (receipt.accepted === true) {
+            for (const request of requests) {
+                this.#rememberPendingHostileSpawn(
+                    request.intent,
+                    request.targetFixedTick
+                );
+            }
+        }
+        return receipt;
     }
 
     /** 다음 fixed 경계에 적용할 despawn을 예약합니다. */
@@ -1651,6 +1787,591 @@ export class GpuEnemySimulationEndpoint {
             targetFixedTick,
             commandId
         );
+    }
+
+    /** Typed semantic execution을 GPU subject snapshot queue에 예약합니다. */
+    requestAbilityExecutionCommand(command) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) return rejected;
+        if (!this.abilitySubjectBackendSupported) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'ability-subject-backend-unavailable'
+            });
+        }
+        return this.backend.stageAbilityExecutionCommand(command);
+    }
+
+    /** CPU identity/transform을 포함하지 않는 bounded aggregate만 drain합니다. */
+    drainCompletedAbilitySubjectSnapshots(out = []) {
+        this.#assertUsable();
+        if (!Array.isArray(out)) {
+            throw new TypeError('ability subject snapshot output은 배열이어야 합니다.');
+        }
+        if (!this.abilitySubjectBackendSupported) return out;
+        return this.backend.drainCompletedAbilitySubjectSnapshots(out);
+    }
+
+    /** Payload runtime에만 전달할 GPU-resident snapshot slice입니다. */
+    getAbilitySubjectSnapshotGpuBinding(snapshotToken) {
+        this.#assertUsable();
+        return this.abilitySubjectBackendSupported
+            ? this.backend.getAbilitySubjectSnapshotGpuBinding(snapshotToken)
+            : null;
+    }
+
+    releaseAbilitySubjectSnapshot(snapshotToken) {
+        if (this.destroyed || !this.abilitySubjectBackendSupported) return false;
+        return this.backend.releaseAbilitySubjectSnapshot(snapshotToken);
+    }
+
+    getAbilitySubjectSnapshotStatus() {
+        if (!this.abilitySubjectBackendSupported) {
+            return Object.freeze({
+                abiVersion: GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION,
+                state: this.destroyed ? 'destroyed' : 'unsupported',
+                pendingCommandCount: 0,
+                pendingReadbackCount: 0,
+                retainedSnapshotCount: 0,
+                aggregateReadbackByteSize: 64,
+                storageBindingCount: 0,
+                requiresRecovery: false,
+                subjectReadbackPolicy: 'aggregate-only'
+            });
+        }
+        return this.backend.getAbilitySubjectSnapshotStatus();
+    }
+
+    /**
+     * Aggregate subject count를 인증한 뒤 registry handle/body slot 전체를
+     * prelease하고 GPU rank materialization을 한 transaction으로 stage합니다.
+     */
+    requestActorPayloadMaterialization(request = {}) {
+        this.#assertUsable();
+        const rejected = this.#rejectClosedGameplayIngress();
+        if (rejected) return rejected;
+        if (!this.actorPayloadBackendSupported
+            || !this.abilitySubjectBackendSupported) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-backend-unavailable',
+                requiresRecovery: false
+            });
+        }
+        const transactionId = String(request.transactionId ?? '');
+        const command = request.command;
+        const completion = request.subjectCompletion;
+        const subjectCount = Number(completion?.subjectCount);
+        if (transactionId.length === 0
+            || !command || !completion?.snapshotToken
+            || !Number.isSafeInteger(subjectCount) || subjectCount <= 0
+            || subjectCount !== Number(completion.capacityDemand)
+            || completion.executionId !== command.executionId
+            || completion.executionOrdinal !== command.executionOrdinal
+            || completion.commandFingerprint !== command.fingerprint
+            || this.actorPayloadTransactions.has(transactionId)) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-request-contract',
+                requiresRecovery: false
+            });
+        }
+        let payloadDefinition;
+        try {
+            payloadDefinition = normalizeActorPayloadDefinition(
+                request.payloadDefinition
+                    ?? R3_ENEMY_ACTOR_PAYLOAD_DEFINITION
+            );
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-definition-contract',
+                message: String(error?.message ?? error),
+                requiresRecovery: false
+            });
+        }
+        const registryStatus = this.registry.getStatus();
+        const registryAvailable = registryStatus.capacity
+            - registryStatus.activeCount
+            - registryStatus.reservedCount;
+        const bodyAvailable = this.backend
+            .getAvailableActorPayloadBodyCapacity();
+        const capacity = evaluateActorPayloadCapacity({
+            requiredBodies: subjectCount,
+            registryAvailable,
+            bodyAvailable,
+            generatedBodyBudget:
+                command.compiledAbility.budgets.generatedBodyCount
+        });
+        if (!capacity.valid) {
+            this.actorPayloadCapacityRejectedCount++;
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-capacity',
+                capacityRejected: true,
+                requestedCount: subjectCount,
+                registryAvailable,
+                bodyAvailable,
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
+                requiresRecovery: false
+            });
+        }
+        if (!this.backend.canStageActorPayloadMaterialization()) {
+            const status = this.backend.getActorPayloadMaterializationStatus();
+            return Object.freeze({
+                accepted: false,
+                retryable: status.requiresRecovery !== true,
+                reason: status.requiresRecovery === true
+                    ? 'actor-payload-runtime-failed'
+                    : 'actor-payload-readback-pressure',
+                requiresRecovery: status.requiresRecovery === true
+            });
+        }
+        const snapshotBinding = this.getAbilitySubjectSnapshotGpuBinding(
+            completion.snapshotToken
+        );
+        if (!snapshotBinding
+            || snapshotBinding.subjectCount !== subjectCount
+            || snapshotBinding.executionOrdinal !== command.executionOrdinal
+            || snapshotBinding.commandFingerprint !== command.fingerprint
+            || snapshotBinding.snapshotFingerprint
+                !== completion.snapshotFingerprint) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-snapshot-token',
+                requiresRecovery: true
+            });
+        }
+
+        let spawnTemplate;
+        try {
+            spawnTemplate = this.backend
+                .createAbilityEnemyPayloadSpawnTemplate(
+                    command.executionOrdinal
+                );
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-route-policy',
+                message: String(error?.message ?? error),
+                requiresRecovery: true
+            });
+        }
+        const handles = [];
+        try {
+            for (let index = 0; index < subjectCount; index++) {
+                const handle = this.registry.reserveEntity({
+                    kindId: payloadDefinition.kindId,
+                    definitionId: payloadDefinition.definitionId,
+                    createdAtTick: request.targetFixedTick
+                });
+                if (!handle) break;
+                handles.push(handle);
+            }
+        } catch (error) {
+            for (const handle of handles) {
+                this.registry.cancelReservation(handle);
+            }
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-registry-prelease',
+                message: String(error?.message ?? error),
+                reservationCount: 0,
+                spawnCount: 0,
+                requiresRecovery: true
+            });
+        }
+        if (handles.length !== subjectCount) {
+            for (const handle of handles) {
+                this.registry.cancelReservation(handle);
+            }
+            this.actorPayloadCapacityRejectedCount++;
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-capacity',
+                capacityRejected: true,
+                requestedCount: subjectCount,
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
+                requiresRecovery: false
+            });
+        }
+        const bodyPrelease = this.backend.preleaseActorPayloadBodies({
+            handles,
+            spawnTemplate
+        });
+        if (bodyPrelease?.accepted !== true) {
+            for (const handle of handles) {
+                this.registry.cancelReservation(handle);
+            }
+            const bodyCapacityRejected
+                = bodyPrelease?.capacityRejected === true
+                || bodyPrelease?.reason === 'capacity'
+                || bodyPrelease?.reason
+                    === 'actor-payload-body-capacity';
+            if (bodyCapacityRejected) {
+                this.actorPayloadCapacityRejectedCount++;
+            }
+            return Object.freeze({
+                accepted: false,
+                reason: bodyCapacityRejected
+                    ? 'actor-payload-body-capacity'
+                    : bodyPrelease?.reason
+                        ?? 'actor-payload-body-prelease',
+                capacityRejected: bodyCapacityRejected,
+                retryable: bodyPrelease?.retryable === true,
+                requestedCount: subjectCount,
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
+                requiresRecovery:
+                    bodyPrelease?.requiresRecovery === true
+            });
+        }
+        const transaction = {
+            transactionId,
+            command,
+            completion,
+            payloadDefinition,
+            spawnTemplate,
+            handles: Object.freeze(handles),
+            bodyPreleaseToken: bodyPrelease.token,
+            targetFixedTick: request.targetFixedTick,
+            state: 'preleased'
+        };
+        const stage = this.backend.stageActorPayloadMaterialization({
+            transactionId,
+            preleaseToken: bodyPrelease.token,
+            command,
+            subjectCompletion: completion,
+            snapshotBinding,
+            payloadDefinition,
+            targetFixedTick: request.targetFixedTick,
+            coreTarget: this.#resolveActorPayloadCoreTarget()
+        });
+        if (stage?.accepted !== true) {
+            this.backend.cancelActorPayloadBodyPrelease(
+                bodyPrelease.token,
+                stage?.reason ?? 'materialization-stage-rejected'
+            );
+            for (const handle of handles) {
+                this.registry.cancelReservation(handle);
+            }
+            return Object.freeze({
+                accepted: false,
+                retryable: stage?.retryable === true,
+                reason: stage?.reason ?? 'actor-payload-stage',
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
+                requiresRecovery: stage?.requiresRecovery === true
+            });
+        }
+        transaction.state = 'gpu-materialization-pending';
+        this.actorPayloadTransactions.set(transactionId, transaction);
+        this.actorPayloadPreleaseHighWater = Math.max(
+            this.actorPayloadPreleaseHighWater,
+            this.actorPayloadTransactions.size
+        );
+        return Object.freeze({
+            accepted: true,
+            transactionId,
+            requestedCount: subjectCount,
+            reservationCount: subjectCount,
+            spawnCount: 0,
+            cooldownConsumed: false,
+            requiresRecovery: false
+        });
+    }
+
+    /** GPU aggregate completion을 body/registry 0-or-N publication으로 확정합니다. */
+    drainCompletedActorPayloadMaterializations(out = []) {
+        this.#assertUsable();
+        if (!Array.isArray(out)) {
+            throw new TypeError('actor payload completion output은 배열이어야 합니다.');
+        }
+        if (!this.actorPayloadBackendSupported) return out;
+        const completed = [];
+        this.backend.drainCompletedActorPayloadMaterializations(completed);
+        for (const aggregate of completed) {
+            const transaction = this.actorPayloadTransactions.get(
+                aggregate?.transactionId
+            );
+            if (!transaction) continue;
+            this.actorPayloadTransactions.delete(transaction.transactionId);
+            const exact = aggregate.executionOrdinal
+                    === transaction.command.executionOrdinal
+                && aggregate.commandFingerprint
+                    === transaction.command.fingerprint
+                && aggregate.snapshotFingerprint
+                    === transaction.completion.snapshotFingerprint
+                && aggregate.subjectCount === transaction.handles.length;
+            if (!exact) {
+                this.actorPayloadFailure = Object.freeze({
+                    stage: 'actor-payload-completion-authentication',
+                    message: 'GPU actor payload completion provenance가 다릅니다.'
+                });
+                this.#cancelActorPayloadTransaction(
+                    transaction,
+                    'completion-provenance-mismatch'
+                );
+                out.push(Object.freeze({
+                    ...aggregate,
+                    state: 'FAILED_PROTOCOL',
+                    committed: false,
+                    generatedCount: 0,
+                    requiresRecovery: true
+                }));
+                continue;
+            }
+            if (aggregate.status
+                === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE) {
+                const activationEntries = transaction.handles.map(
+                    (handle, index) => Object.freeze({
+                        handle,
+                        metadata: createActorPayloadRegistryMetadata(
+                            transaction.spawnTemplate,
+                            transaction.command,
+                            index
+                        )
+                    })
+                );
+                const activation = this.registry.activateReservedBatch(
+                    activationEntries
+                );
+                if (activation?.accepted !== true
+                    || activation.activatedCount
+                        !== transaction.handles.length) {
+                    this.actorPayloadFailure = Object.freeze({
+                        stage: 'actor-payload-registry-publication',
+                        message: activation?.reason
+                            ?? 'registry activation batch mismatch'
+                    });
+                    this.#cancelActorPayloadTransaction(
+                        transaction,
+                        'registry-publication-failed'
+                    );
+                    out.push(Object.freeze({
+                        ...aggregate,
+                        state: 'FAILED_PROTOCOL',
+                        committed: false,
+                        generatedCount: 0,
+                        requiresRecovery: true
+                    }));
+                    continue;
+                }
+                const bodyCommit = this.backend
+                    .commitActorPayloadBodyPrelease(
+                        transaction.bodyPreleaseToken
+                    );
+                if (bodyCommit?.accepted !== true
+                    || bodyCommit.committedCount
+                        !== transaction.handles.length) {
+                    for (const handle of transaction.handles) {
+                        this.registry.remove(handle);
+                    }
+                    this.backend.cancelActorPayloadBodyPrelease(
+                        transaction.bodyPreleaseToken,
+                        'body-publication-failed'
+                    );
+                    this.actorPayloadFailure = Object.freeze({
+                        stage: 'actor-payload-body-publication',
+                        message: bodyCommit?.reason
+                            ?? 'body commit batch mismatch'
+                    });
+                    out.push(Object.freeze({
+                        ...aggregate,
+                        state: 'FAILED_PROTOCOL',
+                        committed: false,
+                        generatedCount: 0,
+                        requiresRecovery: true
+                    }));
+                    continue;
+                }
+                transaction.state = 'committed';
+                this.actorPayloadCommittedCount += transaction.handles.length;
+                out.push(Object.freeze({
+                    ...aggregate,
+                    state: 'COMMITTED',
+                    committed: true,
+                    generatedCount: transaction.handles.length,
+                    handles: transaction.handles,
+                    requiresRecovery: false
+                }));
+                continue;
+            }
+            this.#cancelActorPayloadTransaction(
+                transaction,
+                aggregate.status
+                    === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
+                    ? 'sdf-placement-rejected'
+                    : 'gpu-materialization-rejected'
+            );
+            const protocolFailure = aggregate.status
+                === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PROTOCOL_REJECTED;
+            if (protocolFailure) {
+                this.actorPayloadFailure = Object.freeze({
+                    stage: 'actor-payload-gpu-protocol',
+                    message: 'GPU actor payload protocol이 fail-closed 거절됐습니다.'
+                });
+            }
+            this.actorPayloadRejectedCount++;
+            out.push(Object.freeze({
+                ...aggregate,
+                state: aggregate.status
+                        === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
+                    ? 'REJECTED_PLACEMENT'
+                    : aggregate.status
+                            === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.CANCELLED
+                        ? 'CANCELLED'
+                        : 'FAILED_PROTOCOL',
+                committed: false,
+                generatedCount: 0,
+                requiresRecovery: protocolFailure
+            }));
+        }
+        return out;
+    }
+
+    cancelPendingActorPayloadMaterializations(reason = 'cancelled') {
+        if (this.destroyed || !this.actorPayloadBackendSupported) {
+            return Object.freeze({
+                cancelledExecutionCount: 0,
+                cancelledPreleaseCount: 0,
+                requiresRecovery: false
+            });
+        }
+        const cancelled = this.backend
+            .cancelAllActorPayloadMaterializations(reason);
+        let reservationCount = 0;
+        for (const transaction of this.actorPayloadTransactions.values()) {
+            for (const handle of transaction.handles) {
+                if (this.registry.cancelReservation(handle)) {
+                    reservationCount++;
+                }
+            }
+        }
+        const executionCount = this.actorPayloadTransactions.size;
+        this.actorPayloadTransactions.clear();
+        return Object.freeze({
+            ...cancelled,
+            cancelledExecutionCount: Math.max(
+                cancelled.cancelledExecutionCount ?? 0,
+                executionCount
+            ),
+            cancelledReservationCount: reservationCount
+        });
+    }
+
+    getActorPayloadMaterializationStatus() {
+        const backend = this.actorPayloadBackendSupported
+            ? this.backend.getActorPayloadMaterializationStatus()
+            : Object.freeze({
+                state: this.destroyed ? 'destroyed' : 'unsupported',
+                pendingCount: 0,
+                inFlightCount: 0,
+                bodyPreleaseCount: 0,
+                storageBindingCount: 0,
+                aggregateReadbackByteSize: 64,
+                requiresRecovery: false,
+                subjectReadbackPolicy: 'aggregate-only',
+                perSubjectCpuCommandCount: 0
+            });
+        return Object.freeze({
+            ...backend,
+            transactionCount: this.actorPayloadTransactions.size,
+            transactionHighWater: this.actorPayloadPreleaseHighWater,
+            committedActorCount: this.actorPayloadCommittedCount,
+            rejectedExecutionCount: this.actorPayloadRejectedCount,
+            capacityRejectedExecutionCount:
+                this.actorPayloadCapacityRejectedCount,
+            failure: this.actorPayloadFailure ?? backend.failure ?? null,
+            requiresRecovery: this.actorPayloadFailure !== null
+                || backend.requiresRecovery === true
+        });
+    }
+
+    /** Runtime materialization preflight와 같은 capacity 계산을 preview에 노출합니다. */
+    getActorPayloadCapacityView(requiredBodies = 0, generatedBodyBudget = 0xffffffff) {
+        const registryStatus = this.registry.getStatus();
+        return evaluateActorPayloadCapacity({
+            requiredBodies,
+            registryAvailable: Math.max(
+                0,
+                registryStatus.capacity
+                    - registryStatus.activeCount
+                    - registryStatus.reservedCount
+            ),
+            bodyAvailable: this.actorPayloadBackendSupported
+                ? this.backend.getAvailableActorPayloadBodyCapacity()
+                : 0,
+            generatedBodyBudget
+        });
+    }
+
+    /** Async actor payload preleases 중 hostile/siege HUD에 필요한 scalar만 집계합니다. */
+    getPendingHostileParticipationView() {
+        let pendingHostileActorCount = 0;
+        let pendingSiegeWeight = 0;
+        let pendingSentenceCreatedCount = 0;
+        for (const entry of this.pendingHostileSpawnEntries) {
+            pendingHostileActorCount += 1;
+            pendingSiegeWeight += entry.siegeWeight;
+            pendingSentenceCreatedCount += entry.sentenceCreated ? 1 : 0;
+        }
+        for (const transaction of this.actorPayloadTransactions.values()) {
+            if (transaction.payloadDefinition?.kindId !== 'enemy'
+                || transaction.payloadDefinition?.teamId
+                    !== GAMEPLAY_TEAM_ID.HOSTILE) {
+                continue;
+            }
+            const count = transaction.handles.length;
+            pendingHostileActorCount += count;
+            pendingSentenceCreatedCount += transaction.payloadDefinition
+                    .creationOrigin === 'PLAYER_SENTENCE'
+                ? count
+                : 0;
+            pendingSiegeWeight += count
+                * Number(transaction.spawnTemplate?.weight ?? 0);
+        }
+        return Object.freeze({
+            pendingHostileActorCount,
+            pendingSiegeWeight,
+            pendingSentenceCreatedCount
+        });
+    }
+
+    /** Definition-resolved ordinary C economy facts를 immutable preview와 공유합니다. */
+    getActorPayloadEconomyView() {
+        if (!this.actorPayloadBackendSupported) {
+            return Object.freeze({
+                bountyPerEnemy: 0,
+                siegeWeightPerEnemy: 0,
+                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                available: false
+            });
+        }
+        try {
+            const template = this.backend
+                .createAbilityEnemyPayloadSpawnTemplate(1);
+            return Object.freeze({
+                bountyPerEnemy: Number(template.bountyBudget ?? 0),
+                siegeWeightPerEnemy: Number(template.weight ?? 0),
+                teamId: template.teamId,
+                available: true
+            });
+        } catch {
+            return Object.freeze({
+                bountyPerEnemy: 0,
+                siegeWeightPerEnemy: 0,
+                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                available: false
+            });
+        }
     }
 
     /** GameObject-owned capability director에 주입하는 좁고 frozen인 Effect command port입니다. */
@@ -2647,6 +3368,7 @@ export class GpuEnemySimulationEndpoint {
             const lifecycle = this.lifecycleCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason
             );
+            this.pendingHostileSpawnEntries.length = 0;
             const fixedCommands = this.fixedCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason,
                 finalFixedTick
@@ -2828,6 +3550,21 @@ export class GpuEnemySimulationEndpoint {
                     ?? Object.freeze([]),
                 failure: routeAvailabilityCommands.failure ?? null
             });
+            const abilityExecutions = this.abilitySubjectBackendSupported
+                ? this.backend.cancelPendingAbilityExecutions(
+                    this.gameplayIngressCloseReason
+                )
+                : Object.freeze({ cancelledCount: 0, unsupported: true });
+            const actorPayloadMaterializations
+                = this.actorPayloadBackendSupported
+                    ? this.cancelPendingActorPayloadMaterializations(
+                        this.gameplayIngressCloseReason
+                    )
+                    : Object.freeze({
+                        cancelledExecutionCount: 0,
+                        cancelledPreleaseCount: 0,
+                        unsupported: true
+                    });
             this.#authenticProjectileCapturePrepareEvidence = new WeakSet();
             this.#authenticProjectileCaptureCoreImpactReceipts = new WeakSet();
             this.gameplayIngressCloseCleanup = Object.freeze({
@@ -2837,7 +3574,9 @@ export class GpuEnemySimulationEndpoint {
                 formationCommands,
                 atomicTransformCommands,
                 projectileCaptureCommands,
-                routeAvailabilityCommands
+                routeAvailabilityCommands,
+                abilityExecutions,
+                actorPayloadMaterializations
             });
         }
         return Object.freeze({
@@ -2985,6 +3724,9 @@ export class GpuEnemySimulationEndpoint {
             });
         }
         const lifecycle = this.lifecycleCommandOwner.commitAtFixedBoundary(tick);
+        if (lifecycle.recoveryRequired !== true) {
+            this.#retirePendingHostileSpawnsThrough(tick);
+        }
         this.#observeProjectileCaptureTerminalCleanupCommit(lifecycle, tick);
         this.#observeRouteTerminalCleanupCommit(lifecycle, tick);
         if (!this.gameplayIngressOpen
@@ -3022,6 +3764,29 @@ export class GpuEnemySimulationEndpoint {
                 effectPrograms: null,
                 formationPrograms: null,
                 atomicTransformCommands,
+                recoveryRequired: true,
+                state: 'failed'
+            });
+        }
+        const abilityEntityMetadata = this
+            .#synchronizeAbilityEntityMetadataForLifecycle(lifecycle);
+        if (abilityEntityMetadata.recoveryRequired === true) {
+            this.completedEventRecoveryRequired = true;
+            this.completedEventProtocolFailure = Object.freeze({
+                stage: 'ability-entity-metadata-publication',
+                code: abilityEntityMetadata.reason
+                    ?? 'ability-entity-metadata-publication-failed',
+                name: 'AbilityEntityMetadataPublicationFailure',
+                message: 'lifecycle identity를 ability metadata plane에 게시하지 못했습니다.'
+            });
+            this.#finalizeClosedLifecycleIngress();
+            return Object.freeze({
+                ...lifecycle,
+                fixedCommands: null,
+                effectPrograms: null,
+                formationPrograms: null,
+                atomicTransformCommands,
+                abilityEntityMetadata,
                 recoveryRequired: true,
                 state: 'failed'
             });
@@ -3069,7 +3834,8 @@ export class GpuEnemySimulationEndpoint {
             fixedCommands,
             effectPrograms,
             formationPrograms,
-            atomicTransformCommands
+            atomicTransformCommands,
+            abilityEntityMetadata
         });
     }
 
@@ -3653,12 +4419,21 @@ export class GpuEnemySimulationEndpoint {
         for (const batch of prepared.acceptedBatches) {
             this.#rememberCompletedBatchKey(batch.key, batch.fingerprint);
         }
+        const playerKillTargetKeys = new Set();
+        for (const candidate of prepared.events) {
+            if (isAuthenticatedPlayerLethalEvent(candidate, this.registry)) {
+                playerKillTargetKeys.add(
+                    playerLethalTargetKey(candidate.other, candidate)
+                );
+            }
+        }
         const events = [];
         const contactEvents = [];
         const deathEvents = [];
         this.completedEventTotals.stale += prepared.staleEventCount;
         for (const normalized of prepared.events) {
             let projectileCaptureDeferredDeath = null;
+            let lethalDisposition = null;
             const knownFingerprint = this.knownCompletedEventKeys.get(normalized.key);
             let disposition = knownFingerprint === normalized.fingerprint
                 ? 'duplicate'
@@ -3679,6 +4454,12 @@ export class GpuEnemySimulationEndpoint {
                         entityId: normalized.entityId,
                         incarnation: normalized.incarnation
                     };
+                    const playerKill = playerKillTargetKeys.has(
+                        playerLethalTargetKey(handle, normalized)
+                    );
+                    lethalDisposition = playerKill
+                        ? ENEMY_LIFECYCLE_DISPOSITION_ID.PLAYER_KILL
+                        : null;
                     const capacityBackoff = this
                         .#getAcceptedProjectileCaptureProtocol(normalized);
                     const captureBody = capacityBackoff?.capacityRejected === true
@@ -3694,7 +4475,10 @@ export class GpuEnemySimulationEndpoint {
                         // lifecycle removal waits for next tick's cleanup retry.
                         const deferredReceipt
                             = this.#rememberProjectileCaptureDeferredDeath(
-                                normalized,
+                                Object.freeze({
+                                    ...normalized,
+                                    lethalDisposition
+                                }),
                                 captureBody,
                                 capacityBackoff
                             );
@@ -3717,7 +4501,9 @@ export class GpuEnemySimulationEndpoint {
                             'gpu-death',
                             tick,
                             `gpu-death:${normalized.key}`,
-                            null,
+                            lethalDisposition === null
+                                ? null
+                                : { disposition: lethalDisposition },
                             this.#terminalCleanupAuthority.issuePermit()
                         );
                         if (requested.accepted) {
@@ -3736,6 +4522,9 @@ export class GpuEnemySimulationEndpoint {
             const event = Object.freeze({
                 ...publicEvent,
                 disposition,
+                ...(lethalDisposition === null
+                    ? null
+                    : { lethalDisposition }),
                 ...(projectileCaptureDeferredDeath
                     ? { projectileCaptureDeferredDeath }
                     : null)
@@ -3871,7 +4660,8 @@ export class GpuEnemySimulationEndpoint {
             peerHandle,
             captureSequence: state.captureSequence,
             capacityRejectionFlags:
-                capacitySnapshot.capacityRejectionFlags
+                capacitySnapshot.capacityRejectionFlags,
+            lethalDisposition: event.lethalDisposition ?? null
         });
         const key = projectileCaptureHandleKey(deadHandle);
         const prior = this.projectileCaptureDeferredDeathReceipts.get(key);
@@ -3947,7 +4737,9 @@ export class GpuEnemySimulationEndpoint {
                 'gpu-death',
                 targetFixedTick,
                 `gpu-death:projectile-capture-capacity:${receipt.eventKey}`,
-                null,
+                receipt.lethalDisposition === null
+                    ? null
+                    : { disposition: receipt.lethalDisposition },
                 this.#terminalCleanupAuthority.issuePermit()
             );
             const authenticDuplicate = result?.accepted === false
@@ -3974,7 +4766,10 @@ export class GpuEnemySimulationEndpoint {
             || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
-            || this.getProjectileCaptureRuntimeStatus().requiresRecovery) {
+            || this.getProjectileCaptureRuntimeStatus().requiresRecovery
+            || this.getAbilitySubjectSnapshotStatus().requiresRecovery
+            || this.getActorPayloadMaterializationStatus()
+                .requiresRecovery) {
             return false;
         }
         const submitted = this.backend.fixedUpdate(delta, sourceTick);
@@ -4031,6 +4826,8 @@ export class GpuEnemySimulationEndpoint {
             || this.fixedCommandOwner.getStatus().recoveryRequired
             || this.lifecycleCommandOwner.getStatus().recoveryRequired
             || this.getProjectileCaptureRuntimeStatus().requiresRecovery
+            || this.getAbilitySubjectSnapshotStatus().requiresRecovery
+            || this.getActorPayloadMaterializationStatus().requiresRecovery
             || this.backend.requiresRecovery()
         );
     }
@@ -4042,6 +4839,8 @@ export class GpuEnemySimulationEndpoint {
     getPendingCommandCount() {
         if (this.destroyed) return 0;
         const capture = this.getProjectileCaptureRuntimeStatus();
+        const ability = this.getAbilitySubjectSnapshotStatus();
+        const payload = this.getActorPayloadMaterializationStatus();
         return this.lifecycleCommandOwner.getPendingCount()
                 + this.fixedCommandOwner.getPendingCount()
                 + this.effectCommandOwner.getPendingCount()
@@ -4053,7 +4852,10 @@ export class GpuEnemySimulationEndpoint {
                 + capture.pendingCaptureBatchCount
                 + capture.pendingReleaseBatchCount
                 + capture.preparedBatchCount
-                + Number(capture.stagedReleaseCount > 0);
+                + Number(capture.stagedReleaseCount > 0)
+                + ability.pendingCommandCount
+                + ability.pendingReadbackCount
+                + payload.transactionCount;
     }
 
     getCapacity() {
@@ -4085,6 +4887,10 @@ export class GpuEnemySimulationEndpoint {
         const atomicTransformCommands
             = this.#atomicTransformCommandOwner.getStatus();
         const projectileCapture = this.getProjectileCaptureRuntimeStatus();
+        const abilitySubjectSnapshots = this
+            .getAbilitySubjectSnapshotStatus();
+        const actorPayloadMaterializations = this
+            .getActorPayloadMaterializationStatus();
         const backend = typeof this.backend.getStatus === 'function'
             ? this.backend.getStatus()
             : Object.freeze({ state: this.getRuntimeState() });
@@ -4124,7 +4930,10 @@ export class GpuEnemySimulationEndpoint {
                 + projectileCapture.pendingCaptureBatchCount
                 + projectileCapture.pendingReleaseBatchCount
                 + projectileCapture.preparedBatchCount
-                + Number(projectileCapture.stagedReleaseCount > 0),
+                + Number(projectileCapture.stagedReleaseCount > 0)
+                + abilitySubjectSnapshots.pendingCommandCount
+                + abilitySubjectSnapshots.pendingReadbackCount
+                + actorPayloadMaterializations.transactionCount,
             pendingFixedCommandCount: fixedCommands.pendingCommandCount,
             pendingSourceRelativeDestinationCount:
                 fixedCommands.pendingDestinationCount,
@@ -4153,6 +4962,8 @@ export class GpuEnemySimulationEndpoint {
                 || fixedCommands.recoveryRequired
                 || lifecycle.recoveryRequired
                 || projectileCapture.requiresRecovery
+                || abilitySubjectSnapshots.requiresRecovery
+                || actorPayloadMaterializations.requiresRecovery
                 || this.backend.requiresRecovery()
             ),
             events,
@@ -4161,6 +4972,8 @@ export class GpuEnemySimulationEndpoint {
             formationCommands,
             atomicTransformCommands,
             projectileCapture,
+            abilitySubjectSnapshots,
+            actorPayloadMaterializations,
             fixedCommands,
             lifecycle,
             registry
@@ -4173,6 +4986,15 @@ export class GpuEnemySimulationEndpoint {
             return;
         }
         this.destroyed = true;
+        if (this.actorPayloadBackendSupported) {
+            try {
+                this.backend.cancelAllActorPayloadMaterializations(
+                    'endpoint-destroyed'
+                );
+            } catch {
+                // Backend destroy가 남은 GPU lease를 반복 가능하게 회수합니다.
+            }
+        }
         this.#revokeCoreImpactCleanupPort();
         this.#atomicTransformIngressAuthority.revoke();
         this.#projectileCaptureReleaseAuthority.revoke();
@@ -4202,6 +5024,9 @@ export class GpuEnemySimulationEndpoint {
         this.routeAvailabilityTerminalCleanupCommandIds.clear();
         this.routeAvailabilityBatchScratch.length = 0;
         this.lastCompletedRouteAvailabilityPrograms = null;
+        this.actorPayloadTransactions.clear();
+        this.actorPayloadCompleted.length = 0;
+        this.pendingHostileSpawnEntries.length = 0;
         this.#effectLifecycleCommitProofTick = 0;
         this.#effectLifecycleCommitProofs.length = 0;
         this.initialized = false;
@@ -5595,6 +6420,126 @@ export class GpuEnemySimulationEndpoint {
         const rejected = Object.freeze({ accepted: false, reason: code });
         this.towerGameplayTargetDiagnostic = rejected;
         return rejected;
+    }
+
+    #resolveActorPayloadCoreTarget() {
+        const handles = [];
+        this.registry.copyActiveHandlesInto(handles, { kindId: 'core' });
+        handles.sort((left, right) => (
+            left.entityId - right.entityId
+            || left.incarnation - right.incarnation
+        ));
+        for (const handle of handles) {
+            const binding = this.backend.resolveExactAbilityBodySlot?.(handle);
+            if (binding
+                && binding.entityId === handle.entityId
+                && binding.incarnation === handle.incarnation) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    #cancelActorPayloadTransaction(transaction, reason) {
+        const body = this.backend.cancelActorPayloadBodyPrelease(
+            transaction.bodyPreleaseToken,
+            reason
+        );
+        let cancelledReservationCount = 0;
+        for (const handle of transaction.handles) {
+            if (this.registry.cancelReservation(handle)) {
+                cancelledReservationCount++;
+            }
+        }
+        transaction.state = 'cancelled';
+        return Object.freeze({
+            accepted: body?.requiresRecovery !== true
+                && cancelledReservationCount === transaction.handles.length,
+            cancelledBodyCount: body?.cancelledCount ?? 0,
+            cancelledReservationCount,
+            requiresRecovery: body?.requiresRecovery === true
+        });
+    }
+
+    #synchronizeAbilityEntityMetadataForLifecycle(lifecycle) {
+        if (!this.abilitySubjectBackendSupported) {
+            return Object.freeze({
+                accepted: true,
+                updatedCount: 0,
+                unsupported: true,
+                recoveryRequired: false
+            });
+        }
+        const spawned = lifecycle?.spawned ?? [];
+        if (spawned.length === 0) {
+            return Object.freeze({
+                accepted: true,
+                updatedCount: 0,
+                recoveryRequired: false
+            });
+        }
+        const entries = [];
+        try {
+            for (const publication of spawned) {
+                const handle = publication?.handle;
+                const view = this.registry.copyEntityView(handle, {});
+                const binding = this.backend.resolveExactAbilityBodySlot(handle);
+                if (!view || !binding
+                    || binding.entityId !== view.entityId
+                    || binding.incarnation !== view.incarnation) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'ability-entity-slot-identity-mismatch',
+                        updatedCount: 0,
+                        recoveryRequired: true
+                    });
+                }
+                entries.push(Object.freeze({
+                    slot: binding.slot,
+                    metadata: createAbilityEntityMetadata(view)
+                }));
+            }
+            const result = this.backend.synchronizeAbilityEntityMetadata(
+                entries
+            );
+            return Object.freeze({
+                ...result,
+                recoveryRequired: result?.accepted !== true
+            });
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'ability-entity-metadata-contract',
+                message: String(error?.message ?? error),
+                updatedCount: 0,
+                recoveryRequired: true
+            });
+        }
+    }
+
+    #rememberPendingHostileSpawn(intent, targetFixedTick) {
+        if (intent?.kindId !== 'enemy'
+            || intent?.teamId !== GAMEPLAY_TEAM_ID.HOSTILE) {
+            return;
+        }
+        const tick = Number(targetFixedTick);
+        if (!Number.isSafeInteger(tick) || tick <= 0) {
+            return;
+        }
+        const weight = Number(intent.weight ?? 0);
+        this.pendingHostileSpawnEntries.push(Object.freeze({
+            targetFixedTick: tick,
+            siegeWeight: Number.isFinite(weight) && weight > 0 ? weight : 0,
+            sentenceCreated: intent.creationOrigin === 'PLAYER_SENTENCE'
+        }));
+    }
+
+    #retirePendingHostileSpawnsThrough(fixedTick) {
+        if (this.pendingHostileSpawnEntries.length === 0) {
+            return;
+        }
+        this.pendingHostileSpawnEntries = this.pendingHostileSpawnEntries
+            .filter((entry) => entry.targetFixedTick > fixedTick);
     }
 
     #assertUsable() {

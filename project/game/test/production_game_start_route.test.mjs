@@ -38,6 +38,13 @@ const {
     createProductionGameStartOptions
 } = await loadGameModule('scene/game/production_game_start_route.js');
 const {
+    ABILITY_SLOT_ID
+} = await loadGameModule('ingame/contract/word_sentence_contract.js');
+const {
+    R3_ENEMIES_SHOOT_ENEMIES_SENTENCE,
+    R3_TOWER_SHOOTS_ENEMY_SENTENCE
+} = await loadGameModule('data/word/r3_word_catalog_data.js');
+const {
     TowerCombatRoster
 } = await loadGameModule('ingame/object/tower/tower_combat_roster.js');
 const {
@@ -60,6 +67,14 @@ test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.Q],
+        R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    );
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.E],
+        R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
+    );
     assert.equal(
         options.towerMaxHp,
         R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION.towerMaxHp
@@ -107,6 +122,10 @@ test('두 번째 production map 선택은 폭 10 ㄹ자 10,000-body 성능 세�
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.Q],
+        R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    );
     assert.equal(options.towerMaxHp,
         PERFORMANCE_SERPENTINE_SESSION.towerMaxHp);
     assert.equal(options.coreMaxIntegrity,
@@ -216,6 +235,10 @@ test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.E],
+        R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
+    );
     assert.equal(options.towerMaxHp, 20_000_000);
     assert.equal(options.coreMaxIntegrity, 20_000_000);
 });

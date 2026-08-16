@@ -1,5 +1,17 @@
 # 06. GPU Runtime and Transaction Requirements
 
+## R3 implementation status (2026-08-16)
+
+R3 Enemy Entity Word is now a concrete GPU runtime, not a future seam. CPU code submits one semantic execution;
+the GPU snapshots exact eligible subjects into deterministic order and returns only aggregate evidence. The
+Enemy actor payload then preleases exactly N identities/body slots, uploads contiguous prelease ranges, and
+materializes all N persistent actors or zero. GPU source metadata is the generation authority and writes every
+child as `source generation + 1`; generated children become visible to a later execution only. No per-subject
+result readback, per-child JS object, or full-body readback was introduced.
+
+This implementation is deliberately Enemy-only. Tower Payload, Tower group broadcast/share, other actor nouns
+and verbs, full modifier grammar, and general-purpose child allocation remain future extensions.
+
 ## 1. Existing foundation
 
 The current GPU World already owns Tower, Core proxy, enemies, Basic Bullet, collision, health storage,
@@ -214,9 +226,10 @@ reports the same source tick and `readbackBypassEligible=true`, and only with ev
 readback, a terminal batch, projectile threat, cleanup, mismatched marker, or mismatched source tick keeps the
 original generic-event coherence gate and fails closed on contradictory evidence.
 
-## 2. Required metadata extensions
+## 2. Ability metadata
 
-Future actor/word runtime needs GPU-resident or GPU-queryable metadata:
+R3 uses GPU-resident or GPU-queryable metadata for Enemy Subject/Payload execution. Tower share and broader
+actor-state fields in this list remain future consumers:
 
 ```text
 teamId
@@ -239,7 +252,7 @@ Do not conflate this with physical/interaction layers.
 
 Large sandbox sentences cannot read all subject positions back to CPU.
 
-Required command concept:
+Current R3 command concept:
 
 ```text
 AbilityExecutionCommand
@@ -260,6 +273,11 @@ GPU responsibilities:
 5. Prevent generated bodies joining the current execution.
 6. Emit bounded critical outcomes.
 
+The current completion is aggregate-only: authenticated ABI/session/device/epoch/execution identity, selected
+count, ordered-set fingerprint, source-generation range evidence, and capacity/protocol status. Exact subject
+records stay GPU-resident for the matching materialization transaction. Zero subjects is a successful no-op;
+it consumes no cooldown. Snapshot protocol mismatch or stale generation is recovery.
+
 ## 4. GPU child identity and allocation
 
 The current CPU-preleased source-relative/selected-target SpawnProgram is sufficient for low-rate Basic
@@ -267,7 +285,7 @@ Bullet, Archer, and Diamond M, but not for `Enemies shoot The Tower` with hundre
 activation is bound to same-source/tick BodyControlProgram evidence and one preflighted destination; it is not
 a general GPU child allocator.
 
-Required extension:
+R3 Enemy-only extension:
 
 - GPU-resident child slot allocator or bounded preleased range;
 - exact entity/incarnation allocation contract;
@@ -276,6 +294,12 @@ Required extension:
 - no per-child JS object;
 - no per-child result readback;
 - aggregate completion plus critical identity events.
+
+The R3 endpoint implements this as a bounded actor-payload prelease/materialization ABI. True body-capacity
+shortfall is an exact 0/N normal rejection; temporary event/telemetry backpressure retains the same snapshot and
+retries after the completion boundary. Identity/ABI/generation drift is recovery. Registry publication records
+GPU generation authority/provenance without reading every child generation back. General Tower/other-noun child
+allocation is still future work.
 
 ## 5. Tower group command
 
@@ -455,6 +479,12 @@ On GPU generation replacement:
 - never continue GPU Tower physics from stale CPU pose;
 - do not recreate Lost Share as living stats.
 
+Current R3 concretely preserves `GoldLedger`, `WordSystem`, all five slot assignments, and committed cooldown
+state in the CPU run domain. It cancels/revokes the old GPU-world `AbilityRuntime` subject snapshots and
+`ActorPayloadMaterializer` prelease/materialization transactions, then binds fresh runtime/director/tracker
+owners to the replacement endpoint. No transient actor child is reconstructed from CPU data. TowerShare remains
+future state despite its place in the long-term preservation list above.
+
 Old Atomic Transform and Projectile Capture endpoint/owner/director/transaction ports and generation-qualified
 callbacks are revoked. Old Route Runtime/director/availability ports are revoked too. No J/C′ lineage, PENDING
 state, held projectile, release transaction, closed route, or Z lease is reconstructed into the replacement world.
@@ -480,12 +510,15 @@ completed fixed/SpawnProgram outcomes
 → if depleted: versioned Projectile Capture prepare/release cancel, unpublished-held cleanup, and final R roster observation
 → if depleted: versioned Route Runtime ingress/cleanup/readback cancel and final all-open Z roster observation
 → input/ability commands
+→ WordSystem activation drain and aggregate GPU subject snapshot
+→ ActorPayloadMaterializer exact 0/N identity/body prelease
 → exact Arrow/M behavior/control production
 → if running: one ordered Pentagon command with per-pulse atomic/fair capacity admission
 → if running: one whole-tick Formation prepare batch stage
 → if running: one bounded J/C′ Atomic Transform prepare batch stage
 → subject snapshots
 → lifecycle/child reservations
+→ R3 Enemy actor-payload publication/materialization; completion alone settles cooldown
 → on-time N→N+1 privileged atomic Formation publication and armed transform commit
 → authentic T-1→T J split/C′ return publication, capped to four J-lineage starts
 → authentic T-1→T same-identity projectile release metadata CAS and armed backend commit

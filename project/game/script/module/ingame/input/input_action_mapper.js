@@ -3,6 +3,24 @@ import { INPUT_ACTION_IDS } from 'input/_input_binding_constants.js';
 
 const DIAGONAL_AXIS_SCALE = Math.SQRT1_2;
 const MAX_WHEEL_ACTION_DELTA = 12;
+const SKILL_EDGE_DEFINITIONS = Object.freeze([
+    Object.freeze({
+        inputActionId: INPUT_ACTION_IDS.SKILL_SHIFT,
+        playerActionType: PLAYER_ACTION_TYPES.SKILL_SHIFT
+    }),
+    Object.freeze({
+        inputActionId: INPUT_ACTION_IDS.SKILL_SPACE,
+        playerActionType: PLAYER_ACTION_TYPES.SKILL_SPACE
+    }),
+    Object.freeze({
+        inputActionId: INPUT_ACTION_IDS.SKILL_Q,
+        playerActionType: PLAYER_ACTION_TYPES.SKILL_Q
+    }),
+    Object.freeze({
+        inputActionId: INPUT_ACTION_IDS.SKILL_E,
+        playerActionType: PLAYER_ACTION_TYPES.SKILL_E
+    })
+]);
 
 /**
  * 입력 소스에서 지정한 의미 방향의 현재 눌림 상태를 읽습니다.
@@ -41,6 +59,12 @@ export class InputActionMapper {
                 viewportY: 0
             }
         };
+        this.skillEdgeActions = SKILL_EDGE_DEFINITIONS.map((definition) => ({
+            type: definition.playerActionType,
+            payload: { viewportX: 0, viewportY: 0 }
+        }));
+        this.skillEdgeActionScratch = [];
+        this.skillPressedStates = SKILL_EDGE_DEFINITIONS.map(() => false);
         this.pointerPosition = { x: 0, y: 0 };
         this.lastPointerX = 0;
         this.lastPointerY = 0;
@@ -100,6 +124,31 @@ export class InputActionMapper {
         this.primaryPointerFireAction.payload.viewportX = this.lastPointerX;
         this.primaryPointerFireAction.payload.viewportY = this.lastPointerY;
         return this.primaryPointerFireAction;
+    }
+
+    /**
+     * Shift/Space/Q/E의 rising edge만 stable PlayerAction으로 변환합니다.
+     * held key는 다음 fixed snapshot에서 새 execution을 만들지 않습니다.
+     * @param {{isPressed:(actionId:string)=>boolean}|((actionId:string)=>boolean)} inputSource
+     * @returns {Array<{type:string}>} 입력 순서가 SHIFT→SPACE→Q→E인 재사용 배열입니다.
+     */
+    mapSkillEdgeActions(inputSource) {
+        this.skillEdgeActionScratch.length = 0;
+        for (let index = 0; index < SKILL_EDGE_DEFINITIONS.length; index++) {
+            const pressed = isInputPressed(
+                inputSource,
+                SKILL_EDGE_DEFINITIONS[index].inputActionId
+            );
+            if (pressed && !this.skillPressedStates[index]) {
+                this.skillEdgeActions[index].payload.viewportX
+                    = this.lastPointerX;
+                this.skillEdgeActions[index].payload.viewportY
+                    = this.lastPointerY;
+                this.skillEdgeActionScratch.push(this.skillEdgeActions[index]);
+            }
+            this.skillPressedStates[index] = pressed;
+        }
+        return this.skillEdgeActionScratch;
     }
 
     /**

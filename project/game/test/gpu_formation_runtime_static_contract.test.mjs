@@ -596,7 +596,7 @@ test('H/HX host atomic fixture는 public health를 exact centi-HP로 변환한�
         /destinationView\.metadata\.(?:health|maxHealth)FixedPoint/);
 });
 
-test('H/HX cross-route fixture는 동일 geometry의 두 exact atlas span을 사용한다', () => {
+test('H/HX motion fixture는 cross-route와 U형 SDF의 exact atlas span을 사용한다', () => {
     const start = formationRunnerSource.indexOf(
         'async function runMotionPolicyFixture('
     );
@@ -610,25 +610,34 @@ test('H/HX cross-route fixture는 동일 geometry의 두 exact atlas span을 사
         /GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG\.ROUTE_SPAN_REJECTED,[\s\S]*?tileMap/);
     assert.match(fixture,
         /crossRoute\.beforeFlowFieldIndices\[0\][\s\S]*?!== crossRoute\.beforeFlowFieldIndices\[1\]/);
-    assert.match(fixture, /tileMap\.tileToWorld\(10, 5, \{\}\)/);
-    assert.match(fixture, /tileMap\.tileToWorld\(12, 8, \{\}\)/);
     assert.match(fixture,
-        /blockedAtlas\.routes\.find\(\(\{ pathId \}\) => \([\s\S]*?pathId === routes\[0\]\.pathId/);
+        /const blockedTileMap = new TileMap\(Object\.freeze\(\{/);
     assert.match(fixture,
-        /blockedRouteSpan\?\.gateId === routes\[0\]\.gateId[\s\S]*?blockedRouteSpan\.pathId === routes\[0\]\.pathId/);
+        /directionBlueprint: Object\.freeze\(\['a#g', 'b#f', 'cde'\]\)/);
     assert.match(fixture,
-        /const blockedFieldIndex = blockedRouteSpan\?\.firstFieldIndex;/);
+        /blockedTileMap\.tileToWorld\(1, 0, \{\}\)/);
+    assert.match(fixture,
+        /blockedTileMap\.tileToWorld\(1, 2, \{\}\)/);
+    assert.match(fixture,
+        /blockedAtlas\.routes\.find\(\(\{ pathId \}\) => \([\s\S]*?pathId === blockedRoute\.pathId/);
+    assert.match(fixture,
+        /blockedRouteSpan\?\.gateId === blockedRoute\.gateId[\s\S]*?blockedRouteSpan\.pathId === blockedRoute\.pathId/);
+    assert.match(fixture,
+        /const blockedSourceFieldIndex = blockedRouteSpan\?\.firstFieldIndex;/);
+    assert.match(fixture,
+        /const blockedTargetFieldIndex = blockedSourceFieldIndex \+ 4;/);
     assert.doesNotMatch(fixture,
         /blockedBodies\[0\]\.flowFieldIndex/);
-    assert.match(fixture, /blockedCosts\[0\] > blockedCosts\[1\]/);
+    assert.match(fixture,
+        /blockedCosts\.every\(\(cost\) => cost >= 0 && cost < 1e20\)/);
     assert.match(fixture,
         /Math\.ceil\(blockedDistance \/ grid\.cellSize\)/);
     assert.match(fixture,
         /Math\.min\(\.\.\.sdfSamples\.map\(\(\{ distance \}\) => distance\)\)[\s\S]*?< blockedClearance/);
     assert.match(fixture,
-        /GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG\.SDF_SEGMENT_REJECTED,[\s\S]*?tileMap/);
+        /GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG\.SDF_SEGMENT_REJECTED,[\s\S]*?blockedTileMap/);
     assert.match(fixture,
-        /GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG\.SDF_SEGMENT_REJECTED,[\s\S]*?tileMap,\s*true/);
+        /GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG\.SDF_SEGMENT_REJECTED,[\s\S]*?blockedTileMap,\s*true/);
     const helperStart = formationRunnerSource.indexOf(
         'async function runMotionDiagnosticCase('
     );

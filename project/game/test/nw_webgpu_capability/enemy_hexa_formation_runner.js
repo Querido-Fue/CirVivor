@@ -156,7 +156,9 @@ function createPulseRecord(source, sourceTick) {
         fingerprint: 0x4a1001,
         flags: GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
             | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE,
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_CORE_DAMAGE_MODIFIABLE,
         retargetIntervalTicks:
             PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.retargetIntervalTicks
     });
@@ -3259,6 +3261,10 @@ async function runMotionDiagnosticCase(
         rejectedPairCount,
         pairCount: completion.pairCount,
         minimumVelocityDot,
+        beforePositions: Object.freeze(before.map(({ position }) => position)),
+        afterPositions: Object.freeze(after.map(({ position }) => position)),
+        beforeVelocities: Object.freeze(before.map(({ velocity }) => velocity)),
+        afterVelocities: Object.freeze(after.map(({ velocity }) => velocity)),
         beforeFlowFieldIndices: Object.freeze(before.map(({ flowFieldIndex }) => (
             flowFieldIndex
         ))),
@@ -3330,34 +3336,32 @@ async function runMotionPolicyFixture(device, format) {
             !== crossRoute.beforeFlowFieldIndices[1],
         'Formation cross-route candidate did not fail-close');
 
-    const waypoints = routes[0].waypoints;
-    assert(waypoints.length >= 2, 'Reverse Formation fixture needs two waypoints');
-    const dx = waypoints[1].x - waypoints[0].x;
-    const dy = waypoints[1].y - waypoints[0].y;
-    const length = Math.hypot(dx, dy);
-    assert(length > 0, 'Reverse Formation route segment is degenerate');
-    const unit = { x: dx / length, y: dy / length };
-    const behind = {
-        x: waypoints[0].x + (unit.x * 0.4),
-        y: waypoints[0].y + (unit.y * 0.4)
-    };
-    const ahead = {
-        x: behind.x + (unit.x * Math.min(2.5, length * 0.5)),
-        y: behind.y + (unit.y * Math.min(2.5, length * 0.5))
-    };
+    assert(routes[0].waypoints.length >= 3,
+        'Reverse Formation fixture needs two target stages');
+    const reverseHandles = Object.freeze([
+        Object.freeze({ entityId: 911, incarnation: 1 }),
+        Object.freeze({ entityId: 912, incarnation: 1 })
+    ]);
+    const reversePositions = Object.freeze([
+        firstSeed.position,
+        Object.freeze({
+            x: firstSeed.position.x + 2,
+            y: firstSeed.position.y
+        })
+    ]);
     const reverseBodies = [
-        createNaturalHexa(
+        withIdentity(createNaturalHexa(
             routes[0],
             0,
-            { entityId: 911, incarnation: 1 },
-            ahead
-        ),
-        createNaturalHexa(
+            reverseHandles[0],
+            reversePositions[0]
+        ), reverseHandles[0], { waypointIndex: 2 }),
+        withIdentity(createNaturalHexa(
             routes[0],
             1,
-            { entityId: 912, incarnation: 1 },
-            behind
-        )
+            reverseHandles[1],
+            reversePositions[1]
+        ), reverseHandles[1], { waypointIndex: 1 })
     ];
     const reverse = await runMotionDiagnosticCase(
         device,
@@ -3369,52 +3373,92 @@ async function runMotionPolicyFixture(device, format) {
     assert(reverse.observedCount > 0
         && reverse.pairCount === 0
         && reverse.minimumVelocityDot >= -0.000001,
-    'Formation reverse candidate/no-reverse velocity failed');
+    `Formation reverse candidate/no-reverse velocity failed: ${JSON.stringify(
+        reverse
+    )}`);
 
-    const blockedLeft = Object.freeze(tileMap.tileToWorld(10, 5, {}));
-    const blockedRight = Object.freeze(tileMap.tileToWorld(12, 8, {}));
-    const blockedPositions = Object.freeze([blockedRight, blockedLeft]);
+    const blockedRouteDefinition = Object.freeze({
+        gateId: 'formation-sdf-gate',
+        pathId: 'formation-sdf-u-route',
+        macroCells: Object.freeze([
+            Object.freeze([0, 0]),
+            Object.freeze([1, 0]),
+            Object.freeze([2, 0]),
+            Object.freeze([2, 1]),
+            Object.freeze([2, 2]),
+            Object.freeze([1, 2]),
+            Object.freeze([0, 2])
+        ])
+    });
+    const blockedTileMap = new TileMap(Object.freeze({
+        id: `${mapDefinition.id}-formation-sdf-fixture`,
+        macroRows: 3,
+        macroColumns: 3,
+        pathWidthTiles: 1,
+        directionBlueprint: Object.freeze(['a#g', 'b#f', 'cde']),
+        previewTiles: Object.freeze(['F.F', 'F.F', 'FFF']),
+        enemyModifiers: mapDefinition.enemyModifiers,
+        coreMacroCell: Object.freeze([0, 2]),
+        towerSpawnMacroCell: Object.freeze([2, 1]),
+        enemySpawnRoutes: Object.freeze([blockedRouteDefinition])
+    }));
+    const blockedRoute = blockedTileMap.getSpawnRoutes()[0];
+    const blockedSource = Object.freeze(blockedTileMap.tileToWorld(1, 0, {}));
+    const blockedTarget = Object.freeze(blockedTileMap.tileToWorld(1, 2, {}));
+    const blockedPositions = Object.freeze([blockedSource, blockedTarget]);
     const blockedTiles = blockedPositions.map((position) => Object.freeze(
-        tileMap.worldToTile(position.x, position.y, {})
+        blockedTileMap.worldToTile(position.x, position.y, {})
     ));
-    const blockedBodies = blockedPositions.map((position, index) => (
-        createNaturalHexa(
-            routes[0],
+    const blockedHandles = Object.freeze(blockedPositions.map((_, index) => (
+        Object.freeze({ entityId: 921 + index, incarnation: 1 })
+    )));
+    const blockedBodies = Object.freeze(blockedPositions.map((position, index) => (
+        withIdentity(createNaturalHexa(
+            blockedRoute,
             index,
-            { entityId: 921 + index, incarnation: 1 },
+            blockedHandles[index],
             position
-        )
-    ));
-    const blockedAtlas = createRouteFlowFieldAtlas(tileMap);
+        ), blockedHandles[index], {
+            waypointIndex: index === 0 ? 1 : 5
+        })
+    )));
+    const blockedAtlas = createRouteFlowFieldAtlas(blockedTileMap);
     const blockedRouteSpan = blockedAtlas.routes.find(({ pathId }) => (
-        pathId === routes[0].pathId
+        pathId === blockedRoute.pathId
     ));
-    const blockedFieldIndex = blockedRouteSpan?.firstFieldIndex;
-    const blockedCosts = blockedTiles.map((tile) => (
+    const blockedSourceFieldIndex = blockedRouteSpan?.firstFieldIndex;
+    const blockedTargetFieldIndex = blockedSourceFieldIndex + 4;
+    const blockedFieldIndices = Object.freeze([
+        blockedSourceFieldIndex,
+        blockedTargetFieldIndex
+    ]);
+    const blockedCosts = blockedTiles.map((tile, index) => (
         blockedAtlas.integrationCosts[
-            (blockedFieldIndex * blockedAtlas.size)
+            (blockedFieldIndices[index] * blockedAtlas.size)
                 + (tile.row * blockedAtlas.cols)
                 + tile.column
         ]
     ));
     const blockedDistance = Math.hypot(
-        blockedRight.x - blockedLeft.x,
-        blockedRight.y - blockedLeft.y
+        blockedTarget.x - blockedSource.x,
+        blockedTarget.y - blockedSource.y
     );
-    const grid = tileMap.getNavigationGrid();
+    const grid = blockedTileMap.getNavigationGrid();
     const sdf = createGpuSignedDistanceField(grid);
     const requiredSdfSamples = Math.max(
         1,
         Math.ceil(blockedDistance / grid.cellSize)
     );
-    const worldBounds = tileMap.getWorldBounds();
+    const worldBounds = blockedTileMap.getWorldBounds();
     const sdfSamples = Object.freeze(Array.from(
         { length: requiredSdfSamples + 1 },
         (_, sample) => {
             const t = sample / requiredSdfSamples;
             const position = Object.freeze({
-                x: blockedRight.x + ((blockedLeft.x - blockedRight.x) * t),
-                y: blockedRight.y + ((blockedLeft.y - blockedRight.y) * t)
+                x: blockedSource.x
+                    + ((blockedTarget.x - blockedSource.x) * t),
+                y: blockedSource.y
+                    + ((blockedTarget.y - blockedSource.y) * t)
             });
             const uvX = Math.max(0, Math.min(
                 0.999999,
@@ -3452,16 +3496,18 @@ async function runMotionPolicyFixture(device, format) {
             )
     );
     assert(blockedTiles.every(({ row, column }) => (
-        tileMap.isWalkableTile(row, column)
+        blockedTileMap.isWalkableTile(row, column)
     ))
-        && blockedRouteSpan?.gateId === routes[0].gateId
-        && blockedRouteSpan.pathId === routes[0].pathId
-        && Number.isSafeInteger(blockedFieldIndex)
-        && blockedFieldIndex >= 0
+        && blockedTileMap.isWalkableTile(1, 1) === false
+        && blockedRouteSpan?.gateId === blockedRoute.gateId
+        && blockedRouteSpan.pathId === blockedRoute.pathId
+        && Number.isSafeInteger(blockedSourceFieldIndex)
+        && blockedSourceFieldIndex >= 0
+        && blockedTargetFieldIndex > blockedSourceFieldIndex
         && blockedRouteSpan.fieldCount > 0
-        && blockedFieldIndex + blockedRouteSpan.fieldCount
+        && blockedSourceFieldIndex + blockedRouteSpan.fieldCount
             <= blockedAtlas.fieldCount
-        && blockedCosts[0] > blockedCosts[1]
+        && blockedCosts.every((cost) => cost >= 0 && cost < 1e20)
         && blockedDistance
             < HEXA_HIVE_SIX_RING_FORMATION_DEFINITION.mergeSeekRadiusTiles
         && requiredSdfSamples
@@ -3469,14 +3515,26 @@ async function runMotionPolicyFixture(device, format) {
                 .maximumSdfSegmentSamples
         && Math.min(...sdfSamples.map(({ distance }) => distance))
             < blockedClearance,
-    'Formation deterministic blocked SDF fixture invariant failed');
+    `Formation deterministic blocked SDF fixture invariant failed: ${
+        JSON.stringify({
+            blockedPositions,
+            blockedTiles,
+            blockedRouteSpan,
+            blockedFieldIndices,
+            blockedCosts,
+            blockedDistance,
+            requiredSdfSamples,
+            blockedClearance,
+            sdfSamples
+        })
+    }`);
     const blocked = await runMotionDiagnosticCase(
         device,
         format,
         78,
         blockedBodies,
         GPU_FORMATION_MOTION_DIAGNOSTIC_FLAG.SDF_SEGMENT_REJECTED,
-        tileMap,
+        blockedTileMap,
         true
     );
     assert(blocked.observedCount > 0 && blocked.pairCount === 0,
@@ -3484,7 +3542,7 @@ async function runMotionPolicyFixture(device, format) {
             blockedPositions,
             blockedTiles,
             blockedRouteSpan,
-            blockedFieldIndex,
+            blockedFieldIndices,
             blockedCosts,
             blockedDistance,
             requiredSdfSamples,

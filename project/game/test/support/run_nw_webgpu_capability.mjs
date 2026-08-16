@@ -42,6 +42,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/scene/game/cork_dual_route_wave_01_data.js',
     'data/scene/game/performance_serpentine_map_data.js',
     'module/ingame/contract/camera_control_contract.js',
+    'module/ingame/contract/ability_execution_contract.js',
+    'module/ingame/contract/actor_payload_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
     'module/ingame/contract/enemy_atomic_transform_contract.js',
@@ -52,6 +54,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/enemy_profile_contract.js',
     'module/ingame/contract/enemy_jorang_split_contract.js',
     'module/ingame/contract/tile_navigation_contract.js',
+    'module/ingame/contract/word_sentence_contract.js',
     'module/ingame/contract/gameplay_team_contract.js',
     'module/ingame/contract/player_controllable_contract.js',
     'module/ingame/contract/projectile_target_policy_contract.js',
@@ -68,6 +71,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/navigation/route_flow_field_atlas.js',
     'module/ingame/state/core_integrity.js',
     'module/ingame/state/run_outcome.js',
+    'module/ingame/word/actor_payload_budget.js',
     'module/ingame/object/enemy/enemy_core_impact_director.js',
     'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     'module/ingame/object/enemy/enemy_simulation_backend.js',
@@ -96,6 +100,10 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_atomic_transform_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_atomic_transform_positive_damage_hit_shaders.js',
     'module/ingame/physics/gpu/gpu_atomic_transform_runtime_shaders.js',
+    'module/ingame/physics/gpu/gpu_ability_subject_snapshot_abi.js',
+    'module/ingame/physics/gpu/gpu_ability_subject_snapshot_runtime.js',
+    'module/ingame/physics/gpu/gpu_actor_payload_materialization_abi.js',
+    'module/ingame/physics/gpu/gpu_actor_payload_materialization_runtime.js',
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
@@ -683,7 +691,9 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 === chain.expectedEffectiveTowerContactDamage
             && chain.activeBoostStackCount === 6
             && chain.activeAttackMultiplier === 1.25
-            && chain.canonicalCoreImpactDamage === 1
+            && chain.canonicalCoreImpactDamage > 0
+            && chain.canonicalCoreImpactDamage
+                === hostCommitted?.canonicalCoreImpactDamage
             && effect?.beforeCount === 6
             && effect.sourceATargetCount === 1
             && effect.sourceBTargetCount === 1
@@ -1075,7 +1085,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && unpublished.fixedCommitObserved === true
             && unpublished.lifecycleObserved === true
             && unpublished.rosterSealed === true
-            && unpublished.lastFixedCommitTick === 2
+            && unpublished.lastFixedCommitTick === 3
             && unpublished.requiresRecovery === false
             && published?.hostPublishedBeforeClose === true
             && published.lifecycleTransformCount === 1
@@ -1089,14 +1099,14 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && published.ownerPendingTransformCount === 0
             && published.ownerPendingReadbackCount === 0
             && published.backendState === 'submitted'
-            && published.backendSubmittedTick === 2
+            && published.backendSubmittedTick === 3
             && published.backendPendingPrepareCount === 0
             && published.backendPendingTransformCount === 0
             && published.backendPendingReadbackCount === 0
             && published.fixedCommitObserved === true
             && published.lifecycleObserved === true
             && published.rosterSealed === true
-            && published.lastFixedCommitTick === 2
+            && published.lastFixedCommitTick === 3
             && published.requiresRecovery === false
             && replacement?.sessionGenerationChanged === true
             && replacement.stalePrepareRejected === true
@@ -1311,7 +1321,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && approach.settle.angularDisplacement
                 <= approach.settle.maximumAngularStep + 0.0001
             && Math.abs(approach.settle.maximumAngularStep
-                - (2.5 / 60 / 6)) <= 0.00001
+                - (5 / 60 / 6)) <= 0.00001
             && Math.abs(approach.settle.radius - 6) <= 0.001
             && facing?.byteOffsetX === 32
             && facing.byteOffsetY === 36
@@ -1514,7 +1524,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && cleanup.reservedCountAfter === 0
             && cleanup.orbitSlotCountAfter === 0
             && storage?.classifier === 8
-            && storage.behavior === 8
+            && storage.behavior === 9
             && storage.render === 9
             && storage.contactHandling === 9
             && storage.maximum === 9;

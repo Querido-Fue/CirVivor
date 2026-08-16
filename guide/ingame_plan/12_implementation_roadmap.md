@@ -82,18 +82,22 @@ as a manual PASS. R2 progress is `r2 완료.`.
 
 ## Post-R2 product milestones
 
-## R3 — Enemy Entity Word
+## R3 — Enemy Entity Word — COMPLETE (2026-08-16)
 
-- normal shop catalog entry;
-- Enemy Subject selector;
-- Enemy Payload creation;
-- The Tower shoots Enemies;
-- Enemies shoot Enemies;
-- real bounty/wave/Overtime participation.
+- normal `shopEligible` catalog/offer metadata (full Shop UI remains R8);
+- typed five-slot Word/Sentence compiler/runtime with Q/E production showcase binding;
+- aggregate-only GPU Enemy/Tower Subject selector with same-execution recursion exclusion;
+- exact 0/N GPU Enemy actor payload prelease/materialization with no per-child JS object/readback;
+- `The Tower shoots Enemies` and `Enemies shoot Enemies`;
+- exact Player-kill bounty → CPU Gold and live/pending hostile, bounty-potential, Siege-Weight participation;
+- GPU-world recovery preserves words, slots/cooldowns, and Gold while canceling transient executions;
+- focused Node, full engine, actual WebGPU 0/1/10/256/1000 plus doubling-to-capacity, both WASM, render golden,
+  and diff-hygiene acceptance.
 
-Gate: no same-execution recursion; player-created enemy grants Gold and creates risk.
+Gate: PASS. No same-execution recursion; player-created Enemy grants ordinary exact Player-kill Gold and creates
+risk. Manual interactive smoke was not executed and is not claimed as PASS.
 
-## R4 — TowerGroup + share ledger
+## R4 — TowerGroup + share ledger — NEXT
 
 - multiple Tower bodies;
 - one GPU group movement/Aim command;
@@ -126,13 +130,13 @@ Gate: 1→2 and high-count enemy-created Tower scenarios pass without CPU per-bo
 
 - timer/Overtime phase;
 - Siege Pressure Core DOT;
-- player-created enemy bounty;
+- consume the R3 player-created Enemy bounty/participation inputs in settlement and Overtime phase owners;
 - hostile/pending cleanup condition;
 - zero-Tower final projectile victory.
 
 ## R8 — Shop, UI, checkpoint
 
-- five offers including Enemy;
+- five-offer purchase/reroll UI using the existing R3 Enemy offer metadata;
 - preview/runtime shared formulas;
 - Tower group HUD;
 - safe-boundary TowerGroup save/migration;

@@ -1,5 +1,17 @@
 # 01. Sentence Grammar and Entity Words
 
+## R3 implementation status (2026-08-16)
+
+R3 Enemy Entity Word is complete. The typed catalog/compiler, five-slot `WordSystem`, Q/E semantic input,
+aggregate GPU subject snapshot, and atomic persistent Enemy payload path are connected. The production showcase
+binds Q to `The Tower shoots Enemies` and E to `Enemies shoot Enemies`. Each execution freezes its start-set;
+new children receive GPU-authored `source generation + 1`, become eligible only for later executions, and never
+rejoin the current execution. A zero-subject result and a true 0/N capacity rejection create nothing and consume
+no cooldown.
+
+R3 implements only `Shoot + Enemy`. The Tower payload, `Enemies shoot The Tower`, other actor nouns/verbs,
+Merge, full modifier grammar, the Shop/editor transaction UI, and save integration remain later milestones.
+
 ## 1. Runtime model
 
 Display text is never parsed for gameplay. A sentence is authored from typed word instances and
@@ -81,6 +93,9 @@ Input 2: 20 subjects create 20 new enemies → 40 total.
 
 ## 4. Literal valid examples
 
+The following are design-valid sentences. In current R3 production, only `The Tower shoots Enemies` and
+`Enemies shoot Enemies` have end-to-end actor-payload execution; the others remain explicit future contracts.
+
 ```text
 The Tower shoots Enemies.
 Enemies shoot The Tower.
@@ -151,6 +166,10 @@ These are baseline semantics. Every verb must document its actor-payload impleme
 silently converting the actor to a different noun.
 
 ## 8. Enemy word shop behavior
+
+Current R3 publishes Enemy as an ordinary `shopEligible` Subject+Payload offer with runtime preview metadata.
+The five-offer purchase/reroll/duplicate/upgrade UI and its transactions remain R8 work; catalog eligibility is
+not a claim that the Shop screen is implemented.
 
 - Enemy is eligible for the normal five-offer word shop.
 - It uses ordinary purchase, reroll, duplicate, upgrade, and sentence-slot rules.

@@ -1,5 +1,17 @@
 # 05. Wave Timer, Overtime, Gold, Victory, and Defeat
 
+## R3 implementation status (2026-08-16)
+
+R3 connects the CPU run-domain `GoldLedger`, exact `BountyRewardDirector`, and bounded
+`HostileParticipationTracker`. Natural and player-created hostile Enemies contribute to live/pending hostile
+count, bounty potential, and Siege Weight. An authenticated lethal PLAYER hit must match the same-boundary exact
+`PLAYER_KILL` lifecycle commit before one deduplicated bounty credit is allowed. Core impact, ordinary despawn,
+transform consumption, non-Player kills, replay, and stale/ABA identities award zero Gold.
+
+The combat timer, Overtime phase transition, Siege Pressure Core DOT/escalation, Wave Clear/settlement, Shop,
+and save boundary below remain design targets. R3 provides their participation inputs but does not implement
+those phase owners.
+
 ## 1. Phase flow
 
 ```text
@@ -52,6 +64,8 @@ for this complete receipt.
 
 ## 3. Player-created enemy bounty
 
+This section is implemented in R3 for the Enemy actor payload and exact Player-kill reward path.
+
 A player-created Enemy:
 
 - has ordinary bounty;
@@ -64,6 +78,9 @@ A player-created Enemy:
 The economy is balanced by risk and time, not a hidden bounty exception.
 
 ## 4. Overtime trigger
+
+Not implemented in R3. The live/pending hostile and Siege aggregate inputs exist; no timer or Core DOT consumes
+them yet.
 
 Overtime starts when:
 
@@ -156,6 +173,9 @@ Two independent sources may damage Core:
 Both require exactly-once fixed-domain events and must not double-count the same authored attack.
 
 ## 10. Reward integrity
+
+Current reward settlement additionally requires authentic lethal GPU evidence from an exact Player source and
+the matching same-boundary lifecycle disposition. Either proof alone is insufficient.
 
 A kill reward requires:
 

@@ -274,7 +274,9 @@ function createEffectPulseRecord(
         ) >>> 0,
         flags: GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
             | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE,
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE
+            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_CORE_DAMAGE_MODIFIABLE,
         retargetIntervalTicks:
             PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE.retargetIntervalTicks
     });
@@ -951,6 +953,13 @@ async function runActualLineageRoundTrip(device, format) {
         assert(sourceAfterPreDamage.healthFixedPoint === 60,
             'actual lineage generic pre-damage must leave 60 centi HP');
 
+        requireAccepted(endpoint.requestSpawn(
+            createProbeIntent(sourceAfterPreDamage.position, {
+                commandTag: 'first-hit'
+            }),
+            2,
+            'actual-lineage:first-hit:spawn'
+        ), 'actual lineage first-hit probe');
         let effectStage = null;
         await advanceActualTick({
             endpoint,
@@ -997,13 +1006,6 @@ async function runActualLineageRoundTrip(device, format) {
                 (entry) => entry.effectInstanceId % 2
             )).size === 2,
         'actual lineage J must own two opposite-parity stable Effect instances');
-        requireAccepted(endpoint.requestSpawn(
-            createProbeIntent(sourceAfterPreDamage.position, {
-                commandTag: 'first-hit'
-            }),
-            3,
-            'actual-lineage:first-hit:spawn'
-        ), 'actual lineage first-hit probe');
         const tick3 = await advanceActualTick({
             endpoint,
             director,
@@ -1024,11 +1026,20 @@ async function runActualLineageRoundTrip(device, format) {
             tick: 4,
             label: 'actual lineage T4'
         });
-        assert(tick4.boundary.triggerObservation.triggerCount === 1
+        assert(tick3.boundary.triggerObservation.triggerCount === 1
+            && tick4.boundary.triggerObservation.triggerCount === 0
             && tick4.atomicStage.candidateCount === 1
             && tick4.boundary.preparationObservation.transformCount === 1
             && tick4.lifecycle.atomicTransforms.length === 1,
-        'actual lineage split must publish one transform');
+        `actual lineage split must publish one transform: ${JSON.stringify({
+            priorTriggerObservation: tick3.boundary.triggerObservation,
+            triggerObservation: tick4.boundary.triggerObservation,
+            atomicStage: tick4.atomicStage,
+            preparationObservation:
+                tick4.boundary.preparationObservation,
+            lifecycle: tick4.lifecycle,
+            directorStatus: director.getStatus()
+        })}`);
         const splitTransform = tick4.lifecycle.atomicTransforms[0];
         const children = splitTransform.destinationHandles;
         assert(splitTransform.topologyId
@@ -1498,49 +1509,55 @@ async function runActualFiveToFourPlusOne(device, format) {
             tick: 3,
             label: 'actual 5-to-4+1 T3'
         });
-        const firstStartedSources = tick2.lifecycle.atomicTransforms.map(
+        const tick4 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 4,
+            label: 'actual 5-to-4+1 T4'
+        });
+        const firstStartedSources = tick3.lifecycle.atomicTransforms.map(
             (entry) => entry.sourceHandles[0].entityId
         );
-        assert(tick2.boundary.prepare.records.length === 5
-            && tick2.boundary.preparationObservation.transformCount
+        assert(tick3.boundary.prepare.records.length === 5
+            && tick3.boundary.preparationObservation.transformCount
                 === JORANG_MAXIMUM_TRANSFORM_STARTS_PER_FIXED_TICK
             && tick2.atomicStage.candidateCount === 5
-            && tick2.lifecycle.atomicTransforms.length === 4
+            && tick3.lifecycle.atomicTransforms.length === 4
             && firstStartedSources.join(',')
                 === sources.slice(0, 4).map((handle) => handle.entityId).join(',')
-            && tick2.runtime.atomic.runtimeStatus
-                === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
-            && tick2.runtime.atomic.lastCommittedTransformCount === 4
-            && tick3.boundary.prepare.records.length === 1
-            && tick3.boundary.preparationObservation.transformCount === 1
-            && tick3.lifecycle.atomicTransforms.length === 1
-            && exactHandle(
-                tick3.lifecycle.atomicTransforms[0].sourceHandles[0],
-                sources[4]
-            )
             && tick3.runtime.atomic.runtimeStatus
                 === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
-            && tick3.runtime.atomic.lastCommittedTransformCount === 1,
+            && tick3.runtime.atomic.lastCommittedTransformCount === 4
+            && tick4.boundary.prepare.records.length === 1
+            && tick4.boundary.preparationObservation.transformCount === 1
+            && tick4.lifecycle.atomicTransforms.length === 1
+            && exactHandle(
+                tick4.lifecycle.atomicTransforms[0].sourceHandles[0],
+                sources[4]
+            )
+            && tick4.runtime.atomic.runtimeStatus
+                === GPU_ATOMIC_TRANSFORM_RUNTIME_STATUS.OK
+            && tick4.runtime.atomic.lastCommittedTransformCount === 1,
         `actual 5-to-4+1 publication cadence mismatch: ${JSON.stringify({
-            firstPrepareRecordCount: tick2.boundary.prepare.records.length,
+            firstPrepareRecordCount: tick3.boundary.prepare.records.length,
             firstPreparationObservation:
-                tick2.boundary.preparationObservation,
+                tick3.boundary.preparationObservation,
             firstStageCandidateCount: tick2.atomicStage.candidateCount,
             firstLifecycleTransformCount:
-                tick2.lifecycle.atomicTransforms.length,
+                tick3.lifecycle.atomicTransforms.length,
             firstStartedSources,
             expectedSources: sources.slice(0, 4).map(
                 (handle) => handle.entityId
             ),
             firstGpuCommittedCount:
-                tick2.runtime.atomic.lastCommittedTransformCount,
-            secondPrepareRecordCount: tick3.boundary.prepare.records.length,
-            secondPreparationObservation:
-                tick3.boundary.preparationObservation,
-            secondLifecycleTransformCount:
-                tick3.lifecycle.atomicTransforms.length,
-            secondGpuCommittedCount:
                 tick3.runtime.atomic.lastCommittedTransformCount,
+            secondPrepareRecordCount: tick4.boundary.prepare.records.length,
+            secondPreparationObservation:
+                tick4.boundary.preparationObservation,
+            secondLifecycleTransformCount:
+                tick4.lifecycle.atomicTransforms.length,
+            secondGpuCommittedCount:
+                tick4.runtime.atomic.lastCommittedTransformCount,
             directorStatus: director.getStatus()
         })}`);
 
@@ -1550,16 +1567,16 @@ async function runActualFiveToFourPlusOne(device, format) {
         'actual 5-to-4+1 final roster mismatch');
         return Object.freeze({
             admittedFirstHitCount: tick2.boundary.triggerObservation.triggerCount,
-            firstPrepareCandidateCount: tick2.boundary.prepare.records.length,
+            firstPrepareCandidateCount: tick3.boundary.prepare.records.length,
             firstLifecycleTransformCount:
-                tick2.lifecycle.atomicTransforms.length,
-            firstGpuCommittedCount:
-                tick2.runtime.atomic.lastCommittedTransformCount,
-            secondPrepareCandidateCount: tick3.boundary.prepare.records.length,
-            secondLifecycleTransformCount:
                 tick3.lifecycle.atomicTransforms.length,
-            secondGpuCommittedCount:
+            firstGpuCommittedCount:
                 tick3.runtime.atomic.lastCommittedTransformCount,
+            secondPrepareCandidateCount: tick4.boundary.prepare.records.length,
+            secondLifecycleTransformCount:
+                tick4.lifecycle.atomicTransforms.length,
+            secondGpuCommittedCount:
+                tick4.runtime.atomic.lastCommittedTransformCount,
             sourceOrderExact: true,
             hostStartsByTick: Object.freeze([4, 1]),
             finalCirclePrimeCount: countDefinition(endpoint, circlePrime.id),
@@ -1981,22 +1998,28 @@ async function runActualFirstHitEventCapacityBackoff(device, format) {
                 'actual-event-capacity:retry-probe-retire'
             ), 'actual first-hit event-capacity retry probe retire')
         });
+        const tick6 = await advanceActualTick({
+            endpoint,
+            director,
+            tick: 6,
+            label: 'actual first-hit event-capacity T6'
+        });
         assert(tick5.boundary.triggerObservation.triggerCount === 1
             && tick5.boundary.triggerObservation.capacityRejectionCount === 0
             && tick5.atomicStage.candidateCount === 1
-            && tick5.boundary.preparationObservation.transformCount === 1
-            && tick5.lifecycle.atomicTransforms.length === 1
-            && tick5.runtime.atomic.lastCommittedTransformCount === 1
+            && tick6.boundary.preparationObservation.transformCount === 1
+            && tick6.lifecycle.atomicTransforms.length === 1
+            && tick6.runtime.atomic.lastCommittedTransformCount === 1
             && countDefinition(endpoint, circlePrime.id) === 2
             && countDefinition(endpoint, BASIC_JORANG_ENEMY_DATA.id) === 1
             && !endpoint.requiresRecovery()
             && !director.requiresRecovery(),
         `actual first-hit event-capacity retry split did not succeed: ${JSON.stringify({
-            prepare: tick5.boundary.prepare,
+            prepare: tick6.boundary.prepare,
             preparationObservation:
-                tick5.boundary.preparationObservation,
-            lifecycle: tick5.lifecycle,
-            runtimeAtomic: tick5.runtime.atomic,
+                tick6.boundary.preparationObservation,
+            lifecycle: tick6.lifecycle,
+            runtimeAtomic: tick6.runtime.atomic,
             circlePrimeCount: countDefinition(endpoint, circlePrime.id),
             jorangCount: countDefinition(
                 endpoint,
@@ -2038,9 +2061,9 @@ async function runActualFirstHitEventCapacityBackoff(device, format) {
             retryTriggerCount: tick5.boundary.triggerObservation.triggerCount,
             retryPrepareCandidateCount: tick5.atomicStage.candidateCount,
             retryLifecycleTransformCount:
-                tick5.lifecycle.atomicTransforms.length,
+                tick6.lifecycle.atomicTransforms.length,
             retryGpuCommittedCount:
-                tick5.runtime.atomic.lastCommittedTransformCount,
+                tick6.runtime.atomic.lastCommittedTransformCount,
             finalCirclePrimeCount: countDefinition(endpoint, circlePrime.id),
             requiresRecovery: endpoint.requiresRecovery()
                 || director.requiresRecovery()
@@ -2086,7 +2109,16 @@ async function seedActualPrepare(endpoint, director, route, prefix) {
     assert(pendingBody.atomicTransformState?.phase
             === GPU_CIRCLE_ATOMIC_TRANSFORM_PHASE.SPLIT_PENDING,
     prefix + ' did not author an authentic pending first hit');
-    return Object.freeze({ sourceHandle, tick1 });
+    const tick2 = await advanceActualTick({
+        endpoint,
+        director,
+        tick: 2,
+        label: prefix + ' T2'
+    });
+    assert(tick2.boundary.triggerObservation.triggerCount === 1
+        && tick2.atomicStage.candidateCount === 1,
+    prefix + ' did not submit an authentic prepare');
+    return Object.freeze({ sourceHandle, tick1, tick2 });
 }
 
 async function runActualUnpublishedTerminal(device, format) {
@@ -2104,19 +2136,19 @@ async function runActualUnpublishedTerminal(device, format) {
             route,
             'actual-terminal-unpublished'
         );
-        const boundary = drainActualBoundary(endpoint, director, 2);
+        const boundary = drainActualBoundary(endpoint, director, 3);
         assert(boundary.preparationObservation.transformCount === 1
-            && boundary.triggerObservation.triggerCount === 1,
+            && boundary.triggerObservation.triggerCount === 0,
         'unpublished terminal authentic prepare missing');
-        director.closeForTerminal(2, 'run-defeated');
-        endpoint.closeGameplayIngress('run-defeated', 2);
+        director.closeForTerminal(3, 'run-defeated');
+        endpoint.closeGameplayIngress('run-defeated', 3);
         const lifecycle = assertHealthyBoundary(
-            endpoint.commitAtFixedBoundary(2),
+            endpoint.commitAtFixedBoundary(3),
             'unpublished terminal lifecycle'
         );
-        director.observeFixedCommit(lifecycle, 2);
-        director.observeLifecycle(lifecycle, 2);
-        assert(endpoint.fixedUpdate(FIXED_DELTA, 2),
+        director.observeFixedCommit(lifecycle, 3);
+        director.observeLifecycle(lifecycle, 3);
+        assert(endpoint.fixedUpdate(FIXED_DELTA, 3),
             'unpublished terminal final submit failed');
         const runtime = await waitForActualRuntime(
             endpoint,
@@ -2148,7 +2180,7 @@ async function runActualUnpublishedTerminal(device, format) {
             && directorTerminal?.fixedCommitObserved === true
             && directorTerminal?.lifecycleObserved === true
             && directorTerminal?.rosterSealed === true
-            && director.getStatus().lastFixedCommitTick === 2
+            && director.getStatus().lastFixedCommitTick === 3
             && !endpoint.requiresRecovery()
             && !director.requiresRecovery(),
         'unpublished terminal did not cancel before host publication');
@@ -2200,33 +2232,33 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
         oldPort = endpoint.getAtomicTransformCommandPort();
         oldSessionGeneration = endpoint.getStatus().sessionGeneration;
 
-        const boundary = drainActualBoundary(endpoint, director, 2);
+        const boundary = drainActualBoundary(endpoint, director, 3);
         assert(boundary.preparationObservation.transformCount === 1,
             'published terminal authentic prepare missing');
-        const stage = director.stageForFixedTick({ targetFixedTick: 2 });
-        requireAccepted(stage, 'published terminal T2 restage');
+        const stage = director.stageForFixedTick({ targetFixedTick: 3 });
+        requireAccepted(stage, 'published terminal T3 restage');
         const lifecycle = assertHealthyBoundary(
-            endpoint.commitAtFixedBoundary(2),
+            endpoint.commitAtFixedBoundary(3),
             'published terminal lifecycle'
         );
-        director.observeFixedCommit(lifecycle, 2);
-        director.observeLifecycle(lifecycle, 2);
+        director.observeFixedCommit(lifecycle, 3);
+        director.observeLifecycle(lifecycle, 3);
         const beforeCloseAtomic = endpoint.getBackend()
             .getAtomicTransformRuntimeStatus();
         assert(lifecycle.atomicTransforms.length === 1
             && countDefinition(endpoint, circlePrime.id) === 2
             && beforeCloseAtomic.pendingTransformCount === 1
-            && director.getStatus().lastFixedCommitTick === 2,
+            && director.getStatus().lastFixedCommitTick === 3,
         'published terminal host publication was not complete before close');
 
-        director.closeForTerminal(2, 'run-defeated');
+        director.closeForTerminal(3, 'run-defeated');
         const directorTerminal = director.getStatus().terminal;
         assert(directorTerminal?.fixedCommitObserved === true
             && directorTerminal?.lifecycleObserved === true
             && directorTerminal?.rosterSealed === true,
         'published terminal prior observations were not preserved at close');
-        endpoint.closeGameplayIngress('run-defeated', 2);
-        assert(endpoint.fixedUpdate(FIXED_DELTA, 2),
+        endpoint.closeGameplayIngress('run-defeated', 3);
+        assert(endpoint.fixedUpdate(FIXED_DELTA, 3),
             'published terminal final submit failed');
         const runtime = await waitForActualRuntime(endpoint, 'published terminal');
         const bodies = await readBodies(endpoint.getBackend());
@@ -2249,7 +2281,7 @@ async function runActualPublishedTerminalAndReplacement(device, format) {
             && terminal.owner?.pendingTransformCount === 0
             && terminal.owner?.pendingReadbackCount === 0
             && terminal.backend?.state === 'submitted'
-            && terminal.backend?.submittedTick === 2
+            && terminal.backend?.submittedTick === 3
             && terminal.backend?.pendingPrepareCount === 0
             && terminal.backend?.pendingTransformCount === 0
             && terminal.backend?.pendingReadbackCount === 0

@@ -6,6 +6,9 @@ import { GameObjectSystem } from './object/game_object_system.js';
 import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
 import { CoreIntegrity } from './state/core_integrity.js';
 import { RunOutcome } from './state/run_outcome.js';
+import { GoldLedger } from './state/gold_ledger.js';
+import { SentenceSlotController } from './word/sentence_slot_controller.js';
+import { WordSystem } from './word/word_system.js';
 import {
     GAME_WORLD_SESSION_MODE,
     selectGameWorldSessionMode
@@ -178,7 +181,7 @@ export class GameSystem {
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number,initialGold?:number,wordSystemOptions?:object}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -207,6 +210,11 @@ export class GameSystem {
         );
         this.inputActionMapper = new InputActionMapper();
         this.playerControlRouter = new PlayerControlRouter();
+        this.wordSystem = new WordSystem(options.wordSystemOptions);
+        this.sentenceSlotController = new SentenceSlotController(this.wordSystem);
+        this.goldLedger = new GoldLedger({
+            initialGold: options.initialGold ?? 0
+        });
         this.coreIntegrity = new CoreIntegrity({
             maxIntegrity: options.coreMaxIntegrity
                 ?? THE_CORE_DATA.MAX_INTEGRITY
@@ -222,7 +230,9 @@ export class GameSystem {
             enemyWaveEnabled: options.enemyWaveEnabled,
             gameplayWorldActorsEnabled: options.gameplayWorldActorsEnabled,
             waveDefinition: options.waveDefinition,
-            enemyPresentationProfile: options.enemyPresentationProfile
+            enemyPresentationProfile: options.enemyPresentationProfile,
+            wordSystem: this.wordSystem,
+            goldLedger: this.goldLedger
         });
         this.objectSystem = null;
         this.towerCombatRoster = null;
@@ -283,6 +293,9 @@ export class GameSystem {
         );
 
         const controllables = this.objectSystem.getPlayerControllables();
+        this.registrationTokens.push(
+            this.playerControlRouter.register(this.sentenceSlotController)
+        );
         for (let index = 0; index < controllables.length; index++) {
             this.registrationTokens.push(this.playerControlRouter.register(controllables[index]));
         }
@@ -316,6 +329,7 @@ export class GameSystem {
                 proposedFixedTick
             );
         }
+        this.wordSystem.beginFixedTick(proposedFixedTick);
         const moveAction = this.inputActionMapper.mapMoveAction(
             this.dependencies.inputActionSource
         );
@@ -323,6 +337,12 @@ export class GameSystem {
             .mapPrimaryPointerFireAction(this.dependencies.inputActionSource);
         this.playerControlRouter.dispatch(moveAction);
         this.playerControlRouter.dispatch(primaryPointerFireAction);
+        const skillEdgeActions = this.inputActionMapper.mapSkillEdgeActions(
+            this.dependencies.inputActionSource
+        );
+        for (let index = 0; index < skillEdgeActions.length; index++) {
+            this.playerControlRouter.dispatch(skillEdgeActions[index]);
+        }
         const advanced = this.objectSystem.fixedUpdate(
             this.dependencies.timePort.getFixedDelta(),
             proposedFixedTick
@@ -446,6 +466,21 @@ export class GameSystem {
         return this.runOutcome;
     }
 
+    /** CPU run-domain의 typed Word/Sentence owner입니다. */
+    getWordSystem() {
+        return this.wordSystem;
+    }
+
+    /** 테스트·개발 loadout이 사용하는 5개 immutable runtime slot view입니다. */
+    getAbilitySlotViews() {
+        return this.wordSystem?.getSlotViews() ?? Object.freeze([]);
+    }
+
+    /** 입력 edge와 PRIMARY compatibility를 검증할 bounded controller status입니다. */
+    getSentenceSlotController() {
+        return this.sentenceSlotController;
+    }
+
     /**
      * HUD·테스트가 읽을 수 있는 불변 GPU Tower combat snapshot입니다.
      * CPU fallback의 Tower HP 정책은 아직 OPEN이므로 해당 mode에서는 null입니다.
@@ -468,6 +503,30 @@ export class GameSystem {
     /** GPU_WORLD H/HX Formation capability의 bounded scalar 상태입니다. */
     getFormationRuntimeStatus() {
         return this.objectSystem?.getFormationRuntimeStatus() ?? null;
+    }
+
+    getAbilityRuntimeStatus() {
+        return this.objectSystem?.getAbilityRuntimeStatus() ?? null;
+    }
+
+    getActorPayloadMaterializerStatus() {
+        return this.objectSystem?.getActorPayloadMaterializerStatus() ?? null;
+    }
+
+    getGoldLedger() {
+        return this.goldLedger;
+    }
+
+    getGold() {
+        return this.goldLedger?.getBalance() ?? 0;
+    }
+
+    getBountyRewardStatus() {
+        return this.objectSystem?.getBountyRewardStatus() ?? null;
+    }
+
+    getHostileParticipationStatus() {
+        return this.objectSystem?.getHostileParticipationStatus() ?? null;
     }
 
     /**
@@ -494,6 +553,12 @@ export class GameSystem {
             formation: createFormationDiagnosticStatus(
                 this.getFormationRuntimeStatus()
             ),
+            abilities: this.getAbilityRuntimeStatus(),
+            actorPayloads: this.getActorPayloadMaterializerStatus(),
+            gold: this.getGold(),
+            bounty: this.getBountyRewardStatus(),
+            hostiles: this.getHostileParticipationStatus(),
+            words: this.wordSystem?.getStatusView() ?? null,
             wave: createWaveDiagnosticStatus(
                 this.objectSystem?.getEnemyWaveStatus?.() ?? null
             )
@@ -569,6 +634,8 @@ export class GameSystem {
         }
         this.registrationTokens.length = 0;
         this.playerControlRouter.destroy();
+        this.sentenceSlotController?.destroy();
+        this.sentenceSlotController = null;
         if (this.gameplayStatusRendererOwned) {
             this.gameplayStatusRenderer?.destroy?.();
         }
@@ -581,6 +648,10 @@ export class GameSystem {
         this.towerCombatRoster?.destroy();
         this.towerCombatRoster = null;
         this.runOutcome.destroy();
+        this.goldLedger?.destroy();
+        this.goldLedger = null;
+        this.wordSystem?.destroy();
+        this.wordSystem = null;
         this.fixedTick = 0;
         this.entered = false;
     }

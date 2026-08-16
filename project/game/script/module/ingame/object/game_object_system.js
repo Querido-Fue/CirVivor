@@ -79,6 +79,20 @@ import {
 import {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
 } from '../physics/gpu/gpu_projectile_capture_runtime_abi.js';
+import { AbilityRuntime } from '../word/ability_runtime.js';
+import {
+    ActorPayloadMaterializer
+} from '../word/actor_payload_materializer.js';
+import { GoldLedger } from '../state/gold_ledger.js';
+import {
+    BountyRewardDirector
+} from './enemy/bounty_reward_director.js';
+import {
+    HostileParticipationTracker
+} from '../state/hostile_participation_tracker.js';
+import {
+    SentenceRuntimeEstimator
+} from '../word/sentence_runtime_estimator.js';
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
@@ -258,6 +272,50 @@ export class GameObjectSystem {
         this.worldRegistry = null;
         this.enemyLifecycleCommandOwner = null;
         this.#installGpuEndpoint(this.#createGpuEndpoint(true));
+        this.goldLedgerOwned = !options?.goldLedger;
+        this.goldLedger = options?.goldLedger ?? new GoldLedger();
+        if (typeof this.goldLedger.credit !== 'function'
+            || typeof this.goldLedger.getBalance !== 'function'
+            || typeof this.goldLedger.getStatus !== 'function') {
+            throw new TypeError('GameObjectSystem goldLedger contract가 올바르지 않습니다.');
+        }
+        this.bountyRewardDirector = new BountyRewardDirector({
+            goldLedger: this.goldLedger,
+            sessionGeneration:
+                this.enemySimulationEndpoint.getStatus().sessionGeneration
+        });
+        this.hostileParticipationTracker = new HostileParticipationTracker();
+        this.hostileDangerThreshold = requireNonNegativeSafeInteger(
+            options?.hostileDangerThreshold ?? 32,
+            'hostileDangerThreshold'
+        );
+        this.wordSystem = options?.wordSystem ?? null;
+        if (this.wordSystem !== null
+            && (typeof this.wordSystem.drainActivationRequests !== 'function'
+                || typeof this.wordSystem.recordExecutionOutcome
+                    !== 'function')) {
+            throw new TypeError('GameObjectSystem wordSystem contract가 올바르지 않습니다.');
+        }
+        this.abilityRuntime = this.wordSystem
+            ? new AbilityRuntime({
+                wordSystem: this.wordSystem,
+                endpoint: this.enemySimulationEndpoint
+            })
+            : null;
+        this.actorPayloadMaterializer = this.abilityRuntime
+            ? new ActorPayloadMaterializer({
+                abilityRuntime: this.abilityRuntime,
+                endpoint: this.enemySimulationEndpoint
+            })
+            : null;
+        this.sentenceRuntimeEstimator = this.wordSystem
+            ? new SentenceRuntimeEstimator({
+                getRuntimeState: () => this.#createSentenceRuntimePreviewState()
+            })
+            : null;
+        this.wordSystem?.bindRuntimePreviewProvider?.(
+            this.sentenceRuntimeEstimator
+        );
         this.hostileAttackDirector = null;
         this.enemyCoreImpactDirector = null;
         this.pentagonEffectDirector = null;
@@ -470,6 +528,7 @@ export class GameObjectSystem {
         }
 
         this.camera.init(this.tileMap.getWorldBounds(), this.viewport);
+        this.#refreshHostileParticipation();
         this.initialized = true;
     }
 
@@ -582,6 +641,26 @@ export class GameObjectSystem {
         return this.corkRouteClosureDirector?.getStatus() ?? null;
     }
 
+    getAbilityRuntimeStatus() {
+        return this.abilityRuntime?.getStatus() ?? null;
+    }
+
+    getActorPayloadMaterializerStatus() {
+        return this.actorPayloadMaterializer?.getStatus() ?? null;
+    }
+
+    getGoldStatus() {
+        return this.goldLedger?.getStatus() ?? null;
+    }
+
+    getBountyRewardStatus() {
+        return this.bountyRewardDirector?.getStatus() ?? null;
+    }
+
+    getHostileParticipationStatus() {
+        return this.hostileParticipationTracker?.getStatus() ?? null;
+    }
+
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
     getTerminalStatus() {
         return Object.freeze({
@@ -644,7 +723,10 @@ export class GameObjectSystem {
             || this.formationRuntimeDirector?.requiresRecovery() === true
             || this.jorangSplitLineageDirector?.requiresRecovery() === true
             || this.projectileCaptureDirector?.requiresRecovery() === true
-            || this.corkRouteClosureDirector?.requiresRecovery() === true;
+            || this.corkRouteClosureDirector?.requiresRecovery() === true
+            || this.abilityRuntime?.requiresRecovery() === true
+            || this.actorPayloadMaterializer?.requiresRecovery() === true
+            || this.bountyRewardDirector?.requiresRecovery() === true;
     }
 
     isGpuWorldRecoveryRequired() {
@@ -698,11 +780,33 @@ export class GameObjectSystem {
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
                 || this.projectileCaptureDirector?.requiresRecovery() === true
-                || this.corkRouteClosureDirector?.requiresRecovery() === true)) {
+                || this.corkRouteClosureDirector?.requiresRecovery() === true
+                || this.abilityRuntime?.requiresRecovery() === true
+                || this.actorPayloadMaterializer?.requiresRecovery()
+                    === true
+                || this.bountyRewardDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery();
         }
 
         if (this.pendingEnemyFixedTick === 0) {
+            const payloadObservation = this.actorPayloadMaterializer
+                ?.observeCompleted(proposedFixedTick) ?? null;
+            if (payloadObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery();
+            }
+            const abilityObservation = this.abilityRuntime
+                ?.observeCompletedSubjectSnapshots(proposedFixedTick) ?? null;
+            if (abilityObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery();
+            }
+            const payloadStage = this.actorPayloadMaterializer
+                ?.stageReadyForFixedTick({
+                    targetFixedTick: proposedFixedTick
+                }) ?? null;
+            if (payloadStage?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery();
+            }
+            this.#refreshHostileParticipation();
             if (!this.runOutcome.isDefeated()
                 && !this.coreIntegrity.isDepleted()
                 && !this.#refreshCorkRouteClosureDirectorBindingAtIdleBoundary(
@@ -959,6 +1063,14 @@ export class GameObjectSystem {
                 return this.#pauseForGpuRecovery();
             }
             this.lastCompletedGpuEvents = completedEvents;
+            const bountyCompletedObservation = this.bountyRewardDirector
+                ?.observeCompletedEvents(
+                    completedEvents,
+                    this.worldRegistry
+                ) ?? null;
+            if (bountyCompletedObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery();
+            }
             this.projectileCaptureDirector?.observeCompletedEvents(
                 completedEvents
             );
@@ -1156,6 +1268,16 @@ export class GameObjectSystem {
                     || atomicTransformStage?.accepted === false) {
                     return this.#pauseForGpuRecovery();
                 }
+                const abilityStage = this.abilityRuntime?.stageForFixedTick({
+                    targetFixedTick: proposedFixedTick,
+                    camera: this.camera
+                }) ?? null;
+                if (abilityStage?.recoveryRequired === true
+                    || this.abilityRuntime?.requiresRecovery() === true
+                    || this.actorPayloadMaterializer?.requiresRecovery()
+                        === true) {
+                    return this.#pauseForGpuRecovery();
+                }
             }
 
             const lifecycleResult = this.enemySimulationEndpoint
@@ -1224,6 +1346,12 @@ export class GameObjectSystem {
                 && !this.#bindCommittedGpuWorldActors(lifecycleResult, proposedFixedTick)) {
                 return this.#pauseForGpuRecovery();
             }
+            const bountyLifecycleObservation = this.bountyRewardDirector
+                ?.observeLifecycle(lifecycleResult, proposedFixedTick) ?? null;
+            if (bountyLifecycleObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery();
+            }
+            this.#refreshHostileParticipation();
             this.corkRouteClosureDirector?.observeFixedCommit(
                 lifecycleResult,
                 proposedFixedTick
@@ -1592,7 +1720,10 @@ export class GameObjectSystem {
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
                 || this.projectileCaptureDirector?.requiresRecovery() === true
-                || this.corkRouteClosureDirector?.requiresRecovery() === true;
+                || this.corkRouteClosureDirector?.requiresRecovery() === true
+                || this.abilityRuntime?.requiresRecovery() === true
+                || this.actorPayloadMaterializer?.requiresRecovery() === true
+                || this.bountyRewardDirector?.requiresRecovery() === true;
         return submitted;
     }
 
@@ -1739,6 +1870,12 @@ export class GameObjectSystem {
         this.hostileAttackDirector?.destroy();
         this.waveDirector?.destroy();
         this.primaryProjectileController?.resetGpuBinding();
+        this.actorPayloadMaterializer?.resetGpuBinding(replacementEndpoint);
+        this.abilityRuntime?.resetGpuBinding(replacementEndpoint);
+        this.bountyRewardDirector?.resetGpuBinding(
+            replacementEndpoint.getStatus().sessionGeneration
+        );
+        this.hostileParticipationTracker?.reset();
         this.#revokeCoreImpactCleanupBinding();
         this.enemySimulationEndpoint.configureTowerGameplayTarget?.(null);
         this.enemySimulationEndpoint.configureTrackedBody?.(null);
@@ -1773,6 +1910,7 @@ export class GameObjectSystem {
             ?.getLastCommittedFacts?.() ?? EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
         this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
+        this.#refreshHostileParticipation();
         return true;
     }
 
@@ -1792,6 +1930,17 @@ export class GameObjectSystem {
         this.towerController = null;
         this.primaryProjectileController?.destroy();
         this.primaryProjectileController = null;
+        this.actorPayloadMaterializer?.destroy();
+        this.actorPayloadMaterializer = null;
+        this.abilityRuntime?.destroy();
+        this.abilityRuntime = null;
+        this.wordSystem?.bindRuntimePreviewProvider?.(null);
+        this.sentenceRuntimeEstimator?.destroy();
+        this.sentenceRuntimeEstimator = null;
+        this.bountyRewardDirector?.destroy();
+        this.bountyRewardDirector = null;
+        this.hostileParticipationTracker?.destroy();
+        this.hostileParticipationTracker = null;
         this.hostileAttackDirector?.destroy();
         this.hostileAttackDirector = null;
         this.pentagonEffectDirector?.destroy();
@@ -1817,6 +1966,10 @@ export class GameObjectSystem {
         this.towerHandle = null;
         this.coreProxyHandle = null;
         this.enemySimulationEndpoint.destroy();
+        if (this.goldLedgerOwned) {
+            this.goldLedger?.destroy();
+        }
+        this.goldLedger = null;
         this.lastCompletedEnemyFixedTick = 0;
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
@@ -1844,6 +1997,7 @@ export class GameObjectSystem {
         this.tileMapRenderer.destroy();
         this.initialized = false;
         this.towerCombatRoster = null;
+        this.wordSystem = null;
     }
 
     #transitionRunOutcomeForCore(fixedTick, coreDepletedFact) {
@@ -1897,6 +2051,9 @@ export class GameObjectSystem {
             fixedTick,
             'run-defeated'
         );
+        this.actorPayloadMaterializer?.closeForTerminal('run-defeated');
+        this.abilityRuntime?.closeForTerminal('run-defeated');
+        this.bountyRewardDirector?.closeForTerminal();
         this.enemySimulationEndpoint.closeGameplayIngress?.(
             'run-defeated',
             fixedTick
@@ -3156,6 +3313,44 @@ export class GameObjectSystem {
             sessionGeneration,
             deviceGeneration,
             authoritativeEpoch
+        });
+    }
+
+    #refreshHostileParticipation() {
+        if (!this.hostileParticipationTracker || !this.worldRegistry) {
+            return null;
+        }
+        const pending = this.enemySimulationEndpoint
+            ?.getPendingHostileParticipationView?.() ?? Object.freeze({
+                pendingHostileActorCount: 0,
+                pendingSiegeWeight: 0,
+                pendingSentenceCreatedCount: 0
+            });
+        return this.hostileParticipationTracker.refresh(
+            this.worldRegistry,
+            pending
+        );
+    }
+
+    #createSentenceRuntimePreviewState() {
+        const hostile = this.hostileParticipationTracker?.getStatus() ?? {};
+        const capacity = this.enemySimulationEndpoint
+            ?.getActorPayloadCapacityView?.(0) ?? {};
+        const economy = this.enemySimulationEndpoint
+            ?.getActorPayloadEconomyView?.() ?? {};
+        const towerStatus = this.towerCombatRoster?.getStatus?.() ?? null;
+        return Object.freeze({
+            livingTowerCount: towerStatus?.livingTowerCount
+                ?? (this.tower ? 1 : 0),
+            liveHostileActorCount: hostile.liveHostileActorCount ?? 0,
+            pendingHostileActorCount:
+                hostile.pendingHostileActorCount ?? 0,
+            siegeWeight: hostile.siegeWeight ?? 0,
+            registryAvailable: capacity.registryAvailable ?? 0,
+            bodyAvailable: capacity.bodyAvailable ?? 0,
+            bountyPerEnemy: economy.bountyPerEnemy ?? 0,
+            siegeWeightPerEnemy: economy.siegeWeightPerEnemy ?? 0,
+            dangerThreshold: this.hostileDangerThreshold
         });
     }
 

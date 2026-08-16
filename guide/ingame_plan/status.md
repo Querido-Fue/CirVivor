@@ -14,6 +14,17 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
+**R3 Enemy Entity Word is complete as of 2026-08-16. R4 TowerGroup + Share Ledger is next.** The CPU run domain
+now owns `WordSystem`, five Sentence slots/cooldowns, `SentenceSlotController`, and `GoldLedger`; the active GPU
+world owns `AbilityRuntime`, `ActorPayloadMaterializer`, `SentenceRuntimeEstimator`, `BountyRewardDirector`, and
+`HostileParticipationTracker`. Q executes `The Tower shoots Enemies` and E executes `Enemies shoot Enemies`.
+Subject selection is aggregate-only GPU work, child creation is exact 0/N, and child generation is GPU-authored
+from source generation plus one. Focused Node passed `42/42`, full Node passed `1540/1540`, actual R3 WebGPU
+passed 0/1/10/256/1000 plus doubling-to-capacity with storage maximum 9, protocol/recovery 0,
+`uncapturedErrorCount=0`, and destroyed teardown. Both WASM checks, default WebGPU capability, all exact nine
+R2 routed hardware stages, the supplemental Rhom source-death projectile stage, audited render golden, and diff
+hygiene passed. Manual interactive smoke was not executed and is not claimed as PASS.
+
 ## Implemented runtime foundation
 
 - Tower/Core/Basic Bullet mixed GPU World migration is complete.
@@ -80,8 +91,8 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - Current `WaveDirector` remains spawn-schedule-only. It compiles the four-command authored 60Hz timeline,
   resolves immutable Enemy spawn stats once at queue time, and sends every same-tick set through one atomic
   batch whose rejection preserves schedule cursor/identity. Core impact/depletion is connected through the
-  separate `EnemyCoreImpactDirector` and `RunOutcome`; Gold, wave completion, Shop, and Word runtime remain
-  unconnected.
+  separate `EnemyCoreImpactDirector` and `RunOutcome`. R3 Gold/Word/hostile participation are connected through
+  separate owners; Wave timer/completion/Overtime, Shop transactions, and save remain unconnected.
 - Formation authoring now uses independent `memberCount` and explicit/layout-derived `rows/columns`; legacy
   `size` is rejected. `keepFormation=true` is live only for natural H exact six-ring provenance. The dedicated
   `enemy-hexa-formation` checkpoint fixture does not alter the production 32-spawn/five-tick wave.
@@ -468,17 +479,41 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - This D1 work does not change either production map card, authored performance map/wave, render golden, or any
   R3/economy/Overtime/multi-Tower scope.
 
-## Post-R2 locked target not yet implemented
+## R3 Enemy Entity Word complete (2026-08-16)
 
-- Enemy is a normal purchasable Subject/Payload word.
-- hostile attacks target Towers according to EnemyDefinition/verb policy.
-- player-created enemies are real bounty-bearing hostile actors and Overtime pressure.
+- Stable typed WordDefinition/WordInstance/SentenceDefinition data compiles into immutable abilities. Enemy is
+  an ordinary `shopEligible` Subject+Payload offer; the full Shop transaction UI is not implied.
+- `WordSystem` owns five bounded immutable slot views and fixed semantic activation requests. The production
+  showcase assigns Q `The Tower shoots Enemies` and E `Enemies shoot Enemies`.
+- GPU selection freezes exact alive Tower/Hostile Enemy subjects at execution start in private deterministic
+  slot order and returns aggregate identity/count/fingerprint only. The visibility ordinal and GPU generation
+  rule prevent same-execution recursion.
+- `ActorPayloadMaterializer` implements only `Shoot + Enemy`: all destinations are preleased and materialized as
+  persistent ordinary `basic_circle_01` Hostile actors, or zero. Capacity one-short is normal zero-partial;
+  temporary event/telemetry backpressure retains the same snapshot for retry.
+- Player-created Enemies carry exact owner/ability/execution/generation provenance, ordinary reward eligibility,
+  bounty budget, hostile participation, and Siege Weight. Exact authenticated lethal PLAYER evidence plus the
+  matching same-boundary `PLAYER_KILL` lifecycle commit is the only Gold ingress.
+- GPU-world replacement preserves CPU words, five slots/cooldowns, and Gold, cancels transient executions and
+  preleases, rejects old completion, and binds fresh GPU-world-scoped owners.
+- Actual GPU 256→512 and 1000→2000 fanout passed. Capacity-1000 doubling reached 640 active and rejected the next
+  640-child execution with generated/cooldown/reserved all zero. Storage maximum remained 9; protocol failure,
+  recovery, and uncaptured error counts remained zero.
+
+## Post-R3 locked target not yet implemented
+
 - multiple Towers share a conserved living stat budget; death creates permanent Lost Share.
-- `The Tower shoots The Tower`, `Enemies shoot The Tower`, and `The Towers merge` are valid.
+- one GPU Tower-group movement/Aim command and bounded group camera summary.
+- Tower actor payload, including `The Tower shoots The Tower` and `Enemies shoot The Tower`.
+- `The Towers merge` and generic actor Merge transaction.
+- hostile attack/actor-verb policies beyond the current Enemy-only Shoot path.
+- full modifier grammar and other actor nouns/verbs.
 - valid self-destructive sentences execute literally.
 - wave timer expiry with hostiles enters Overtime Core DOT.
+- full five-offer Shop/purchase/reroll/editor UI and preview panels.
+- save/checkpoint schema and continue/migration for later TowerGroup state.
 
-## Post-R2 implementation gap
+## Post-R3 implementation gap
 
 The current GPU world still lacks the remaining gameplay policy and transaction layers required for:
 
@@ -487,18 +522,20 @@ definition-level target-policy expansion beyond the locked default team matrix
 Tower Share and multiple-Tower authored state
 multiple Tower group control/camera summary
 hostile attack policies beyond the production Archer/M producers
-GPU subject selector
-GPU actor child allocator
 Tower-share split/merge transaction
-bounty/Siege Pressure/Overtime
+Tower/other-noun actor child allocation
+full modifier grammar
+Wave timer/Overtime Core DOT/settlement
+Shop/editor UI and save/checkpoint integration
 ```
 
 ## Closed checkpoint boundary
 
 The Turn 4 checkpoint and Turn 9 final acceptance from `plan/0809_enemy/R2_GOAL.md` are complete. Turns 5–8
 production plus Turn 9 hardening, showcase, fixtures, and final runner were accepted on 2026-08-12. This status
-does not start post-R2 Word, economy, Tower Share, general child-allocation, or end-to-end Sentence work. Manual
-sandbox visual QA remains future evidence and was not substituted by automated hardware acceptance.
+also closes `plan/0816_enemy_word` R3 Enemy Entity Word on 2026-08-16. It does not start R4 TowerGroup/Share,
+Tower Payload, Merge, Overtime, full Shop/editor, or save work. Manual sandbox visual QA remains future evidence
+and was not substituted by automated hardware acceptance.
 
 ## R1 final acceptance evidence
 

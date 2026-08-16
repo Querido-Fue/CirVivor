@@ -1,5 +1,15 @@
 # 02. Team, Ownership, Targeting, and Action Semantics
 
+## R3 implementation status (2026-08-16)
+
+R3 materializes only a fixed-HOSTILE Enemy payload. Q uses the living Tower subject and shared world Aim Point;
+E uses living hostile Enemy subjects and the current hostile target/facing policy. Every child is a persistent
+Enemy with exact owner, source ability/execution, generation, bounty, Siege, and target metadata. Team and noun
+identity remain independent from physical/interaction layers.
+
+The table and verb sections below remain the full design contract. Player Tower payload creation—including
+`Enemies shoot The Tower`—and Throw/Emit/Summon/Merge actor execution are not implemented in R3.
+
 ## 1. Required gameplay metadata
 
 Collision capability and gameplay allegiance are different dimensions.
@@ -152,6 +162,10 @@ which collision/interaction pairs are suppressed
 ```
 
 It must not make the actor globally invulnerable or untargetable unless the content says so.
+
+The current Enemy payload uses a data-owned positive `surfaceGap` at materialization and does not add a general
+invulnerability window. A future payload that still needs pair grace must implement the exact narrow contract
+above rather than broad collision or damage immunity.
 
 ## 9. Damage snapshot
 

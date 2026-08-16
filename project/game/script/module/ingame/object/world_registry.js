@@ -346,6 +346,62 @@ export class WorldRegistry {
         return true;
     }
 
+    /**
+     * 동일 actor payload execution의 reservation 전체를 0-or-N으로 활성화합니다.
+     * 모든 exact identity와 flat metadata를 먼저 snapshot하므로 변이 loop은
+     * 예외 없이 전체 성공합니다.
+     */
+    activateReservedBatch(entries) {
+        this.#assertUsable();
+        if (!Array.isArray(entries) || entries.length === 0) {
+            throw new TypeError('reserved activation batch는 비어 있지 않은 배열이어야 합니다.');
+        }
+        const keys = new Set();
+        const staged = entries.map((entry, index) => {
+            const exact = normalizeHandle(
+                entry?.handle,
+                `entries[${index}].handle`
+            );
+            const key = `${exact.entityId}:${exact.incarnation}`;
+            if (keys.has(key)) {
+                throw new RangeError('reserved activation batch handle이 중복됩니다.');
+            }
+            keys.add(key);
+            const record = this.#findExactRecord(exact, 'handle');
+            if (!record || record.state !== 'reserved') {
+                return null;
+            }
+            return Object.freeze({
+                record,
+                metadata: normalizeMetadata(entry?.metadata ?? null)
+            });
+        });
+        if (staged.some((entry) => entry === null)) {
+            return Object.freeze({
+                accepted: false,
+                activatedCount: 0,
+                reason: 'stale-reservation'
+            });
+        }
+        for (const { record, metadata } of staged) {
+            record.metadata = metadata;
+            record.metadataRevision = 1;
+            record.state = 'active';
+            this.activeCountByKind.set(
+                record.kindId,
+                (this.activeCountByKind.get(record.kindId) ?? 0) + 1
+            );
+        }
+        this.reservedCount -= staged.length;
+        this.activeCount += staged.length;
+        this.revision++;
+        return Object.freeze({
+            accepted: true,
+            activatedCount: staged.length,
+            handles: Object.freeze(staged.map(({ record }) => record.handle))
+        });
+    }
+
     /** backend가 spawn batch를 거부했을 때 보이지 않던 예약을 취소합니다. */
     cancelReservation(handle) {
         this.#assertUsable();
