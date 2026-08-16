@@ -148,15 +148,16 @@ render-frame cadence never owns gameplay movement.
 
 Diamond M's selected-target spawn is bound to the same source/tick/selection fingerprint as its GPU control.
 The Core branch emits typed CPU Core damage and never mutates fictitious GPU Core HP. The Tower branch must
-match the exact selected Tower before consuming projectile budget, then applies the immutable launch-time
-damage once as a direct event. It does not compete with the continuous-contact Maximum Damage Window; a
+match the exact selected Tower before consuming projectile budget, then contributes the immutable launch-time
+damage snapshot to the common final-candidate path. Contact, Arrow charge, Archer projectile, and M projectile
+candidates first select one same-Tower/same-tick maximum and then use the same Maximum Damage Window. A
 wrong/stale Tower is a rejected hit and consumes nothing.
 
 Once a Tower-selected M projectile has resolved as a live body, its exact target identity, hit budget, and
 attack damage are launch-time projectile authority. Later death/despawn of the source M removes only that
 source and cancels only unresolved source work; it must not revoke, retarget, or zero an already launched
-projectile. A later exact Tower hit therefore still applies its snapshotted damage through the direct Tower HP
-path even if another source currently owns an active Maximum Damage Window.
+projectile. A later exact Tower hit therefore still competes using its snapshotted damage even if another source
+currently owns an active Maximum Damage Window; it never bypasses that window.
 
 ### Octagon O orbit and directional defense
 
@@ -204,11 +205,12 @@ basic movement/attack program. Effect and current Formation state are independen
 The endpoint owns one bounded generic Effect command owner, while `GameObjectSystem` owns one
 `PentagonEffectDirector` with an exact-handle primitive SoA roster and no per-P/per-effect JavaScript objects.
 The GPU owns double-buffered A/B Effect-instance pools, one per-body Effect Summary, and one per-body PEmitter
-state. Every P pulse due at the same `targetFixedTick` is staged in one deterministic whole-tick batch; every
-preflight is zero-partial. A valid pulse with no eligible target still completes and advances that source's
-cadence. Authentic `CAPACITY_REJECTED` caused only by candidate/instance/event or pulse-grid capacity is a
-normal completion: protocol watermark advances, but sequence/cadence and HP/Summary/events do not, and the
-logical pulse retries deterministically. ABI/record/program-capacity/instance-ID or mixed evidence is recovery.
+state. Every P pulse due at the same `targetFixedTick` is staged in one deterministic ordered command; every
+preflight and commit is atomic per pulse, not for the whole due set. Each pulse completes as `APPLIED`,
+`ZERO_TARGET`, `SOURCE_INVALID`, or `DEFERRED_CAPACITY`. A deferred pulse applies no subset of its targets,
+consumes no sequence/cadence, keeps `recovery=false`, and retries with the same logical sequence. Deterministic
+rotating admission moves the retry start so a persistently capacity-constrained source cannot starve. ABI/
+record/program-capacity/instance-ID or mixed evidence is recovery.
 
 Effect lifetime is half-open: an instance is active only while
 `appliedTick <= fixedTick < expiresAtTick`; it is expired at `fixedTick >= expiresAtTick`. Independent Boost
@@ -225,11 +227,11 @@ reachable route stage is allowed, and reverse or unreachable movement fails clos
 used. The Effect contract/catalog can describe Poison, Burn, and Freeze, but Turn 3 creates no empty production
 runtime class for those future families.
 
-Effect damage integration always starts from immutable base data. Contact-handler damage is recomputed from
-the authored/resolved base each fixed tick, and projectile damage is snapshotted once at spawn; neither path
-feeds a previously multiplied value back into the next tick. P's current Boost may modify Tower contact and
-Tower projectile damage only through the explicit channel flags. Direct Core impact and typed projectile Core
-damage remain unmodified.
+Effect damage integration always starts from immutable base data. Contact/direct damage is recomputed from the
+authored/resolved base each fixed tick, and projectile damage is snapshotted once at spawn; neither path feeds a
+previously multiplied value back into the next tick. `Attack` and P Boost attack multiplication cover all four
+hostile channels: contact→Tower, projectile→Tower, direct impact→Core, and projectile→Core. A narrower exception
+must use a separately named data flag rather than changing the meaning of `Attack`.
 
 Effect target nouns come from interaction metadata and Team, never from the current physical `bodyLayer`.
 Consequently a Cork Z in `BLOCKING` remains a hostile Enemy eligible for P Boost even though its solver role is
@@ -248,8 +250,9 @@ the privileged lifecycle/opaque single-use registry transaction; the one authent
 one destination spawn and both source despawns. Death/Core cleanup wins before publication.
 
 Current/max signed-int32 centi-HP each merge as `sum + trunc(sum / 10)` after complete overflow/alive/current≤max
-preflight. Absolute n-table stats apply from natural n1 through HX: only Tower-contact attack changes, Core
-impact stays 1, and bounty budgets are `[1,2,4,6,8,10]`. Map/wave modifiers for H/HX are rejected. Every active
+preflight. Absolute n-table stats apply from natural n1 through HX. Tower-contact damage is
+`[0.1,0.12,0.144,0.1728,0.20736,0.248832]`, while direct Core-impact Attack scaling is
+`[1,1.2,1.44,1.728,2.0736,2.48832]`; bounty budgets are `[1,2,4,6,8,10]`. Map/wave modifiers for H/HX are rejected. Every active
 half-open Effect instance is independently rekeyed to the destination with exact ID/provenance/ticks preserved;
 no aggregate, refresh, or silent loss is allowed.
 
@@ -477,12 +480,12 @@ wins independently of GPU append order; an equal maximum chooses source entityId
 ascending. If the first accepted tick is `N`, `expiresAtFixedTick = N + 60`; `T < expiresAtFixedTick` is
 active and `T >= expiresAtFixedTick` is expired. During an active window, damage at or below the stored peak
 applies zero without changing expiry, while a larger value applies only `D - peak`, updates the peak, and
-updates winning provenance without extending the original `N + 60` expiry. `DAMAGE_APPLIED.value` is the
+updates winning provenance while resetting expiry to that tick plus 60. `DAMAGE_APPLIED.value` is the
 actual Tower HP decrement, never the unclamped source maximum.
 
-A valid ordinary projectile contact consumes penetration/self-hit budget even when this window reduces applied
-HP damage to zero. An authenticated selected-target M Tower projectile is a discrete direct-damage channel and
-is not reduced by this window. A rejected friendly-fire, stale/invalid-target, miss, capture, or reflect contact
+A valid projectile contact consumes penetration/self-hit budget even when this window reduces applied HP
+damage to zero. An authenticated selected-target M Tower projectile retains its launch snapshot but enters this
+same window. A rejected friendly-fire, stale/invalid-target, miss, capture, or reflect contact
 consumes no budget. Enemy overlap remains a valid continuous candidate every fixed tick; separation is not the
 rearm rule.
 

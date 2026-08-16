@@ -65,7 +65,7 @@ test('manual launcher는 production WebGPU platform ready 뒤에만 GameScene을
     );
     assert.match(
         source,
-        /import \{ getWebGpuPlatformPort \} from 'display\/display_system\.js'/
+        /import \{[\s\S]*getWebGpuPlatformPort[\s\S]*\} from 'display\/display_system\.js'/
     );
     const waitStart = source.indexOf('\nfunction waitForGame() {');
     const requireWaveStart = source.indexOf('\nfunction requireWaveNumber', waitStart);
@@ -168,6 +168,17 @@ test('visible controls는 SendInput click, pause epoch, camera, bounded evidence
     assert.match(source, /status\.fixedTick > 0/);
     assert.match(source, /status\.endpoint\.runtimeState === 'gpu-ready'/);
     assert.match(source, /showcase-gpu-ready/);
+    assert.match(source, /performanceTelemetry: Object\.freeze/);
+    assert.match(source, /bodyHighWater/);
+    assert.match(source, /projectileHighWater/);
+    assert.match(source, /contactHighWater/);
+    assert.match(source, /effectHighWater/);
+    assert.match(source, /totalOverflowCount/);
+    assert.match(source, /unexpectedCapacityOverflowCount/);
+    assert.match(source, /requiredStorageBuffersPerShaderStage/);
+    assert.match(source, /getWebGpuFrameTelemetryPort/);
+    assert.match(source, /frameComposerTelemetry/);
+    assert.match(source, /uncapturedErrorCount/);
     assert.match(source, /button\.id !== 'r2-manual-safe-exit'/);
     assert.match(source, /elapsed=\$\{\(status\.fixedTick \/ 60\)\.toFixed\(1\)\}s/);
     assert.match(source, /const ACTION_HISTORY_CAPACITY = 12/);
@@ -268,11 +279,20 @@ test('runner는 project package root가 아닌 isolated runtime/app만 spawn한�
     assert.match(source, /child = spawn\(executablePath, \[/);
     assert.match(source, /appDirectory\n        \], \{/);
     assert.match(source, /cwd: runDirectory/);
+    assert.match(source, /--disable-background-timer-throttling/);
+    assert.match(source, /--disable-backgrounding-occluded-windows/);
+    assert.match(source, /--disable-renderer-backgrounding/);
     assert.match(source, /production package root 직접 실행은 manual harness에서 금지/);
     assert.doesNotMatch(source, /spawn\(config\.sourceExecutablePath/);
     assert.doesNotMatch(source, /cwd: config\.gameDirectory|cwd: config\.projectDirectory/);
     assert.match(source, /NW manual showcase exit:/);
     assert.match(source, /Removed isolated manual showcase run directory:/);
+    assert.match(source, /createPerformanceReceiptIdentity\(/);
+    assert.match(source, /rev-parse', 'HEAD\^\{tree\}'/);
+    assert.match(source, /worktreeContentKey/);
+    assert.match(source, /mapContentKey/);
+    assert.match(source, /waveContentKey/);
+    assert.match(source, /CIRVIVOR_R2_SHOWCASE_RECEIPT_IDENTITY/);
 });
 
 test('production map registry와 menu/SceneSystem에는 manual showcase route가 추가되지 않는다', async () => {

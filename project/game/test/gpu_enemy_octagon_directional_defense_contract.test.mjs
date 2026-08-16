@@ -94,6 +94,7 @@ test('program3 raw SEEK 80-byte overlay와 O data는 facing/slot/reduction exact
         EXPIRES_AT_FIXED_TICK: 12,
         PEAK_SOURCE_ENTITY_ID: 16,
         PEAK_SOURCE_INCARNATION: 20,
+        DIRECT_CORE_DAMAGE_FIXED_POINT: 24,
         RESERVED_0: 24,
         RESERVED_1: 28,
         RESERVED_2: 32,

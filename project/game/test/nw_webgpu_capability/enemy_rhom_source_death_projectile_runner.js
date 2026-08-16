@@ -48,12 +48,13 @@ const WINDOW_PRIME_SPAWN_TICK = SOURCE_DEATH_TICK + 1;
 const WINDOW_PRIME_PUBLICATION_TICK = WINDOW_PRIME_SPAWN_TICK + 1;
 const FIRST_PROJECTILE_TICK = WINDOW_PRIME_PUBLICATION_TICK + 1;
 const LAST_PROJECTILE_TICK = 48;
+const WINDOW_PRIME_DAMAGE = 1;
 const WINDOW_PRIME_PROJECTILE_DATA = Object.freeze({
     id: 'nw-rhom-maximum-window-prime-projectile',
     collisionRadius: HOSTILE_RHOM_PROJECTILE_DATA.collisionRadius,
     inverseMass: 1,
     penetration: 1,
-    damage: HOSTILE_RHOM_PROJECTILE_DATA.damage,
+    damage: WINDOW_PRIME_DAMAGE,
     damageSelf: 1,
     lifetimeSeconds: 1,
     killOnTerrain: false,
@@ -418,6 +419,9 @@ async function runRhomSourceDeathProjectileFixture(device) {
     );
     const targetDamage = HOSTILE_RHOM_PROJECTILE_DATA.damage;
     const targetDamageFixedPoint = Math.round(targetDamage * 100);
+    const windowPrimeDamageFixedPoint = Math.round(WINDOW_PRIME_DAMAGE * 100);
+    const expectedWindowDelta = targetDamage - WINDOW_PRIME_DAMAGE;
+    const expectedWindowDeltaFixedPoint = Math.round(expectedWindowDelta * 100);
     let sourceHandle = null;
     let coreHandle = null;
     let targetTowerHandle = null;
@@ -844,12 +848,12 @@ async function runRhomSourceDeathProjectileFixture(device) {
             + THE_TOWER_COMBAT_DATA.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS;
         assertNear(
             targetAfterWindowPrime.health,
-            THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
+            THE_TOWER_COMBAT_DATA.MAX_HEALTH - WINDOW_PRIME_DAMAGE,
             0.000001,
             'Tower HP after Maximum Damage Window prime'
         );
         assert(targetAfterWindowPrime.combatState?.peakFinalDamageFixedPoint
-                === targetDamageFixedPoint
+                === windowPrimeDamageFixedPoint
             && targetAfterWindowPrime.combatState?.expiresAtFixedTick
                 === expectedWindowExpiry
             && targetAfterWindowPrime.combatState?.peakSourceEntityId
@@ -895,8 +899,8 @@ async function runRhomSourceDeathProjectileFixture(device) {
             (event) => exactHandle(event, windowPrimeProjectileHandle)
         );
         assert(windowPrimeDamageEvent
-            && windowPrimeDamageEvent.damageFixedPoint === targetDamageFixedPoint
-            && windowPrimeDamageEvent.valueFixedPoint === targetDamageFixedPoint
+            && windowPrimeDamageEvent.damageFixedPoint === windowPrimeDamageFixedPoint
+            && windowPrimeDamageEvent.valueFixedPoint === windowPrimeDamageFixedPoint
             && windowPrimeDamageEvent.maximumDamageWindow === true
             && windowPrimeDamageEvent.sourceTick === WINDOW_PRIME_SPAWN_TICK
             && windowPrimeDeath,
@@ -931,7 +935,7 @@ async function runRhomSourceDeathProjectileFixture(device) {
             'primed target Tower before Rhom impact'
         );
         assert(primedTargetBeforeRhomImpact.health
-                === THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage
+                === THE_TOWER_COMBAT_DATA.MAX_HEALTH - WINDOW_PRIME_DAMAGE
             && primedTargetBeforeRhomImpact.combatState?.peakFinalDamageFixedPoint
                 === windowPrimeState.peakFinalDamageFixedPoint
             && primedTargetBeforeRhomImpact.combatState?.expiresAtFixedTick
@@ -980,28 +984,33 @@ async function runRhomSourceDeathProjectileFixture(device) {
                     'Core at projectile impact'
                 );
                 assertNear(targetAfterImpact.health,
-                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - (targetDamage * 2),
+                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
                     0.000001,
                     'Tower HP after source-dead Rhom projectile');
                 assertNear(wrongAfterImpact.health,
                     THE_TOWER_COMBAT_DATA.MAX_HEALTH,
                     0.000001,
                     'wrong Tower HP after source-dead Rhom projectile');
+                const expectedImpactWindowExpiry = projectileTowerHit.sourceTick
+                    + THE_TOWER_COMBAT_DATA.MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS;
                 assert(coreAfterImpact.health === initialCore.health
-                    && projectileTowerHit.damageFixedPoint === targetDamageFixedPoint
-                    && projectileTowerHit.valueFixedPoint === targetDamageFixedPoint
-                    && projectileTowerHit.maximumDamageWindow === false
-                    && projectileTowerHit.damage === targetDamage
+                    && projectileTowerHit.damageFixedPoint
+                        === expectedWindowDeltaFixedPoint
+                    && projectileTowerHit.valueFixedPoint
+                        === expectedWindowDeltaFixedPoint
+                    && projectileTowerHit.maximumDamageWindow === true
+                    && projectileTowerHit.damage === expectedWindowDelta
                     && targetAfterImpact.combatState?.peakFinalDamageFixedPoint
-                        === windowPrimeState.peakFinalDamageFixedPoint
+                        === targetDamageFixedPoint
                     && targetAfterImpact.combatState?.expiresAtFixedTick
-                        === windowPrimeState.expiresAtFixedTick
+                        === expectedImpactWindowExpiry
                     && targetAfterImpact.combatState?.peakSourceEntityId
-                        === windowPrimeState.peakSourceEntityId
+                        === projectileHandle.entityId
                     && targetAfterImpact.combatState?.peakSourceIncarnation
-                        === windowPrimeState.peakSourceIncarnation
+                        === projectileHandle.incarnation
                     && projectileTowerHit.sourceTick
                         < windowPrimeState.expiresAtFixedTick
+                    && expectedImpactWindowExpiry > windowPrimeState.expiresAtFixedTick
                     && !containsBody(lastBodies, projectileHandle),
                 `source-dead Rhom projectile Tower impact mismatch: ${JSON.stringify({
                     projectileTowerHit,
@@ -1044,7 +1053,7 @@ async function runRhomSourceDeathProjectileFixture(device) {
                     'Core after projectile terminal cleanup'
                 );
                 assertNear(finalTarget.health,
-                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - (targetDamage * 2),
+                    THE_TOWER_COMBAT_DATA.MAX_HEALTH - targetDamage,
                     0.000001,
                     'Tower HP after projectile terminal cleanup');
                 assertNear(finalWrong.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH,
@@ -1196,8 +1205,11 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 wrongTowerUnchanged: true,
                 noSourceRevalidation: true,
                 projectileDamageFixedPoint: targetDamageFixedPoint,
-                maximumDamageWindow: false,
-                directDiscreteDamage: true,
+                appliedDamageFixedPoint:
+                    impactBoundary.projectileTowerHit.damageFixedPoint,
+                maximumDamageWindow: true,
+                directDiscreteDamage: false,
+                commonMaximumDamageWindow: true,
                 windowActiveBeforeImpact:
                     impactBoundary.projectileTowerHit.sourceTick
                         < windowPrimeState.expiresAtFixedTick,
@@ -1208,15 +1220,18 @@ async function runRhomSourceDeathProjectileFixture(device) {
                 windowExpiryBeforeImpact: windowPrimeState.expiresAtFixedTick,
                 windowExpiryAfterImpact:
                     targetAfterImpact.combatState.expiresAtFixedTick,
-                windowStatePreserved:
+                windowStatePreserved: false,
+                windowStateReset:
                     targetAfterImpact.combatState.peakFinalDamageFixedPoint
-                        === windowPrimeState.peakFinalDamageFixedPoint
+                        === targetDamageFixedPoint
                     && targetAfterImpact.combatState.expiresAtFixedTick
-                        === windowPrimeState.expiresAtFixedTick
+                        === impactBoundary.projectileTowerHit.sourceTick
+                            + THE_TOWER_COMBAT_DATA
+                                .MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS
                     && targetAfterImpact.combatState.peakSourceEntityId
-                        === windowPrimeState.peakSourceEntityId
+                        === projectileHandle.entityId
                     && targetAfterImpact.combatState.peakSourceIncarnation
-                        === windowPrimeState.peakSourceIncarnation,
+                        === projectileHandle.incarnation,
                 projectileSelfBudgetBefore: HOSTILE_RHOM_PROJECTILE_DATA.penetration,
                 projectileDeath: Object.freeze({
                     reason: projectileDeath.reason,

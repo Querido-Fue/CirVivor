@@ -70,7 +70,7 @@ test('Penta pulse는 body를 생성하지 않는 병렬 virtual-projectile grid 
     assert.doesNotMatch(sensorBlock, /contact_handlers|damage_self|damage_other|lifetime/);
 });
 
-test('Penta sensor 후보는 pulse/target 결정 순서와 whole-batch gate를 유지한다', () => {
+test('Penta sensor 후보는 결정 순서와 pulse-atomic capacity admission을 유지한다', () => {
     const prefixBlock = sourceBetween(
         GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
         'fn prefix_effect_pulse_candidates(',
@@ -82,8 +82,11 @@ test('Penta sensor 후보는 pulse/target 결정 순서와 whole-batch gate를 �
         'fn write_effect_event('
     );
     assert.match(prefixBlock, /applied_count = candidate_cursor/);
-    assert.match(prefixBlock, /candidate_cursor \+= record\.candidate_count/);
-    assert.match(prefixBlock, /EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED/);
+    assert.match(prefixBlock, /candidate_cursor \+= candidate_need/);
+    assert.match(prefixBlock,
+        /rotation_start = params\.fixed_tick % safe_program_count[\s\S]*?EFFECT_RESULT_DEFERRED_CAPACITY[\s\S]*?applied_count = 0u[\s\S]*?continue;/);
+    assert.match(prefixBlock,
+        /candidate_fits[\s\S]*?instance_fits[\s\S]*?event_fits/);
     assert.match(writeBlock, /materialize_effect_pulse_sensor_hits/);
     assert.match(writeBlock, /written_count != record\.candidate_count/);
 
@@ -98,7 +101,7 @@ test('Penta sensor 후보는 pulse/target 결정 순서와 whole-batch gate를 �
     );
     assert.match(
         materializeBlock,
-        /EFFECT_RESULT_CAPACITY_REJECTED[\s\S]*?candidate_count, 0u[\s\S]*?event_count, 0u/
+        /result == EFFECT_RESULT_PENDING[\s\S]*?admitted_pulse_count \+= 1u[\s\S]*?current_result != EFFECT_RESULT_PENDING[\s\S]*?continue;/
     );
 
     const dispatchBlock = sourceBetween(

@@ -22,6 +22,22 @@ const {
     'data/object/projectile/hostile_rhom_projectile_data.js'
 );
 const {
+    BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT,
+    resolveBasicHexaFormationStats
+} = await loadGameModule('data/object/enemy/basic_hexa_enemy_data.js');
+const {
+    PENTA_BOOST_EFFECT_DEFINITION
+} = await loadGameModule('data/object/enemy/enemy_effect_catalog_data.js');
+const {
+    ENEMY_CAPABILITY_ID,
+    createEnemyCapabilityMask
+} = await loadGameModule(
+    'ingame/contract/enemy_capability_contract.js'
+);
+const {
+    encodeGpuCircleBodyFixedPoint
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
+const {
     GAMEPLAY_ALLEGIANCE_POLICY,
     GAMEPLAY_DAMAGE_POLICY_ID,
     GAMEPLAY_TEAM_ID
@@ -97,7 +113,7 @@ function createProjectileMetadata(spawnSequence, overrides = {}) {
     });
 }
 
-function createRegistry(projectiles) {
+function createRegistry(projectiles, enemies = []) {
     const records = new Map();
     records.set(handleKey(CORE_HANDLE), Object.freeze({
         ...CORE_HANDLE,
@@ -114,6 +130,15 @@ function createRegistry(projectiles) {
             metadata: projectile.metadata
         }));
     }
+    for (const enemy of enemies) {
+        records.set(handleKey(enemy.handle), Object.freeze({
+            ...enemy.handle,
+            kindId: 'enemy',
+            definitionId: enemy.definitionId,
+            createdAtTick: 11,
+            metadata: enemy.metadata
+        }));
+    }
     // SOURCE_HANDLE은 의도적으로 등록하지 않습니다. Projectile source Enemy의
     // active liveness는 committed Core request 인증 조건이 아닙니다.
     return Object.freeze({
@@ -125,6 +150,43 @@ function createRegistry(projectiles) {
             Object.assign(out, record);
             return out;
         }
+    });
+}
+
+function boostedFixedPoint(baseFixedPoint) {
+    return Math.trunc(Math.fround(
+        Math.fround(baseFixedPoint)
+            * Math.fround(PENTA_BOOST_EFFECT_DEFINITION.attackMultiplier)
+    ));
+}
+
+function createHexaEnemyRecord(memberCount, handle) {
+    const stats = resolveBasicHexaFormationStats(memberCount);
+    return Object.freeze({
+        handle,
+        definitionId: memberCount === 6
+            ? 'basic_hexa_hive_01'
+            : memberCount === 1
+                ? 'basic_hexa_01'
+                : 'basic_hexa_group_01',
+        metadata: Object.freeze({
+            definitionId: memberCount === 6
+                ? 'basic_hexa_hive_01'
+                : memberCount === 1
+                    ? 'basic_hexa_01'
+                    : 'basic_hexa_group_01',
+            capabilityMask: createEnemyCapabilityMask([
+                ENEMY_CAPABILITY_ID.CORE_IMPACT
+            ]),
+            teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+            coreImpactDamage: stats.coreImpactDamage,
+            bountyBudget: stats.bountyBudget,
+            physicsProfileId: 'main-gpu-enemy-physics-01',
+            combatProfileId: 'main-gpu-enemy-combat-01',
+            behaviorProfileId: memberCount === 6
+                ? 'hexa-keep-formation-01'
+                : 'hexa-seek-formation-01'
+        })
     });
 }
 
@@ -219,6 +281,79 @@ test('typed Core damage request는 append 순서와 source liveness에 무관하
     assert.equal(status.coreDamageRequestAppliedCount, 2);
     assert.equal(status.dedupedCount, 1);
     assert.equal(status.recoveryRequired, false);
+});
+
+test('typed projectile Core damage는 authored base와 P Boost snapshot만 인증한다', () => {
+    const projectile = Object.freeze({ entityId: 52, incarnation: 4 });
+    const baseFixedPoint = encodeGpuCircleBodyFixedPoint(
+        HOSTILE_RHOM_PROJECTILE_DATA.coreDamage
+    );
+    const boosted = boostedFixedPoint(baseFixedPoint);
+    assert.equal(baseFixedPoint, 500);
+    assert.equal(boosted, 625);
+
+    for (const valueFixedPoint of [baseFixedPoint, boosted]) {
+        const core = new CoreIntegrity({ maxIntegrity: 10 });
+        const director = new EnemyCoreImpactDirector({
+            coreIntegrity: core,
+            endpoint: createEndpoint()
+        });
+        const observed = director.observeCompletedEvents(snapshot([
+            coreDamageRequest(projectile, { valueFixedPoint })
+        ]), createRegistry([{
+            handle: projectile,
+            metadata: createProjectileMetadata(0)
+        }]));
+        const request = observed.facts.find(
+            ({ type }) => type === CORE_IMPACT_FACT_TYPE.DAMAGE_REQUEST
+        );
+        assert.ok(request);
+        assert.equal(request.requestedDamageFixedPoint, valueFixedPoint);
+        assert.equal(request.requestedDamage, valueFixedPoint / 100);
+        assert.equal(core.getCurrentIntegrity(), 10 - valueFixedPoint / 100);
+        assert.equal(observed.recoveryRequired, false);
+    }
+});
+
+test('H/HX n=1..6 direct Core damage는 승인된 기하급수 base와 P Boost 값을 적용한다', () => {
+    assert.deepEqual(
+        BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT.slice(1).map(
+            ({ coreImpactDamage }) => coreImpactDamage
+        ),
+        [1, 1.2, 1.44, 1.728, 2.0736, 2.48832]
+    );
+    for (let memberCount = 1; memberCount <= 6; memberCount++) {
+        const enemyHandle = Object.freeze({
+            entityId: 600 + memberCount,
+            incarnation: memberCount
+        });
+        const enemyRecord = createHexaEnemyRecord(memberCount, enemyHandle);
+        const baseFixedPoint = encodeGpuCircleBodyFixedPoint(
+            enemyRecord.metadata.coreImpactDamage
+        );
+        for (const valueFixedPoint of [
+            baseFixedPoint,
+            boostedFixedPoint(baseFixedPoint)
+        ]) {
+            const core = new CoreIntegrity({ maxIntegrity: 20 });
+            const director = new EnemyCoreImpactDirector({
+                coreIntegrity: core,
+                endpoint: createEndpoint()
+            });
+            const observed = director.observeCompletedEvents(snapshot([
+                coreDamageRequest(enemyHandle, { valueFixedPoint })
+            ]), createRegistry([], [enemyRecord]));
+            const impact = observed.facts.find(
+                ({ type }) => type === CORE_IMPACT_FACT_TYPE.IMPACT
+            );
+            assert.ok(impact, `n=${memberCount}, damage=${valueFixedPoint}`);
+            assert.equal(impact.coreImpactDamage, valueFixedPoint / 100);
+            assert.equal(impact.appliedDamage, valueFixedPoint / 100);
+            assert.equal(core.getCurrentIntegrity(), 20 - valueFixedPoint / 100);
+            assert.equal(observed.pendingCleanupCount, 1);
+            assert.equal(observed.recoveryRequired, false);
+        }
+    }
 });
 
 test('cleanup 뒤 applied Core request direct replay는 dedupe보다 exact liveness를 먼저 검증한다', () => {

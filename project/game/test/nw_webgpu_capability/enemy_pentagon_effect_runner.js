@@ -56,7 +56,9 @@ const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
 const HARDWARE_FIXED_SUBMIT_SETTLE_INTERVAL_TICKS = 16;
 const REQUIRED_EFFECT_FLAGS = GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
     | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE;
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_CORE_DAMAGE_MODIFIABLE;
 
 function assert(condition, message) {
     if (!condition) {
@@ -517,9 +519,9 @@ async function runPentagonEffectFixture(device, format) {
             && (overlappingLeft.flags
                 & GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_TOWER) !== 0
             && (overlappingLeft.flags
-                & GPU_EFFECT_DAMAGE_CHANNEL_FLAG.DIRECT_CORE_IMPACT) === 0
+                & GPU_EFFECT_DAMAGE_CHANNEL_FLAG.DIRECT_CORE_IMPACT) !== 0
             && (overlappingLeft.flags
-                & GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_CORE) === 0,
+                & GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_CORE) !== 0,
         'Effect Tower/Core damage-channel summary mismatch'
     );
     assert(overlappingPlanes.emitter(0).lastRetargetTick === 1,
@@ -669,19 +671,24 @@ async function runEffectCapacityAtomicityFixture(device, format, kind) {
     assert(staged.accepted, `Effect ${kind} one-short stage failed`);
     assert(backend.fixedUpdate(1 / 60, 1), `Effect ${kind} one-short submit failed`);
     const completion = await waitForEffectCompletion(backend, device);
-    const expectedStatus = kind === 'instance'
-        ? GPU_EFFECT_RUNTIME_STATUS.INSTANCE_CAPACITY_EXCEEDED
-        : GPU_EFFECT_RUNTIME_STATUS.EVENT_CAPACITY_EXCEEDED;
-    assert((completion.status & expectedStatus) !== 0,
-        `Effect ${kind} capacity status mismatch: ${completion.status}`);
+    assert(completion.status === GPU_EFFECT_RUNTIME_STATUS.OK,
+        `Effect ${kind} capacity entered recovery status: ${completion.status}`);
     assert(completion.appliedInstanceCount === 0 && completion.eventCount === 0,
         `Effect ${kind} capacity was partially applied`);
     assert(
         completion.pulseResults[0].resultCode
-            === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
+            === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
         `Effect ${kind} capacity result mismatch`
     );
+    assert(completion.pulseResults[0].candidateCount === 2
+        && completion.pulseResults[0].appliedCount === 0
+        && completion.candidateCount === 0
+        && completion.deferredPulseCount === 1,
+    `Effect ${kind} deferred candidate provenance mismatch`);
     const status = backend.getEffectRuntimeStatus();
+    assert(status.requiresRecovery === false
+        && status.lastDeferredPulseCount === 1,
+    `Effect ${kind} defer unexpectedly required recovery`);
     backend.destroy();
     return Object.freeze({
         kind,
@@ -689,8 +696,159 @@ async function runEffectCapacityAtomicityFixture(device, format, kind) {
         candidateCount: completion.candidateCount,
         appliedInstanceCount: completion.appliedInstanceCount,
         eventCount: completion.eventCount,
+        deferredPulseCount: completion.deferredPulseCount,
+        rawCandidateCount: completion.pulseResults[0].candidateCount,
+        requiresRecovery: status.requiresRecovery,
         pendingPulseProgramCount: status.pendingPulseProgramCount,
         pendingEffectReadbackCount: status.pendingEffectReadbackCount
+    });
+}
+
+async function runEffectCapacityProgressFixture(device, format) {
+    const tileMap = createTileMap();
+    const route = tileMap.getSpawnRoutes()[0];
+    const backend = new EnemySimulationBackend({
+        webGpuPlatformPort: createPlatformPort(device, format)
+    }, {
+        capacity: 4,
+        effectCommandCapacity: 2,
+        effectInstanceCapacity: 6,
+        effectCandidateCapacity: 3,
+        effectEventCapacity: 4,
+        sessionGeneration: 42
+    });
+    backend.init(tileMap);
+    const originIntent = createGpuEnemySpawnIntent({
+        definition: BASIC_PENTA_ENEMY_DATA,
+        route,
+        spawnSequence: 0
+    });
+    const origin = originIntent.position;
+    const sources = [0, 1].map((index) => withIdentity(
+        createGpuEnemySpawnIntent({
+            definition: BASIC_PENTA_ENEMY_DATA,
+            route,
+            spawnSequence: index
+        }),
+        421 + index,
+        1,
+        {
+            contactHandler: null,
+            position: Object.freeze({ x: origin.x, y: origin.y }),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            flowSpeed: 0,
+            maxSpeed: 0
+        }
+    ));
+    const targets = [0, 1].map((index) => withIdentity(
+        createGpuEnemySpawnIntent({
+            definition: BASIC_SQUARE_ENEMY_DATA,
+            route,
+            spawnSequence: index + 2
+        }),
+        423 + index,
+        1,
+        {
+            contactHandler: null,
+            position: Object.freeze({ x: origin.x, y: origin.y }),
+            velocity: Object.freeze({ x: 0, y: 0 }),
+            flowSpeed: 0,
+            maxSpeed: 0
+        }
+    ));
+    assert(backend.replaceBodies([...sources, ...targets]).accepted === 4,
+        'Effect mixed-capacity replacement failed');
+
+    const firstStage = backend.stageEffectPulseProgramBatch({
+        abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+        batchIdFingerprint: 0x420001,
+        sourceTick: 1,
+        records: sources.map((source, index) => createPulseRecord(
+            source,
+            1,
+            0,
+            0x420101 + index,
+            REQUIRED_EFFECT_FLAGS
+        ))
+    });
+    assert(firstStage.accepted && firstStage.stagedCount === 2,
+        'Effect mixed-capacity first stage failed');
+    assert(backend.fixedUpdate(1 / 60, 1),
+        'Effect mixed-capacity first submit failed');
+    const first = await waitForEffectCompletion(backend, device);
+    assert(first.status === GPU_EFFECT_RUNTIME_STATUS.OK
+        && first.candidateCount === 3
+        && first.appliedInstanceCount === 3
+        && first.eventCount === 4
+        && first.deferredPulseCount === 1,
+    `Effect mixed-capacity first aggregate mismatch: ${JSON.stringify(first)}`);
+    assert(first.pulseResults[0].resultCode
+            === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
+        && first.pulseResults[0].candidateCount === 3
+        && first.pulseResults[0].appliedCount === 0
+        && first.pulseResults[1].resultCode
+            === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+        && first.pulseResults[1].candidateCount === 3
+        && first.pulseResults[1].appliedCount === 3,
+    `Effect mixed-capacity deterministic rotation mismatch: ${JSON.stringify(first.pulseResults)}`);
+    const firstStatus = backend.getEffectRuntimeStatus();
+    assert(firstStatus.requiresRecovery === false
+        && firstStatus.lastDeferredPulseCount === 1,
+    'Effect mixed-capacity first tick entered recovery');
+
+    const retryStage = backend.stageEffectPulseProgramBatch({
+        abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+        batchIdFingerprint: 0x420002,
+        sourceTick: 2,
+        records: [createPulseRecord(
+            sources[0],
+            2,
+            0,
+            0x420201,
+            REQUIRED_EFFECT_FLAGS
+        )]
+    });
+    assert(retryStage.accepted && retryStage.stagedCount === 1,
+        'Effect mixed-capacity retry stage failed');
+    assert(backend.fixedUpdate(1 / 60, 2),
+        'Effect mixed-capacity retry submit failed');
+    const retry = await waitForEffectCompletion(backend, device);
+    assert(retry.status === GPU_EFFECT_RUNTIME_STATUS.OK
+        && retry.pulseResults[0].pulseSequence === 0
+        && retry.pulseResults[0].resultCode
+            === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+        && retry.pulseResults[0].candidateCount === 3
+        && retry.pulseResults[0].appliedCount === 3
+        && retry.deferredPulseCount === 0,
+    `Effect mixed-capacity retry did not progress: ${JSON.stringify(retry)}`);
+    const retryStatus = backend.getEffectRuntimeStatus();
+    assert(retryStatus.requiresRecovery === false
+        && retryStatus.candidateCountHighWater === 3
+        && retryStatus.instanceCountHighWater === 6
+        && retryStatus.eventCountHighWater === 4,
+    `Effect mixed-capacity telemetry mismatch: ${JSON.stringify(retryStatus)}`);
+    backend.destroy();
+    return Object.freeze({
+        firstTick: Object.freeze({
+            results: first.pulseResults,
+            candidateCount: first.candidateCount,
+            appliedInstanceCount: first.appliedInstanceCount,
+            eventCount: first.eventCount,
+            deferredPulseCount: first.deferredPulseCount
+        }),
+        retryTick: Object.freeze({
+            pulseSequence: retry.pulseResults[0].pulseSequence,
+            resultCode: retry.pulseResults[0].resultCode,
+            candidateCount: retry.pulseResults[0].candidateCount,
+            appliedCount: retry.pulseResults[0].appliedCount,
+            deferredPulseCount: retry.deferredPulseCount
+        }),
+        highWater: Object.freeze({
+            candidate: retryStatus.candidateCountHighWater,
+            instance: retryStatus.instanceCountHighWater,
+            event: retryStatus.eventCountHighWater
+        }),
+        requiresRecovery: retryStatus.requiresRecovery
     });
 }
 
@@ -1668,6 +1826,10 @@ async function run() {
                 device,
                 format,
                 'event'
+            ),
+            phaseAlignedCapacityProgress: await runEffectCapacityProgressFixture(
+                device,
+                format
             ),
             noRevive: await runEffectNoReviveFixture(device, format),
             targetAbaReset: await runEffectAbaResetFixture(device, format),

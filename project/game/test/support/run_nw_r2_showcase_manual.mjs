@@ -1,4 +1,5 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -42,6 +43,116 @@ const GAME_ASSET_DIRECTORIES = Object.freeze([
     'audio',
     'image'
 ]);
+const GIT_OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
+const PERFORMANCE_MAP_SOURCE = Object.freeze([
+    'project',
+    'game',
+    'script',
+    'data',
+    'scene',
+    'game',
+    'performance_serpentine_map_data.js'
+]);
+const PERFORMANCE_WAVE_SOURCE = Object.freeze([
+    'project',
+    'game',
+    'script',
+    'data',
+    'scene',
+    'game',
+    'performance_serpentine_wave_data.js'
+]);
+
+function createSha256Key(parts) {
+    const hash = createHash('sha256');
+    for (const part of parts) {
+        const value = Buffer.isBuffer(part) ? part : Buffer.from(String(part));
+        hash.update(String(value.byteLength));
+        hash.update('\0');
+        hash.update(value);
+    }
+    return `sha256:${hash.digest('hex')}`;
+}
+
+function readGitOutput(repositoryDirectory, args, encoding = null) {
+    return execFileSync('git', [
+        '-C',
+        repositoryDirectory,
+        ...args
+    ], {
+        encoding,
+        maxBuffer: GIT_OUTPUT_MAX_BYTES,
+        windowsHide: true
+    });
+}
+
+async function createPerformanceReceiptIdentity(config) {
+    const headCommit = readGitOutput(
+        config.repositoryDirectory,
+        ['rev-parse', 'HEAD'],
+        'utf8'
+    ).trim();
+    const headTree = readGitOutput(
+        config.repositoryDirectory,
+        ['rev-parse', 'HEAD^{tree}'],
+        'utf8'
+    ).trim();
+    const worktreeStatus = readGitOutput(
+        config.repositoryDirectory,
+        ['status', '--porcelain=v1', '-z', '--untracked-files=all']
+    );
+    const trackedDiff = readGitOutput(
+        config.repositoryDirectory,
+        ['diff', '--binary', 'HEAD', '--']
+    );
+    const untrackedOutput = readGitOutput(
+        config.repositoryDirectory,
+        ['ls-files', '--others', '--exclude-standard', '-z']
+    );
+    const untrackedPaths = untrackedOutput.toString('utf8')
+        .split('\0')
+        .filter(Boolean)
+        .sort();
+    const worktreeParts = [headCommit, headTree, worktreeStatus, trackedDiff];
+    for (const relativePath of untrackedPaths) {
+        worktreeParts.push(relativePath);
+        worktreeParts.push(await fs.readFile(path.join(
+            config.repositoryDirectory,
+            relativePath
+        )));
+    }
+    const mapSource = await fs.readFile(path.join(
+        config.repositoryDirectory,
+        ...PERFORMANCE_MAP_SOURCE
+    ));
+    const waveSource = await fs.readFile(path.join(
+        config.repositoryDirectory,
+        ...PERFORMANCE_WAVE_SOURCE
+    ));
+    const mapContentKey = createSha256Key([
+        PERFORMANCE_MAP_SOURCE.join('/'),
+        mapSource
+    ]);
+    const waveContentKey = createSha256Key([
+        PERFORMANCE_WAVE_SOURCE.join('/'),
+        waveSource
+    ]);
+    const worktreeContentKey = createSha256Key(worktreeParts);
+    return Object.freeze({
+        schemaVersion: 1,
+        headCommit,
+        headTree,
+        worktreeDirty: worktreeStatus.byteLength > 0,
+        worktreeContentKey,
+        mapContentKey,
+        waveContentKey,
+        workloadContentKey: createSha256Key([
+            mapContentKey,
+            waveContentKey,
+            worktreeContentKey
+        ])
+    });
+}
 
 function waitForExit(child) {
     return new Promise((resolve, reject) => {
@@ -169,6 +280,8 @@ export function createManualShowcaseLaunchConfig(options = {}) {
         ),
         supportDirectory,
         gameDirectory,
+        projectDirectory,
+        repositoryDirectory,
         evidenceDirectory: path.resolve(
             options.evidenceDirectory
                 ?? process.env.CIRVIVOR_R2_SHOWCASE_EVIDENCE_DIR
@@ -199,6 +312,7 @@ export async function runManualShowcase(options = {}) {
     process.once('SIGINT', handleInterrupt);
     process.once('SIGTERM', handleInterrupt);
     try {
+        const receiptIdentity = await createPerformanceReceiptIdentity(config);
         const executablePath = await prepareIsolatedNwRuntime(
             config.sourceExecutablePath,
             runDirectory
@@ -216,13 +330,18 @@ export async function runManualShowcase(options = {}) {
         child = spawn(executablePath, [
             `--user-data-dir=${path.join(runDirectory, 'user-data')}`,
             '--force-device-scale-factor=1',
+            '--disable-background-timer-throttling',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-renderer-backgrounding',
             '--enable-logging=stderr',
             appDirectory
         ], {
             cwd: runDirectory,
             env: {
                 ...process.env,
-                CIRVIVOR_R2_SHOWCASE_EVIDENCE_DIR: config.evidenceDirectory
+                CIRVIVOR_R2_SHOWCASE_EVIDENCE_DIR: config.evidenceDirectory,
+                CIRVIVOR_R2_SHOWCASE_RECEIPT_IDENTITY:
+                    JSON.stringify(receiptIdentity)
             },
             stdio: 'inherit',
             windowsHide: false

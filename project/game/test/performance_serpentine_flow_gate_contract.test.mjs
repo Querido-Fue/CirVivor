@@ -288,20 +288,30 @@ test('Pentagon pulse는 partial grid에서 quadratic candidate scan 전에 fail-
         'fn scan_effect_pulse_candidates('
     );
     const scanEnd = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
-        'fn write_effect_event(',
+        'fn prefix_effect_pulse_candidates(',
         scanStart
     );
     const scan = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(scanStart, scanEnd);
     const overflowStatus = scan.indexOf(
         'atomicOr(&pool_state.status, EFFECT_STATUS_GRID_OVERFLOW);'
     );
-    const overflowReturn = scan.indexOf('return;', overflowStatus);
-    const candidateLoops = scan.indexOf('for (var pulse_index', overflowStatus);
+    const enableScan = scan.indexOf(
+        'atomicStore(&effect_pulse_sensor_scan_enabled, 1u);',
+        overflowStatus
+    );
+    const candidateScan = scan.indexOf(
+        'emit_effect_pulse_sensor_hits(record, local_id.x);',
+        overflowStatus
+    );
 
     assert.ok(scanStart >= 0 && scanEnd > scanStart);
     assert.ok(overflowStatus >= 0);
-    assert.ok(overflowReturn > overflowStatus);
-    assert.ok(candidateLoops > overflowReturn);
+    assert.ok(enableScan > overflowStatus);
+    assert.ok(candidateScan > enableScan);
+    assert.match(
+        scan.slice(overflowStatus, candidateScan),
+        /if \(record_valid[\s\S]*?&& grid_complete[\s\S]*?effect_pulse_sensor_scan_enabled[\s\S]*?workgroupBarrier\(\);[\s\S]*?if \(atomicLoad\(&effect_pulse_sensor_scan_enabled\) != 0u\)/
+    );
 });
 
 test('Pentagon cluster retarget은 셀마다 grid를 한 번만 읽고 field별 local count를 쓴다', () => {

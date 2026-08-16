@@ -26,6 +26,9 @@ import {
 import {
     HOSTILE_RHOM_PROJECTILE_DATA
 } from 'data/object/projectile/hostile_rhom_projectile_data.js';
+import {
+    PENTA_BOOST_EFFECT_DEFINITION
+} from 'data/object/enemy/enemy_effect_catalog_data.js';
 
 const DEFAULT_HISTORY_CAPACITY = 65536;
 const DEFAULT_FACT_CAPACITY = 2048;
@@ -121,6 +124,20 @@ function optionalId(value) {
 function nonNegativeFinite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? number : fallback;
+}
+
+function applyAttackMultiplierToFixedPoint(baseFixedPoint) {
+    return Math.trunc(Math.fround(
+        Math.fround(baseFixedPoint)
+            * Math.fround(PENTA_BOOST_EFFECT_DEFINITION.attackMultiplier)
+    ));
+}
+
+function isAuthenticatedAttackDamageFixedPoint(value, baseFixedPoint) {
+    return Number.isSafeInteger(value)
+        && value > 0
+        && (value === baseFixedPoint
+            || value === applyAttackMultiplierToFixedPoint(baseFixedPoint));
 }
 
 function readProtocol(endpoint) {
@@ -1060,10 +1077,9 @@ export class EnemyCoreImpactDirector {
                 failureReason: 'exact-handle-contract'
             });
         }
-        const projectile = readExactView(registry, projectileHandle);
+        const damageSubject = readExactView(registry, projectileHandle);
         const core = readExactView(registry, coreHandle);
-        if (!projectile
-            || projectile.kindId !== PROJECTILE_WORLD_KIND_ID
+        if (!damageSubject
             || !core
             || core.kindId !== GPU_CORE_PROXY_WORLD_KIND_ID
             || core.definitionId !== GPU_CORE_PROXY_DEFINITION_ID) {
@@ -1072,6 +1088,22 @@ export class EnemyCoreImpactDirector {
                 failureReason: 'exact-entity-contract'
             });
         }
+        if (damageSubject.kindId === ENEMY_WORLD_KIND_ID) {
+            return this.#normalizeDirectCoreDamageRequestCandidate({
+                event,
+                eventProtocol,
+                enemyHandle: projectileHandle,
+                coreHandle,
+                enemy: damageSubject
+            });
+        }
+        if (damageSubject.kindId !== PROJECTILE_WORLD_KIND_ID) {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'exact-entity-contract'
+            });
+        }
+        const projectile = damageSubject;
         const metadata = projectile.metadata;
         let sourceHandle;
         let ownerHandle;
@@ -1154,9 +1186,11 @@ export class EnemyCoreImpactDirector {
             || expectedDamageFixedPoint <= 0
             || expectedDamageFixedPoint !== descriptor.coreDamageFixedPoint
             || !Number.isSafeInteger(metadataDamageFixedPoint)
-            || !Number.isSafeInteger(eventDamageFixedPoint)
+            || !isAuthenticatedAttackDamageFixedPoint(
+                eventDamageFixedPoint,
+                expectedDamageFixedPoint
+            )
             || metadataDamageFixedPoint !== expectedDamageFixedPoint
-            || eventDamageFixedPoint !== expectedDamageFixedPoint
             || event.damageFixedPoint !== 0) {
             return Object.freeze({
                 candidate: null,
@@ -1179,8 +1213,8 @@ export class EnemyCoreImpactDirector {
                 coreHandle,
                 projectileHandle,
                 damageSubjectHandle: projectileHandle,
-                requestedDamageFixedPoint: expectedDamageFixedPoint,
-                requestedDamage: expectedDamageFixedPoint
+                requestedDamageFixedPoint: eventDamageFixedPoint,
+                requestedDamage: eventDamageFixedPoint
                     / GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE,
                 projectileDefinitionId,
                 producerId,
@@ -1188,6 +1222,84 @@ export class EnemyCoreImpactDirector {
                 sourceHandle,
                 ownerHandle,
                 spawnSequence,
+                impactKey
+            })
+        });
+    }
+
+    #normalizeDirectCoreDamageRequestCandidate({
+        event,
+        eventProtocol,
+        enemyHandle,
+        coreHandle,
+        enemy
+    }) {
+        const metadata = enemy.metadata;
+        let hasCoreImpactCapability = false;
+        try {
+            hasCoreImpactCapability = hasEnemyCapability(
+                metadata?.capabilityMask,
+                ENEMY_CAPABILITY_ID.CORE_IMPACT,
+                'enemy registry metadata capabilityMask'
+            );
+            requirePositiveSafeInteger(event.sourceTick, 'event.sourceTick');
+            requireNonNegativeSafeInteger(event.sequence, 'event.sequence');
+        } catch {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'metadata-primitive-contract'
+            });
+        }
+        const authoredCoreImpactDamage = nonNegativeFinite(
+            metadata?.coreImpactDamage,
+            -1
+        );
+        const bountyBudget = nonNegativeFinite(metadata?.bountyBudget, -1);
+        let authoredDamageFixedPoint = -1;
+        try {
+            authoredDamageFixedPoint = encodeGpuCircleBodyFixedPoint(
+                authoredCoreImpactDamage
+            );
+        } catch {
+            authoredDamageFixedPoint = -1;
+        }
+        const appliedDamageFixedPoint = event.valueFixedPoint;
+        if (!hasCoreImpactCapability
+            || metadata?.teamId !== GAMEPLAY_TEAM_ID.HOSTILE
+            || authoredCoreImpactDamage <= 0
+            || bountyBudget < 0
+            || !isAuthenticatedAttackDamageFixedPoint(
+                appliedDamageFixedPoint,
+                authoredDamageFixedPoint
+            )
+            || event.damageFixedPoint !== 0) {
+            return Object.freeze({
+                candidate: null,
+                failureReason: 'metadata-authentication'
+            });
+        }
+        const impactKey = createSemanticImpactKey(
+            eventProtocol,
+            coreHandle,
+            enemyHandle
+        );
+        return Object.freeze({
+            failureReason: null,
+            candidate: Object.freeze({
+                kind: 'enemy-impact',
+                event,
+                eventProtocol,
+                coreHandle,
+                enemyHandle,
+                damageSubjectHandle: enemyHandle,
+                coreImpactDamage: appliedDamageFixedPoint
+                    / GPU_CIRCLE_BODY_FIXED_POINT.HEALTH_SCALE,
+                bountyBudget,
+                enemyDefinitionId: optionalId(metadata?.definitionId)
+                    ?? optionalId(enemy.definitionId),
+                physicsProfileId: optionalId(metadata?.physicsProfileId),
+                combatProfileId: optionalId(metadata?.combatProfileId),
+                behaviorProfileId: optionalId(metadata?.behaviorProfileId),
                 impactKey
             })
         });

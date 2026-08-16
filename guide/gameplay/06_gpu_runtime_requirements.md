@@ -87,17 +87,21 @@ cancelPendingEffectProgramsForTerminal
 getEffectRuntimeStatus
 ```
 
-All P sources due on one fixed tick form one ordered batch identity. Host validation, private exact
-handle-to-slot revalidation, and GPU capacity preflight are whole-batch and zero-partial. The endpoint resolves
-one shared capacity (`explicit` or `min(bodyCapacity, 256)`) for owner and backend. Command/replay evidence
-binds session, target tick, exact source handle, pulse sequence, ordered-source fingerprint, device generation,
-and authoritative epoch. Protocol comparison is hierarchical (`session → device → epoch`), not component-wise.
+All P sources due on one fixed tick form one ordered command identity, but host validation, exact private
+handle-to-slot revalidation, capacity demand, and mutation are atomic per pulse. Each pulse reports `APPLIED`,
+`ZERO_TARGET`, `SOURCE_INVALID`, or `DEFERRED_CAPACITY`; an admitted earlier pulse may commit while a later pulse
+defers, but no pulse may partially apply its target set. The endpoint resolves one shared capacity (`explicit`
+or `min(bodyCapacity, 256)`) for owner and backend. Command/replay evidence binds session, target tick, exact
+source handle, pulse sequence, ordered-source fingerprint, device generation, and authoritative epoch. Protocol
+comparison is hierarchical (`session → device → epoch`), not component-wise.
 
-An authentic whole-batch Effect `CAPACITY_REJECTED` is normal only when status is a nonzero subset of
-candidate/instance/event capacity or pulse-grid overflow, every pulse result is `CAPACITY_REJECTED`, all
-candidate/applied/event counts are zero, and events are empty. It advances the completion watermark but not the
-logical pulse sequence/cadence; retry uses the completion-observation fixed tick and a new tick-bound command
-identity. Program capacity, ABI/record corruption, instance-ID exhaustion, or mixed evidence is hard recovery.
+Candidate/instance/event demands are admitted in deterministic rotating sequence order. A
+`DEFERRED_CAPACITY` pulse has zero candidate/application/event mutation, advances neither its logical sequence
+nor cadence, keeps `recovery=false`, and retries with that same sequence; rotating the next admission origin
+provides starvation-free progress under repeated pressure. Program capacity, ABI/record corruption,
+instance-ID exhaustion, or partial/mixed evidence is hard recovery. A valid single pulse whose demand exceeds
+the current candidate/instance/event capacity is `DEFERRED_CAPACITY`, does not block smaller later pulses, and
+remains retryable until capacity or its live target set changes.
 
 The Formation backend seam is:
 
@@ -395,22 +399,23 @@ policy, and dedupe identity must all validate before Core mutation.
 Ordinary contact/projectile and Arrow `DAMAGE_APPLIED` records carry the actual HP delta after same-tick
 maximum aggregation and the Maximum Damage Window, including zero for a valid suppressed candidate. The same
 Tower/source-tick winner is selected independently of append order by final damage descending, then source
-entityId/incarnation ascending. Raising an active peak applies only the delta and never extends the first
-accepted tick's `N + 60` expiry. Valid projectile contacts consume penetration/self-hit budget before this
+entityId/incarnation ascending. Raising an active peak applies only the delta and resets expiry to the winning
+tick plus 60; a value at or below the peak applies zero and preserves expiry. Valid projectile contacts consume penetration/self-hit budget before this
 target-side window; hit rejection (friendly/stale/invalid/miss/capture/reflect) consumes nothing.
 
-M's exact selected-Tower projectile instead applies its immutable launch-time one-hit damage snapshot directly
-after validating that selected Tower. Source death after launch does not invalidate the projectile. This branch
-bypasses same-tick maximum aggregation and the continuous Maximum Damage Window, and its event reports
-`maximumDamageWindow=false`.
+M's exact selected-Tower projectile preserves its immutable launch-time target/damage/budget snapshot, and
+source death after launch does not invalidate it. After target and hit-budget validation it enters the same
+same-tick maximum and Maximum Damage Window as Enemy contact, Arrow charge, and Archer projectile candidates;
+its event therefore reports `maximumDamageWindow=true`.
 
-Effect Summary never becomes a new base-damage authority. GPU contact handlers recompute from immutable
-authored/resolved base damage each tick, while a projectile snapshots its resolved damage once at spawn.
-Explicit flags may allow Tower-contact and Tower-projectile channels to consume the current attack multiplier;
-direct Core impact and typed projectile Core damage remain unmodified. A generic target-layer bit alone is not
-proof of a Tower damage channel. SpawnProgram `TOWER_DAMAGE_CHANNEL` is materialized only for the canonical
-Archer exact-Tower target-entity request after live source/Tower definition and attack/projectile-policy checks;
-M continues to use its GPU `selected_is_tower` evidence.
+Effect Summary never becomes a new base-damage authority. GPU contact/direct handlers recompute from immutable
+authored/resolved base damage each tick, while a projectile snapshots its resolved channel damage once at
+spawn. `Attack` and P Boost attack multiplication apply to Tower contact, Tower projectile, direct Core impact,
+and projectile Core channels. A narrower exception needs its own named data flag. A generic target-layer bit
+alone is not proof of a Tower damage channel. SpawnProgram materializes channel identity only after live
+source/target definition and policy checks; M continues to use its GPU selected-target evidence. Direct Core
+impact conversion is isolated in `resolve_direct_core_damage_requests`, whose profile uses at most 8 storage
+buffers, while typed Core requests remain CPU-domain mutations rather than fictitious GPU Core HP.
 
 ## 11. Capacity and priority
 
@@ -476,7 +481,7 @@ completed fixed/SpawnProgram outcomes
 → if depleted: versioned Route Runtime ingress/cleanup/readback cancel and final all-open Z roster observation
 → input/ability commands
 → exact Arrow/M behavior/control production
-→ if running: one whole-tick Pentagon pulse batch stage
+→ if running: one ordered Pentagon command with per-pulse atomic/fair capacity admission
 → if running: one whole-tick Formation prepare batch stage
 → if running: one bounded J/C′ Atomic Transform prepare batch stage
 → subject snapshots
@@ -490,8 +495,8 @@ completed fixed/SpawnProgram outcomes
 → Route Runtime selection/forward-reroute/clearance-wait and Z expansion
 → Projectile Capture inbound match/preflight and transient prepared shield
 → collision/contact/final damage
-→ ordinary contact/projectile and Arrow only: same-Tower/source-tick maximum aggregation
-→ contact handler: selected-target M Tower direct launch-snapshot one-hit, otherwise Maximum Damage Window → HP mutation
+→ every valid Tower producer: same-Tower/source-tick final-damage maximum aggregation
+→ common Maximum Damage Window (higher peak resets expiry) → GPU HP mutation
 → death
 → Projectile Capture late whole-batch seal or zero-mutation capacity rejection
 → Route Runtime exact availability + physical blocker close/reopen/finalize

@@ -90,7 +90,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
     }),
     /**
      * Contact handler/effect record와 분리된 generic per-body combat state입니다.
-     * pending candidate는 contact buffer scan으로만 유지하므로 reserved word는 항상 0입니다.
+     * direct Core impact base damage는 기존 첫 reserved word를 재사용합니다.
      */
     COMBAT_STATE: Object.freeze({
         STRIDE: 40,
@@ -100,6 +100,8 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         EXPIRES_AT_FIXED_TICK: 12,
         PEAK_SOURCE_ENTITY_ID: 16,
         PEAK_SOURCE_INCARNATION: 20,
+        DIRECT_CORE_DAMAGE_FIXED_POINT: 24,
+        // 이전 ABI consumer가 offset lookup을 유지할 수 있는 layout alias입니다.
         RESERVED_0: 24,
         RESERVED_1: 28,
         RESERVED_2: 32,
@@ -766,7 +768,9 @@ export function resolveGpuCircleBodyMaximumDamageWindow(options = {}) {
     validCandidates.sort(compareMaximumDamageWindowCandidates);
     const candidate = validCandidates[0];
     const active = expiresAtFixedTick !== 0 && fixedTick < expiresAtFixedTick;
-    if (!active && fixedTick > UINT32_MAX - duration) {
+    const resetsWindow = !active
+        || candidate.finalDamageFixedPoint > peakFinalDamageFixedPoint;
+    if (resetsWindow && fixedTick > UINT32_MAX - duration) {
         throw new RangeError('Maximum Damage Window expiry가 uint32 tick 범위를 초과합니다.');
     }
     if (currentHealthFixedPoint === 0) {
@@ -809,11 +813,8 @@ export function resolveGpuCircleBodyMaximumDamageWindow(options = {}) {
         appliedDamageFixedPoint,
         remainingHealthFixedPoint: currentHealthFixedPoint,
         peakFinalDamageFixedPoint: candidate.finalDamageFixedPoint,
-        // 첫 active tick N이 만든 N+duration expiry는 peak/provenance가 커져도
-        // 연장하지 않습니다. T >= expiry인 새 window만 새 expiry를 계산합니다.
-        expiresAtFixedTick: active
-            ? expiresAtFixedTick
-            : fixedTick + duration,
+        // inactive winner와 active higher peak 모두 그 tick부터 새 window를 엽니다.
+        expiresAtFixedTick: fixedTick + duration,
         peakSourceEntityId: candidate.sourceEntityId,
         peakSourceIncarnation: candidate.sourceIncarnation,
         candidate: Object.freeze({ ...candidate }),
@@ -1838,9 +1839,27 @@ function resolveSpawnCombatState(
             'DIRECT resolution에는 maximumDamageWindowDurationTicks 0이 필요합니다.'
         );
     }
+    const authoredDirectCoreDamage = spawn.directCoreImpactDamage
+        ?? spawn.coreImpactDamage
+        ?? 0;
+    const encodedDirectCoreDamage = encodeGpuCircleBodyFixedPoint(
+        authoredDirectCoreDamage
+    );
+    const directCoreDamageFixedPoint = requireInt32(
+        spawn.directCoreDamageFixedPoint ?? encodedDirectCoreDamage,
+        'directCoreDamageFixedPoint'
+    );
+    if (directCoreDamageFixedPoint < 0
+        || (spawn.directCoreDamageFixedPoint !== undefined
+            && directCoreDamageFixedPoint !== encodedDirectCoreDamage)) {
+        throw new RangeError(
+            'direct Core damage fixed-point는 authored coreImpactDamage와 같은 0 이상 값이어야 합니다.'
+        );
+    }
     return {
         targetInteractionLayerMask,
-        maximumDamageWindowDurationTicks
+        maximumDamageWindowDurationTicks,
+        directCoreDamageFixedPoint
     };
 }
 
@@ -1886,6 +1905,13 @@ export function writeGpuCircleBodyCombatState(storage, index, state = {}) {
         !== (peakSourceIncarnation === GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT)) {
         throw new RangeError('combatState peak source identity는 모두 valid 또는 모두 invalid여야 합니다.');
     }
+    const directCoreDamageFixedPoint = requireInt32(
+        state.directCoreDamageFixedPoint ?? 0,
+        'combatState.directCoreDamageFixedPoint'
+    );
+    if (directCoreDamageFixedPoint < 0) {
+        throw new RangeError('combatState.directCoreDamageFixedPoint는 0 이상이어야 합니다.');
+    }
     view.setUint32(
         offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.TARGET_INTERACTION_LAYER_MASK,
         targetInteractionLayerMask,
@@ -1918,8 +1944,12 @@ export function writeGpuCircleBodyCombatState(storage, index, state = {}) {
         peakSourceIncarnation,
         LITTLE_ENDIAN
     );
+    view.setInt32(
+        offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.DIRECT_CORE_DAMAGE_FIXED_POINT,
+        directCoreDamageFixedPoint,
+        LITTLE_ENDIAN
+    );
     for (const reservedOffset of [
-        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_0,
         GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_1,
         GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_2,
         GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_3
@@ -1961,6 +1991,10 @@ export function readGpuCircleBodyCombatState(storage, index) {
         ),
         peakSourceIncarnation: view.getUint32(
             offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION,
+            LITTLE_ENDIAN
+        ),
+        directCoreDamageFixedPoint: view.getInt32(
+            offset + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.DIRECT_CORE_DAMAGE_FIXED_POINT,
             LITTLE_ENDIAN
         )
     };

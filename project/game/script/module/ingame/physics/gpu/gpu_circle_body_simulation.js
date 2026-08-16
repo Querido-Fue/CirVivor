@@ -344,11 +344,6 @@ const CONTACT_STATE_ATOMIC_TRANSFORM_COMMITTED_COUNT_OFFSET = 60;
 const CONTACT_STATE_ABI_STATUS_OK = 1;
 const MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_OK = 0;
 const CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK = 0;
-const EFFECT_RETRYABLE_CAPACITY_STATUS_MASK
-    = GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED
-    | GPU_EFFECT_RUNTIME_STATUS.INSTANCE_CAPACITY_EXCEEDED
-    | GPU_EFFECT_RUNTIME_STATUS.EVENT_CAPACITY_EXCEEDED
-    | GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW;
 const APPLIED_EVENT_POLICY_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.ENTER_POLICY
     | GPU_CIRCLE_APPLIED_EVENT_FLAG.CONTINUOUS_POLICY;
 const APPLIED_EVENT_KNOWN_FLAGS = GPU_CIRCLE_APPLIED_EVENT_FLAG.TARGET_DIED
@@ -396,6 +391,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'preflight_core_damage_requests',
     'finalize_core_damage_request_preflight',
     'resolve_core_damage_requests',
+    'resolve_direct_core_damage_requests',
     'resolve_enemy_charge_contacts',
     'preflight_maximum_damage_window',
     'finalize_maximum_damage_window_preflight',
@@ -418,6 +414,7 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     CONTACT_HANDLING: 'contact-handling',
     MAXIMUM_DAMAGE_WINDOW: 'maximum-damage-window',
     CORE_DAMAGE_REQUEST: 'core-damage-request',
+    DIRECT_CORE_DAMAGE_REQUEST: 'direct-core-damage-request',
     FIXED_CONTROL: 'fixed-control',
     SOURCE_RESOLVE: 'source-resolve',
     ENEMY_BEHAVIOR: 'enemy-behavior',
@@ -467,6 +464,8 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
     resolve_core_damage_requests:
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
+    resolve_direct_core_damage_requests:
+        COMPUTE_PIPELINE_PROFILE.DIRECT_CORE_DAMAGE_REQUEST,
     resolve_enemy_charge_contacts: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     preflight_maximum_damage_window: COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
     finalize_maximum_damage_window_preflight:
@@ -500,12 +499,6 @@ function effectReadbackEventOffset(pulseCapacity) {
 function effectReadbackByteSize(pulseCapacity, eventCapacity) {
     return effectReadbackEventOffset(pulseCapacity)
         + (eventCapacity * GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE);
-}
-
-function isRetryableEffectCapacityStatus(status) {
-    const normalized = Number(status) >>> 0;
-    return normalized !== GPU_EFFECT_RUNTIME_STATUS.OK
-        && (normalized & ~EFFECT_RETRYABLE_CAPACITY_STATUS_MASK) === 0;
 }
 
 function requirePositiveInteger(value, label) {
@@ -1588,6 +1581,10 @@ export class GpuCircleBodySimulation {
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: 0 });
         this.bodyCount = 0;
         this.activeBodyCount = 0;
+        this.projectileBodyCount = 0;
+        this.bodyCountHighWater = 0;
+        this.activeBodyCountHighWater = 0;
+        this.projectileBodyCountHighWater = 0;
         this.pendingBodyCount = 0;
         this.slotActive = new Uint8Array(this.capacity);
         this.slotEventProducing = new Uint8Array(this.capacity);
@@ -1704,11 +1701,15 @@ export class GpuCircleBodySimulation {
         this.lastEventReadbackCompletedTick = 0;
         this.lastEventStatsTick = 0;
         this.lastContactCount = 0;
+        this.contactCountHighWater = 0;
         this.lastContactOverflowCount = 0;
+        this.totalContactOverflowCount = 0;
         this.lastAppliedEventCount = 0;
         this.lastAppliedEventOverflowCount = 0;
+        this.totalAppliedEventOverflowCount = 0;
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
+        this.totalDeathEventOverflowCount = 0;
         this.lastBodyControlOutcomeCount = 0;
         this.spawnProgramReadbackSlots = [];
         this.spawnProgramReadbackLease = 0;
@@ -1739,6 +1740,10 @@ export class GpuCircleBodySimulation {
         this.lastEffectCandidateCount = 0;
         this.lastEffectAppliedInstanceCount = 0;
         this.lastEffectEventCount = 0;
+        this.lastEffectDeferredPulseCount = 0;
+        this.effectCandidateCountHighWater = 0;
+        this.effectInstanceCountHighWater = 0;
+        this.effectEventCountHighWater = 0;
         this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
         this.formationPrepareReadbackSlots = [];
         this.formationPrepareReadbackLease = 0;
@@ -2084,6 +2089,7 @@ export class GpuCircleBodySimulation {
         this.lastEffectCandidateCount = 0;
         this.lastEffectAppliedInstanceCount = 0;
         this.lastEffectEventCount = 0;
+        this.lastEffectDeferredPulseCount = 0;
         this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
         this.effectProgramBackpressureCount = 0;
         this.formationPrepareBatchQueue.length = 0;
@@ -3584,8 +3590,6 @@ export class GpuCircleBodySimulation {
     }
 
     getEffectRuntimeStatus() {
-        const retryableCapacityRejected
-            = isRetryableEffectCapacityStatus(this.lastEffectRuntimeStatus);
         return Object.freeze({
             abiVersion: GPU_EFFECT_RUNTIME_ABI_VERSION,
             state: this.state,
@@ -3604,10 +3608,17 @@ export class GpuCircleBodySimulation {
             sourceTick: this.lastEffectProgramSourceTick,
             lastSubmittedTick: this.lastEffectProgramSubmittedTick,
             runtimeStatus: this.lastEffectRuntimeStatus,
-            retryableCapacityRejected,
+            lastProgramCount: this.lastEffectProgramCount,
+            lastCandidateCount: this.lastEffectCandidateCount,
+            lastAppliedInstanceCount: this.lastEffectAppliedInstanceCount,
+            lastEventCount: this.lastEffectEventCount,
+            lastDeferredPulseCount: this.lastEffectDeferredPulseCount,
+            candidateCountHighWater: this.effectCandidateCountHighWater,
+            instanceCountHighWater: this.effectInstanceCountHighWater,
+            eventCountHighWater: this.effectEventCountHighWater,
+            retryableCapacityRejected: false,
             requiresRecovery: this.requiresAuthoritativeRebuild
-                || (this.lastEffectRuntimeStatus !== GPU_EFFECT_RUNTIME_STATUS.OK
-                    && !retryableCapacityRejected)
+                || this.lastEffectRuntimeStatus !== GPU_EFFECT_RUNTIME_STATUS.OK
                 || this.terminalEffectProgramCancelStatus?.state === 'failed',
             failure: this.failure,
             terminal: this.terminalEffectProgramCancelStatus
@@ -7970,6 +7981,14 @@ export class GpuCircleBodySimulation {
                 this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
+                    COMPUTE_PIPELINE_PROFILE.DIRECT_CORE_DAMAGE_REQUEST
+                );
+                pass.setPipeline(
+                    this.pipelines.compute.resolve_direct_core_damage_requests
+                );
+                this.#dispatchContacts(pass);
+                this.#setComputeProfile(
+                    pass,
                     COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW
                 );
                 this.#dispatchBodies(pass, 'resolve_maximum_damage_window');
@@ -9419,6 +9438,10 @@ export class GpuCircleBodySimulation {
             capacity: this.capacity,
             bodyCount: this.bodyCount,
             activeBodyCount: this.activeBodyCount,
+            projectileBodyCount: this.projectileBodyCount,
+            bodyCountHighWater: this.bodyCountHighWater,
+            activeBodyCountHighWater: this.activeBodyCountHighWater,
+            projectileBodyCountHighWater: this.projectileBodyCountHighWater,
             pendingBodyCount: this.pendingBodyCount,
             freeSlotCount: this.freeSlots.length,
             deviceGeneration: this.deviceGeneration,
@@ -9453,7 +9476,9 @@ export class GpuCircleBodySimulation {
             contact: Object.freeze({
                 capacity: this.contactCapacity,
                 lastCount: this.lastContactCount,
-                lastOverflowCount: this.lastContactOverflowCount
+                countHighWater: this.contactCountHighWater,
+                lastOverflowCount: this.lastContactOverflowCount,
+                totalOverflowCount: this.totalContactOverflowCount
             }),
             events: Object.freeze({
                 capacity: this.eventCapacity,
@@ -9469,8 +9494,11 @@ export class GpuCircleBodySimulation {
                 lastStatsTick: this.lastEventStatsTick,
                 lastAppliedCount: this.lastAppliedEventCount,
                 lastAppliedOverflowCount: this.lastAppliedEventOverflowCount,
+                totalAppliedOverflowCount:
+                    this.totalAppliedEventOverflowCount,
                 lastDeathCount: this.lastDeathEventCount,
-                lastDeathOverflowCount: this.lastDeathEventOverflowCount
+                lastDeathOverflowCount: this.lastDeathEventOverflowCount,
+                totalDeathOverflowCount: this.totalDeathEventOverflowCount
             }),
             fixedPrimitives: Object.freeze({
                 ingressOpen: this.fixedProgramIngressOpen,
@@ -9674,6 +9702,7 @@ export class GpuCircleBodySimulation {
         }
         this.#releaseGpuResources();
         this.activeBodyCount = 0;
+        this.projectileBodyCount = 0;
         this.hasGpuAuthoritativeState = false;
         this.slotActive.fill(0);
         this.slotEventProducing.fill(0);
@@ -9986,6 +10015,7 @@ export class GpuCircleBodySimulation {
         let projectileCaptureDomainBodyCount = 0;
         let projectileCaptureProjectileBodyCount = 0;
         let projectileCaptureMaintenanceBodyCount = 0;
+        let projectileBodyCount = 0;
         let routeRuntimeRosterCount = 0;
         let routeRuntimeProjectileThreatBodyCount = 0;
         let maximumBodyRadius = 0;
@@ -10047,6 +10077,10 @@ export class GpuCircleBodySimulation {
             );
             const interaction = unpackGpuCircleInteractionMeta(interactionMeta);
             const physics = unpackGpuCirclePhysicsMeta(physicalMeta);
+            if (physics.bodyLayer
+                === GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE) {
+                projectileBodyCount++;
+            }
             const sourcePolicyMask =
                 GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_ENTER_ONLY
                 | GPU_CIRCLE_BODY_CONTACT_HANDLER_FLAG.INTERACTION_CONTINUOUS;
@@ -10126,10 +10160,23 @@ export class GpuCircleBodySimulation {
             = projectileCaptureProjectileBodyCount;
         this.projectileCaptureMaintenanceBodyCount
             = projectileCaptureMaintenanceBodyCount;
+        this.projectileBodyCount = projectileBodyCount;
         this.routeRuntimeRosterCount = routeRuntimeRosterCount;
         this.routeRuntimeProjectileThreatBodyCount
             = routeRuntimeProjectileThreatBodyCount;
         this.maximumBodyRadius = maximumBodyRadius;
+        this.bodyCountHighWater = Math.max(
+            this.bodyCountHighWater,
+            this.bodyCount
+        );
+        this.activeBodyCountHighWater = Math.max(
+            this.activeBodyCountHighWater,
+            this.activeBodyCount
+        );
+        this.projectileBodyCountHighWater = Math.max(
+            this.projectileBodyCountHighWater,
+            projectileBodyCount
+        );
         this.uploadedComputeFixedDelta = NaN;
         this.uploadedComputeFixedTick = -1;
     }
@@ -11509,11 +11556,19 @@ export class GpuCircleBodySimulation {
                     throw new RangeError('Effect readback header/pool protocol이 일치하지 않습니다.');
                 }
                 const status = (pool.status | header.status) >>> 0;
-                const retryableCapacityRejected
-                    = isRetryableEffectCapacityStatus(status);
+                if (status !== GPU_EFFECT_RUNTIME_STATUS.OK
+                    || pool.batchAccepted !== 1
+                    || pool.candidateOverflow !== 0
+                    || pool.eventOverflow !== 0) {
+                    throw new RangeError(
+                        `Effect runtime protocol failure: status=${status}, accepted=${pool.batchAccepted}, candidateOverflow=${pool.candidateOverflow}, eventOverflow=${pool.eventOverflow}`
+                    );
+                }
                 const pulseResults = new Array(header.count);
                 let candidateTotal = 0;
                 let appliedTotal = 0;
+                let admittedPulseCount = 0;
+                let deferredPulseCount = 0;
                 for (let index = 0; index < header.count; index++) {
                     const record = readGpuEffectPulseProgramRecord(
                         mappedProgram,
@@ -11545,30 +11600,34 @@ export class GpuCircleBodySimulation {
                         || record.result
                             === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET
                         || record.result
-                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID;
-                    if (status === GPU_EFFECT_RUNTIME_STATUS.OK
-                        && (!normalResult
-                            || (record.result
-                                === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
-                                && record.appliedCount === 0)
-                            || (record.result
-                                !== GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
-                                && (record.candidateCount !== 0
-                                    || record.appliedCount !== 0)))) {
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                        || record.result
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY;
+                    const deferred = record.result
+                        === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY;
+                    const applied = record.result
+                        === GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED;
+                    const zeroTarget = record.result
+                        === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET;
+                    if (!normalResult
+                        || (applied && (record.appliedCount === 0
+                            || record.appliedCount !== record.candidateCount))
+                        || (deferred && record.appliedCount !== 0)
+                        || (!applied && !deferred
+                            && (record.candidateCount !== 0
+                                || record.appliedCount !== 0))) {
                         throw new RangeError(
                             `Effect normal result/count mismatch: index=${index}, result=${record.result}`
                         );
                     }
-                    if (retryableCapacityRejected
-                        && (record.result
-                                !== GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
-                            || record.candidateCount !== 0
-                            || record.appliedCount !== 0)) {
-                        throw new RangeError(
-                            `Effect retryable capacity result is not zero-partial: index=${index}`
-                        );
+                    if (deferred) {
+                        deferredPulseCount++;
+                    } else {
+                        candidateTotal += record.candidateCount;
                     }
-                    candidateTotal += record.candidateCount;
+                    if (applied || zeroTarget) {
+                        admittedPulseCount++;
+                    }
                     appliedTotal += record.appliedCount;
                     pulseResults[index] = Object.freeze({
                         programIndex: index,
@@ -11580,11 +11639,13 @@ export class GpuCircleBodySimulation {
                 }
                 if (candidateTotal !== pool.candidateCount
                     || appliedTotal !== pool.materializedCount
+                    || pool.inputCount
+                        !== pool.retainedCount + pool.materializedCount
+                    || pool.inputCount > this.effectInstanceCapacity
+                    || pool.eventCount
+                        !== candidateTotal + admittedPulseCount
                     || pool.eventCount > this.effectEventCapacity
-                    || (retryableCapacityRejected
-                        && (candidateTotal !== 0
-                            || appliedTotal !== 0
-                            || pool.eventCount !== 0))) {
+                    || pool.candidateCount > this.effectCandidateCapacity) {
                     throw new RangeError('Effect aggregate count가 pulse/pool과 다릅니다.');
                 }
                 const events = new Array(pool.eventCount);
@@ -11615,6 +11676,7 @@ export class GpuCircleBodySimulation {
                     candidateCount: candidateTotal,
                     appliedInstanceCount: appliedTotal,
                     eventCount: events.length,
+                    deferredPulseCount,
                     pulseResults: Object.freeze(pulseResults),
                     events: Object.freeze(events)
                 });
@@ -11623,23 +11685,19 @@ export class GpuCircleBodySimulation {
                 this.lastEffectCandidateCount = candidateTotal;
                 this.lastEffectAppliedInstanceCount = appliedTotal;
                 this.lastEffectEventCount = events.length;
-                if (status !== GPU_EFFECT_RUNTIME_STATUS.OK
-                    && !retryableCapacityRejected) {
-                    this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
-                    this.failure = captureFailure(
-                        'effect-runtime-capacity',
-                        new Error(`GPU Effect runtime status=${status}`)
-                    );
-                    this.state = this.requiresAuthoritativeRebuild
-                        ? 'requires-rebuild'
-                        : 'failed';
-                } else if (retryableCapacityRejected
-                    && !this.requiresAuthoritativeRebuild) {
-                    // Authentic capacity-only completion advances protocol
-                    // watermarks but remains a normal retry signal.
-                    this.failure = null;
-                    this.state = 'ready';
-                }
+                this.lastEffectDeferredPulseCount = deferredPulseCount;
+                this.effectCandidateCountHighWater = Math.max(
+                    this.effectCandidateCountHighWater,
+                    candidateTotal
+                );
+                this.effectInstanceCountHighWater = Math.max(
+                    this.effectInstanceCountHighWater,
+                    pool.inputCount
+                );
+                this.effectEventCountHighWater = Math.max(
+                    this.effectEventCountHighWater,
+                    events.length
+                );
             } catch (error) {
                 failure = captureFailure('effect-program-readback', error);
             } finally {
@@ -13278,6 +13336,7 @@ export class GpuCircleBodySimulation {
         this.lastEffectCandidateCount = 0;
         this.lastEffectAppliedInstanceCount = 0;
         this.lastEffectEventCount = 0;
+        this.lastEffectDeferredPulseCount = 0;
         this.lastEffectRuntimeStatus = GPU_EFFECT_RUNTIME_STATUS.OK;
         this.hostFormationBodyState = createGpuFormationBodyStateStorage(
             this.capacity
@@ -13765,6 +13824,13 @@ export class GpuCircleBodySimulation {
             }
 
             this.#releaseClaimedEventReadbackSlot(slot);
+            this.contactCountHighWater = Math.max(
+                this.contactCountHighWater,
+                rawContactCount
+            );
+            this.totalContactOverflowCount += contactOverflow;
+            this.totalAppliedEventOverflowCount += appliedOverflow;
+            this.totalDeathEventOverflowCount += deathOverflow;
             this.lastEventReadbackCompletedTick = Math.max(
                 this.lastEventReadbackCompletedTick,
                 queueEntry.submittedTick
@@ -14041,10 +14107,13 @@ export class GpuCircleBodySimulation {
         this.lastEventStatsTick = 0;
         this.lastContactCount = 0;
         this.lastContactOverflowCount = 0;
+        this.totalContactOverflowCount = 0;
         this.lastAppliedEventCount = 0;
         this.lastAppliedEventOverflowCount = 0;
+        this.totalAppliedEventOverflowCount = 0;
         this.lastDeathEventCount = 0;
         this.lastDeathEventOverflowCount = 0;
+        this.totalDeathEventOverflowCount = 0;
         this.lastBodyControlOutcomeCount = 0;
     }
 
@@ -14814,6 +14883,16 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(11)
             ]
         });
+        const computeDirectCoreDamageRequestBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-direct-core-damage-request-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(10),
+                storageLayoutEntry(12)
+            ]
+        });
         const computeEnemyBehaviorBodiesLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-enemy-behavior-bodies-layout',
             entries: [
@@ -15004,6 +15083,12 @@ export class GpuCircleBodySimulation {
                 computeParamsLayout,
                 computeMaximumDamageWindowEventsLayout
             ],
+            [COMPUTE_PIPELINE_PROFILE.DIRECT_CORE_DAMAGE_REQUEST]: [
+                computeDirectCoreDamageRequestBodiesLayout,
+                computeEmptyLayout,
+                computeParamsLayout,
+                computeMaximumDamageWindowEventsLayout
+            ],
             [COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL]: [
                 computeFixedControlLayout,
                 computeEmptyLayout,
@@ -15061,7 +15146,7 @@ export class GpuCircleBodySimulation {
                 [1, 2, 6, 7, 8, 11], [0, 1, 2], true
             ],
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.PREFIX_PULSES]: [
-                [7, 8, 11], [], false
+                [7, 8, 10, 11, 12], [], true
             ],
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.WRITE_PULSES]: [
                 [1, 2, 6, 7, 8, 11], [0, 1, 2], true
@@ -15867,6 +15952,17 @@ export class GpuCircleBodySimulation {
                 { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) }
             ]
         });
+        const computeDirectCoreDamageRequestBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-direct-core-damage-request-bodies',
+            layout: computeDirectCoreDamageRequestBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 10, resource: resource(this.buffers.combatStates) },
+                { binding: 12, resource: resource(this.buffers.effectSummaries) }
+            ]
+        });
         const computeEnemyBehaviorBodies = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
             layout: computeEnemyBehaviorBodiesLayout,
@@ -16137,6 +16233,12 @@ export class GpuCircleBodySimulation {
                 ],
                 [COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST]: [
                     computeCoreDamageRequestBodies,
+                    computeEmpty,
+                    computeParams,
+                    computeMaximumDamageWindowEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.DIRECT_CORE_DAMAGE_REQUEST]: [
+                    computeDirectCoreDamageRequestBodies,
                     computeEmpty,
                     computeParams,
                     computeMaximumDamageWindowEvents

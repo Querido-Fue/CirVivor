@@ -58,7 +58,9 @@ const nwSupportSource = await readFile(new URL(
 
 const EXPECTED_PULSE_FLAGS = GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
     | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE;
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_CORE_DAMAGE_MODIFIABLE;
 
 function createEffectBody(overrides = {}) {
     return {
@@ -243,7 +245,7 @@ test('Pulse ABI는 stale source sentinel을 normal SOURCE_INVALID 경로용으�
     assert.throws(() => writeGpuEffectPulseProgramRecord(storage, 256, record), /capacity/);
 });
 
-test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 atomic whole-batch preflight를 보존한다', () => {
+test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 pulse-atomic admission을 보존한다', () => {
     assert.equal('PENTA' in GPU_EFFECT_RUNTIME_ENTRY_POINT, false);
     assert.match(GPU_EFFECT_RUNTIME_COMPUTE_WGSL, /struct EffectInstance \{/);
     assert.match(GPU_EFFECT_RUNTIME_COMPUTE_WGSL, /effect_instances_input/);
@@ -274,17 +276,25 @@ test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 a
     const materializeStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
         'fn materialize_effect_batch('
     );
+    const prefixStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
+        'fn prefix_effect_pulse_candidates('
+    );
     const writeEventStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
         'fn write_effect_event('
     );
     const finishStart = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.indexOf(
         'fn finish_effect_tick('
     );
-    assert.ok(scanStart >= 0 && writeEventStart > scanStart
+    assert.ok(scanStart >= 0 && prefixStart > scanStart
+        && writeEventStart > prefixStart
         && materializeStart > writeEventStart
         && finishStart > materializeStart);
     const scanBlock = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(
         scanStart,
+        prefixStart
+    );
+    const prefixBlock = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(
+        prefixStart,
         writeEventStart
     );
     const materializeBlock = GPU_EFFECT_RUNTIME_COMPUTE_WGSL.slice(
@@ -292,6 +302,24 @@ test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 a
         finishStart
     );
     assert.doesNotMatch(scanBlock, /effect_instances_output|effect_events/);
+    assert.match(
+        prefixBlock,
+        /let rotation_start = params\.fixed_tick % safe_program_count;[\s\S]*?let pulse_index = \(rotation_start \+ ordinal\) % safe_program_count;/
+    );
+    assert.match(
+        prefixBlock,
+        /let candidate_fits[\s\S]*?let instance_fits[\s\S]*?let event_fits[\s\S]*?EFFECT_RESULT_DEFERRED_CAPACITY[\s\S]*?continue;/
+    );
+    assert.match(
+        prefixBlock,
+        /applied_count = candidate_cursor;[\s\S]*?candidate_cursor \+= candidate_need;[\s\S]*?event_cursor \+= event_need;/
+    );
+    const admissionLoopStart = prefixBlock.indexOf('var candidate_cursor = 0u;');
+    assert.ok(admissionLoopStart >= 0);
+    assert.doesNotMatch(
+        prefixBlock.slice(admissionLoopStart),
+        /EFFECT_STATUS_(?:CANDIDATE|INSTANCE|EVENT)_CAPACITY_EXCEEDED/
+    );
     const firstMaterializeMutation = materializeBlock.indexOf(
         'var event_index = 0u;'
     );
@@ -303,7 +331,11 @@ test('Effect WGSL은 independent A/B pool, half-open timer, tick-start grid와 a
     assert.match(materializePreflight,
         /arrayLength\(&effect_candidates\.values\)[\s\S]*?arrayLength\(&effect_instances_output\.values\)[\s\S]*?arrayLength\(&effect_events\.values\)/);
     assert.match(materializePreflight,
-        /EFFECT_RESULT_CAPACITY_REJECTED[\s\S]*?candidate_count, 0u[\s\S]*?event_count, 0u[\s\S]*?return;/);
+        /result == EFFECT_RESULT_PENDING[\s\S]*?admitted_pulse_count \+= 1u/);
+    assert.match(materializePreflight,
+        /Unexpected protocol\/identity failures remain whole-batch fail-close[\s\S]*?result == EFFECT_RESULT_PENDING[\s\S]*?EFFECT_RESULT_POLICY_REJECTED/);
+    assert.doesNotMatch(materializePreflight,
+        /result == EFFECT_RESULT_DEFERRED_CAPACITY[\s\S]*?EFFECT_RESULT_POLICY_REJECTED/);
     assert.doesNotMatch(GPU_EFFECT_RUNTIME_COMPUTE_WGSL, /ENEMY_BEHAVIOR_STATE_PENTA/);
 });
 
@@ -326,7 +358,6 @@ test('모든 compute entry의 transitive storage usage는 exact 9 이하이다',
         }
     }
     assert.deepEqual(collisionUsage.get('handle_contacts'), [
-        '0:0:counts',
         '0:1:physics',
         '0:2:simulations',
         '0:4:contact_handlers',
@@ -336,11 +367,23 @@ test('모든 compute entry의 transitive storage usage는 exact 9 이하이다',
         '3:2:applied_events',
         '3:3:death_events'
     ]);
-    assert.deepEqual(collisionUsage.get('resolve_maximum_damage_window'), [
+    assert.deepEqual(collisionUsage.get('resolve_direct_core_damage_requests'), [
         '0:0:counts',
         '0:1:physics',
         '0:2:simulations',
         '0:10:combat_states',
+        '0:12:effect_summaries',
+        '3:0:contact_state',
+        '3:1:contacts',
+        '3:2:applied_events'
+    ]);
+    assert.deepEqual(collisionUsage.get('resolve_maximum_damage_window'), [
+        '0:0:counts',
+        '0:1:physics',
+        '0:2:simulations',
+        '0:4:contact_handlers',
+        '0:10:combat_states',
+        '0:11:enemy_behavior_states',
         '3:0:contact_state',
         '3:1:contacts',
         '3:2:applied_events'
@@ -351,7 +394,6 @@ test('모든 compute entry의 transitive storage usage는 exact 9 이하이다',
         '0:6:effect_emitters',
         '0:7:pulse_program',
         '0:8:pool_state',
-        '0:11:effect_candidates',
         '1:0:grid_counts',
         '1:1:grid_bodies',
         '1:2:grid_overflow'
@@ -378,30 +420,34 @@ test('모든 compute entry의 transitive storage usage는 exact 9 이하이다',
     ]);
 });
 
-test('Effect damage order는 immutable contact base와 Tower-only projectile snapshot을 사용하고 Core channel을 곱하지 않는다', () => {
+test('Effect damage order는 immutable base와 Tower/Core별 단일 attack multiplier를 사용한다', () => {
     assert.match(
         GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
         /resolved_base_damage_other[\s\S]*?base_damage \* attack_multiplier/
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn snapshot_tower_attack_damage[\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER/
+        /fn effect_attack_multiplier_for_channel\([\s\S]*?damage_channel_flag[\s\S]*?attack_multiplier/
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /if \(selected_is_tower\) \{[\s\S]*?snapshot_tower_attack_damage/
-    );
-    assert.doesNotMatch(
-        GPU_COLLISION_COMPUTE_WGSL,
-        /selected_is_core[\s\S]{0,160}snapshot_tower_attack_damage/
+        /fn snapshot_projectile_attack_damage\([\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE[\s\S]*?resolved_core_damage_fixed_point/
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /program\.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY[\s\S]*?program\.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL[\s\S]*?snapshot_tower_attack_damage/
+        /snapshot_projectile_attack_damage\([\s\S]*?select\([\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER,[\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE,[\s\S]*?selected_is_core/
     );
-    assert.doesNotMatch(
+    assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /PLAYER_DAMAGEABLE[\s\S]{0,160}snapshot_tower_attack_damage/
+        /program\.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY[\s\S]*?program\.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL[\s\S]*?snapshot_projectile_attack_damage\([\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER/
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /fn resolve_direct_core_impact_damage\([\s\S]*?effect_attack_multiplier_for_channel\([\s\S]*?EFFECT_DAMAGE_CHANNEL_DIRECT_CORE_IMPACT[\s\S]*?f32\(authored_damage\) \* attack_multiplier/
+    );
+    assert.match(
+        GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
+        /EFFECT_INSTANCE_FLAG_TOWER_CONTACT_DAMAGE_MODIFIABLE[\s\S]*?EFFECT_DAMAGE_CHANNEL_TOWER_CONTACT[\s\S]*?EFFECT_INSTANCE_FLAG_PROJECTILE_TOWER_DAMAGE_MODIFIABLE[\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER[\s\S]*?EFFECT_INSTANCE_FLAG_DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE[\s\S]*?EFFECT_DAMAGE_CHANNEL_DIRECT_CORE_IMPACT[\s\S]*?EFFECT_INSTANCE_FLAG_PROJECTILE_CORE_DAMAGE_MODIFIABLE[\s\S]*?EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE/
     );
 });
 

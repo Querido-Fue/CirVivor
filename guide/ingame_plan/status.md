@@ -137,7 +137,7 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
   `T >= expiresAtFixedTick` is expired. Same-Tower/source-tick candidates are order-independent; maximum
   final damage wins, with equal maxima resolved by source entityId then incarnation ascending. `DAMAGE_APPLIED`
   reports the actual HP delta, including zero for a valid suppressed hit. A larger active maximum applies only
-  the peak delta and never extends the original first-tick expiry.
+  the peak delta and resets expiry to that winning tick plus 60; a value at or below the peak preserves expiry.
 - A valid projectile hit consumes penetration/self-hit budget even when the window applies zero HP damage.
   Friendly fire, stale/invalid target, miss, capture, or reflect rejection consumes nothing.
 - Weight is physical mass (`inverseMass = 1 / weight`); the Tower baseline is data-authored `10`, and
@@ -183,20 +183,21 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
   catalog records; Poison/Burn/Freeze exist only as generic data/contract/non-production fixture vocabulary,
   with no empty production capability classes.
 - The endpoint owns one bounded generic Effect command owner and `GameObjectSystem` owns one
-  `PentagonEffectDirector` with an exact-handle primitive SoA roster. Every same-tick due P is one ordered
-  whole-tick batch and validation is zero-partial. Explicit zero-target advances cadence. Authentic candidate/
-  instance/event/pulse-grid `CAPACITY_REJECTED` advances only the protocol watermark, consumes no sequence or
-  cadence, and retries without pausing the fixed world; program-capacity/ABI/record/ID or mixed evidence is
-  recovery. Owner/backend share the same resolved capacity.
+  `PentagonEffectDirector` with an exact-handle primitive SoA roster. Same-tick due P sources share one ordered
+  command, but candidate/instance/event admission and commit are atomic per pulse. Results are `APPLIED`,
+  `ZERO_TARGET`, `SOURCE_INVALID`, or `DEFERRED_CAPACITY`. A deferred pulse mutates no subset of targets,
+  consumes no sequence/cadence, keeps `recovery=false`, and retries with the same logical sequence. Admission
+  origin rotates deterministically after pressure so no due source starves; program-capacity/ABI/record/ID or
+  mixed/partial evidence remains recovery. Owner/backend share the same resolved capacity.
 - GPU A/B Effect pools preserve independent exact source/target instances and half-open expiration. Per-body
   Summary implements `1+` Boost regeneration and `2+` attack multiplication; PEmitter state owns pulse and
   retarget cadence independently from the basic behavior-program union.
 - P navigation consumes tick-start bounded-grid candidates and uploaded route integration-cost/SDF data. It
   admits only non-increasing same-stage cost or a reachable later stage, rejects reverse/unreachable movement,
   and performs no CPU pose readback or naive P×N² scan.
-- Contact handlers recompute from immutable authored/resolved base damage and projectiles snapshot damage once
-  at spawn. Explicit flags permit current Effect attack modification only for Tower contact/projectile channels;
-  direct Core impact and typed projectile Core damage remain unmodified.
+- Contact/direct handlers recompute from immutable authored/resolved base damage and projectiles snapshot
+  channel damage once at spawn. `Attack` and P Boost multiplication apply consistently to Tower contact,
+  Tower projectile, direct Core impact, and projectile Core channels.
 - Core terminal close now also cancels/tombstones Effect work, retires readback leases, skips terminal
   pulse/regen, observes the final P lifecycle removal, and requires matching Effect ABI/tick/count/pending-zero
   plus roster-seal evidence. GPU-world replacement preserves Tower HP only and resets every transient
@@ -220,8 +221,9 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
   `WorldRegistry` token. One authentic lifecycle commit removes both sources and activates one destination;
   ordinary death/Core cleanup wins before publication.
 - Current/max signed-int32 centi-HP each merge as `sum + trunc(sum/10)`. H/HX uses the fixed absolute n-table,
-  rejects map/wave modifiers, changes Tower contact only, keeps Core impact 1, and uses bounty budgets
-  `[1,2,4,6,8,10]`. Consumed sources have no kill bounty.
+  rejects map/wave modifiers, scales Tower contact as `[0.1,0.12,0.144,0.1728,0.20736,0.248832]`, scales
+  Core-impact Attack as `[1,1.2,1.44,1.728,2.0736,2.48832]`, and uses bounty budgets `[1,2,4,6,8,10]`.
+  Consumed sources have no kill bounty.
 - Every target-tick half-open active Effect instance rekeys independently to the destination with exact identity,
   provenance, and applied/expiry ticks. Prepared/actual counts must match; aggregate/refresh/silent loss is forbidden.
 - Core terminal cancel now covers Formation prepared/armed/program/readback work and forbids a final transform.
@@ -443,6 +445,28 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
   one-per-tick 10,000-spawn completion interval with opaque red mixed shapes, live Tower/Core contact damage, and no
   reset log newer than `reset_2026-08-16_00-21-01-417.txt`.
 - This stabilization section does not start R3 Word/Sentence, economy, Tower Share, or multi-Tower work.
+
+## Post-R2 Debug/Optimization D1 implementation status
+
+- Tower contact, Arrow charge, Archer projectile, and M projectile now converge on one GPU final-candidate →
+  same-tick maximum → Maximum Damage Window → HP path. A higher active peak resets expiry; M retains its exact
+  launch snapshot and source-death independence without a direct-HP bypass.
+- `Attack`/P Boost covers all four hostile damage channels. H/HX direct Core impact now follows the absolute
+  n1..6 Attack scale `[1,1.2,1.44,1.728,2.0736,2.48832]` rather than a fixed value.
+- P capacity is per-pulse atomic with deterministic rotating, starvation-free retry. Telemetry exposes due,
+  applied, deferred, maximum targets per pulse, candidate/instance/event high-water, and maximum consecutive
+  defer count; deferred work keeps the same sequence and does not trigger recovery.
+- The Map 2 performance receipt is bound to current HEAD/tree/worktree content plus exact map/wave content keys,
+  and records definition counts, body/projectile/effect/contact high-water, fixed completion/failure/drop/lost
+  time, simulation progress ratio, frame/fixed CPU percentiles, GPU limits, overflow, recovery/restart/protocol,
+  uncaptured errors, and device loss. PASS is forbidden until the full existing 10,000-request workload completes
+  with every required zero-error/zero-loss gate. No final performance PASS is recorded in this guide yet.
+- Current non-performance gates pass: changed JS/MJS syntax `32/32`, full Node `1498/1498`, both WASM
+  reproducibility checks, default actual WebGPU, M source-death/common-window, and phase-aligned P capacity.
+  The actual dedicated receipts keep `storageMaximum=9`, `uncapturedErrorCount=0`, `recovery=false`, and
+  `deviceLostReason=destroyed`.
+- This D1 work does not change either production map card, authored performance map/wave, render golden, or any
+  R3/economy/Overtime/multi-Tower scope.
 
 ## Post-R2 locked target not yet implemented
 

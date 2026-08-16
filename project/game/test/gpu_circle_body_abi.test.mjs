@@ -189,6 +189,8 @@ assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_FINAL_DAMAGE_FIXED_POINT, 8);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.EXPIRES_AT_FIXED_TICK, 12);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_ENTITY_ID, 16);
 assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION, 20);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.DIRECT_CORE_DAMAGE_FIXED_POINT, 24);
+assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_0, 24);
 assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE }, {
     STRIDE: 48,
     PROGRAM_ID: 0,
@@ -549,7 +551,8 @@ assert.deepEqual({ ...packedBody.combatState }, {
     peakFinalDamageFixedPoint: 0,
     expiresAtFixedTick: 0,
     peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
-    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    directCoreDamageFixedPoint: 0
 });
 assert.deepEqual(
     [...new Uint8Array(
@@ -559,7 +562,7 @@ assert.deepEqual(
         16
     )],
     Array(16).fill(0),
-    'CombatState +24..+39는 directional defense가 재사용하지 않는 reserved zero입니다.'
+    '기본 spawn의 direct Core damage와 나머지 reserved words는 zero입니다.'
 );
 assert.deepEqual({
     ...packedBody.enemyBehaviorState,
@@ -804,7 +807,8 @@ writeGpuCircleBodyCombatState(storage, 1, {
     peakFinalDamageFixedPoint: 600,
     expiresAtFixedTick: 67,
     peakSourceEntityId: 9,
-    peakSourceIncarnation: 3
+    peakSourceIncarnation: 3,
+    directCoreDamageFixedPoint: 125
 });
 assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
     targetInteractionLayerMask: 0x42,
@@ -812,17 +816,26 @@ assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
     peakFinalDamageFixedPoint: 600,
     expiresAtFixedTick: 67,
     peakSourceEntityId: 9,
-    peakSourceIncarnation: 3
+    peakSourceIncarnation: 3,
+    directCoreDamageFixedPoint: 125
 });
+assert.equal(
+    new DataView(storage.combatStateBuffer).getInt32(
+        GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
+            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.DIRECT_CORE_DAMAGE_FIXED_POINT,
+        true
+    ),
+    125
+);
 assert.deepEqual(
     [...new Uint8Array(
         storage.combatStateBuffer,
         GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE
-            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.PEAK_SOURCE_INCARNATION + 4,
-        16
+            + GPU_CIRCLE_BODY_ABI.COMBAT_STATE.RESERVED_1,
+        12
     )],
-    Array(16).fill(0),
-    'maximum-damage write 뒤에도 CombatState reserved words는 zero입니다.'
+    Array(12).fill(0),
+    'maximum-damage/direct-Core write 뒤에도 나머지 CombatState reserved words는 zero입니다.'
 );
 writeGpuCircleBodySpawn(storage, 1, {
     position: { x: 12.25, y: -3.5 },
@@ -842,7 +855,8 @@ assert.deepEqual({ ...readGpuCircleBodyCombatState(storage, 1) }, {
     peakFinalDamageFixedPoint: 0,
     expiresAtFixedTick: 0,
     peakSourceEntityId: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
-    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
+    peakSourceIncarnation: GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT,
+    directCoreDamageFixedPoint: 0
 });
 
 // route field index와 speed는 source-compatible simulation stride 안에서 round trip합니다.
@@ -1099,13 +1113,17 @@ assert.equal(firstPermutation.expiresAtFixedTick, 67);
 assert.equal(secondPermutation.appliedDamageFixedPoint, 600);
 assert.equal(secondPermutation.peakFinalDamageFixedPoint, 600);
 assert.equal(secondPermutation.expiresAtFixedTick, 67);
+// LOCKED mixed producer example: contact 1 + Archer 4 + M 5는 HP 5만 적용하고
+// 세 번째 stable source(M)가 winner provenance를 소유합니다.
 const threeCandidatePermutation = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 7,
     maximumDamageWindowDurationTicks: 60,
-    candidates: maximumDamageWindowCandidates([2, 4, 3])
+    candidates: maximumDamageWindowCandidates([1, 4, 5])
 });
-assert.equal(threeCandidatePermutation.appliedDamageFixedPoint, 400);
-assert.equal(threeCandidatePermutation.peakFinalDamageFixedPoint, 400);
+assert.equal(threeCandidatePermutation.appliedDamageFixedPoint, 500);
+assert.equal(threeCandidatePermutation.peakFinalDamageFixedPoint, 500);
+assert.equal(threeCandidatePermutation.peakSourceEntityId, 12);
+assert.equal(threeCandidatePermutation.peakSourceIncarnation, 3);
 const tieProvenance = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 9,
     maximumDamageWindowDurationTicks: 60,
@@ -1131,7 +1149,7 @@ assert.equal(suppressedSmaller.expiresAtFixedTick, 69);
 assert.equal(suppressedSmaller.damageAppliedEvent.valueFixedPoint, 0);
 assert.equal(suppressedSmaller.damageAppliedEvent.sourceEntityId, 7);
 assert.equal(suppressedSmaller.damageAppliedEvent.sourceIncarnation, 3);
-const largerPeakWithoutExpiryExtension = resolveGpuCircleBodyMaximumDamageWindow({
+const largerPeakResetsExpiry = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 10,
     maximumDamageWindowDurationTicks: 60,
     peakFinalDamageFixedPoint: 600,
@@ -1140,11 +1158,11 @@ const largerPeakWithoutExpiryExtension = resolveGpuCircleBodyMaximumDamageWindow
     peakSourceIncarnation: 9,
     candidates: [{ finalDamageFixedPoint: 700, sourceEntityId: 7, sourceIncarnation: 3 }]
 });
-assert.equal(largerPeakWithoutExpiryExtension.appliedDamageFixedPoint, 100);
-assert.equal(largerPeakWithoutExpiryExtension.peakFinalDamageFixedPoint, 700);
-assert.equal(largerPeakWithoutExpiryExtension.expiresAtFixedTick, 69);
-assert.equal(largerPeakWithoutExpiryExtension.peakSourceEntityId, 7);
-const activeNearUint32Boundary = resolveGpuCircleBodyMaximumDamageWindow({
+assert.equal(largerPeakResetsExpiry.appliedDamageFixedPoint, 100);
+assert.equal(largerPeakResetsExpiry.peakFinalDamageFixedPoint, 700);
+assert.equal(largerPeakResetsExpiry.expiresAtFixedTick, 70);
+assert.equal(largerPeakResetsExpiry.peakSourceEntityId, 7);
+assertThrowsNamed(() => resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 0xffffffff - 30,
     maximumDamageWindowDurationTicks: 60,
     peakFinalDamageFixedPoint: 600,
@@ -1152,11 +1170,18 @@ const activeNearUint32Boundary = resolveGpuCircleBodyMaximumDamageWindow({
     peakSourceEntityId: 1,
     peakSourceIncarnation: 9,
     candidates: [{ finalDamageFixedPoint: 700, sourceEntityId: 7, sourceIncarnation: 3 }]
+}), 'RangeError');
+const suppressedNearUint32Boundary = resolveGpuCircleBodyMaximumDamageWindow({
+    fixedTick: 0xffffffff - 30,
+    maximumDamageWindowDurationTicks: 60,
+    peakFinalDamageFixedPoint: 700,
+    expiresAtFixedTick: 0xffffffff - 1,
+    peakSourceEntityId: 7,
+    peakSourceIncarnation: 3,
+    candidates: [{ finalDamageFixedPoint: 600, sourceEntityId: 1, sourceIncarnation: 9 }]
 });
-assert.equal(activeNearUint32Boundary.appliedDamageFixedPoint, 100);
-assert.equal(activeNearUint32Boundary.peakFinalDamageFixedPoint, 700);
-assert.equal(activeNearUint32Boundary.expiresAtFixedTick, 0xffffffff - 1);
-assert.equal(activeNearUint32Boundary.peakSourceEntityId, 7);
+assert.equal(suppressedNearUint32Boundary.appliedDamageFixedPoint, 0);
+assert.equal(suppressedNearUint32Boundary.expiresAtFixedTick, 0xffffffff - 1);
 const clampedWinner = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 11,
     maximumDamageWindowDurationTicks: 60,
@@ -1183,7 +1208,7 @@ assert.equal(
     GPU_CIRCLE_BODY_IDENTITY.INVALID_COMPONENT
 );
 
-// 실제 연속 fixed tick 산술: 최초 N+60 expiry를 유지한 채
+// 실제 연속 fixed tick 산술: higher peak마다 T+60 expiry를 다시 열고
 // 0.1→6→4→8→만료 뒤 0.1을 state chaining으로 고정합니다.
 const chainedWindowFirst = resolveGpuCircleBodyMaximumDamageWindow({
     fixedTick: 100,
@@ -1230,7 +1255,7 @@ assert.deepEqual({
     applied: 590,
     health: 2400,
     peak: 600,
-    expires: 160,
+    expires: 161,
     source: [2, 1],
     event: 590
 });
@@ -1259,7 +1284,7 @@ assert.deepEqual({
     applied: 0,
     health: 2400,
     peak: 600,
-    expires: 160,
+    expires: 161,
     source: [2, 1],
     event: 0,
     eventSource: [3, 1]
@@ -1285,12 +1310,12 @@ assert.deepEqual({
     applied: 200,
     health: 2200,
     peak: 800,
-    expires: 160,
+    expires: 163,
     source: [4, 1],
     event: 200
 });
 const chainedWindowExpiry = resolveGpuCircleBodyMaximumDamageWindow({
-    fixedTick: 160,
+    fixedTick: 163,
     maximumDamageWindowDurationTicks: 60,
     currentHealthFixedPoint: chainedWindowEight.remainingHealthFixedPoint,
     peakFinalDamageFixedPoint: chainedWindowEight.peakFinalDamageFixedPoint,
@@ -1313,7 +1338,7 @@ assert.deepEqual({
     applied: 10,
     health: 2190,
     peak: 10,
-    expires: 220,
+    expires: 223,
     source: [5, 1],
     event: 10
 });

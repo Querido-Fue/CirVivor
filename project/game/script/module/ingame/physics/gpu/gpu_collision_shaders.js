@@ -267,6 +267,8 @@ const ENEMY_ORBIT_PHASE_RADIANS_PER_Q32: f32 = ${toWgslFloat(
 // 이후 모든 slot은 같은 fixed-tick Q32 phase로 함께 회전합니다.
 const ENEMY_ORBIT_SLOT_ZERO_PHASE_Q32: u32 = 0x80000000u;
 const EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER: u32 = ${GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_TOWER}u;
+const EFFECT_DAMAGE_CHANNEL_DIRECT_CORE_IMPACT: u32 = ${GPU_EFFECT_DAMAGE_CHANNEL_FLAG.DIRECT_CORE_IMPACT}u;
+const EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE: u32 = ${GPU_EFFECT_DAMAGE_CHANNEL_FLAG.PROJECTILE_CORE}u;
 const EFFECT_SUMMARY_FLAG_PROJECTILE_ATTACK_SNAPSHOT: u32 = ${GPU_EFFECT_SUMMARY_FLAG.PROJECTILE_ATTACK_SNAPSHOT}u;
 const DEATH_EVENT_FLAG_HEALTH: u32 = 1u;
 const DEATH_EVENT_FLAG_LIFETIME: u32 = 2u;
@@ -347,7 +349,7 @@ struct CombatState {
     expires_at_fixed_tick: atomic<u32>,
     peak_source_entity_id: atomic<u32>,
     peak_source_incarnation: atomic<u32>,
-    reserved_0: u32,
+    direct_core_damage_fixed_point: i32,
     reserved_1: u32,
     reserved_2: u32,
     reserved_3: u32,
@@ -807,32 +809,60 @@ fn body_id_is_simulation_active(body_id: u32) -> bool {
 
 ${GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL}
 
-fn snapshot_tower_attack_damage(source_slot: u32, destination_slot: u32) {
+fn effect_attack_multiplier_for_channel(
+    source_slot: u32,
+    damage_channel_flag: u32
+) -> f32 {
     let source_identity_matches = effect_summaries.values[source_slot].entity_id
             == simulations.values[source_slot].entity_id
         && effect_summaries.values[source_slot].incarnation
             == simulations.values[source_slot].incarnation;
+    if (!source_identity_matches) {
+        return 1.0;
+    }
+    let damage_is_modifiable = (atomicLoad(
+        &effect_summaries.values[source_slot].flags
+    ) & damage_channel_flag) != 0u;
+    return select(
+        1.0,
+        max(effect_summaries.values[source_slot].attack_multiplier, 0.0),
+        damage_is_modifiable
+    );
+}
+
+fn snapshot_projectile_attack_damage(
+    source_slot: u32,
+    destination_slot: u32,
+    damage_channel_flag: u32
+) {
     let destination_identity_matches =
         effect_summaries.values[destination_slot].entity_id
             == simulations.values[destination_slot].entity_id
         && effect_summaries.values[destination_slot].incarnation
             == simulations.values[destination_slot].incarnation;
-    if (!source_identity_matches || !destination_identity_matches) {
+    if (!destination_identity_matches) {
         return;
     }
-    let projectile_tower_damage_is_modifiable =
-        (atomicLoad(&effect_summaries.values[source_slot].flags)
-            & EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER) != 0u;
-    let source_attack_multiplier = select(
-        1.0,
-        max(effect_summaries.values[source_slot].attack_multiplier, 0.0),
-        projectile_tower_damage_is_modifiable
+    let source_attack_multiplier = effect_attack_multiplier_for_channel(
+        source_slot,
+        damage_channel_flag
     );
-    effect_summaries.values[destination_slot].resolved_base_damage_other = max(
-        effect_summaries.values[destination_slot].authored_damage_other
-            * source_attack_multiplier,
-        0.0
-    );
+    if (damage_channel_flag == EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE) {
+        let authored_core_damage_fixed_point = max(bitcast<i32>(
+            enemy_behavior_states.values[destination_slot].windup_range
+        ), 0);
+        let resolved_core_damage_fixed_point = max(i32(
+            f32(authored_core_damage_fixed_point) * source_attack_multiplier
+        ), 0);
+        enemy_behavior_states.values[destination_slot].windup_range
+            = bitcast<f32>(resolved_core_damage_fixed_point);
+    } else {
+        effect_summaries.values[destination_slot].resolved_base_damage_other = max(
+            effect_summaries.values[destination_slot].authored_damage_other
+                * source_attack_multiplier,
+            0.0
+        );
+    }
     effect_summaries.values[destination_slot].source_snapshot_tick
         = params.fixed_tick;
     atomicOr(
@@ -1835,12 +1865,15 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
             = control_state.selected_target_incarnation;
         spawn_program.records[program_index].selected_target_kind
             = control_state.selected_target_kind;
-        if (selected_is_tower) {
-            snapshot_tower_attack_damage(
-                program.source_slot,
-                program.destination_slot
-            );
-        }
+        snapshot_projectile_attack_damage(
+            program.source_slot,
+            program.destination_slot,
+            select(
+                EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER,
+                EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE,
+                selected_is_core
+            )
+        );
         atomicOr(
             &simulations.values[program.destination_slot].flags,
             BODY_FLAG_ALIVE
@@ -1910,9 +1943,10 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
     // 자체는 Tower 권한 증거가 아니며 aim/core/other projectile은 원본 damage를 유지합니다.
     if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
         && program.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL) {
-        snapshot_tower_attack_damage(
+        snapshot_projectile_attack_damage(
             program.source_slot,
-            program.destination_slot
+            program.destination_slot,
+            EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER
         );
     }
     atomicOr(
@@ -2114,12 +2148,15 @@ fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3
         = control_state.selected_target_incarnation;
     spawn_program.records[program_index].selected_target_kind
         = control_state.selected_target_kind;
-    if (selected_is_tower) {
-        snapshot_tower_attack_damage(
-            program.source_slot,
-            program.destination_slot
-        );
-    }
+    snapshot_projectile_attack_damage(
+        program.source_slot,
+        program.destination_slot,
+        select(
+            EFFECT_DAMAGE_CHANNEL_PROJECTILE_TOWER,
+            EFFECT_DAMAGE_CHANNEL_PROJECTILE_CORE,
+            selected_is_core
+        )
+    );
     atomicOr(
         &simulations.values[program.destination_slot].flags,
         BODY_FLAG_ALIVE
@@ -3681,6 +3718,37 @@ fn resolve_contact_target_mitigation(
     );
 }
 
+fn hostile_direct_core_impact_is_valid(
+    source_body_id: u32,
+    target_body_id: u32
+) -> bool {
+    return body_interaction_layer(
+            physics.values[source_body_id].interaction_meta
+        ) == BODY_LAYER_ENEMY
+        && body_interaction_layer(
+            physics.values[target_body_id].interaction_meta
+        ) == BODY_LAYER_CORE_PROXY
+        && gameplay_team_id(simulations.values[source_body_id].gameplay_meta)
+            == GAMEPLAY_TEAM_HOSTILE
+        && combat_states.values[source_body_id].direct_core_damage_fixed_point > 0
+        && gameplay_damage_is_allowed(
+            simulations.values[source_body_id].gameplay_meta,
+            simulations.values[target_body_id].gameplay_meta
+        );
+}
+
+fn resolve_direct_core_impact_damage(source_body_id: u32) -> i32 {
+    let authored_damage = max(
+        combat_states.values[source_body_id].direct_core_damage_fixed_point,
+        0
+    );
+    let attack_multiplier = effect_attack_multiplier_for_channel(
+        source_body_id,
+        EFFECT_DAMAGE_CHANNEL_DIRECT_CORE_IMPACT
+    );
+    return max(i32(f32(authored_damage) * attack_multiplier), 0);
+}
+
 fn mark_maximum_damage_window_candidate(
     contact_index: u32,
     final_damage: i32,
@@ -3766,7 +3834,11 @@ fn find_maximum_damage_window_candidate(
         contact_index += 1u) {
         let contact = contacts.values[contact_index];
         let marker = bitcast<u32>(contact.normal.y);
-        let policy_event_flag = maximum_damage_window_policy_from_marker(marker);
+        var policy_event_flag = maximum_damage_window_policy_from_marker(marker);
+        if (policy_event_flag == 0u
+            && selected_target_tower_candidate_is_valid(contact)) {
+            policy_event_flag = selected_target_tower_policy_from_marker(marker);
+        }
         if (policy_event_flag == 0u
             || contact.other_body_id < 0
             || u32(contact.other_body_id) != target_body_id
@@ -3847,16 +3919,22 @@ fn preflight_maximum_damage_window(
         &combat_states.values[body_id].expires_at_fixed_tick
     );
     let window_is_active = params.fixed_tick < expires_at_fixed_tick;
-    if (!window_is_active
+    let candidate = find_maximum_damage_window_candidate(body_id);
+    if (candidate.found == 0u) {
+        return;
+    }
+    let current_peak = select(
+        0,
+        atomicLoad(&combat_states.values[body_id].peak_final_damage_fixed_point),
+        window_is_active
+    );
+    let resets_window = !window_is_active || candidate.final_damage > current_peak;
+    if (resets_window
         && !maximum_damage_window_tick_is_representable(duration)) {
         atomicStore(
             &contact_state.maximum_damage_window_protocol_status,
             MAXIMUM_DAMAGE_WINDOW_PROTOCOL_STATUS_FAILURE
         );
-        return;
-    }
-    let candidate = find_maximum_damage_window_candidate(body_id);
-    if (candidate.found == 0u) {
         return;
     }
     // 유효 winner는 delta가 0이어도 exact provenance의 DAMAGE_APPLIED fact를 남긴다.
@@ -3967,11 +4045,14 @@ fn resolve_maximum_damage_window(
             candidate.source_incarnation
         );
     } else if (candidate.final_damage > current_peak) {
-        // Maximum Damage Window는 최초 active 시작 N+duration에 고정된다.
-        // 더 큰 peak/provenance는 갱신하되 expiry를 T+duration으로 연장하지 않는다.
+        // 더 큰 peak가 winner이면 그 tick부터 새 damage window를 시작합니다.
         atomicStore(
             &combat_states.values[body_id].peak_final_damage_fixed_point,
             candidate.final_damage
+        );
+        atomicStore(
+            &combat_states.values[body_id].expires_at_fixed_tick,
+            params.fixed_tick + duration
         );
         atomicStore(
             &combat_states.values[body_id].peak_source_entity_id,
@@ -4393,7 +4474,9 @@ fn shield_atomic_transform_first_hit_contacts(
 
 @compute @workgroup_size(256)
 fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
-    if (!abi_is_current()) {
+    // clear_contact_state가 같은 pass 앞에서 BODY ABI를 한 번 검증합니다. 여기서는
+    // 그 sticky 결과를 소비해 contact ABI storage usage를 9로 유지합니다.
+    if (atomicLoad(&contact_state.abi_status) != CONTACT_ABI_STATUS_OK) {
         return;
     }
     if (atomicLoad(&contact_state.contact_overflow) != 0u) {
@@ -4415,7 +4498,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let self_body_id = contact.self_body_id;
-    if (self_body_id >= counts.body_count
+    let body_capacity = arrayLength(&simulations.values);
+    if (self_body_id >= body_capacity
         || simulations.values[self_body_id].incarnation != contact.self_incarnation
         || !body_id_is_simulation_active(self_body_id)) {
         return;
@@ -4457,7 +4541,7 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     }
 
     let other_body_id = u32(contact.other_body_id);
-    if (other_body_id >= counts.body_count
+    if (other_body_id >= body_capacity
         || other_body_id == self_body_id
         || simulations.values[other_body_id].incarnation != contact.other_incarnation
         || !body_id_is_simulation_active(other_body_id)) {
@@ -4465,13 +4549,22 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     }
     if (body_interaction_layer(physics.values[self_body_id].interaction_meta)
             == BODY_LAYER_CORE_PROXY
-        && body_interaction_layer(physics.values[other_body_id].interaction_meta)
-            == BODY_LAYER_PROJECTILE
-        && contact_handler_has_flag(
-            contact_handlers.values[other_body_id].flags,
-            CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
-        )) {
-        // Projectile 방향의 typed request만 event authority를 갖습니다.
+        && ((body_interaction_layer(
+                physics.values[other_body_id].interaction_meta
+            ) == BODY_LAYER_PROJECTILE
+            && contact_handler_has_flag(
+                contact_handlers.values[other_body_id].flags,
+                CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST
+            )) || hostile_direct_core_impact_is_valid(
+                other_body_id,
+                self_body_id
+            ))) {
+        // Hostile source 방향의 typed request만 Core damage authority를 갖습니다.
+        return;
+    }
+    if (hostile_direct_core_impact_is_valid(self_body_id, other_body_id)) {
+        // Effect summary가 필요한 Direct Core damage는 전용 8-storage pass가
+        // 공통 preflight로 예약된 event slot에 typed request로 기록합니다.
         return;
     }
     if (contact_handler_has_flag(
@@ -4493,8 +4586,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         ) == BODY_LAYER_PLAYER_DAMAGEABLE) {
         // Tower 후보는 여기서 program state를 읽지 않고 marker만 남깁니다.
         // 전용 <=9-storage pass가 program/team/identity/policy/budget을 exact
-        // 검증한 뒤 self budget을 reserve하고 Tower HP에 direct 적용합니다.
-        // 성공분만 policy/target-died event로 emit하며 window marker로 승격하지 않습니다.
+        // 검증하고 self budget을 reserve한 뒤 공통 maximum-window marker로
+        // 승격합니다. Tower HP/window/event mutation은 공통 resolver만 소유합니다.
         mark_selected_target_tower_candidate(
             contact_index,
             resolve_contact_source_modified_damage(
@@ -4792,7 +4885,11 @@ fn preflight_core_damage_requests(
     }
     let contact = contacts.values[contact_index];
     if (core_damage_request_candidate_is_valid(contact)
-        || selected_target_tower_candidate_is_valid(contact)) {
+        || (contact.other_body_id >= 0
+            && hostile_direct_core_impact_is_valid(
+                contact.self_body_id,
+                u32(contact.other_body_id)
+            ))) {
         atomicAdd(&contact_state.core_damage_request_event_count, 1u);
     }
 }
@@ -4855,35 +4952,16 @@ fn resolve_core_damage_requests(
         if (!reserve_self_hit_budget(self_body_id, damage_self)) {
             return;
         }
-        let damage = apply_target_damage(
-            other_body_id,
-            bitcast<i32>(contact.normal.x)
-        );
-        if (damage.applied <= 0) {
-            if (damage_self > 0) {
-                atomicAdd(&simulations.values[self_body_id].health, damage_self);
-            }
-            return;
-        }
         let policy_event_flag = selected_target_tower_policy_from_marker(
             bitcast<u32>(contact.normal.y)
         );
-        let target_died_flag = select(
-            0u,
-            APPLIED_EVENT_FLAG_TARGET_DIED,
-            damage.target_died != 0u
+        // M Tower도 유효 hit의 self/penetration budget은 여기서 먼저 소모하고,
+        // HP/window/event mutation은 다른 모든 producer와 같은 resolver가 담당합니다.
+        mark_maximum_damage_window_candidate(
+            contact_index,
+            bitcast<i32>(contact.normal.x),
+            policy_event_flag
         );
-        append_applied_event(AppliedEvent(
-            simulations.values[self_body_id].entity_id,
-            contact.self_incarnation,
-            simulations.values[other_body_id].entity_id,
-            contact.other_incarnation,
-            damage.applied,
-            APPLIED_EVENT_TYPE_DAMAGE_APPLIED
-                | policy_event_flag
-                | target_died_flag,
-            contact.world_position
-        ));
         return;
     }
     if (!core_damage_request_candidate_is_valid(contact)) {
@@ -4905,6 +4983,45 @@ fn resolve_core_damage_requests(
         simulations.values[other_body_id].entity_id,
         contact.other_incarnation,
         core_damage_fixed_point,
+        APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST,
+        contact.world_position
+    ));
+}
+
+@compute @workgroup_size(256)
+fn resolve_direct_core_damage_requests(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u
+        || atomicLoad(&contact_state.event_overflow) != 0u
+        || atomicLoad(&contact_state.core_damage_request_protocol_status)
+            != CORE_DAMAGE_REQUEST_PROTOCOL_STATUS_OK) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (contact.other_body_id < 0) {
+        return;
+    }
+    let self_body_id = contact.self_body_id;
+    let other_body_id = u32(contact.other_body_id);
+    if (!hostile_direct_core_impact_is_valid(self_body_id, other_body_id)) {
+        return;
+    }
+    append_applied_event(AppliedEvent(
+        simulations.values[self_body_id].entity_id,
+        contact.self_incarnation,
+        simulations.values[other_body_id].entity_id,
+        contact.other_incarnation,
+        resolve_direct_core_impact_damage(self_body_id),
         APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST,
         contact.world_position
     ));

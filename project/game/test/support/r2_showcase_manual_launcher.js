@@ -15,7 +15,10 @@ import {
     PERFORMANCE_SERPENTINE_SESSION,
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
-import { getWebGpuPlatformPort } from 'display/display_system.js';
+import {
+    getWebGpuFrameTelemetryPort,
+    getWebGpuPlatformPort
+} from 'display/display_system.js';
 import { GameScene } from 'scene/game/_game_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
 import { TileMap } from 'ingame/map/tile_map.js';
@@ -532,8 +535,28 @@ class R2ShowcaseManualController {
         const jorang = objectSystem.getJorangSplitLineageStatus();
         const capture = objectSystem.getProjectileCaptureStatus();
         const closure = objectSystem.getCorkRouteClosureStatus();
+        const pentagonEffect = objectSystem.getPentagonEffectStatus();
         const endpoint = gameSystem.getGpuSimulationEndpoint().getStatus();
-        const platform = getWebGpuPlatformPort()?.getState?.() ?? null;
+        const platformPort = getWebGpuPlatformPort();
+        const platform = platformPort?.getState?.() ?? null;
+        const frameComposerTelemetry = getWebGpuFrameTelemetryPort()
+            ?.getSnapshot?.() ?? null;
+        const gpu = endpoint.backend?.gpu ?? null;
+        const unexpectedCapacityOverflow = Object.freeze({
+            contact: countOrZero(gpu?.contact?.totalOverflowCount),
+            appliedEvent: countOrZero(
+                gpu?.events?.totalAppliedOverflowCount
+            ),
+            deathEvent: countOrZero(gpu?.events?.totalDeathOverflowCount),
+            spawnProgram: countOrZero(
+                gpu?.fixedPrimitives?.spawnProgram?.overflowCount
+            ),
+            navigationSmall: countOrZero(gpu?.overflow?.totalSmallCount),
+            navigationBig: countOrZero(gpu?.overflow?.totalBigCount)
+        });
+        const unexpectedCapacityOverflowCount = Object.values(
+            unexpectedCapacityOverflow
+        ).reduce((sum, count) => sum + count, 0);
         const framePolicy = this.game.systemHandler.getFrameExecutionPolicy();
         const pauseReasons = Object.freeze([
             ...this.game.systemHandler.pauseReasons.keys()
@@ -588,6 +611,49 @@ class R2ShowcaseManualController {
                 closedPathIds: Object.freeze([...(closure?.closedPathIds ?? [])]),
                 recoveryRequired: closure?.recoveryRequired === true
             }),
+            performanceTelemetry: Object.freeze({
+                bodyHighWater: countOrZero(gpu?.bodyCountHighWater),
+                activeBodyHighWater: countOrZero(
+                    gpu?.activeBodyCountHighWater
+                ),
+                projectileHighWater: countOrZero(
+                    gpu?.projectileBodyCountHighWater
+                ),
+                contactHighWater: countOrZero(
+                    gpu?.contact?.countHighWater
+                ),
+                effectHighWater: Object.freeze({
+                    candidate: countOrZero(
+                        gpu?.effects?.candidateCountHighWater
+                    ),
+                    instance: countOrZero(
+                        gpu?.effects?.instanceCountHighWater
+                    ),
+                    event: countOrZero(gpu?.effects?.eventCountHighWater)
+                }),
+                pentagonPulse: pentagonEffect?.telemetry
+                    ? Object.freeze({ ...pentagonEffect.telemetry })
+                    : null,
+                unexpectedCapacityOverflow,
+                unexpectedCapacityOverflowCount,
+                requiredStorageBuffersPerShaderStage: countOrZero(
+                    gpu?.fixedPrimitives?.storageProfile?.requiredMaximum
+                ),
+                uncapturedErrorCount: countOrZero(
+                    frameComposerTelemetry?.counters?.uncapturedErrorCount
+                ),
+                platform: Object.freeze({
+                    deviceGeneration: countOrZero(platform?.deviceGeneration),
+                    limits: Object.freeze({ ...(platform?.limits ?? {}) }),
+                    adapterInfo: platform?.adapterInfo
+                        ? Object.freeze({ ...platform.adapterInfo })
+                        : null,
+                    lostInfo: platform?.lostInfo
+                        ? Object.freeze({ ...platform.lostInfo })
+                        : null
+                }),
+                frameComposer: frameComposerTelemetry
+            }),
             recovery: Object.freeze({
                 ...this.currentScene.getEnemyRecoveryStatus(),
                 failureCount: this.recoveryFailureCount,
@@ -603,6 +669,8 @@ class R2ShowcaseManualController {
                 backendState: endpoint.backend?.state ?? null,
                 backendGpuState: endpoint.backend?.gpu?.state ?? null,
                 backendFailure: endpoint.backend?.gpu?.failure ?? null,
+                eventProtocolFailure:
+                    endpoint.events?.protocolFailure ?? null,
                 lifecyclePendingCount: countOrZero(endpoint.lifecycle?.pendingCount),
                 lifecycleLastState: lifecycleCommit?.state ?? null,
                 lifecycleRecoveryRequired:

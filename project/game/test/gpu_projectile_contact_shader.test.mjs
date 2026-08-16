@@ -92,6 +92,7 @@ function resolveMaximumDamageWindowBatchReference({
             tower.peakSourceIncarnation = candidate.incarnation;
         } else if (candidate.finalDamage > tower.peakFinalDamage) {
             tower.peakFinalDamage = candidate.finalDamage;
+            tower.expiresAtFixedTick = fixedTick + tower.duration;
             tower.peakSourceEntityId = candidate.entityId;
             tower.peakSourceIncarnation = candidate.incarnation;
         }
@@ -445,7 +446,7 @@ assert.ok(
 );
 
 // 새 contact/event bind group과 고정 stride 레코드를 정적으로 잠급니다.
-assert.match(compute, /struct CombatState \{[\s\S]*?target_interaction_layer_mask: u32,[\s\S]*?maximum_damage_window_duration_fixed_ticks: u32,[\s\S]*?peak_final_damage_fixed_point: atomic<i32>,[\s\S]*?expires_at_fixed_tick: atomic<u32>,[\s\S]*?peak_source_entity_id: atomic<u32>,[\s\S]*?peak_source_incarnation: atomic<u32>,/);
+assert.match(compute, /struct CombatState \{[\s\S]*?target_interaction_layer_mask: u32,[\s\S]*?maximum_damage_window_duration_fixed_ticks: u32,[\s\S]*?peak_final_damage_fixed_point: atomic<i32>,[\s\S]*?expires_at_fixed_tick: atomic<u32>,[\s\S]*?peak_source_entity_id: atomic<u32>,[\s\S]*?peak_source_incarnation: atomic<u32>,[\s\S]*?direct_core_damage_fixed_point: i32,/);
 assert.match(compute, /struct ContactState \{[\s\S]*?contact_count: atomic<u32>,[\s\S]*?death_overflow: atomic<u32>,[\s\S]*?abi_status: atomic<u32>,[\s\S]*?event_encoding_version: atomic<u32>,[\s\S]*?maximum_damage_window_event_count: atomic<u32>,[\s\S]*?maximum_damage_window_protocol_status: atomic<u32>,[\s\S]*?core_damage_request_event_count: atomic<u32>,[\s\S]*?core_damage_request_protocol_status: atomic<u32>,/);
 assert.match(compute, /struct Contact \{\s*self_body_id: u32,\s*self_incarnation: u32,\s*other_body_id: i32,\s*other_incarnation: u32,\s*world_position: vec2f,\s*normal: vec2f,/);
 assert.match(compute, /struct AppliedEvent \{\s*subject_entity_id: u32,\s*subject_incarnation: u32,\s*other_entity_id: u32,\s*other_incarnation: u32,\s*value_fixed_point: i32,\s*event_meta: u32,\s*world_position: vec2f,/);
@@ -591,12 +592,12 @@ const maximumDamageWindowFinder = compute.slice(
 );
 assert.match(
     maximumDamageWindowFinder,
-    /let policy_event_flag = maximum_damage_window_policy_from_marker\(marker\)/
+    /var policy_event_flag = maximum_damage_window_policy_from_marker\(marker\)/
 );
 assert.doesNotMatch(maximumDamageWindowFinder, /contact_handlers/);
-assert.doesNotMatch(
+assert.match(
     maximumDamageWindowFinder,
-    /selected_target_tower_policy_from_marker|selected_target_tower_candidate_is_valid/
+    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?selected_target_tower_policy_from_marker\(marker\)/
 );
 assert.match(compute, /const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC: u32 = 0x7fc00000u;/);
 assert.match(compute, /const MAXIMUM_DAMAGE_WINDOW_MARKER_MAGIC_MASK: u32 = 0xfffffff0u;/);
@@ -635,7 +636,7 @@ const maximumDamageWindowResolver = compute.slice(
 );
 assert.match(
     maximumDamageWindowPreflight,
-    /let window_is_active = params\.fixed_tick < expires_at_fixed_tick;[\s\S]*?if \(!window_is_active[\s\S]*?!maximum_damage_window_tick_is_representable\(duration\)\)/
+    /let window_is_active = params\.fixed_tick < expires_at_fixed_tick;[\s\S]*?let candidate = find_maximum_damage_window_candidate\(body_id\);[\s\S]*?let resets_window = !window_is_active \|\| candidate\.final_damage > current_peak;[\s\S]*?if \(resets_window[\s\S]*?!maximum_damage_window_tick_is_representable\(duration\)\)/
 );
 assert.match(
     maximumDamageWindowPreflight,
@@ -658,7 +659,7 @@ const activePeakBranch = maximumDamageWindowResolver.slice(
 );
 assert.ok(activePeakBranchStart >= 0 && activePeakBranchEnd > activePeakBranchStart);
 assert.match(activePeakBranch, /peak_final_damage_fixed_point[\s\S]*?peak_source_entity_id[\s\S]*?peak_source_incarnation/);
-assert.doesNotMatch(activePeakBranch, /expires_at_fixed_tick|params\.fixed_tick \+ duration/);
+assert.match(activePeakBranch, /expires_at_fixed_tick[\s\S]*?params\.fixed_tick \+ duration/);
 assert.doesNotMatch(
     maximumDamageWindowResolver,
     /existing_event_count|maximum_damage_window_event_count|atomicAdd\(\s*&contact_state\.event_overflow/
@@ -666,7 +667,8 @@ assert.doesNotMatch(
 assert.doesNotMatch(maximumDamageWindowResolver, /if \(damage\.applied <= 0\)[\s\S]*?return;/);
 assert.doesNotMatch(compute, /\blet active\b/);
 
-// Typed Core request는 exact selected Core contact만 별도 preflight/resolve하며 Core HP를 GPU에서 바꾸지 않습니다.
+// Typed projectile Core request만 별도 event preflight/resolve하며 Core HP는 GPU에서 바꾸지 않습니다.
+// M Tower는 같은 pass에서 self budget만 예약한 뒤 공통 maximum-window 후보로 승격합니다.
 assert.match(compute, /const CONTACT_HANDLER_FLAG_CORE_DAMAGE_REQUEST: u32 = 32u;/);
 assert.match(compute, /const APPLIED_EVENT_TYPE_CORE_DAMAGE_REQUEST: u32 = 6u;/);
 assert.match(compute, /const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = 2u;/);
@@ -732,7 +734,14 @@ assert.match(
 );
 assert.match(
     compute,
-    /fn preflight_core_damage_requests\([\s\S]*?core_damage_request_candidate_is_valid\(contact\)[\s\S]*?selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?core_damage_request_event_count/
+    /fn preflight_core_damage_requests\([\s\S]*?core_damage_request_candidate_is_valid\(contact\)[\s\S]*?core_damage_request_event_count/
+);
+assert.doesNotMatch(
+    compute.slice(
+        compute.indexOf('fn preflight_core_damage_requests('),
+        compute.indexOf('fn finalize_core_damage_request_preflight(')
+    ),
+    /selected_target_tower_candidate_is_valid/
 );
 assert.match(
     compute,
@@ -744,7 +753,7 @@ assert.match(
 );
 assert.match(
     coreResolveBlock,
-    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?apply_target_damage\([\s\S]*?damage\.applied <= 0[\s\S]*?atomicAdd\(&simulations\.values\[self_body_id\]\.health, damage_self\)[\s\S]*?APPLIED_EVENT_TYPE_DAMAGE_APPLIED[\s\S]*?policy_event_flag[\s\S]*?target_died_flag/
+    /selected_target_tower_candidate_is_valid\(contact\)[\s\S]*?reserve_self_hit_budget\(self_body_id, damage_self\)[\s\S]*?mark_maximum_damage_window_candidate\([\s\S]*?bitcast<i32>\(contact\.normal\.x\)[\s\S]*?policy_event_flag/
 );
 const selectedTowerResolveStart = coreResolveBlock.indexOf(
     'if (selected_target_tower_candidate_is_valid(contact))'
@@ -760,9 +769,10 @@ const selectedTowerResolveBlock = coreResolveBlock.slice(
     selectedTowerResolveStart,
     coreCandidateResolveStart
 );
+assert.match(selectedTowerResolveBlock, /mark_maximum_damage_window_candidate/);
 assert.doesNotMatch(
     selectedTowerResolveBlock,
-    /mark_maximum_damage_window_candidate|APPLIED_EVENT_FLAG_MAXIMUM_DAMAGE_WINDOW/
+    /apply_target_damage|append_applied_event|APPLIED_EVENT_TYPE_DAMAGE_APPLIED/
 );
 assert.doesNotMatch(coreResolveBlock, /\.health\s*=|atomicSub/);
 assert.match(
@@ -839,23 +849,23 @@ assert.deepEqual(activeLargerPeak.towers[0], {
     id: 3,
     health: 700,
     peakFinalDamage: 300,
-    expiresAtFixedTick: 100,
+    expiresAtFixedTick: 140,
     peakSourceEntityId: 5,
     peakSourceIncarnation: 1,
     duration: 60,
     candidate: { finalDamage: 300, entityId: 5, incarnation: 1 }
 });
-const expiredStartsFreshWindow = resolveMaximumDamageWindowBatchReference({
+const exactExpiryStartsFreshWindow = resolveMaximumDamageWindowBatchReference({
     existingEventCount: 0,
     maxEvents: 1,
-    fixedTick: 100,
+    fixedTick: 140,
     towers: [{
         ...activeLargerPeak.towers[0],
         candidate: { finalDamage: 400, entityId: 4, incarnation: 9 }
     }]
 });
-assert.equal(expiredStartsFreshWindow.towers[0].expiresAtFixedTick, 160);
-assert.equal(expiredStartsFreshWindow.towers[0].peakFinalDamage, 400);
+assert.equal(exactExpiryStartsFreshWindow.towers[0].expiresAtFixedTick, 200);
+assert.equal(exactExpiryStartsFreshWindow.towers[0].peakFinalDamage, 400);
 const oneShort = resolveMaximumDamageWindowBatchReference({
     existingEventCount: 0,
     maxEvents: 1,

@@ -44,6 +44,11 @@ const PROFILE = ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[
 const DEFINITION = ENEMY_EFFECT_DEFINITION_BY_ID[
     PENTA_BOOST_EFFECT_DEFINITION_ID
 ];
+const EXPECTED_PULSE_FLAGS = GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.DIRECT_CORE_IMPACT_DAMAGE_MODIFIABLE
+    | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_CORE_DAMAGE_MODIFIABLE;
 
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
@@ -317,9 +322,7 @@ test('Effect owner는 same-tick P 전체를 한 batch로 stage하고 zero-target
     assert.equal('sourceSlot' in backend.staged[0].records[0], false);
     assert.equal(
         backend.staged[0].records[0].flags,
-        GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+        EXPECTED_PULSE_FLAGS
     );
     assert.equal(
         backend.staged[0].records[0].retargetIntervalTicks,
@@ -783,9 +786,7 @@ test('Effect owner는 same-boundary despawn source를 SOURCE_INVALID provenance�
     ).programs.length, 1);
     assert.equal(
         backend.staged[0].records[0].flags,
-        GPU_EFFECT_PULSE_PROGRAM_FLAG.PENTA_TARGET_ALLOWED
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.TOWER_CONTACT_DAMAGE_MODIFIABLE
-            | GPU_EFFECT_PULSE_PROGRAM_FLAG.PROJECTILE_TOWER_DAMAGE_MODIFIABLE
+        EXPECTED_PULSE_FLAGS
             | GPU_EFFECT_PULSE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID
     );
     backend.completed.push(Object.freeze({
@@ -1309,72 +1310,114 @@ test('Pentagon director는 live roster SOURCE_INVALID completion을 recovery로 
     director.destroy();
 });
 
-for (const [label, status] of [
-    ['candidate', GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED],
-    ['instance', GPU_EFFECT_RUNTIME_STATUS.INSTANCE_CAPACITY_EXCEEDED],
-    ['event', GPU_EFFECT_RUNTIME_STATUS.EVENT_CAPACITY_EXCEEDED],
-    ['grid', GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW],
-    ['combined', GPU_EFFECT_RUNTIME_STATUS.CANDIDATE_CAPACITY_EXCEEDED
-        | GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW]
-]) {
-    test(`Effect ${label} capacity completion은 normal zero-partial로 watermark만 전진한다`, () => {
-        const sessionGeneration = 60 + status;
-        const registry = new WorldRegistry({ capacity: 2 });
-        const backend = createEffectBackend(sessionGeneration);
-        const handle = activateEmitter(registry, backend);
-        const owner = new GpuEffectCommandOwner(backend, registry, {
-            sessionGeneration,
-            effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
-            effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
-            commandCapacity: 2
-        });
-        const commands = [createPulseCommand(sessionGeneration, 5, handle)];
-        const batchId = createGpuEffectPulseBatchId(sessionGeneration, 5, commands);
-        assert.equal(owner.getCommandPort().requestPulseBatch({
-            batchId,
-            targetFixedTick: 5,
-            commands
-        }).accepted, true);
-        assert.equal(owner.commitAtFixedBoundary(5).programs.length, 1);
-        backend.completed.push(Object.freeze({
-            abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
-            ...backend.getEventProtocolState(),
-            previousSourceTick: 0,
-            previousSubmittedTick: 0,
-            sourceTick: 5,
-            submittedTick: 5,
-            completedThroughTick: 5,
-            status,
-            candidateCount: 0,
-            appliedInstanceCount: 0,
-            eventCount: 0,
-            pulseResults: Object.freeze([Object.freeze({
+test('Effect owner는 same-tick APPLIED/DEFERRED_CAPACITY를 pulse별 zero-partial completion으로 수락한다', () => {
+    const sessionGeneration = 60;
+    const registry = new WorldRegistry({ capacity: 4 });
+    const backend = createEffectBackend(sessionGeneration);
+    const appliedSource = activateEmitter(registry, backend);
+    const deferredSource = activateEmitter(registry, backend);
+    const target = activateEmitter(registry, backend);
+    const owner = new GpuEffectCommandOwner(backend, registry, {
+        sessionGeneration,
+        effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
+        effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
+        commandCapacity: 4
+    });
+    const commands = [appliedSource, deferredSource].map((handle) => (
+        createPulseCommand(sessionGeneration, 5, handle)
+    ));
+    const batchId = createGpuEffectPulseBatchId(sessionGeneration, 5, commands);
+    assert.equal(owner.getCommandPort().requestPulseBatch({
+        batchId,
+        targetFixedTick: 5,
+        commands
+    }).accepted, true);
+    assert.equal(owner.commitAtFixedBoundary(5).programs.length, 2);
+    const appliedRecord = backend.staged[0].records[0];
+    backend.completed.push(Object.freeze({
+        abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+        ...backend.getEventProtocolState(),
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 5,
+        submittedTick: 5,
+        completedThroughTick: 5,
+        status: GPU_EFFECT_RUNTIME_STATUS.OK,
+        candidateCount: 1,
+        appliedInstanceCount: 1,
+        eventCount: 2,
+        pulseResults: Object.freeze([
+            Object.freeze({
                 programIndex: 0,
                 pulseSequence: 0,
-                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
-                candidateCount: 0,
+                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED,
+                candidateCount: 1,
+                appliedCount: 1
+            }),
+            Object.freeze({
+                programIndex: 1,
+                pulseSequence: 0,
+                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
+                candidateCount: 3,
                 appliedCount: 0
-            })]),
-            events: Object.freeze([])
-        }));
-        const completion = owner.commitCompletedAtFixedBoundary(6);
-        assert.equal(completion.protocolFailure, null);
-        assert.equal(completion.results.length, 1);
-        assert.equal(
-            completion.results[0].resultCode,
-            GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED
-        );
-        const statusSnapshot = owner.getStatus();
-        assert.equal(statusSnapshot.recoveryRequired, false);
-        assert.equal(statusSnapshot.pendingPulseProgramCount, 0);
-        assert.equal(statusSnapshot.completedThroughTick, 5);
-        assert.equal(statusSnapshot.telemetry.capacityRejectedCount, 1);
+            })
+        ]),
+        events: Object.freeze([
+            Object.freeze({
+                type: GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED,
+                flags: 0,
+                effectInstanceId: appliedRecord.fingerprint,
+                instanceIncarnation: 7,
+                sourceEntityId: appliedSource.entityId,
+                sourceIncarnation: appliedSource.incarnation,
+                targetEntityId: appliedSource.entityId,
+                targetIncarnation: appliedSource.incarnation,
+                effectDefinitionCode: DEFINITION.effectDefinitionCode,
+                valueFixedPoint: 1,
+                position: Object.freeze({ x: 0, y: 0 })
+            }),
+            Object.freeze({
+                type: GPU_EFFECT_EVENT_TYPE.INSTANCE_APPLIED,
+                flags: 0,
+                effectInstanceId: 1,
+                instanceIncarnation: 7,
+                sourceEntityId: appliedSource.entityId,
+                sourceIncarnation: appliedSource.incarnation,
+                targetEntityId: target.entityId,
+                targetIncarnation: target.incarnation,
+                effectDefinitionCode: DEFINITION.effectDefinitionCode,
+                valueFixedPoint: 1,
+                position: Object.freeze({ x: 1, y: 0 })
+            })
+        ])
+    }));
+    const completion = owner.commitCompletedAtFixedBoundary(6);
+    assert.equal(completion.protocolFailure, null);
+    assert.equal(completion.results.length, 2);
+    assert.equal(
+        completion.results[0].resultCode,
+        GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+    );
+    assert.deepEqual({
+        resultCode: completion.results[1].resultCode,
+        candidateCount: completion.results[1].candidateCount,
+        appliedCount: completion.results[1].appliedCount
+    }, {
+        resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
+        candidateCount: 3,
+        appliedCount: 0
     });
-}
+    const statusSnapshot = owner.getStatus();
+    assert.equal(statusSnapshot.recoveryRequired, false);
+    assert.equal(statusSnapshot.pendingPulseProgramCount, 0);
+    assert.equal(statusSnapshot.completedThroughTick, 5);
+    assert.equal(statusSnapshot.telemetry.deferredCapacityCount, 1);
+    assert.equal(statusSnapshot.telemetry.capacityRejectedCount, 0);
+});
 
-for (const forged of ['fatal-status-mix', 'forged-event']) {
-    test(`Effect capacity ${forged}는 telemetry mutation 전 recovery로 봉인한다`, () => {
-        const sessionGeneration = forged === 'fatal-status-mix' ? 80 : 81;
+for (const forged of ['fatal-status', 'forged-event']) {
+    test(`Effect deferred ${forged}는 telemetry mutation 전 recovery로 봉인한다`, () => {
+        const sessionGeneration = forged === 'fatal-status' ? 80 : 81;
         const registry = new WorldRegistry({ capacity: 2 });
         const backend = createEffectBackend(sessionGeneration);
         const handle = activateEmitter(registry, backend);
@@ -1414,18 +1457,17 @@ for (const forged of ['fatal-status-mix', 'forged-event']) {
             sourceTick: 5,
             submittedTick: 5,
             completedThroughTick: 5,
-            status: forged === 'fatal-status-mix'
+            status: forged === 'fatal-status'
                 ? GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW
-                    | GPU_EFFECT_RUNTIME_STATUS.PROGRAM_CAPACITY_EXCEEDED
-                : GPU_EFFECT_RUNTIME_STATUS.GRID_OVERFLOW,
+                : GPU_EFFECT_RUNTIME_STATUS.OK,
             candidateCount: 0,
             appliedInstanceCount: 0,
             eventCount: events.length,
             pulseResults: Object.freeze([Object.freeze({
                 programIndex: 0,
                 pulseSequence: 0,
-                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
-                candidateCount: 0,
+                resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
+                candidateCount: 2,
                 appliedCount: 0
             })]),
             events: Object.freeze(events)
@@ -1437,6 +1479,7 @@ for (const forged of ['fatal-status-mix', 'forged-event']) {
         assert.equal(statusSnapshot.pendingPulseProgramCount, 1);
         assert.equal(statusSnapshot.completedThroughTick, 0);
         assert.equal(statusSnapshot.telemetry.capacityRejectedCount, 0);
+        assert.equal(statusSnapshot.telemetry.deferredCapacityCount, 0);
     });
 }
 
@@ -1554,7 +1597,7 @@ for (const forged of ['batch-id', 'queued-count', 'extra-field', 'replayed']) {
     });
 }
 
-test('Pentagon delayed CAPACITY_REJECTED completion은 관찰 boundary에서 같은 sequence로 재시도한다', () => {
+test('Pentagon delayed DEFERRED_CAPACITY completion은 관찰 boundary에서 같은 sequence로 재시도한다', () => {
     const sessionGeneration = 110;
     const registry = new WorldRegistry({ capacity: 2 });
     const backend = createEffectBackend(sessionGeneration);
@@ -1610,12 +1653,15 @@ test('Pentagon delayed CAPACITY_REJECTED completion은 관찰 boundary에서 같
             sourceTick: 121,
             sourceHandle: command.sourceHandle,
             pulseSequence: 0,
-            resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED,
-            candidateCount: 0,
+            resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
+            candidateCount: 3,
             appliedCount: 0
         }]
     });
     assert.equal(director.requiresRecovery(), false);
+    assert.equal(director.getStatus().telemetry.deferredPulseCount, 1);
+    assert.equal(director.getStatus().telemetry.maxTargetsPerPulse, 3);
+    assert.equal(director.getStatus().telemetry.maxConsecutiveDeferCount, 1);
     const retry = director.stageForFixedTick({ targetFixedTick: 130 });
     assert.equal(retry.accepted, true);
     assert.equal(retry.stagedCount, 1);

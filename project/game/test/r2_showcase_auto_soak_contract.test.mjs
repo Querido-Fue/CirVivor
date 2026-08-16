@@ -19,6 +19,13 @@ test('manual showcase 자동 soak는 명시적 환경 변수에서만 bounded te
         bootstrapSource,
         /snapshot\.fixedTick > 0[\s\S]*runtimeState === 'gpu-ready'/
     );
+    assert.match(bootstrapSource, /snapshot\.windowFocused === true/);
+    assert.match(bootstrapSource, /snapshot\.loopRunning === true/);
+    assert.match(bootstrapSource, /previousActiveSnapshot/);
+    assert.match(
+        bootstrapSource,
+        /snapshot\.fixedTick > previousActiveSnapshot\.fixedTick/
+    );
     assert.match(bootstrapSource, /catch \(error\) \{\s*lastSnapshotError = error;/);
     assert.match(bootstrapSource, /fixedTicksPerSecond/);
     assert.match(bootstrapSource, /scheduledFixedStepCount/);
@@ -50,6 +57,27 @@ test('manual showcase 자동 soak는 명시적 환경 변수에서만 bounded te
     assert.match(bootstrapSource, /CIRVIVOR_R2_SHOWCASE_AUTO_TARGET/);
     assert.match(bootstrapSource, /performance-map-2/);
     assert.match(bootstrapSource, /api\.selectPerformanceMap\(\)/);
+    assert.match(bootstrapSource, /CIRVIVOR_R2_SHOWCASE_RECEIPT_IDENTITY/);
+    assert.match(bootstrapSource, /persistAutoSoakReceipt/);
+    assert.match(bootstrapSource, /worktreeContentKey/);
+    assert.match(bootstrapSource, /PERFORMANCE_DEFINITION_SPAWN_COUNTS/);
+    assert.match(bootstrapSource, /acceptedSpawnCountByDefinitionId/);
+    assert.match(bootstrapSource, /requiredWorkloadCompleted/);
+    assert.match(bootstrapSource, /getReleaseSimulationProfilerSnapshot/);
+    assert.match(bootstrapSource, /getWebGpuFrameTelemetryPort/);
+    assert.match(bootstrapSource, /frameTelemetryPort\.setEnabled\(true\)/);
+    assert.match(bootstrapSource, /totalCompletedFixedStepCount/);
+    assert.match(bootstrapSource, /totalFailedFixedStepCount === 0/);
+    assert.match(bootstrapSource, /totalDroppedFixedStepCount === 0/);
+    assert.match(bootstrapSource, /totalLostSimulationSeconds === 0/);
+    assert.match(bootstrapSource, /simulationProgressRatio/);
+    assert.match(bootstrapSource, /fixedCpuP50Ms/);
+    assert.match(bootstrapSource, /fixedCpuP95Ms/);
+    assert.match(bootstrapSource, /fixedCpuP99Ms/);
+    assert.match(bootstrapSource, /unexpectedCapacityOverflowCount === 0/);
+    assert.match(bootstrapSource, /uncapturedErrorCount === 0/);
+    assert.match(bootstrapSource, /requiredStorageBuffersPerShaderStage <= 9/);
+    assert.match(bootstrapSource, /protocolFailureCount === 0/);
 
     const autoSoakStart = bootstrapSource.indexOf('\nasync function bootstrap()');
     const catchStart = bootstrapSource.indexOf('\nbootstrap().catch', autoSoakStart);
@@ -58,5 +86,7 @@ test('manual showcase 자동 soak는 명시적 환경 변수에서만 bounded te
     const autoSoakBody = bootstrapSource.slice(autoSoakStart, catchStart);
     assert.match(autoSoakBody, /if \(autoSoakDurationMs <= 0\) \{\s*return;/);
     assert.match(autoSoakBody, /api\.selectWave\(1\);/);
-    assert.match(autoSoakBody, /finally \{\s*api\.safeExit\(\);/);
+    assert.match(bootstrapSource, /setReleaseSimulationProfilerEnabled\(true/);
+    assert.match(autoSoakBody, /setReleaseSimulationProfilerEnabled\(false/);
+    assert.match(autoSoakBody, /finally \{[\s\S]*api\.safeExit\(\);/);
 });

@@ -62,7 +62,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
         moveSpeedTilesPerSecond: 4.5,
         weight: 2,
         bountyBudget: 2,
-        coreImpactDamage: 1
+        coreImpactDamage: 1.2
     }),
     Object.freeze({
         memberCount: 3,
@@ -70,7 +70,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
         moveSpeedTilesPerSecond: 4.05,
         weight: 4,
         bountyBudget: 4,
-        coreImpactDamage: 1
+        coreImpactDamage: 1.44
     }),
     Object.freeze({
         memberCount: 4,
@@ -78,7 +78,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
         moveSpeedTilesPerSecond: 3.645,
         weight: 8,
         bountyBudget: 6,
-        coreImpactDamage: 1
+        coreImpactDamage: 1.728
     }),
     Object.freeze({
         memberCount: 5,
@@ -86,7 +86,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
         moveSpeedTilesPerSecond: 3.2805,
         weight: 16,
         bountyBudget: 8,
-        coreImpactDamage: 1
+        coreImpactDamage: 2.0736
     }),
     Object.freeze({
         memberCount: 6,
@@ -94,7 +94,7 @@ export const BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT = Object.freeze([
         moveSpeedTilesPerSecond: 2.95245,
         weight: 32,
         bountyBudget: 10,
-        coreImpactDamage: 1
+        coreImpactDamage: 2.48832
     })
 ]);
 

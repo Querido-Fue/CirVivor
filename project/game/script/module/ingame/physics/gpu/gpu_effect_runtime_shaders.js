@@ -61,9 +61,9 @@ const EXPECTED_PULSE_POLICY_FLAGS = (
 
 if (!PENTA_BOOST_EFFECT_DEFINITION.towerContactDamageEffectModifiable
     || !PENTA_BOOST_EFFECT_DEFINITION.projectileTowerDamageEffectModifiable
-    || PENTA_BOOST_EFFECT_DEFINITION.directCoreImpactDamageEffectModifiable
-    || PENTA_BOOST_EFFECT_DEFINITION.typedProjectileCoreDamageEffectModifiable) {
-    throw new RangeError('PENTA Boost damage-channel policy가 Turn 3 LOCK과 다릅니다.');
+    || !PENTA_BOOST_EFFECT_DEFINITION.directCoreImpactDamageEffectModifiable
+    || !PENTA_BOOST_EFFECT_DEFINITION.typedProjectileCoreDamageEffectModifiable) {
+    throw new RangeError('PENTA Boost damage-channel policy가 R2 LOCK과 다릅니다.');
 }
 if (PENTA_BOOST_EFFECT_DEFINITION.moveSpeedMultiplier !== 1) {
     throw new RangeError('Turn 3 P navigation은 catalog moveSpeedMultiplier=1을 요구합니다.');
@@ -117,7 +117,7 @@ const EFFECT_RESULT_PENDING: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.PENDING}u;
 const EFFECT_RESULT_APPLIED: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED}u;
 const EFFECT_RESULT_ZERO_TARGET: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET}u;
 const EFFECT_RESULT_SOURCE_INVALID: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID}u;
-const EFFECT_RESULT_CAPACITY_REJECTED: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED}u;
+const EFFECT_RESULT_DEFERRED_CAPACITY: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY}u;
 const EFFECT_RESULT_POLICY_REJECTED: u32 = ${GPU_EFFECT_PULSE_PROGRAM_RESULT.POLICY_REJECTED}u;
 const EFFECT_STATUS_ABI_MISMATCH: u32 = ${GPU_EFFECT_RUNTIME_STATUS.ABI_MISMATCH}u;
 const EFFECT_STATUS_PROGRAM_CAPACITY_EXCEEDED: u32 = ${GPU_EFFECT_RUNTIME_STATUS.PROGRAM_CAPACITY_EXCEEDED}u;
@@ -783,15 +783,13 @@ fn scan_effect_pulse_candidates(
                 atomicOr(&pool_state.status, EFFECT_STATUS_GRID_OVERFLOW);
             }
             if (arrayLength(&simulations.values)
-                    > EFFECT_PULSE_SENSOR_TARGET_CAPACITY
-                || arrayLength(&effect_candidates.values) == 0u) {
+                    > EFFECT_PULSE_SENSOR_TARGET_CAPACITY) {
                 atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
             }
             if (record_valid
                 && grid_complete
                 && arrayLength(&simulations.values)
-                    <= EFFECT_PULSE_SENSOR_TARGET_CAPACITY
-                && arrayLength(&effect_candidates.values) > 0u) {
+                    <= EFFECT_PULSE_SENSOR_TARGET_CAPACITY) {
                 atomicStore(&effect_pulse_sensor_scan_enabled, 1u);
             }
         }
@@ -811,9 +809,10 @@ fn scan_effect_pulse_candidates(
     }
 }
 
-// Candidate counts are reduced in authored pulse order.  applied_count is a
-// tick-local scratch offset until materialize_effect_batch overwrites it with
-// the public applied count.
+// Capacity admission is pulse-atomic. A deterministic rotating start makes every
+// retryable pulse first within a bounded number of ticks, while an oversized pulse
+// is skipped without blocking smaller later pulses. applied_count is the packed
+// candidate offset until materialize_effect_batch publishes the applied count.
 @compute @workgroup_size(1)
 fn prefix_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u) {
     if (global_id.x != 0u) {
@@ -831,29 +830,47 @@ fn prefix_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3
         atomicStore(&pool_state.candidate_count, 0u);
         return;
     }
+    let retained_count = atomicLoad(&pool_state.retained_count);
+    let candidate_capacity = arrayLength(&effect_candidates.values);
+    let instance_capacity = arrayLength(&effect_instances_output.values);
+    let event_capacity = arrayLength(&effect_events.values);
+    if (retained_count > instance_capacity) {
+        atomicOr(&pool_state.status, EFFECT_STATUS_INSTANCE_CAPACITY_EXCEEDED);
+        atomicStore(&pool_state.candidate_count, 0u);
+        return;
+    }
     var candidate_cursor = 0u;
-    for (var pulse_index = 0u; pulse_index < safe_program_count; pulse_index += 1u) {
+    var event_cursor = 0u;
+    let rotation_start = params.fixed_tick % safe_program_count;
+    for (var ordinal = 0u; ordinal < safe_program_count; ordinal += 1u) {
+        let pulse_index = (rotation_start + ordinal) % safe_program_count;
         let record = pulse_program.records[pulse_index];
         if (record.result != EFFECT_RESULT_PENDING) {
             continue;
         }
-        pulse_program.records[pulse_index].applied_count = candidate_cursor;
-        if (record.candidate_count > 0xffffffffu - candidate_cursor) {
-            atomicStore(&pool_state.candidate_overflow, 1u);
-            atomicOr(
-                &pool_state.status,
-                EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED
-            );
-            candidate_cursor = 0xffffffffu;
-            break;
+        let candidate_need = record.candidate_count;
+        let event_need = candidate_need + 1u;
+        let candidate_fits = candidate_cursor <= candidate_capacity
+            && candidate_need <= candidate_capacity - candidate_cursor;
+        let instance_fits = candidate_cursor
+                <= instance_capacity - retained_count
+            && candidate_need
+                <= instance_capacity - retained_count - candidate_cursor;
+        let event_fits = event_cursor <= event_capacity
+            && event_need <= event_capacity - event_cursor;
+        if (!candidate_fits || !instance_fits || !event_fits) {
+            pulse_program.records[pulse_index].result
+                = EFFECT_RESULT_DEFERRED_CAPACITY;
+            pulse_program.records[pulse_index].applied_count = 0u;
+            atomicAdd(&pool_state.pulse_result_count, 1u);
+            continue;
         }
-        candidate_cursor += record.candidate_count;
+        pulse_program.records[pulse_index].applied_count = candidate_cursor;
+        candidate_cursor += candidate_need;
+        event_cursor += event_need;
     }
     atomicStore(&pool_state.candidate_count, candidate_cursor);
-    if (candidate_cursor > arrayLength(&effect_candidates.values)) {
-        atomicStore(&pool_state.candidate_overflow, 1u);
-        atomicOr(&pool_state.status, EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED);
-    }
+    atomicStore(&pool_state.batch_accepted, 1u);
 }
 
 // A second identical grid pass writes only after deterministic prefix offsets
@@ -943,7 +960,14 @@ fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
     );
     let retained_count = atomicLoad(&pool_state.retained_count);
     let candidate_count = atomicLoad(&pool_state.candidate_count);
-    let valid_pulse_count = atomicLoad(&pool_state.valid_pulse_count);
+    var admitted_pulse_count = 0u;
+    for (var pulse_index = 0u;
+        pulse_index < safe_program_count;
+        pulse_index += 1u) {
+        if (pulse_program.records[pulse_index].result == EFFECT_RESULT_PENDING) {
+            admitted_pulse_count += 1u;
+        }
+    }
     if (atomicLoad(&pool_state.candidate_overflow) != 0u
         || candidate_count > arrayLength(&effect_candidates.values)) {
         atomicOr(&pool_state.status, EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED);
@@ -952,7 +976,8 @@ fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
         > arrayLength(&effect_instances_output.values)) {
         atomicOr(&pool_state.status, EFFECT_STATUS_INSTANCE_CAPACITY_EXCEEDED);
     }
-    if (valid_pulse_count + candidate_count > arrayLength(&effect_events.values)) {
+    if (admitted_pulse_count + candidate_count
+        > arrayLength(&effect_events.values)) {
         atomicStore(&pool_state.event_overflow, 1u);
         atomicOr(&pool_state.status, EFFECT_STATUS_EVENT_CAPACITY_EXCEEDED);
     }
@@ -970,12 +995,11 @@ fn materialize_effect_batch(@builtin(global_invocation_id) global_id: vec3u) {
     atomicStore(&pool_state.batch_accepted, accepted);
     if (accepted == 0u) {
         for (var index = 0u; index < safe_program_count; index += 1u) {
-            // A whole-tick preflight failure is represented as one atomic
-            // zero-partial batch.  Source/order-specific intermediate results
-            // are deliberately erased so the host cannot mistake a prefix for
-            // consumed cadence.
-            pulse_program.records[index].result = EFFECT_RESULT_CAPACITY_REJECTED;
-            pulse_program.records[index].candidate_count = 0u;
+            // Unexpected protocol/identity failures remain whole-batch fail-close.
+            // Expected capacity deferrals never enter this branch.
+            if (pulse_program.records[index].result == EFFECT_RESULT_PENDING) {
+                pulse_program.records[index].result = EFFECT_RESULT_POLICY_REJECTED;
+            }
             pulse_program.records[index].applied_count = 0u;
         }
         atomicStore(&pool_state.pulse_result_count, safe_program_count);

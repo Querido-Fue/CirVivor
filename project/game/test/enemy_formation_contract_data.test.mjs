@@ -445,12 +445,12 @@ test('H/group/HX identity, spawn boundary, capability/profile 3-way를 고정한
 test('n1..6 raw stats와 final-only f32/inverseMass/Core/bounty를 고정한다', () => {
     assert.equal(Object.isFrozen(BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT), true);
     const expected = [
-        [0.1, 5, 1, 1],
-        [0.12, 4.5, 2, 2],
-        [0.144, 4.05, 4, 4],
-        [0.1728, 3.645, 8, 6],
-        [0.20736, 3.2805, 16, 8],
-        [0.248832, 2.95245, 32, 10]
+        [0.1, 5, 1, 1, 1],
+        [0.12, 4.5, 2, 2, 1.2],
+        [0.144, 4.05, 4, 4, 1.44],
+        [0.1728, 3.645, 8, 6, 1.728],
+        [0.20736, 3.2805, 16, 8, 2.0736],
+        [0.248832, 2.95245, 32, 10, 2.48832]
     ];
     for (let memberCount = 1; memberCount <= 6; memberCount++) {
         const raw = BASIC_HEXA_RAW_STATS_BY_MEMBER_COUNT[memberCount];
@@ -459,14 +459,15 @@ test('n1..6 raw stats와 final-only f32/inverseMass/Core/bounty를 고정한다'
             raw.towerContactDamage,
             raw.moveSpeedTilesPerSecond,
             raw.weight,
-            raw.bountyBudget
+            raw.bountyBudget,
+            raw.coreImpactDamage
         ], expected[memberCount - 1]);
         assert.equal(resolved.towerContactDamage, Math.fround(expected[memberCount - 1][0]));
         assert.equal(resolved.moveSpeedTilesPerSecond, Math.fround(expected[memberCount - 1][1]));
         assert.equal(resolved.weight, Math.fround(expected[memberCount - 1][2]));
         assert.equal(resolved.inverseMass, Math.fround(1 / resolved.weight));
         assert.equal(resolved.bountyBudget, expected[memberCount - 1][3]);
-        assert.equal(resolved.coreImpactDamage, 1);
+        assert.equal(resolved.coreImpactDamage, expected[memberCount - 1][4]);
     }
 });
 

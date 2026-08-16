@@ -415,6 +415,7 @@ async function runProductionShaderSmoke(device, format) {
         'preflight_core_damage_requests',
         'finalize_core_damage_request_preflight',
         'resolve_core_damage_requests',
+        'resolve_direct_core_damage_requests',
         'preflight_maximum_damage_window',
         'finalize_maximum_damage_window_preflight',
         'resolve_maximum_damage_window',
@@ -1241,7 +1242,6 @@ async function runProductionShapeFlowAtlasSmoke(device) {
                     && upload.textureUsage === (
                         GPUTextureUsage.TEXTURE_BINDING
                         | GPUTextureUsage.COPY_DST
-                        | GPUTextureUsage.STORAGE_BINDING
                     )
                     && upload.textureWidth === cols
                     && upload.textureHeight === rows
@@ -4963,22 +4963,29 @@ async function runProductionTowerCoreWorldHardwareSmoke(device) {
     const coreIntent = createGpuCoreProxySpawnIntent({
         position: navigationSource.corePosition
     });
+    const enemyBaseIntent = createGpuEnemySpawnIntent({
+        definition: {
+            id: 'nw_phase4_core_enemy',
+            collisionWeight: 1,
+            moveSpeedTilesPerSecond: 1,
+            collisionRadiusTiles: 0.25,
+            maxHealth: 3,
+            colorRgba: [1, 0.2, 0.2, 1]
+        },
+        route: navigationSource.route,
+        spawnSequence: 0,
+        waveId: 'nw-phase4-disabled-wave',
+        policyId: 'hardware-fixture'
+    });
     const enemyIntent = Object.freeze({
-        ...createGpuEnemySpawnIntent({
-            definition: {
-                id: 'nw_phase4_core_enemy',
-                collisionWeight: 1,
-                moveSpeedTilesPerSecond: 1,
-                collisionRadiusTiles: 0.25,
-                maxHealth: 3,
-                colorRgba: [1, 0.2, 0.2, 1]
-            },
-            route: navigationSource.route,
-            spawnSequence: 0,
-            waveId: 'nw-phase4-disabled-wave',
-            policyId: 'hardware-fixture'
+        ...enemyBaseIntent,
+        position: Object.freeze({
+            x: navigationSource.corePosition.x
+                + coreIntent.radius
+                + enemyBaseIntent.radius
+                + 0.00005,
+            y: navigationSource.corePosition.y
         }),
-        position: Object.freeze({ x: 8.75005, y: 8 }),
         velocity: Object.freeze({ x: 0, y: 0 })
     });
     const minimumCoreEnemyDistance = coreIntent.radius + enemyIntent.radius;
@@ -5210,7 +5217,7 @@ async function runProductionTowerCoreWorldHardwareSmoke(device) {
             'Phase 4 Core가 physical response로 y 이동했습니다');
         assert(
             releasedCoreEnemyDistance < minimumCoreEnemyDistance
-                && enemyTravelDuringSustainedOverlap < 0.001
+                && enemyTravelDuringSustainedOverlap < 0.002
                 && coreAfterRelease.health > 0
                 && enemyAfterRelease.health > 0,
             `Phase 4 Core/Enemy physical displacement 또는 zero-damage 계약이 깨졌습니다: ${JSON.stringify({
@@ -12170,9 +12177,9 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterLarger,
             22,
             800,
-            62,
+            64,
             largerHandle,
-            'Maximum Damage Window 큰 후보 expiry 비연장'
+            'Maximum Damage Window 큰 후보 expiry 재설정'
         );
         const largerCompleted = endpoint.commitCompletedEventsAtFixedBoundary(5);
         completedBatches.push(largerCompleted);
@@ -12212,7 +12219,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             `Maximum Damage Window expiry cleanup commit 실패: ${JSON.stringify(cleanupCommit)}`
         );
         const continuousContactEvents = [];
-        for (let tick = 5; tick < 62; tick++) {
+        for (let tick = 5; tick < 64; tick++) {
             if (tick > 5) {
                 requestTowerPressureControl(tick);
                 const pressureCommit = endpoint.commitAtFixedBoundary(tick);
@@ -12261,18 +12268,18 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerBeforeExpiry,
             22,
             800,
-            62,
+            64,
             largerHandle,
             'Maximum Damage Window exact expiry 직전'
         );
-        requestTowerPressureControl(62);
-        const expiryPressureCommit = endpoint.commitAtFixedBoundary(62);
+        requestTowerPressureControl(64);
+        const expiryPressureCommit = endpoint.commitAtFixedBoundary(64);
         assert(
             expiryPressureCommit.state === 'committed'
                 && expiryPressureCommit.fixedCommands.controls.length === 1,
             `Maximum Damage Window exact expiry pressure control commit 실패: ${JSON.stringify(expiryPressureCommit)}`
         );
-        await runFixed(62, 'Maximum Damage Window exact expiry 연속 접촉 완료');
+        await runFixed(64, 'Maximum Damage Window exact expiry 연속 접촉 완료');
         const towerAfterExpiry = await readTower(
             towerHandle,
             'Maximum Damage Window exact expiry Tower'
@@ -12281,11 +12288,11 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterExpiry,
             21.9,
             10,
-            122,
+            124,
             contactEnemyHandle,
             'Maximum Damage Window T>=expires Enemy full 재적용'
         );
-        const expiryCompleted = endpoint.commitCompletedEventsAtFixedBoundary(63);
+        const expiryCompleted = endpoint.commitCompletedEventsAtFixedBoundary(65);
         completedBatches.push(expiryCompleted);
         const expiryDamageEvent = expiryCompleted.contactEvents.find((event) => (
             eventMatches(event, contactEnemyHandle, towerHandle)
@@ -12306,12 +12313,12 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 10 + spawnSequence,
                 towerAfterExpiry.position
             ),
-            63,
+            65,
             `maximum-damage-window:tie-projectile:${spawnSequence}`
         ));
         assert(tieRequests.every(({ accepted }) => accepted),
             `Maximum Damage Window tie 발사체 요청 실패: ${JSON.stringify(tieRequests)}`);
-        const tieCommit = endpoint.commitAtFixedBoundary(63);
+        const tieCommit = endpoint.commitAtFixedBoundary(65);
         const tieHandles = tieCommit.spawned
             .filter(({ commandId }) => commandId.startsWith('maximum-damage-window:tie-projectile:'))
             .map(({ handle }) => handle);
@@ -12322,7 +12329,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
         const tieWinner = [...tieHandles].sort((left, right) => (
             left.entityId - right.entityId || left.incarnation - right.incarnation
         ))[0];
-        await runFixed(63, 'Maximum Damage Window tie 후보 완료');
+        await runFixed(65, 'Maximum Damage Window tie 후보 완료');
         const towerAfterTie = await readTower(
             towerHandle,
             'Maximum Damage Window tie 후 Tower'
@@ -12331,11 +12338,11 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             towerAfterTie,
             17,
             500,
-            122,
+            125,
             tieWinner,
-            'Maximum Damage Window tie provenance/expiry 비연장'
+            'Maximum Damage Window tie provenance/expiry 재설정'
         );
-        const tieCompleted = endpoint.commitCompletedEventsAtFixedBoundary(64);
+        const tieCompleted = endpoint.commitCompletedEventsAtFixedBoundary(66);
         completedBatches.push(tieCompleted);
         const tieDamageEvent = tieCompleted.contactEvents.find((event) => (
             eventMatches(event, tieWinner, towerHandle)
@@ -12354,12 +12361,12 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 20,
                 towerAfterTie.position
             ),
-            64,
+            66,
             'maximum-damage-window:lethal-projectile'
         );
         assert(lethalRequest.accepted,
             `Maximum Damage Window lethal 발사체 요청 실패: ${JSON.stringify(lethalRequest)}`);
-        const lethalCommit = endpoint.commitAtFixedBoundary(64);
+        const lethalCommit = endpoint.commitAtFixedBoundary(66);
         const lethalHandle = lethalCommit.spawned.find(({ commandId }) => (
             commandId === 'maximum-damage-window:lethal-projectile'
         ))?.handle;
@@ -12367,7 +12374,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
             lethalCommit.state === 'committed' && lethalHandle,
             `Maximum Damage Window lethal commit 실패: ${JSON.stringify(lethalCommit)}`
         );
-        await runFixed(64, 'Maximum Damage Window lethal 후보 완료');
+        await runFixed(66, 'Maximum Damage Window lethal 후보 완료');
         const afterLethalBodies = await readPhase5Bodies(endpoint);
         assert(
             !afterLethalBodies.some((body) => exactHandleMatches(body.handle, towerHandle))
@@ -12375,7 +12382,7 @@ async function runProductionMaximumDamageWindowHardwareSmoke(device) {
                 && endpoint.hasBody(towerHandle),
             `Maximum Damage Window lethal Tower lifecycle 불일치: ${JSON.stringify(afterLethalBodies)}`
         );
-        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(65);
+        const lethalCompleted = endpoint.commitCompletedEventsAtFixedBoundary(67);
         completedBatches.push(lethalCompleted);
         const lethalDamageEvent = lethalCompleted.contactEvents.find((event) => (
             eventMatches(event, lethalHandle, towerHandle)

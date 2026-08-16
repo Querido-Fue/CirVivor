@@ -520,10 +520,10 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                     - windowPrimeEntry.predictedDistance
             ) <= 0.000001
             && windowPrime.targetHpBefore === 30
-            && windowPrime.targetHpAfter === 25
-            && windowPrime.damageFixedPoint === 500
+            && windowPrime.targetHpAfter === 29
+            && windowPrime.damageFixedPoint === 100
             && windowPrime.maximumDamageWindow === true
-            && windowPrime.peakFinalDamageFixedPoint === 500
+            && windowPrime.peakFinalDamageFixedPoint === 100
             && windowPrime.expiresAtFixedTick === 65
             && windowPrime.peakSourceEntityId
                 === windowPrime.projectileHandle.entityId
@@ -533,8 +533,8 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && Number.isSafeInteger(windowPrime.projectileDeath?.sourceTick)
             && typeof windowPrime.projectileDeath?.disposition === 'string'
             && windowPrime.terminalCleanupExact === true
-            && impact?.targetHpBefore === 25
-            && impact.targetHpAfter === 20
+            && impact?.targetHpBefore === 29
+            && impact.targetHpAfter === 25
             && impact.wrongTowerHpBefore === 30
             && impact.wrongTowerHpAfter === 30
             && impact.coreHealthAfter === impact.coreHealthBefore
@@ -542,15 +542,19 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && impact.wrongTowerUnchanged === true
             && impact.noSourceRevalidation === true
             && impact.projectileDamageFixedPoint === 500
-            && impact.maximumDamageWindow === false
-            && impact.directDiscreteDamage === true
+            && impact.appliedDamageFixedPoint === 400
+            && impact.maximumDamageWindow === true
+            && impact.directDiscreteDamage === false
+            && impact.commonMaximumDamageWindow === true
             && impact.windowActiveBeforeImpact === true
             && impact.sourceTick < windowPrime.expiresAtFixedTick
-            && impact.windowPeakBeforeImpactFixedPoint === 500
+            && impact.windowPeakBeforeImpactFixedPoint === 100
             && impact.windowPeakAfterImpactFixedPoint === 500
             && impact.windowExpiryBeforeImpact === windowPrime.expiresAtFixedTick
-            && impact.windowExpiryAfterImpact === windowPrime.expiresAtFixedTick
-            && impact.windowStatePreserved === true
+            && impact.windowExpiryAfterImpact === impact.sourceTick + 60
+            && impact.windowExpiryAfterImpact > impact.windowExpiryBeforeImpact
+            && impact.windowStatePreserved === false
+            && impact.windowStateReset === true
             && impact.projectileSelfBudgetBefore === 1
             && typeof impact.projectileDeath?.reason === 'string'
             && Number.isSafeInteger(impact.projectileDeath?.sourceTick)
@@ -562,7 +566,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && cleanup.sourceRegistryPresent === false
             && cleanup.sourceBackendPresent === false
             && cleanup.noRevive === true
-            && cleanup.targetHpAfterCleanup === 20
+            && cleanup.targetHpAfterCleanup === 25
             && cleanup.activeCount === 3
             && cleanup.activeProjectileCount === 0
             && cleanup.reservedCount === 0
@@ -576,6 +580,11 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && runtime.deviceTeardownExpected === 'destroyed';
     } else if (fixtureStage === 'enemy-pentagon-effect') {
         fixture = result?.productionEnemyPentagonEffect;
+        const extended = result?.enemyPentagonEffectExtended;
+        const instanceCapacity = extended?.instanceCapacityAtomicity;
+        const eventCapacity = extended?.eventCapacityAtomicity;
+        const progress = extended?.phaseAlignedCapacityProgress;
+        const firstResults = progress?.firstTick?.results ?? [];
         scenarioValid = fixture?.scenario
                 === 'penta-independent-boost-pulse-whole-tick'
             && fixture.candidateCount === 2
@@ -583,13 +592,48 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.eventCount === 3
             && fixture.damageChannels?.towerContact === true
             && fixture.damageChannels?.projectileTower === true
-            && fixture.damageChannels?.directCore === false
-            && fixture.damageChannels?.projectileCore === false
+            && fixture.damageChannels?.directCore === true
+            && fixture.damageChannels?.projectileCore === true
             && fixture.storageProfile?.sourceResolve === 9
             && fixture.effectStorageBuffersPerStage === 9
             && fixture.terminal?.state === 'submitted'
             && fixture.terminal?.pendingPulseProgramCount === 0
-            && fixture.terminal?.pendingEffectReadbackCount === 0;
+            && fixture.terminal?.pendingEffectReadbackCount === 0
+            && [instanceCapacity, eventCapacity].every((capacity) => (
+                capacity?.status === 0
+                && capacity.candidateCount === 0
+                && capacity.appliedInstanceCount === 0
+                && capacity.eventCount === 0
+                && capacity.deferredPulseCount === 1
+                && capacity.rawCandidateCount === 2
+                && capacity.requiresRecovery === false
+                && capacity.pendingPulseProgramCount === 0
+                && capacity.pendingEffectReadbackCount === 0
+            ))
+            && firstResults.length === 2
+            && firstResults[0]?.programIndex === 0
+            && firstResults[0].pulseSequence === 0
+            && firstResults[0].resultCode === 4
+            && firstResults[0].candidateCount === 3
+            && firstResults[0].appliedCount === 0
+            && firstResults[1]?.programIndex === 1
+            && firstResults[1].pulseSequence === 0
+            && firstResults[1].resultCode === 1
+            && firstResults[1].candidateCount === 3
+            && firstResults[1].appliedCount === 3
+            && progress.firstTick.candidateCount === 3
+            && progress.firstTick.appliedInstanceCount === 3
+            && progress.firstTick.eventCount === 4
+            && progress.firstTick.deferredPulseCount === 1
+            && progress.retryTick?.pulseSequence === 0
+            && progress.retryTick.resultCode === 1
+            && progress.retryTick.candidateCount === 3
+            && progress.retryTick.appliedCount === 3
+            && progress.retryTick.deferredPulseCount === 0
+            && progress.highWater?.candidate === 3
+            && progress.highWater.instance === 6
+            && progress.highWater.event === 4
+            && progress.requiresRecovery === false;
     } else if (fixtureStage === 'enemy-hexa-formation') {
         fixture = result?.productionEnemyHexaFormation;
         const chain = fixture?.chain;

@@ -189,8 +189,8 @@ test('Boost/P production catalog의 stable ID, GPU code, authored 값을 고정�
         moveSpeedMultiplier: 1,
         towerModifiable: true,
         projectileTowerModifiable: true,
-        directCoreModifiable: false,
-        typedProjectileCoreModifiable: false
+        directCoreModifiable: true,
+        typedProjectileCoreModifiable: true
     });
     assert.deepEqual({ ...PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE }, {
         id: 'penta-cluster-boost-pulse-01',
@@ -380,8 +380,8 @@ test('P spawn은 string authority를 GPU codes로 한 번 materialize하고 regi
         effectPentaTargetAllowed: true,
         effectTowerContactDamageModifiable: true,
         effectProjectileTowerDamageModifiable: true,
-        effectDirectCoreImpactDamageModifiable: false,
-        effectProjectileCoreDamageModifiable: false,
+        effectDirectCoreImpactDamageModifiable: true,
+        effectProjectileCoreDamageModifiable: true,
         effectClusterRetargetIntervalTicks: 15
     });
     assert.deepEqual({ ...intent.effectEmitterState }, {
@@ -420,8 +420,8 @@ test('P spawn은 string authority를 GPU codes로 한 번 materialize하고 regi
         effectPentaTargetAllowed: true,
         effectTowerContactDamageModifiable: true,
         effectProjectileTowerDamageModifiable: true,
-        effectDirectCoreImpactDamageModifiable: false,
-        effectProjectileCoreDamageModifiable: false,
+        effectDirectCoreImpactDamageModifiable: true,
+        effectProjectileCoreDamageModifiable: true,
         effectClusterRetargetIntervalTicks: 15
     });
     assert.equal('effectEmitterState' in metadata, false);

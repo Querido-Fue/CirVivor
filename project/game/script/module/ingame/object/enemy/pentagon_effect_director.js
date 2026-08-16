@@ -122,6 +122,7 @@ export class PentagonEffectDirector {
         this.pulseSequences = new Float64Array(this.capacity);
         this.pendingTicks = new Float64Array(this.capacity);
         this.pendingPhases = new Uint8Array(this.capacity);
+        this.consecutiveDeferCounts = new Uint32Array(this.capacity);
         this.profileIds = new Array(this.capacity).fill(null);
         this.effectDefinitionIds = new Array(this.capacity).fill(null);
         this.indexByExactHandle = new Map();
@@ -152,6 +153,11 @@ export class PentagonEffectDirector {
             stagedBatchCount: 0,
             stagedPulseCount: 0,
             completedPulseCount: 0,
+            duePulseCount: 0,
+            appliedPulseCount: 0,
+            deferredPulseCount: 0,
+            maxTargetsPerPulse: 0,
+            maxConsecutiveDeferCount: 0,
             zeroTargetCompletionCount: 0,
             capacityRejectedStageCount: 0,
             capacityRejectedCompletionCount: 0,
@@ -283,17 +289,19 @@ export class PentagonEffectDirector {
                     === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET;
                 const sourceInvalid = resultCode
                     === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID;
-                const capacityRejected = resultCode
-                    === GPU_EFFECT_PULSE_PROGRAM_RESULT.CAPACITY_REJECTED;
+                const deferredCapacity = resultCode
+                    === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY;
                 if (result.commandId !== expectedCommandId
                     || observedCommandIds.has(expectedCommandId)
                     || (!applied
                         && !zeroTarget
                         && !sourceInvalid
-                        && !capacityRejected)
+                        && !deferredCapacity)
                     || (applied
                         ? appliedCount <= 0 || candidateCount !== appliedCount
-                        : candidateCount !== 0 || appliedCount !== 0)) {
+                        : deferredCapacity
+                            ? appliedCount !== 0
+                            : candidateCount !== 0 || appliedCount !== 0)) {
                     throw new RangeError(
                         `Effect completion result/code/count가 올바르지 않습니다: ${result.commandId}`
                     );
@@ -304,7 +312,7 @@ export class PentagonEffectDirector {
                     const staleProof = this.staleSubmittedCommandById.get(
                         expectedCommandId
                     );
-                    if ((!sourceInvalid && !capacityRejected)
+                    if ((!sourceInvalid && !deferredCapacity)
                         || !staleProof
                         || staleProof.sourceTick !== sourceTick
                         || staleProof.pulseSequence !== pulseSequence
@@ -318,7 +326,8 @@ export class PentagonEffectDirector {
                         kind: 'stale',
                         commandId: expectedCommandId,
                         sourceTick,
-                        capacityRejected
+                        deferredCapacity,
+                        candidateCount
                     }));
                     continue;
                 }
@@ -331,14 +340,19 @@ export class PentagonEffectDirector {
                     );
                 }
                 const profile = this.#readProfileAt(index);
-                const nextSequence = capacityRejected
+                const nextSequence = deferredCapacity
                     ? pulseSequence
                     : pulseSequence + 1;
-                const nextPulseTick = capacityRejected
+                const nextPulseTick = deferredCapacity
                     ? observationTick
                     : sourceTick + profile.pulseIntervalTicks;
+                const consecutiveDeferCount = deferredCapacity
+                    ? this.consecutiveDeferCounts[index] + 1
+                    : 0;
                 if (!Number.isSafeInteger(nextSequence)
-                    || !Number.isSafeInteger(nextPulseTick)) {
+                    || !Number.isSafeInteger(nextPulseTick)
+                    || !Number.isSafeInteger(consecutiveDeferCount)
+                    || consecutiveDeferCount > 0xffffffff) {
                     throw new RangeError('Effect pulse cadence 정수 공간이 고갈되었습니다.');
                 }
                 completionPlans.push(Object.freeze({
@@ -348,7 +362,10 @@ export class PentagonEffectDirector {
                     nextSequence,
                     nextPulseTick,
                     zeroTarget,
-                    capacityRejected
+                    applied,
+                    deferredCapacity,
+                    candidateCount,
+                    consecutiveDeferCount
                 }));
             }
             for (const plan of completionPlans) {
@@ -359,8 +376,12 @@ export class PentagonEffectDirector {
                         plan.sourceTick
                     );
                     this.telemetry.staleCompletionCount++;
-                    if (plan.capacityRejected) {
-                        this.telemetry.capacityRejectedCompletionCount++;
+                    this.telemetry.maxTargetsPerPulse = Math.max(
+                        this.telemetry.maxTargetsPerPulse,
+                        plan.candidateCount
+                    );
+                    if (plan.deferredCapacity) {
+                        this.telemetry.deferredPulseCount++;
                     }
                     continue;
                 }
@@ -368,6 +389,8 @@ export class PentagonEffectDirector {
                 this.nextPulseTicks[plan.index] = plan.nextPulseTick;
                 this.pendingTicks[plan.index] = 0;
                 this.pendingPhases[plan.index] = PULSE_PENDING_PHASE.NONE;
+                this.consecutiveDeferCounts[plan.index]
+                    = plan.consecutiveDeferCount;
                 this.lastCompletedSourceTick = Math.max(
                     this.lastCompletedSourceTick,
                     plan.sourceTick
@@ -376,8 +399,20 @@ export class PentagonEffectDirector {
                 if (plan.zeroTarget) {
                     this.telemetry.zeroTargetCompletionCount++;
                 }
-                if (plan.capacityRejected) {
+                if (plan.applied) {
+                    this.telemetry.appliedPulseCount++;
+                }
+                this.telemetry.maxTargetsPerPulse = Math.max(
+                    this.telemetry.maxTargetsPerPulse,
+                    plan.candidateCount
+                );
+                if (plan.deferredCapacity) {
+                    this.telemetry.deferredPulseCount++;
                     this.telemetry.capacityRejectedCompletionCount++;
+                    this.telemetry.maxConsecutiveDeferCount = Math.max(
+                        this.telemetry.maxConsecutiveDeferCount,
+                        plan.consecutiveDeferCount
+                    );
                 }
             }
             this.observedCompletionSnapshots.add(snapshot);
@@ -390,7 +425,7 @@ export class PentagonEffectDirector {
         return this.getStatus();
     }
 
-    /** 같은 tick의 모든 due P를 한 번의 atomic batch로만 요청합니다. */
+    /** 같은 tick due P를 한 batch로 보내되 GPU 결과는 pulse별 atomic입니다. */
     stageForFixedTick(options = {}) {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(
@@ -475,6 +510,7 @@ export class PentagonEffectDirector {
             this.lastStageResult = createEmptyStageResult(tick);
             return this.lastStageResult;
         }
+        this.telemetry.duePulseCount += dueIndexes.length;
         dueIndexes.sort((left, right) => (
             this.entityIds[left] - this.entityIds[right]
                 || this.incarnations[left] - this.incarnations[right]
@@ -826,6 +862,7 @@ export class PentagonEffectDirector {
         this.pulseSequences[index] = 0;
         this.pendingTicks[index] = 0;
         this.pendingPhases[index] = PULSE_PENDING_PHASE.NONE;
+        this.consecutiveDeferCounts[index] = 0;
         this.profileIds[index] = profile.id;
         this.effectDefinitionIds[index] = definition.id;
         this.indexByExactHandle.set(key, index);
@@ -881,6 +918,8 @@ export class PentagonEffectDirector {
             this.pulseSequences[index] = this.pulseSequences[lastIndex];
             this.pendingTicks[index] = this.pendingTicks[lastIndex];
             this.pendingPhases[index] = this.pendingPhases[lastIndex];
+            this.consecutiveDeferCounts[index]
+                = this.consecutiveDeferCounts[lastIndex];
             this.profileIds[index] = this.profileIds[lastIndex];
             this.effectDefinitionIds[index] = this.effectDefinitionIds[lastIndex];
             const movedKey = `${this.entityIds[index]}:${this.incarnations[index]}`;
@@ -893,6 +932,7 @@ export class PentagonEffectDirector {
         this.pulseSequences[lastIndex] = 0;
         this.pendingTicks[lastIndex] = 0;
         this.pendingPhases[lastIndex] = PULSE_PENDING_PHASE.NONE;
+        this.consecutiveDeferCounts[lastIndex] = 0;
         this.profileIds[lastIndex] = null;
         this.effectDefinitionIds[lastIndex] = null;
         this.count--;
@@ -956,6 +996,7 @@ export class PentagonEffectDirector {
         this.pulseSequences.fill(0);
         this.pendingTicks.fill(0);
         this.pendingPhases.fill(PULSE_PENDING_PHASE.NONE);
+        this.consecutiveDeferCounts.fill(0);
         this.profileIds.fill(null);
         this.effectDefinitionIds.fill(null);
         this.indexByExactHandle.clear();

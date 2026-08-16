@@ -1,10 +1,24 @@
 import {
     installR2ShowcaseManualLauncher
 } from '../support/r2_showcase_manual_launcher.js';
+import {
+    PERFORMANCE_SERPENTINE_ENEMY_DEFINITION_IDS,
+    PERFORMANCE_SERPENTINE_TOTAL_SPAWN_COUNT
+} from 'data/scene/game/performance_serpentine_wave_data.js';
+import {
+    getReleaseSimulationProfilerSnapshot,
+    setReleaseSimulationProfilerEnabled
+} from 'simulation/release_simulation_profiler.js';
+import { getWebGpuFrameTelemetryPort } from 'display/display_system.js';
+import { fsPromises, path } from 'util/nw_bridge.js';
 
 const AUTO_SOAK_RESULT_PREFIX = 'R2_AUTO_SOAK_RESULT ';
 const AUTO_SOAK_POLL_INTERVAL_MS = 250;
 const AUTO_SOAK_READY_TIMEOUT_MS = 30_000;
+const AUTO_SOAK_RECEIPT_IDENTITY_ENV
+    = 'CIRVIVOR_R2_SHOWCASE_RECEIPT_IDENTITY';
+const AUTO_SOAK_EVIDENCE_DIRECTORY_ENV
+    = 'CIRVIVOR_R2_SHOWCASE_EVIDENCE_DIR';
 const AUTO_SOAK_COMPLETION_METHODS = Object.freeze({
     projectileCapture:
         'commitCompletedProjectileCaptureProgramsAtFixedBoundary',
@@ -18,9 +32,22 @@ const AUTO_SOAK_COMPLETION_METHODS = Object.freeze({
         'commitCompletedRouteAvailabilityProgramsAtFixedBoundary',
     genericEvents: 'commitCompletedEventsAtFixedBoundary'
 });
+const PERFORMANCE_DEFINITION_SPAWN_COUNT
+    = PERFORMANCE_SERPENTINE_TOTAL_SPAWN_COUNT
+        / PERFORMANCE_SERPENTINE_ENEMY_DEFINITION_IDS.length;
+const PERFORMANCE_DEFINITION_SPAWN_COUNTS = Object.freeze(Object.fromEntries(
+    PERFORMANCE_SERPENTINE_ENEMY_DEFINITION_IDS.map((definitionId) => [
+        definitionId,
+        PERFORMANCE_DEFINITION_SPAWN_COUNT
+    ])
+));
+
+function getRuntimeProcess() {
+    return globalThis.nw?.process ?? globalThis.process;
+}
 
 function readAutoSoakDurationMs() {
-    const runtimeProcess = globalThis.nw?.process ?? globalThis.process;
+    const runtimeProcess = getRuntimeProcess();
     const seconds = Number(
         runtimeProcess?.env?.CIRVIVOR_R2_SHOWCASE_AUTO_SOAK_SECONDS ?? 0
     );
@@ -30,11 +57,55 @@ function readAutoSoakDurationMs() {
 }
 
 function readAutoSoakTarget() {
-    const runtimeProcess = globalThis.nw?.process ?? globalThis.process;
+    const runtimeProcess = getRuntimeProcess();
     return runtimeProcess?.env?.CIRVIVOR_R2_SHOWCASE_AUTO_TARGET
         === 'performance-map-2'
         ? 'performance-map-2'
         : 'showcase-wave-1';
+}
+
+function readAutoSoakReceiptIdentity() {
+    const serialized = getRuntimeProcess()?.env?.[AUTO_SOAK_RECEIPT_IDENTITY_ENV];
+    if (typeof serialized !== 'string' || serialized.length === 0) {
+        throw new Error('자동 soak receipt에 Git/worktree identity가 없습니다.');
+    }
+    const identity = JSON.parse(serialized);
+    for (const key of [
+        'headCommit',
+        'headTree',
+        'worktreeContentKey',
+        'mapContentKey',
+        'waveContentKey',
+        'workloadContentKey'
+    ]) {
+        if (typeof identity?.[key] !== 'string' || identity[key].length === 0) {
+            throw new Error(`자동 soak receipt identity ${key}가 유효하지 않습니다.`);
+        }
+    }
+    return Object.freeze({ ...identity });
+}
+
+async function persistAutoSoakReceipt(result) {
+    const evidenceDirectory = getRuntimeProcess()?.env
+        ?.[AUTO_SOAK_EVIDENCE_DIRECTORY_ENV];
+    if (typeof evidenceDirectory !== 'string' || evidenceDirectory.length === 0) {
+        throw new Error('자동 soak receipt evidence directory가 없습니다.');
+    }
+    const revisionKey = result.identity.worktreeContentKey
+        .replace(/^sha256:/, '')
+        .slice(0, 16);
+    const receiptPath = path.join(
+        evidenceDirectory,
+        `r2-performance-receipt-${result.mapId}-${result.waveId}-${revisionKey}.json`
+    );
+    const receipt = Object.freeze({ ...result, receiptPath });
+    await fsPromises.mkdir(evidenceDirectory, { recursive: true });
+    await fsPromises.writeFile(
+        receiptPath,
+        `${JSON.stringify(receipt, null, 2)}\n`,
+        'utf8'
+    );
+    return receipt;
 }
 
 function wait(milliseconds) {
@@ -66,7 +137,8 @@ function installAutoSoakDiagnostics() {
     const systemHandler = game?.systemHandler;
     const gameSystem = systemHandler?.sceneSystem?.scene?.getGameSystem?.();
     const endpoint = gameSystem?.getGpuSimulationEndpoint?.();
-    if (!systemHandler || !gameSystem || !endpoint) {
+    const frameTelemetryPort = getWebGpuFrameTelemetryPort();
+    if (!systemHandler || !gameSystem || !endpoint || !frameTelemetryPort) {
         throw new Error('자동 soak diagnostics에 actual Game/System/endpoint가 필요합니다.');
     }
     const counters = {
@@ -87,6 +159,7 @@ function installAutoSoakDiagnostics() {
         gameFixedAdvancedCount: 0,
         endpointSubmitCount: 0,
         endpointSubmitDeferredCount: 0,
+        acceptedSpawnCountByDefinitionId: {},
         catchUpMaximumStepHistogram: {},
         completion: Object.fromEntries(
             Object.keys(AUTO_SOAK_COMPLETION_METHODS).map((label) => [label, {
@@ -99,6 +172,10 @@ function installAutoSoakDiagnostics() {
     let lastRafTimestamp = Number(game.lastFrameTimestamp);
     let lastWallTimestamp = performance.now();
     const restorers = [];
+    if (frameTelemetryPort.setEnabled(true) !== true) {
+        throw new Error('자동 soak WebGPU frame telemetry를 활성화하지 못했습니다.');
+    }
+    restorers.push(() => frameTelemetryPort.setEnabled(false));
     const wrap = (owner, methodName, wrapper) => {
         const original = owner?.[methodName];
         if (typeof original !== 'function') {
@@ -111,6 +188,34 @@ function installAutoSoakDiagnostics() {
             owner[methodName] = original;
         });
     };
+    const recordAcceptedSpawn = (request) => {
+        const intent = request?.intent;
+        const definitionId = intent?.enemyDefinitionId ?? intent?.definitionId;
+        if (typeof definitionId !== 'string'
+            || definitionId.length === 0
+            || typeof intent?.waveId !== 'string') {
+            return;
+        }
+        counters.acceptedSpawnCountByDefinitionId[definitionId]
+            = (counters.acceptedSpawnCountByDefinitionId[definitionId] ?? 0) + 1;
+    };
+
+    wrap(endpoint, 'requestSpawn', (original, receiver, args) => {
+        const result = original.apply(receiver, args);
+        if (result?.accepted === true) {
+            recordAcceptedSpawn({ intent: args[0] });
+        }
+        return result;
+    });
+    wrap(endpoint, 'requestSpawnBatch', (original, receiver, args) => {
+        const result = original.apply(receiver, args);
+        if (result?.accepted === true && Array.isArray(args[0])) {
+            for (const request of args[0]) {
+                recordAcceptedSpawn(request);
+            }
+        }
+        return result;
+    });
 
     wrap(systemHandler, 'tick', (original, receiver, args) => {
         counters.renderFrameCount++;
@@ -253,17 +358,28 @@ function installAutoSoakDiagnostics() {
 async function waitForReadySnapshot(api) {
     const deadline = performance.now() + AUTO_SOAK_READY_TIMEOUT_MS;
     let lastSnapshotError = null;
+    let previousActiveSnapshot = null;
     while (performance.now() < deadline) {
         try {
+            requestAutoSoakForeground();
             const snapshot = api.getSnapshot();
-            if (snapshot.fixedTick > 0
+            const active = snapshot.fixedTick > 0
                 && snapshot.endpoint.runtimeState === 'gpu-ready'
-                && snapshot.recoveryRequired === false) {
+                && snapshot.windowFocused === true
+                && snapshot.loopRunning === true
+                && snapshot.recoveryRequired === false;
+            if (active
+                && previousActiveSnapshot
+                && snapshot.fixedTick > previousActiveSnapshot.fixedTick
+                && snapshot.frameTiming.lastFrameTimestamp
+                    > previousActiveSnapshot.frameTiming.lastFrameTimestamp) {
                 return snapshot;
             }
+            previousActiveSnapshot = active ? snapshot : null;
             lastSnapshotError = null;
         } catch (error) {
             lastSnapshotError = error;
+            previousActiveSnapshot = null;
         }
         await wait(AUTO_SOAK_POLL_INTERVAL_MS);
     }
@@ -273,8 +389,15 @@ async function waitForReadySnapshot(api) {
     ].filter(Boolean).join(' '));
 }
 
-async function runAutoSoak(api, durationMs, diagnostics) {
+async function runAutoSoak(
+    api,
+    durationMs,
+    diagnostics,
+    autoSoakTarget,
+    receiptIdentity
+) {
     const startSnapshot = await waitForReadySnapshot(api);
+    setReleaseSimulationProfilerEnabled(true, performance.now());
     diagnostics.reset();
     const startedAt = performance.now();
     const cpuSamplesMs = [];
@@ -343,14 +466,71 @@ async function runAutoSoak(api, durationMs, diagnostics) {
         Number.EPSILON,
         schedulerDiagnostics.frameDeltaSecondsTotal
     );
+    const releaseProfiler = Object.freeze({
+        ...getReleaseSimulationProfilerSnapshot()
+    });
+    const observedDefinitionSpawnCounts = Object.freeze({
+        ...schedulerDiagnostics.acceptedSpawnCountByDefinitionId
+    });
+    const expectedDefinitionSpawnCounts = autoSoakTarget === 'performance-map-2'
+        ? PERFORMANCE_DEFINITION_SPAWN_COUNTS
+        : null;
+    const definitionSpawnCountsMatch = expectedDefinitionSpawnCounts === null
+        || Object.entries(expectedDefinitionSpawnCounts).every(
+            ([definitionId, expectedCount]) => (
+                observedDefinitionSpawnCounts[definitionId] === expectedCount
+            )
+        );
+    const requiredWorkloadCompleted = endSnapshot.wave.allSpawnsQueued === true
+        && endSnapshot.wave.remainingSpawnCount === 0
+        && endSnapshot.wave.blockedSpawnCount === 0
+        && endSnapshot.endpoint.pendingCommandCount === 0
+        && (autoSoakTarget !== 'performance-map-2'
+            || (endSnapshot.wave.totalSpawnCount
+                    === PERFORMANCE_SERPENTINE_TOTAL_SPAWN_COUNT
+                && endSnapshot.wave.queuedSpawnCount
+                    === PERFORMANCE_SERPENTINE_TOTAL_SPAWN_COUNT
+                && definitionSpawnCountsMatch));
+    const completionProtocolFailureCount = Object.values(
+        schedulerDiagnostics.completion
+    ).reduce((sum, entry) => sum + entry.protocolFailureCount, 0);
+    const endpointProtocolFailureCount = Number(
+        endSnapshot.endpoint.eventProtocolFailure !== null
+    );
+    const protocolFailureCount = completionProtocolFailureCount
+        + endpointProtocolFailureCount;
+    const uncapturedErrorCount = Number(
+        endSnapshot.performanceTelemetry.frameComposer
+            ?.counters?.uncapturedErrorCount ?? -1
+    );
+    const unexpectedCapacityOverflowCount = Number(
+        endSnapshot.performanceTelemetry.unexpectedCapacityOverflowCount
+    );
+    const requiredStorageBuffersPerShaderStage = Number(
+        endSnapshot.performanceTelemetry
+            .requiredStorageBuffersPerShaderStage
+    );
+    const passed = requiredWorkloadCompleted
+        && releaseProfiler.totalCompletedFixedStepCount > 0
+        && releaseProfiler.totalFailedFixedStepCount === 0
+        && releaseProfiler.totalDroppedFixedStepCount === 0
+        && releaseProfiler.totalLostSimulationSeconds === 0
+        && endSnapshot.recoveryRequired === false
+        && endSnapshot.recovery.restartCount === 0
+        && endSnapshot.recovery.failureCount === 0
+        && protocolFailureCount === 0
+        && uncapturedErrorCount === 0
+        && unexpectedCapacityOverflowCount === 0
+        && requiredStorageBuffersPerShaderStage > 0
+        && requiredStorageBuffersPerShaderStage <= 9;
     return Object.freeze({
-        status: endSnapshot.recoveryRequired === false
-                && endSnapshot.recovery.restartCount === 0
-                && endSnapshot.recovery.failureCount === 0
-            ? 'pass'
-            : 'fail',
+        status: passed ? 'pass' : 'fail',
+        identity: receiptIdentity,
         mapId: endSnapshot.mapId,
         waveId: endSnapshot.waveId,
+        mapContentKey: receiptIdentity.mapContentKey,
+        waveContentKey: receiptIdentity.waveContentKey,
+        workloadContentKey: receiptIdentity.workloadContentKey,
         elapsedSeconds,
         sampleCount,
         startFixedTick: startSnapshot.fixedTick,
@@ -370,6 +550,72 @@ async function runAutoSoak(api, durationMs, diagnostics) {
         maximumPendingCommandCount,
         queuedSpawnCount: endSnapshot.wave.queuedSpawnCount,
         remainingSpawnCount: endSnapshot.wave.remainingSpawnCount,
+        workload: Object.freeze({
+            requiredCompleted: requiredWorkloadCompleted,
+            totalSpawnCount: endSnapshot.wave.totalSpawnCount,
+            queuedSpawnCount: endSnapshot.wave.queuedSpawnCount,
+            remainingSpawnCount: endSnapshot.wave.remainingSpawnCount,
+            blockedSpawnCount: endSnapshot.wave.blockedSpawnCount,
+            allSpawnsQueued: endSnapshot.wave.allSpawnsQueued,
+            expectedDefinitionSpawnCounts,
+            observedDefinitionSpawnCounts,
+            definitionSpawnCountsMatch
+        }),
+        highWater: Object.freeze({
+            body: endSnapshot.performanceTelemetry.bodyHighWater,
+            activeBody: endSnapshot.performanceTelemetry.activeBodyHighWater,
+            projectile: endSnapshot.performanceTelemetry.projectileHighWater,
+            contact: endSnapshot.performanceTelemetry.contactHighWater,
+            effect: endSnapshot.performanceTelemetry.effectHighWater,
+            pentagonPulse: endSnapshot.performanceTelemetry.pentagonPulse
+        }),
+        fixed: Object.freeze({
+            scheduled: releaseProfiler.totalScheduledFixedStepCount,
+            completed: releaseProfiler.totalCompletedFixedStepCount,
+            failed: releaseProfiler.totalFailedFixedStepCount,
+            dropped: releaseProfiler.totalDroppedFixedStepCount,
+            lostSimulationSeconds:
+                releaseProfiler.totalLostSimulationSeconds,
+            actualFixedTicksPerSecond:
+                releaseProfiler.actualFixedTicksPerSecond,
+            cumulativeFixedTicksPerSecond:
+                releaseProfiler.cumulativeFixedTicksPerSecond,
+            simulationProgressRatio:
+                releaseProfiler.simulationProgressRatio
+        }),
+        cpu: Object.freeze({
+            frameMs: Object.freeze({
+                p50: releaseProfiler.frameCpuP50Ms,
+                p95: releaseProfiler.frameCpuP95Ms,
+                p99: releaseProfiler.frameCpuP99Ms
+            }),
+            fixedMs: Object.freeze({
+                p50: releaseProfiler.fixedCpuP50Ms,
+                p95: releaseProfiler.fixedCpuP95Ms,
+                p99: releaseProfiler.fixedCpuP99Ms
+            })
+        }),
+        gpu: Object.freeze({
+            requiredStorageBuffersPerShaderStage,
+            limits: endSnapshot.performanceTelemetry.platform.limits,
+            adapterInfo: endSnapshot.performanceTelemetry.platform.adapterInfo,
+            deviceGeneration:
+                endSnapshot.performanceTelemetry.platform.deviceGeneration,
+            lostInfo: endSnapshot.performanceTelemetry.platform.lostInfo,
+            uncapturedErrorCount,
+            unexpectedCapacityOverflow:
+                endSnapshot.performanceTelemetry.unexpectedCapacityOverflow,
+            unexpectedCapacityOverflowCount
+        }),
+        failures: Object.freeze({
+            recoveryRequired: endSnapshot.recoveryRequired,
+            recoveryRestartCount: endSnapshot.recovery.restartCount,
+            recoveryFailureCount: endSnapshot.recovery.failureCount,
+            protocolFailureCount,
+            completionProtocolFailureCount,
+            endpointProtocolFailureCount,
+            firstRecoveryFailure: endSnapshot.recovery.firstFailure
+        }),
         recoveryRequired: endSnapshot.recoveryRequired,
         recoveryRestartCount: endSnapshot.recovery.restartCount,
         recoveryFailureCount: endSnapshot.recovery.failureCount,
@@ -410,7 +656,8 @@ async function runAutoSoak(api, durationMs, diagnostics) {
             wallMaximum: wallFrameDeltaValues.length > 0
                 ? Math.max(...wallFrameDeltaValues)
                 : null
-        })
+        }),
+        releaseProfiler
     });
 }
 
@@ -422,6 +669,7 @@ async function bootstrap() {
     }
     try {
         const autoSoakTarget = readAutoSoakTarget();
+        const receiptIdentity = readAutoSoakReceiptIdentity();
         if (autoSoakTarget === 'performance-map-2') {
             api.selectPerformanceMap();
         } else {
@@ -429,12 +677,20 @@ async function bootstrap() {
         }
         const diagnostics = installAutoSoakDiagnostics();
         try {
-            const result = await runAutoSoak(api, autoSoakDurationMs, diagnostics);
-            console.log(`${AUTO_SOAK_RESULT_PREFIX}${JSON.stringify(result)}`);
+            const result = await runAutoSoak(
+                api,
+                autoSoakDurationMs,
+                diagnostics,
+                autoSoakTarget,
+                receiptIdentity
+            );
+            const receipt = await persistAutoSoakReceipt(result);
+            console.log(`${AUTO_SOAK_RESULT_PREFIX}${JSON.stringify(receipt)}`);
         } finally {
             diagnostics.restore();
         }
     } finally {
+        setReleaseSimulationProfilerEnabled(false, performance.now());
         api.safeExit();
     }
 }

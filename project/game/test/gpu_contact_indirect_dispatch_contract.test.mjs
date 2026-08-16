@@ -41,7 +41,7 @@ test('contact hot path는 예약 capacity가 아니라 실제 GPU contact_count�
     );
     assert.equal(
         (contactHotPath.match(/#dispatchContacts\(pass\)/g) ?? []).length,
-        13
+        14
     );
     assert.doesNotMatch(
         contactHotPath,

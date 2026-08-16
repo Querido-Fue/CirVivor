@@ -77,8 +77,24 @@ CirVivor는 exact body identity에서 결정한 normal을 사용해 pair 순서�
 - reference profile은 원본처럼 tick당 grid 1회를 유지한다. 고속·고밀도 결과가 중간 rebuild 필요성을 증명할 때만 별도 profile로 비교한다.
 - presentation은 `strict-interpolation`, 원본 clock의 `reference-clock-extrapolation`, 한 tick으로 제한한 `capped-accumulator-extrapolation`을 분리한다.
 - grid/contact/applied/death overflow와 readback pending/ring/backpressure/watermark를 별도 status로 노출한다.
+- D1 status는 순간 overflow뿐 아니라 contact/applied/death 누적 overflow도 보존해 성능 receipt가 중간
+  overflow를 최종 0으로 오인하지 않게 한다. body/projectile/contact 및 Effect candidate/instance/event
+  high-water도 같은 bounded telemetry 경로로 수집한다.
 - projectile의 이전 겹침 pair는 반복 피해를 막기 위해 억제하고, `CLOSEST_ONLY`와 terrain kill을 deterministic하게 처리한다. 이는 이동 구간을 검사하는 swept CCD가 아니다.
 - GPU death는 즉시 draw/grid에서 숨기되 exact-identity death event를 받은 CPU가 next fixed despawn으로 registry와 stable slot을 회수한다.
+
+## D1 damage/effect capacity adaptation
+
+- Tower의 contact, Arrow charge, Archer projectile, M projectile은 모두 final candidate → same-tick maximum →
+  Maximum Damage Window → GPU HP 순서를 공유한다. 활성 창에서 더 큰 피해는 차이만 적용하고 만료를
+  현재 tick+duration으로 reset한다.
+- direct Core impact와 projectile Core damage도 같은 `Attack`/P Boost 의미를 사용한다. typed CPU Core
+  request는 GPU Core HP를 만들지 않으며, direct Core 변환 pass는 storage buffer 8 이하를 유지한다.
+- P virtual-projectile sensor는 body/projectile/contact/render slot이나 CPU pose readback을 만들지 않는다.
+  용량은 pulse별로 원자적으로 예약하며, 결정적 회전 순서가 `DEFERRED_CAPACITY`의 동일-sequence 재시도를
+  starvation 없이 진행시킨다. 모든 Effect compute profile은 storage buffer 9 이하를 유지한다.
+- `performance_serpentine_02` receipt는 revision과 map/wave content key에 결속하고, 10,000 workload 완료와
+  fixed 실패/drop/lost time, recovery/restart/protocol/uncaptured/overflow가 모두 0일 때만 PASS다.
 
 ## 의도적으로 제외한 원본 producer
 

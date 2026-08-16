@@ -78,7 +78,7 @@ Static tests must fail if production guides/contracts silently reintroduce:
   source entityId/incarnation ascending regardless of append order;
 - first tick `N` expires exactly at `N + 60`; `T < expiry` is active and `T >= expiry` is expired;
 - active-window lower/equal damage applies zero without rearming; a higher maximum applies only the peak delta
-  and never extends the original first-tick `N + 60` expiry;
+  and resets expiry to the winning tick plus 60;
 - `DAMAGE_APPLIED.value` equals actual HP decrement, including zero and lethal HP clamp;
 - a valid suppressed projectile consumes penetration/self-hit, while friendly/stale/invalid/miss/capture/
   reflect rejection consumes neither;
@@ -127,12 +127,13 @@ at the 2026-08-10 Turn 4 checkpoint.
   route flow and make bounded route progress; occluded WINDUP cannot lock a charge, and terrain-blocked CHARGE
   must enter recovery without a Tower recoil event, damage candidate, or GPU-world recovery.
 - Arrow CHARGE and CONTACT_RECOIL use the endpoint-normalized bounded Expo-out finite difference with lambda
-  `0.5` at fixed 60 Hz. Actual GPU samples must match charge `k=0/1`, recoil contact preload and physical
+  `10` at fixed 60 Hz. Actual GPU samples must match charge `k=0/1`, recoil contact preload and physical
   `S+1 k=0`, and `S+2 k=1`; the first charge displacement remains below the `1/8`-tile SDF texel.
 - A Tower-selected M projectile is sampled after canonical T+1 completion publication. After its source M alone
   is despawned, exact target identity, launch damage snapshot, self-hit budget, and live registry/GPU body remain
-  unchanged. Its later exact contact must reduce the selected Tower from `30` to `25`, leave the wrong Tower and
-  Core unchanged, then clean the projectile once without recovery.
+  unchanged. Its later exact contact must enter the common same-tick maximum/window path, reduce the selected
+  Tower from `30` to `25`, leave the wrong Tower and Core unchanged, then clean the projectile once without
+  recovery.
 - The first title map card preserves the corridor preview ID but creates the R2 showcase map and authored Wave 1
   in the production `GameScene`. The map-select overlay must release its title overlay session before routing;
   other explicit map IDs and omitted direct-start IDs keep the legacy resolver path.
@@ -145,14 +146,14 @@ at the 2026-08-10 Turn 4 checkpoint.
 - GPU Effect A/B pools, per-body Summary, and PEmitter state are independent from the exclusive
   `EnemyBehaviorState` union. Half-open expiry is active only for
   `appliedTick <= T < expiresAtTick`; independent expirations drive Boost transitions `0↔1↔2+`.
-- `1+` Boost enables regeneration and `2+` adds attack multiplication. Contact damage recomputes from an
-  immutable authored/resolved base, projectile damage snapshots once at spawn, Tower-channel flags are exact,
-  and both direct and typed-projectile Core damage remain unmodified.
-- Every same-tick due P is one ordered command batch. Validation is zero-partial; explicit zero-target completion
-  advances cadence. Authentic candidate/instance/event/pulse-grid `CAPACITY_REJECTED` advances only the protocol
-  watermark, consumes no sequence/cadence, applies no mutation, and retries from the observation boundary.
-  Program capacity, stale/ABA without exact proof, replay/fingerprint, ABI/record/ID exhaustion, and mixed
-  evidence are recovery. The shared owner/backend capacity has exact 256/257 boundary coverage.
+- `1+` Boost enables regeneration and `2+` adds attack multiplication. Contact/direct damage recomputes from an
+  immutable authored/resolved base, projectile damage snapshots once at spawn, and all four hostile Tower/Core
+  contact/projectile channels consume the explicit Attack modifier.
+- Every same-tick due P is one ordered command, with zero-partial validation and capacity commit per pulse.
+  `APPLIED`, `ZERO_TARGET`, and `SOURCE_INVALID` settle only that pulse. `DEFERRED_CAPACITY` consumes no sequence/
+  cadence, applies no mutation, keeps `recovery=false`, and retries the same sequence under deterministic rotating
+  admission. Tests cover an admitted prefix with a deferred suffix, next-tick progress, source death/ABA,
+  oversized single-pulse demand, repeated fairness, and candidate/instance/event capacity boundaries.
 - Completion validation covers hierarchical session→device→epoch comparison, future-batch protocol snapshot,
   contiguous tick equality, exact APPLIED/ZERO_TARGET/SOURCE_INVALID result/count combinations, one pulse event
   per valid pulse, exact instance-event cardinality, and duplicate/missing/extra provenance rejection before
@@ -186,8 +187,9 @@ checkpoint. Production separates Arrow gameplay from tracked pose, replaces form
   WorldRegistry token. The one authentic lifecycle result is one destination spawn plus both source despawns;
   death/Core cleanup wins pre-publication and post-publication GPU failure is recovery without rollback.
 - Current/max positive signed-int32 centi-HP each use `sum + trunc(sum/10)` once. H/HX uses the absolute n-table,
-  permits no map/wave modifier, scales Tower contact only, leaves Core impact 1, and uses bounty
-  `[1,2,4,6,8,10]`; merge/transform dispositions pay no kill bounty.
+  permits no map/wave modifier, scales Tower contact as `[0.1,0.12,0.144,0.1728,0.20736,0.248832]`, scales
+  direct Core impact as `[1,1.2,1.44,1.728,2.0736,2.48832]`, and uses bounty `[1,2,4,6,8,10]`; merge/transform
+  dispositions pay no kill bounty.
 - Tick-start bounded-grid/route-integration/SDF64 join selection rejects reverse progress, overflow, and naive
   H×N². Candidate order is distance²/stage delta/cost delta/root identity/slot/rotation ascending.
 - Every target-tick half-open active Effect instance is independently rekeyed with exact identity/provenance/
@@ -441,6 +443,9 @@ final cumulative runner, this section records R2 COMPLETE while preserving the e
   buffers, and terminal/replacement leave all routes open with zero Z roster/staged/readback/cleanup leaks.
 - actual hardware fixture covers order-independent Maximum Damage Window, valid-zero projectile budget,
   continuous overlap/expiry, weight displacement, capacity preflight atomicity, exact Core cleanup, and terminal seal.
+- D1 mixed-producer hardware coverage requires contact, Arrow/Archer, and M Tower candidates to select one
+  deterministic same-tick winner, requires a higher active peak to reset expiry, and rejects any M direct-HP
+  bypass. Its separate Core direct-request pass and every Effect profile must keep the global storage maximum 9.
 - Turn 2 hardware fixture additionally covers Arrow charge/telegraph/non-homing/recoil/Core fallback and M's
   exact Core-first/Tower-selected projectile branches, typed Core request, persistent stop/resume, stale-target
   rejection, and zero final active/reserved/pending counts.
@@ -625,3 +630,11 @@ acceptance items below remain future gates rather than R1 or Turn 1 PASS claims.
 - stable entity/UI/listener/resource counts after map transition.
 
 Approval requires actual fixed tick progress and p95/p99 data, not visual FPS alone.
+
+For the current `performance_serpentine_02` / `performance_serpentine_wave_01` 10,000-request workload, the D1
+receipt must bind HEAD commit/tree/worktree content and exact map/wave content keys. It records per-definition
+spawn counts, body/projectile/effect/contact high-water, fixed completed/failed/dropped, lost simulation time,
+simulation-progress ratio, frame/fixed CPU p50/p95/p99, GPU limits, storage maximum, overflow, recovery/restart/
+protocol/uncaptured errors, and device-loss reason. PASS additionally requires the complete workload, fixed
+failed/dropped/lost all zero, recovery/restart/protocol/uncaptured/overflow all zero, and storage maximum at most
+9. A partial or diagnostic run is never promoted to performance PASS.

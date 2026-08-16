@@ -43,8 +43,8 @@ const PENTA_BOOST_EFFECT_DEFINITION_SOURCE = Object.freeze({
     moveSpeedMultiplier: 1,
     towerContactDamageEffectModifiable: true,
     projectileTowerDamageEffectModifiable: true,
-    directCoreImpactDamageEffectModifiable: false,
-    typedProjectileCoreDamageEffectModifiable: false,
+    directCoreImpactDamageEffectModifiable: true,
+    typedProjectileCoreDamageEffectModifiable: true,
     tags: Object.freeze(['beneficial', 'boost'])
 });
 
