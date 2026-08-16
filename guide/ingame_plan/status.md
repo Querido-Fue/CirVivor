@@ -422,6 +422,26 @@ executed. Economy, Word, and multi-Tower capabilities remain outside this R2 sli
 - A resolved Tower-selected M projectile owns its exact target, self-hit budget, and snapshotted attack damage
   independently of later source-M death. Source cleanup cancels unresolved source work only; a live projectile
   still reaches the ordinary Tower Maximum Damage Window and HP path.
+- The second title card's `performance_serpentine_02` load map is now a width-10 four-run corridor over a
+  `120×70` grid with 51 route waypoints. Its 10,000 one-per-tick requests repeat one deterministic ten-definition
+  cycle, yielding exactly 1,000 of each visual family. The O slot uses the map-load-only
+  `performance-octa-core-route-01` definition so the heavy octagon follows the Core route without consuming the
+  natural O runtime's eight Tower-orbit leases. All ten load definitions resolve to the same explicit opaque red
+  RGBA while preserving their analytic shapes.
+- The 2026-08-15 high-density reset was not a body-capacity or device-loss event. A generic Core contact could
+  legitimately trail Projectile Capture's independently completed watermark, so an exact authenticated Capture
+  Core-impact receipt now accepts any positive source tick at or below that watermark and still rejects future or
+  unauthenticated ticks. Repeated H spawns then exposed a second latent protocol error: Formation had equated the
+  global game `sourceTick` with the fresh-GPU-world local `submittedTick`. Prepare/transform completion now checks
+  global authored boundaries and exact local submission continuity independently, including transform at the
+  authenticated prepare-local tick plus one.
+- The same high-density replay exposed a third Formation edge at 5,715 live enemies: an authentic same-boundary
+  lifecycle removal produced the intended `ALLOW_SOURCE_INVALID + 0xffffffff` prepare record, but the host ABI
+  rejected the sentinel before submission. Prepare serialization now permits that sentinel only under the exact
+  lifecycle flag and keeps unflagged sentinel input fail-closed. The focused contracts passed 18/18 and the full
+  Node suite passed 1497/1497. A fresh production NW.js/computer-use Map 2 run stayed active beyond the deterministic
+  one-per-tick 10,000-spawn completion interval with opaque red mixed shapes, live Tower/Core contact damage, and no
+  reset log newer than `reset_2026-08-16_00-21-01-417.txt`.
 - This stabilization section does not start R3 Word/Sentence, economy, Tower Share, or multi-Tower work.
 
 ## Post-R2 locked target not yet implemented

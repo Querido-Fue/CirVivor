@@ -113,7 +113,7 @@ test('Archer는 shared main enemy 수치를 쓰는 별도 frozen definition으�
     const catalogIds = Object.keys(
         basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID
     );
-    assert.equal(catalogIds.length, 12);
+    assert.equal(catalogIds.length, 13);
     assert.equal(new Set(catalogIds).size, catalogIds.length);
     assert.equal(
         Object.isFrozen(basicEnemyData.INGAME_ENEMY_DEFINITION_BY_ID),

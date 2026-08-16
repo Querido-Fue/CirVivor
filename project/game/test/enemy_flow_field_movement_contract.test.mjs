@@ -48,6 +48,7 @@ const EXPECTED_DEFAULT_SPEED_BY_DEFINITION_ID = Object.freeze({
     basic_ring_01: 5,
     basic_cork_01: 5,
     basic_circle_01: 5,
+    'performance-octa-core-route-01': 5,
     archer_01: 5
 });
 const EXPECTED_NAVIGATION_MODES = Object.freeze(new Set([

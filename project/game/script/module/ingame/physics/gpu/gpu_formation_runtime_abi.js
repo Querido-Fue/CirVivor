@@ -592,11 +592,23 @@ export function writeGpuFormationPrepareProgramRecord(storage, index, source) {
     if (safeIndex >= storage.capacity) {
         throw new RangeError('formation prepare index가 capacity를 벗어났습니다.');
     }
+    const flags = requireUint32(source.flags ?? 0, 'formation prepare flags');
+    if ((flags & ~GPU_FORMATION_PREPARE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID) !== 0) {
+        throw new RangeError('formation prepare flags에 unknown bit가 있습니다.');
+    }
+    const sourceSlot = requireUint32(
+        source.sourceSlot,
+        'formation prepare sourceSlot',
+        {
+            allowSentinel: (flags
+                & GPU_FORMATION_PREPARE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID) !== 0
+        }
+    );
     const offset = abi.PREPARE_HEADER.STRIDE + (safeIndex * record.STRIDE);
     new Uint8Array(storage.buffer, offset, record.STRIDE).fill(0);
     storage.view.setUint32(
         offset + record.SOURCE_SLOT,
-        requireUint32(source.sourceSlot, 'formation prepare sourceSlot'),
+        sourceSlot,
         LITTLE_ENDIAN
     );
     storage.view.setUint32(
@@ -639,10 +651,6 @@ export function writeGpuFormationPrepareProgramRecord(storage, index, source) {
         GPU_FORMATION_PREPARE_RESULT.PENDING,
         LITTLE_ENDIAN
     );
-    const flags = requireUint32(source.flags ?? 0, 'formation prepare flags');
-    if ((flags & ~GPU_FORMATION_PREPARE_PROGRAM_FLAG.ALLOW_SOURCE_INVALID) !== 0) {
-        throw new RangeError('formation prepare flags에 unknown bit가 있습니다.');
-    }
     storage.view.setUint32(offset + record.FLAGS, flags, LITTLE_ENDIAN);
     for (const field of [
         record.PAIR_PROGRAM_INDEX,

@@ -994,11 +994,12 @@ export class GpuFormationCommandOwner {
             || (envelope.status !== GPU_FORMATION_RUNTIME_STATUS.OK
                 && envelope.status !== GPU_FORMATION_RUNTIME_STATUS.GRID_OVERFLOW)
             || envelope.sourceTick !== sourceTick
-            || envelope.submittedTick !== sourceTick
             || envelope.completedThroughTick !== sourceTick
             || envelope.previousSourceTick !== expectedPreviousSourceTick
             || envelope.previousSubmittedTick !== expectedPreviousSubmittedTick
             || sourceTick <= envelope.previousSourceTick
+            || !Number.isSafeInteger(envelope.submittedTick)
+            || envelope.submittedTick <= 0
             || envelope.submittedTick <= envelope.previousSubmittedTick
             || inFlight.protocol.submittedTick + 1 !== envelope.submittedTick
             || envelope.batchIdFingerprint !== inFlight.batchIdFingerprint
@@ -1059,6 +1060,11 @@ export class GpuFormationCommandOwner {
             targetFixedTick: tick,
             sourceTick,
             batchIdFingerprint: inFlight.batchIdFingerprint,
+            // sourceTick은 복구 뒤에도 이어지는 game fixed tick이고 submittedTick은
+            // fresh GPU world마다 다시 시작하는 backend-local watermark입니다.
+            // 두 좌표계를 섞지 않고, 인증된 prepare 제출 tick을 transform의
+            // 정확한 다음-local-submit 검증에 보존합니다.
+            completionSubmittedTick: envelope.submittedTick,
             // Transform arm은 완료 시점이 아니라 prepare submit 직전의
             // protocol watermark를 인증합니다. 완료 envelope의 submittedTick을
             // 넘기면 backend의 N-1 -> N 연속성 검사가 항상 실패합니다.
@@ -1073,7 +1079,7 @@ export class GpuFormationCommandOwner {
         });
         this.inFlightBySourceTick.delete(sourceTick);
         this.preparedByFingerprint.set(inFlight.batchIdFingerprint, prepared);
-        this.lastPrepareSubmittedTick = sourceTick;
+        this.lastPrepareSubmittedTick = envelope.submittedTick;
         this.lastPrepareCompletedTick = sourceTick;
         this.lastProtocol = protocol;
         this.lastCompletionSourceTick = sourceTick;
@@ -1434,6 +1440,7 @@ export class GpuFormationCommandOwner {
             targetFixedTick: request.targetFixedTick,
             armedCount: records.length,
             prepareProtocol: prepared.protocol,
+            prepareCompletionSubmittedTick: prepared.completionSubmittedTick,
             completionProtocol: Object.freeze({ ...armed.evidence }),
             records
         }));
@@ -1818,7 +1825,9 @@ export class GpuFormationCommandOwner {
                 !== expected.completionProtocol.authoritativeEpoch
             || completion.preparedSourceTick !== targetFixedTick - 1
             || completion.sourceTick !== targetFixedTick
-            || completion.submittedTick !== targetFixedTick
+            || !Number.isSafeInteger(completion.submittedTick)
+            || completion.submittedTick
+                !== expected.prepareCompletionSubmittedTick + 1
             || completion.completedThroughTick !== targetFixedTick
             || completion.batchIdFingerprint
                 !== expected.transformBatchIdFingerprint

@@ -13,8 +13,13 @@ const {
     BASIC_PENTA_ENEMY_DATA,
     BASIC_RHOM_ENEMY_DATA,
     BASIC_RING_ENEMY_DATA,
-    BASIC_TRIANGLE_ENEMY_DATA
+    BASIC_TRIANGLE_ENEMY_DATA,
+    MAIN_GPU_ENEMY_COLOR_RGBA,
+    PERFORMANCE_OCTA_ENEMY_DATA
 } = await loadGameModule('data/object/enemy/basic_circle_enemy_data.js');
+const {
+    ENEMY_CAPABILITY_ID
+} = await loadGameModule('ingame/contract/enemy_capability_contract.js');
 const {
     PERFORMANCE_SERPENTINE_MACRO_COLUMNS,
     PERFORMANCE_SERPENTINE_MACRO_ROWS,
@@ -41,11 +46,24 @@ const {
 const { TileMap } = await loadGameModule('ingame/map/tile_map.js');
 const { WaveDirector } = await loadGameModule('ingame/flow/wave_director.js');
 
-test('두 번째 성능 map은 폭 10의 단일 116-waypoint ㄹ자 통로다', () => {
+const PERFORMANCE_DEFINITIONS = Object.freeze([
+    BASIC_CIRCLE_ENEMY_DATA,
+    BASIC_TRIANGLE_ENEMY_DATA,
+    BASIC_ARROW_ENEMY_DATA,
+    BASIC_RHOM_ENEMY_DATA,
+    BASIC_PENTA_ENEMY_DATA,
+    BASIC_HEXA_ENEMY_DATA,
+    PERFORMANCE_OCTA_ENEMY_DATA,
+    BASIC_JORANG_ENEMY_DATA,
+    BASIC_RING_ENEMY_DATA,
+    BASIC_CORK_ENEMY_DATA
+]);
+
+test('두 번째 성능 map은 폭 10의 단일 51-waypoint 4줄 통로다', () => {
     assert.equal(PERFORMANCE_SERPENTINE_MAP_ID, 'performance_serpentine_02');
     assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.id,
         PERFORMANCE_SERPENTINE_MAP_ID);
-    assert.equal(PERFORMANCE_SERPENTINE_MACRO_ROWS, 17);
+    assert.equal(PERFORMANCE_SERPENTINE_MACRO_ROWS, 7);
     assert.equal(PERFORMANCE_SERPENTINE_MACRO_COLUMNS, 12);
     assert.equal(PERFORMANCE_SERPENTINE_PATH_WIDTH_TILES, 10);
     assert.equal(PERFORMANCE_SERPENTINE_FLOW_TRANSITION_RADIUS_TILES, 4.5);
@@ -55,12 +73,12 @@ test('두 번째 성능 map은 폭 10의 단일 116-waypoint ㄹ자 통로다', 
     assert.equal(PERFORMANCE_SERPENTINE_MAP_DATA.enemySpawnRoutes.length, 1);
 
     const route = PERFORMANCE_SERPENTINE_MAP_DATA.enemySpawnRoutes[0];
-    assert.equal(route.macroCells.length, 116);
+    assert.equal(route.macroCells.length, 51);
     assert.deepEqual(route.macroCells[0], [0, 0]);
-    assert.deepEqual(route.macroCells.at(-1), [16, 11]);
-    assert.deepEqual(PERFORMANCE_SERPENTINE_MAP_DATA.coreMacroCell, [16, 11]);
+    assert.deepEqual(route.macroCells.at(-1), [6, 0]);
+    assert.deepEqual(PERFORMANCE_SERPENTINE_MAP_DATA.coreMacroCell, [6, 0]);
     assert.deepEqual(PERFORMANCE_SERPENTINE_MAP_DATA.towerSpawnMacroCell,
-        [16, 10]);
+        [6, 1]);
     assert.equal(new Set(route.macroCells.map(
         ([row, column]) => `${row}:${column}`
     )).size, route.macroCells.length);
@@ -75,16 +93,16 @@ test('두 번째 성능 map은 폭 10의 단일 116-waypoint ㄹ자 통로다', 
     }
 
     const tileMap = new TileMap(PERFORMANCE_SERPENTINE_MAP_DATA);
-    assert.equal(tileMap.rows, 170);
+    assert.equal(tileMap.rows, 70);
     assert.equal(tileMap.columns, 120);
     assert.equal(tileMap.getSpawnRoutes().length, 1);
-    assert.equal(tileMap.getSpawnRoutes()[0].waypoints.length, 116);
+    assert.equal(tileMap.getSpawnRoutes()[0].waypoints.length, 51);
     assert.equal(tileMap.getFlowTransitionRadius(), 4.5);
     assert.equal(tileMap.getRouteClosurePhysicalBlocking(), true);
     assert.equal(tileMap.getRouteGraph(), null);
 });
 
-test('성능 wave는 10종 census 뒤 C/T/A를 1 tick 간격으로 총 10,000개 예약한다', () => {
+test('성능 wave는 10종을 같은 비율로 1 tick 간격에 총 10,000개 예약한다', () => {
     assert.equal(PERFORMANCE_SERPENTINE_TOTAL_SPAWN_COUNT, 10_000);
     assert.equal(PERFORMANCE_SERPENTINE_SPAWN_INTERVAL_TICKS, 1);
     assert.equal(PERFORMANCE_SERPENTINE_LANE_OFFSETS_TILES.length, 10);
@@ -95,7 +113,7 @@ test('성능 wave는 10종 census 뒤 C/T/A를 1 tick 간격으로 총 10,000개
         BASIC_RHOM_ENEMY_DATA.id,
         BASIC_PENTA_ENEMY_DATA.id,
         BASIC_HEXA_ENEMY_DATA.id,
-        BASIC_OCTA_ENEMY_DATA.id,
+        PERFORMANCE_OCTA_ENEMY_DATA.id,
         BASIC_JORANG_ENEMY_DATA.id,
         BASIC_RING_ENEMY_DATA.id,
         BASIC_CORK_ENEMY_DATA.id
@@ -104,6 +122,49 @@ test('성능 wave는 10종 census 뒤 C/T/A를 1 tick 간격으로 총 10,000개
         towerMaxHp: 20_000_000,
         coreMaxIntegrity: 20_000_000
     });
+    assert.equal(PERFORMANCE_SERPENTINE_WAVE_01_DATA.timeline.length, 1);
+    assert.equal(
+        PERFORMANCE_SERPENTINE_WAVE_01_DATA.timeline[0].spawnGroups[0].count,
+        10_000
+    );
+
+    assert.notEqual(PERFORMANCE_OCTA_ENEMY_DATA.id, BASIC_OCTA_ENEMY_DATA.id);
+    assert.equal(
+        PERFORMANCE_OCTA_ENEMY_DATA.shapeType,
+        BASIC_OCTA_ENEMY_DATA.shapeType
+    );
+    assert.equal(
+        PERFORMANCE_OCTA_ENEMY_DATA.physicsProfileId,
+        BASIC_OCTA_ENEMY_DATA.physicsProfileId
+    );
+    assert.notEqual(
+        PERFORMANCE_OCTA_ENEMY_DATA.behaviorProfileId,
+        BASIC_OCTA_ENEMY_DATA.behaviorProfileId
+    );
+    assert.equal(
+        PERFORMANCE_OCTA_ENEMY_DATA.capabilityIds.includes(
+            ENEMY_CAPABILITY_ID.ORBIT
+        ),
+        false,
+        '부하용 O가 자연 O의 bounded orbit roster를 소비하면 안 됩니다.'
+    );
+    assert.equal(
+        PERFORMANCE_OCTA_ENEMY_DATA.capabilityIds.includes(
+            ENEMY_CAPABILITY_ID.DIRECTIONAL_DEFENSE
+        ),
+        false
+    );
+
+    for (const definition of PERFORMANCE_DEFINITIONS) {
+        assert.deepEqual(
+            Array.from(definition.colorRgba),
+            Array.from(MAIN_GPU_ENEMY_COLOR_RGBA),
+            `${definition.id}는 공통 hostile RGBA를 완전히 가져야 합니다.`
+        );
+        assert.equal(definition.colorRgba.length, 4);
+        assert.equal(definition.colorRgba[3], 1);
+        assert.ok(definition.radiusScale > 0);
+    }
 
     const director = new WaveDirector({
         waveDefinition: PERFORMANCE_SERPENTINE_WAVE_01_DATA
@@ -127,16 +188,16 @@ test('성능 wave는 10종 census 뒤 C/T/A를 1 tick 간격으로 총 10,000개
         return result;
     }, {});
     assert.deepEqual(counts, {
-        [BASIC_CIRCLE_ENEMY_DATA.id]: 3_331,
-        [BASIC_TRIANGLE_ENEMY_DATA.id]: 3_331,
-        [BASIC_ARROW_ENEMY_DATA.id]: 3_331,
-        [BASIC_RHOM_ENEMY_DATA.id]: 1,
-        [BASIC_PENTA_ENEMY_DATA.id]: 1,
-        [BASIC_HEXA_ENEMY_DATA.id]: 1,
-        [BASIC_OCTA_ENEMY_DATA.id]: 1,
-        [BASIC_JORANG_ENEMY_DATA.id]: 1,
-        [BASIC_RING_ENEMY_DATA.id]: 1,
-        [BASIC_CORK_ENEMY_DATA.id]: 1
+        [BASIC_CIRCLE_ENEMY_DATA.id]: 1_000,
+        [BASIC_TRIANGLE_ENEMY_DATA.id]: 1_000,
+        [BASIC_ARROW_ENEMY_DATA.id]: 1_000,
+        [BASIC_RHOM_ENEMY_DATA.id]: 1_000,
+        [BASIC_PENTA_ENEMY_DATA.id]: 1_000,
+        [BASIC_HEXA_ENEMY_DATA.id]: 1_000,
+        [PERFORMANCE_OCTA_ENEMY_DATA.id]: 1_000,
+        [BASIC_JORANG_ENEMY_DATA.id]: 1_000,
+        [BASIC_RING_ENEMY_DATA.id]: 1_000,
+        [BASIC_CORK_ENEMY_DATA.id]: 1_000
     });
     director.destroy();
 });

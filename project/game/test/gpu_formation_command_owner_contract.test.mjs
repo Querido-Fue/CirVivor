@@ -115,7 +115,11 @@ function createBackend(handle, { submittedTickCount = 4 } = {}) {
     };
 }
 
-function sourceInvalidEnvelope(backend, reason) {
+function sourceInvalidEnvelope(
+    backend,
+    reason,
+    { submittedTick = 5 } = {}
+) {
     const batch = backend.staged[0];
     const record = batch.records[0];
     return Object.freeze({
@@ -126,7 +130,7 @@ function sourceInvalidEnvelope(backend, reason) {
         previousSourceTick: 0,
         previousSubmittedTick: 0,
         sourceTick: 5,
-        submittedTick: 5,
+        submittedTick,
         completedThroughTick: 5,
         batchIdFingerprint: batch.batchIdFingerprint,
         programCount: 1,
@@ -221,6 +225,23 @@ test('prepare submit watermark가 completion tick과 연속하지 않으면 fail
     assert.equal(completed.protocolFailure.code, 'completion-envelope-mismatch');
     assert.equal(owner.requiresRecovery(), true);
     assert.equal(owner.getStatus().preparedTransformBatchCount, 0);
+});
+
+test('복구 후 Formation prepare는 global source tick과 local submitted tick을 독립 인증한다', () => {
+    const { owner, backend } = createOwnerFixture({ submittedTickCount: 16 });
+    backend.completed.push(sourceInvalidEnvelope(
+        backend,
+        GPU_FORMATION_PREPARE_SOURCE_INVALID_REASON.DIED_AFTER_STAGE,
+        { submittedTick: 17 }
+    ));
+
+    const completed = owner.commitCompletedAtFixedBoundary(6);
+    assert.equal(completed.protocolFailure, null);
+    assert.equal(completed.sourceTick, 5);
+    assert.equal(completed.completionSubmittedTick, 17);
+    assert.equal(owner.getStatus().lastPrepareSourceTick, 5);
+    assert.equal(owner.getStatus().lastPrepareSubmittedTick, 17);
+    assert.equal(owner.requiresRecovery(), false);
 });
 
 test('N+1 첫 empty drain은 in-flight를 보존해 같은 boundary의 늦은 completion을 인증한다', () => {
@@ -331,6 +352,7 @@ test('Formation transform readback 지연은 같은 fixed boundary를 pending �
         transformBatchIdFingerprint: 606,
         targetFixedTick: 5,
         armedCount: 1,
+        prepareCompletionSubmittedTick: 17,
         completionProtocol: Object.freeze({
             sessionGeneration: 5,
             deviceGeneration: 2,
@@ -376,7 +398,7 @@ test('Formation transform readback 지연은 같은 fixed boundary를 pending �
             authoritativeEpoch: 3,
             preparedSourceTick: 4,
             sourceTick: 5,
-            submittedTick: 5,
+            submittedTick: 18,
             completedThroughTick: 5,
             batchIdFingerprint: 606,
             programCount: 1,

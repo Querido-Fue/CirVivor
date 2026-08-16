@@ -15,7 +15,10 @@ import {
 } from 'ingame/contract/enemy_profile_contract.js';
 import {
     ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID,
+    CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
     ENEMY_PROFILE_CATALOG,
+    MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
+    OCTAGON_HEAVY_ENEMY_PHYSICS_PROFILE_ID,
     TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
     TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
     TRIANGLE_FAST_LIGHT_ENEMY_PHYSICS_PROFILE_ID
@@ -120,6 +123,31 @@ export const BASIC_CIRCLE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'circle'
 );
 
+export const PERFORMANCE_OCTA_ENEMY_DEFINITION_ID
+    = 'performance-octa-core-route-01';
+
+/**
+ * 맵 2의 10종 균등 부하를 위한 O silhouette입니다. 자연 O의 heavy 수치는
+ * 유지하되 bounded Tower orbit roster에는 들어가지 않고 일반 Core flow를 탑니다.
+ */
+export const PERFORMANCE_OCTA_ENEMY_DATA = normalizeEnemyDefinition(
+    Object.freeze({
+        id: PERFORMANCE_OCTA_ENEMY_DEFINITION_ID,
+        spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
+        shapeDefinitionId: 'octa',
+        physicsProfileId: OCTAGON_HEAVY_ENEMY_PHYSICS_PROFILE_ID,
+        combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
+        behaviorProfileId: CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
+        formationDefinitionId: null,
+        capabilityIds: MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
+        render: Object.freeze({
+            colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
+            radiusScale: 1
+        })
+    }),
+    ENEMY_PROFILE_CATALOG
+);
+
 export const INGAME_ENEMY_DEFINITIONS = Object.freeze([
     BASIC_SQUARE_ENEMY_DATA,
     BASIC_TRIANGLE_ENEMY_DATA,
@@ -138,6 +166,7 @@ export const INGAME_ENEMY_DEFINITION_BY_ID = Object.freeze(
     Object.fromEntries([
         ...INGAME_ENEMY_DEFINITIONS,
         BASIC_CIRCLE_ENEMY_DATA,
+        PERFORMANCE_OCTA_ENEMY_DATA,
         ARCHER_ENEMY_DATA
     ].map((definition) => [definition.id, definition]))
 );

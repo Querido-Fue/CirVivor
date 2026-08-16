@@ -49,12 +49,12 @@ test('성능 map은 하나의 coarse route field로 10-wide lane과 stage 순서
 
     assert.ok(stages.length > 2);
     assert.equal(atlas.cols, 12);
-    assert.equal(atlas.rows, 17);
+    assert.equal(atlas.rows, 7);
     assert.equal(atlas.cellSize, 10);
     assert.equal(atlas.sourceLayerCount, 1);
     assert.ok(stages.every((stage) => stage.sourceLayerIndex === 0));
     assert.equal(atlas.gpuGeneration.sourceLayerCount, 1);
-    assert.equal(atlas.gpuGeneration.relaxationPassCount, 116);
+    assert.equal(atlas.gpuGeneration.relaxationPassCount, 51);
     assert.ok(
         atlas.directions.byteLength
             + atlas.integrationCosts.byteLength

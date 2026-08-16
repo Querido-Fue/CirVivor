@@ -249,7 +249,7 @@ test('stable capability IDs, content-free contract, duplicate/missing registry, 
 
 test('모든 production definition은 frozen profile/capability를 해석하고 shape와 behavior는 독립이다', () => {
     const definitions = Object.values(INGAME_ENEMY_DEFINITION_BY_ID);
-    assert.equal(definitions.length, 12);
+    assert.equal(definitions.length, 13);
     for (const definition of definitions) {
         const profiles = resolveEnemyDefinitionProfiles(definition, ENEMY_PROFILE_CATALOG);
         assert.equal(Object.isFrozen(definition), true);

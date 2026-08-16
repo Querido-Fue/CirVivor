@@ -6305,7 +6305,12 @@ export class GpuCircleBodySimulation {
             || receipt.sessionGeneration !== this.sessionGeneration
             || receipt.deviceGeneration !== this.deviceGeneration
             || receipt.authoritativeEpoch !== this.authoritativeEpoch
-            || receipt.sourceTick !== this.projectileCaptureCompletedThroughTick
+            // Generic contact readback은 독립 Capture 완료 watermark보다 늦게 도착할
+            // 수 있습니다. Endpoint가 exact source-tick 증거를 인증하므로, 여기서는
+            // 이미 완료된 양의 tick인지 확인하고 미래 tick만 거부합니다.
+            || !Number.isSafeInteger(receipt.sourceTick)
+            || receipt.sourceTick <= 0
+            || receipt.sourceTick > this.projectileCaptureCompletedThroughTick
             || receipt.type !== 'contact'
             || (receipt.eventType !== 'interaction-enter'
                 && receipt.eventType !== 'interaction-continuous')
