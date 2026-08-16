@@ -366,6 +366,16 @@ test('모든 compute entry의 transitive storage usage는 exact 9 이하이다',
         '0:11:effect_candidates',
         '0:12:effect_events'
     ]);
+    assert.deepEqual(effectUsage.get('write_effect_pulse_candidates'), [
+        '0:1:physics',
+        '0:2:simulations',
+        '0:6:effect_emitters',
+        '0:7:pulse_program',
+        '0:8:pool_state',
+        '0:11:effect_candidates',
+        '1:0:grid_counts',
+        '1:1:grid_bodies'
+    ]);
 });
 
 test('Effect damage order는 immutable contact base와 Tower-only projectile snapshot을 사용하고 Core channel을 곱하지 않는다', () => {
@@ -531,7 +541,7 @@ test('Pentagon navigation은 route integration/SDF bounded gate를 texture로 �
     );
     assert.match(
         GPU_EFFECT_RUNTIME_COMPUTE_WGSL,
-        /fn big_grid_body_is_canonical_in_cell[\s\S]*?fn scan_effect_pulse_candidates[\s\S]*?let small_count[\s\S]*?let big_count[\s\S]*?big_grid_body_is_canonical_in_cell/
+        /fn emit_effect_pulse_sensor_hits[\s\S]*?slots_per_cell[\s\S]*?grid_counts[\s\S]*?grid_bodies[\s\S]*?atomicOr\(&effect_pulse_sensor_hits/
     );
     assert.match(
         GPU_EFFECT_RUNTIME_COMPUTE_WGSL,

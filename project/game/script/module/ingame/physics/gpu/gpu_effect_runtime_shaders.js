@@ -147,6 +147,11 @@ const EFFECT_NAV_ROUTE_FIELD_COUNT_MASK: u32 = ${GPU_EFFECT_EMITTER_NAVIGATION_C
 const EFFECT_NAV_RESERVED_MASK: u32 = ${GPU_EFFECT_EMITTER_NAVIGATION_CONFIG.RESERVED_MASK}u;
 const MAX_PENTA_ROUTE_LOOKAHEAD_FIELDS: u32 = 32u;
 const MAX_PENTA_SDF_SEGMENT_SAMPLES: u32 = 64u;
+// One pulse owns one workgroup-local hit mask.  The production body capacity is
+// 16K; 64K keeps the virtual-projectile path bounded without consuming a body,
+// contact, render, or projectile-lifecycle slot.
+const EFFECT_PULSE_SENSOR_HIT_WORD_COUNT: u32 = 2048u;
+const EFFECT_PULSE_SENSOR_TARGET_CAPACITY: u32 = 65536u;
 const FLOW_INTEGRATION_UNREACHABLE_COST: f32 = 10000000000000000000.0;
 const EPSILON: f32 = 0.000001;
 
@@ -410,6 +415,12 @@ struct SdfBuffer { values: array<f32> }
 @group(1) @binding(6) var world_flow_integration: texture_2d_array<f32>;
 @group(2) @binding(0) var<uniform> params: SimulationParams;
 
+// Penta pulses are invisible, one-tick virtual projectiles.  Their hit mask is
+// workgroup-local, so overlapping big-grid proxies and repeated covered cells
+// collapse to one exact target without any global clear/readback pass.
+var<workgroup> effect_pulse_sensor_hits: array<atomic<u32>, 2048>;
+var<workgroup> effect_pulse_sensor_scan_enabled: atomic<u32>;
+
 fn body_interaction_layer(interaction_meta: u32) -> u32 {
     return interaction_meta & 65535u;
 }
@@ -450,27 +461,6 @@ fn big_grid_body_is_canonical_in_cell(grid_body: GridBody, cell_index: u32) -> b
     }
     return u32(center_cell.y) * params.grid_cell_count.x + u32(center_cell.x)
         == cell_index;
-}
-
-fn identity_is_after(
-    entity_id: u32,
-    incarnation: u32,
-    previous_entity_id: u32,
-    previous_incarnation: u32
-) -> bool {
-    return entity_id > previous_entity_id
-        || (entity_id == previous_entity_id && incarnation > previous_incarnation);
-}
-
-fn identity_is_before(
-    entity_id: u32,
-    incarnation: u32,
-    best_entity_id: u32,
-    best_incarnation: u32
-) -> bool {
-    return best_entity_id == INVALID_IDENTITY_COMPONENT
-        || entity_id < best_entity_id
-        || (entity_id == best_entity_id && incarnation < best_incarnation);
 }
 
 fn emitter_retarget_interval(emitter: EffectEmitterState) -> u32 {
@@ -590,16 +580,12 @@ fn retain_effect_instances(@builtin(global_invocation_id) global_id: vec3u) {
     effect_instances_output.values[output_index] = instance;
 }
 
-fn append_effect_candidate(
+fn write_effect_candidate(
+    index: u32,
     pulse_index: u32,
     record: EffectPulseRecord,
     target_slot: u32
 ) {
-    let index = atomicAdd(&pool_state.candidate_count, 1u);
-    if (index >= arrayLength(&effect_candidates.values)) {
-        atomicStore(&pool_state.candidate_overflow, 1u);
-        return;
-    }
     effect_candidates.values[index] = EffectCandidate(
         pulse_index,
         record.source_entity_id,
@@ -612,8 +598,224 @@ fn append_effect_candidate(
     );
 }
 
+fn effect_pulse_policy_is_valid(record: EffectPulseRecord) -> bool {
+    return record.effect_definition_code == PENTA_BOOST_EFFECT_CODE
+        && record.emitter_definition_code == PENTA_EMITTER_CODE
+        && record.target_policy == EFFECT_TARGET_POLICY_HOSTILE_ENEMY
+        && record.flags == EXPECTED_PULSE_POLICY_FLAGS
+        && record.retarget_interval_ticks != 0u
+        && record.radius_tiles > 0.0
+        && record.source_tick == params.fixed_tick;
+}
+
+fn clear_effect_pulse_sensor_hits(local_index: u32) {
+    let target_capacity = min(
+        arrayLength(&simulations.values),
+        EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+    );
+    let word_count = (target_capacity + 31u) / 32u;
+    for (var word_index = local_index;
+        word_index < word_count;
+        word_index += 256u) {
+        atomicStore(&effect_pulse_sensor_hits[word_index], 0u);
+    }
+}
+
+fn emit_effect_pulse_sensor_hits(record: EffectPulseRecord, local_index: u32) {
+    let source_position = physics.values[record.source_slot].position;
+    let min_cell = clamp(
+        grid_cell_for_position(source_position - vec2f(record.radius_tiles)),
+        vec2i(0),
+        vec2i(params.grid_cell_count) - vec2i(1)
+    );
+    let max_cell = clamp(
+        grid_cell_for_position(source_position + vec2f(record.radius_tiles)),
+        vec2i(0),
+        vec2i(params.grid_cell_count) - vec2i(1)
+    );
+    let cell_width = u32(max_cell.x - min_cell.x + 1);
+    let cell_height = u32(max_cell.y - min_cell.y + 1);
+    let cell_count = cell_width * cell_height;
+    let slots_per_cell = params.max_bodies_per_cell * 2u;
+    let scan_slot_count = cell_count * slots_per_cell;
+    let radius_squared = record.radius_tiles * record.radius_tiles;
+
+    // This is the same small/big bucket broadphase shape used by projectile
+    // contacts, but the pulse never consumes penetration or creates a body.
+    for (var scan_index = local_index;
+        scan_index < scan_slot_count;
+        scan_index += 256u) {
+        let cell_ordinal = scan_index / slots_per_cell;
+        let bucket_ordinal = scan_index - (cell_ordinal * slots_per_cell);
+        let bucket = bucket_ordinal / params.max_bodies_per_cell;
+        let bucket_slot = bucket_ordinal - (bucket * params.max_bodies_per_cell);
+        let cell_x = u32(min_cell.x) + (cell_ordinal % cell_width);
+        let cell_y = u32(min_cell.y) + (cell_ordinal / cell_width);
+        let cell_index = cell_y * params.grid_cell_count.x + cell_x;
+        let bucket_count = min(
+            atomicLoad(&grid_counts.values[(cell_index * 2u) + bucket]),
+            params.max_bodies_per_cell
+        );
+        if (bucket_slot >= bucket_count) {
+            continue;
+        }
+        let grid_body = grid_bodies.values[
+            grid_bucket_offset(cell_index, bucket) + bucket_slot
+        ];
+        let body_id = grid_body.body_id;
+        if (body_id >= EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+            || !effect_target_is_valid(record, body_id)) {
+            continue;
+        }
+        // Preserve authored pulse-radius semantics: target centers, rather than
+        // their physical radii, enter the virtual projectile volume.
+        let delta = physics.values[body_id].position - source_position;
+        if (dot(delta, delta) > radius_squared) {
+            continue;
+        }
+        let word_index = body_id >> 5u;
+        let bit_mask = 1u << (body_id & 31u);
+        atomicOr(&effect_pulse_sensor_hits[word_index], bit_mask);
+    }
+}
+
+fn count_effect_pulse_sensor_hits() -> u32 {
+    let target_capacity = min(
+        arrayLength(&simulations.values),
+        EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+    );
+    let word_count = (target_capacity + 31u) / 32u;
+    var hit_count = 0u;
+    for (var word_index = 0u;
+        word_index < word_count;
+        word_index += 1u) {
+        hit_count += countOneBits(atomicLoad(
+            &effect_pulse_sensor_hits[word_index]
+        ));
+    }
+    return hit_count;
+}
+
+fn materialize_effect_pulse_sensor_hits(
+    pulse_index: u32,
+    record: EffectPulseRecord
+) -> u32 {
+    let target_capacity = min(
+        arrayLength(&simulations.values),
+        EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+    );
+    let word_count = (target_capacity + 31u) / 32u;
+    var hit_ordinal = 0u;
+    for (var word_index = 0u;
+        word_index < word_count;
+        word_index += 1u) {
+        var hit_bits = atomicLoad(&effect_pulse_sensor_hits[word_index]);
+        while (hit_bits != 0u) {
+            let bit_index = firstTrailingBit(hit_bits);
+            let target_slot = (word_index << 5u) + bit_index;
+            if (hit_ordinal < record.candidate_count) {
+                let output_index = record.applied_count + hit_ordinal;
+                if (output_index < arrayLength(&effect_candidates.values)) {
+                    write_effect_candidate(
+                        output_index,
+                        pulse_index,
+                        record,
+                        target_slot
+                    );
+                }
+            }
+            hit_ordinal += 1u;
+            hit_bits &= hit_bits - 1u;
+        }
+    }
+    return hit_ordinal;
+}
+
+// One workgroup is dispatched per due Penta pulse.  Threads cooperatively scan
+// the existing tick-start grid, while lane zero performs only the bounded mask
+// count.  This replaces the old single-thread per-cell O(bucket^2) ordering.
+@compute @workgroup_size(256)
+fn scan_effect_pulse_candidates(
+    @builtin(local_invocation_id) local_id: vec3u,
+    @builtin(workgroup_id) workgroup_id: vec3u
+) {
+    let pulse_index = workgroup_id.x;
+    clear_effect_pulse_sensor_hits(local_id.x);
+    if (local_id.x == 0u) {
+        atomicStore(&effect_pulse_sensor_scan_enabled, 0u);
+        let safe_program_count = min(
+            pulse_program.header.count,
+            min(pulse_program.header.capacity, arrayLength(&pulse_program.records))
+        );
+        if (pulse_index < safe_program_count) {
+            var record = pulse_program.records[pulse_index];
+            record.result = EFFECT_RESULT_PENDING;
+            record.candidate_count = 0u;
+            record.applied_count = 0u;
+            pulse_program.records[pulse_index] = record;
+
+            var record_valid = false;
+            if (!effect_source_is_valid(record)) {
+                let source_invalid_is_authorized = (record.flags
+                    & EFFECT_PULSE_FLAG_ALLOW_SOURCE_INVALID) != 0u;
+                pulse_program.records[pulse_index].result = select(
+                    EFFECT_RESULT_POLICY_REJECTED,
+                    EFFECT_RESULT_SOURCE_INVALID,
+                    source_invalid_is_authorized
+                );
+                if (!source_invalid_is_authorized) {
+                    atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
+                }
+                atomicAdd(&pool_state.pulse_result_count, 1u);
+            } else if (!effect_pulse_policy_is_valid(record)) {
+                pulse_program.records[pulse_index].result =
+                    EFFECT_RESULT_POLICY_REJECTED;
+                atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
+                atomicAdd(&pool_state.pulse_result_count, 1u);
+            } else {
+                record_valid = true;
+                atomicAdd(&pool_state.valid_pulse_count, 1u);
+            }
+
+            let grid_complete = atomicLoad(&grid_overflow.small_count) == 0u
+                && atomicLoad(&grid_overflow.big_count) == 0u;
+            if (!grid_complete) {
+                atomicOr(&pool_state.status, EFFECT_STATUS_GRID_OVERFLOW);
+            }
+            if (arrayLength(&simulations.values)
+                    > EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+                || arrayLength(&effect_candidates.values) == 0u) {
+                atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
+            }
+            if (record_valid
+                && grid_complete
+                && arrayLength(&simulations.values)
+                    <= EFFECT_PULSE_SENSOR_TARGET_CAPACITY
+                && arrayLength(&effect_candidates.values) > 0u) {
+                atomicStore(&effect_pulse_sensor_scan_enabled, 1u);
+            }
+        }
+    }
+    workgroupBarrier();
+
+    if (atomicLoad(&effect_pulse_sensor_scan_enabled) != 0u) {
+        let record = pulse_program.records[pulse_index];
+        emit_effect_pulse_sensor_hits(record, local_id.x);
+    }
+    workgroupBarrier();
+
+    if (local_id.x == 0u
+        && atomicLoad(&effect_pulse_sensor_scan_enabled) != 0u) {
+        pulse_program.records[pulse_index].candidate_count =
+            count_effect_pulse_sensor_hits();
+    }
+}
+
+// Candidate counts are reduced in authored pulse order.  applied_count is a
+// tick-local scratch offset until materialize_effect_batch overwrites it with
+// the public applied count.
 @compute @workgroup_size(1)
-fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u) {
+fn prefix_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u) {
     if (global_id.x != 0u) {
         return;
     }
@@ -621,143 +823,83 @@ fn scan_effect_pulse_candidates(@builtin(global_invocation_id) global_id: vec3u)
         pulse_program.header.count,
         min(pulse_program.header.capacity, arrayLength(&pulse_program.records))
     );
-    if (atomicLoad(&grid_overflow.small_count) != 0u
-        || atomicLoad(&grid_overflow.big_count) != 0u) {
-        atomicOr(&pool_state.status, EFFECT_STATUS_GRID_OVERFLOW);
-        // A partial grid cannot authorize any pulse candidate. Avoid the
-        // serial per-cell identity ordering work: materialize_effect_batch
-        // seals the already-marked status as one zero-partial rejection.
-        return;
-    }
     if (safe_program_count == 0u) {
         atomicStore(&pool_state.batch_accepted, 1u);
         return;
     }
-    for (var pulse_index = 0u; pulse_index < safe_program_count; pulse_index += 1u) {
-        var record = pulse_program.records[pulse_index];
-        record.result = EFFECT_RESULT_PENDING;
-        record.candidate_count = 0u;
-        record.applied_count = 0u;
-        pulse_program.records[pulse_index] = record;
-        if (!effect_source_is_valid(record)) {
-            let source_invalid_is_authorized = (record.flags
-                & EFFECT_PULSE_FLAG_ALLOW_SOURCE_INVALID) != 0u;
-            pulse_program.records[pulse_index].result = select(
-                EFFECT_RESULT_POLICY_REJECTED,
-                EFFECT_RESULT_SOURCE_INVALID,
-                source_invalid_is_authorized
-            );
-            if (!source_invalid_is_authorized) {
-                atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
-            }
-            atomicAdd(&pool_state.pulse_result_count, 1u);
-            continue;
-        }
-        if (record.effect_definition_code != PENTA_BOOST_EFFECT_CODE
-            || record.emitter_definition_code != PENTA_EMITTER_CODE
-            || record.target_policy != EFFECT_TARGET_POLICY_HOSTILE_ENEMY
-            || record.flags != EXPECTED_PULSE_POLICY_FLAGS
-            || record.retarget_interval_ticks == 0u
-            || record.radius_tiles <= 0.0
-            || record.source_tick != params.fixed_tick) {
-            pulse_program.records[pulse_index].result = EFFECT_RESULT_POLICY_REJECTED;
-            atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
-            atomicAdd(&pool_state.pulse_result_count, 1u);
-            continue;
-        }
-        atomicAdd(&pool_state.valid_pulse_count, 1u);
-        let candidate_start = atomicLoad(&pool_state.candidate_count);
-        let source_position = physics.values[record.source_slot].position;
-        let min_cell = clamp(
-            grid_cell_for_position(source_position - vec2f(record.radius_tiles)),
-            vec2i(0),
-            vec2i(params.grid_cell_count) - vec2i(1)
-        );
-        let max_cell = clamp(
-            grid_cell_for_position(source_position + vec2f(record.radius_tiles)),
-            vec2i(0),
-            vec2i(params.grid_cell_count) - vec2i(1)
-        );
-        let radius_squared = record.radius_tiles * record.radius_tiles;
-        for (var y = min_cell.y; y <= max_cell.y; y += 1) {
-            for (var x = min_cell.x; x <= max_cell.x; x += 1) {
-                let cell_index = u32(y) * params.grid_cell_count.x + u32(x);
-                let small_count = min(
-                    atomicLoad(&grid_counts.values[cell_index * 2u]),
-                    params.max_bodies_per_cell
-                );
-                let big_count = min(
-                    atomicLoad(&grid_counts.values[(cell_index * 2u) + 1u]),
-                    params.max_bodies_per_cell
-                );
-                let bucket_count = small_count + big_count;
-                var previous_entity_id = 0u;
-                var previous_incarnation = 0u;
-                var has_previous = false;
-                for (var ordinal = 0u; ordinal < bucket_count; ordinal += 1u) {
-                    var best_slot = INVALID_IDENTITY_COMPONENT;
-                    var best_entity_id = INVALID_IDENTITY_COMPONENT;
-                    var best_incarnation = INVALID_IDENTITY_COMPONENT;
-                    for (var bucket_slot = 0u; bucket_slot < bucket_count; bucket_slot += 1u) {
-                        var bucket = 0u;
-                        var index_in_bucket = bucket_slot;
-                        if (bucket_slot >= small_count) {
-                            bucket = 1u;
-                            index_in_bucket = bucket_slot - small_count;
-                        }
-                        let storage_index = grid_bucket_offset(cell_index, bucket)
-                            + index_in_bucket;
-                        let grid_body = grid_bodies.values[storage_index];
-                        if (bucket == 1u
-                            && !big_grid_body_is_canonical_in_cell(
-                                grid_body,
-                                cell_index
-                            )) {
-                            continue;
-                        }
-                        let body_id = grid_body.body_id;
-                        if (!effect_target_is_valid(record, body_id)) {
-                            continue;
-                        }
-                        let delta = physics.values[body_id].position - source_position;
-                        if (dot(delta, delta) > radius_squared) {
-                            continue;
-                        }
-                        let entity_id = simulations.values[body_id].entity_id;
-                        let incarnation = simulations.values[body_id].incarnation;
-                        if (has_previous && !identity_is_after(
-                            entity_id,
-                            incarnation,
-                            previous_entity_id,
-                            previous_incarnation
-                        )) {
-                            continue;
-                        }
-                        if (identity_is_before(
-                            entity_id,
-                            incarnation,
-                            best_entity_id,
-                            best_incarnation
-                        )) {
-                            best_slot = body_id;
-                            best_entity_id = entity_id;
-                            best_incarnation = incarnation;
-                        }
-                    }
-                    if (best_slot == INVALID_IDENTITY_COMPONENT) {
-                        break;
-                    }
-                    append_effect_candidate(pulse_index, record, best_slot);
-                    previous_entity_id = best_entity_id;
-                    previous_incarnation = best_incarnation;
-                    has_previous = true;
-                }
-            }
-        }
-        pulse_program.records[pulse_index].candidate_count =
-            atomicLoad(&pool_state.candidate_count) - candidate_start;
+    if (atomicLoad(&pool_state.status) != 0u) {
+        atomicStore(&pool_state.candidate_count, 0u);
+        return;
     }
+    var candidate_cursor = 0u;
+    for (var pulse_index = 0u; pulse_index < safe_program_count; pulse_index += 1u) {
+        let record = pulse_program.records[pulse_index];
+        if (record.result != EFFECT_RESULT_PENDING) {
+            continue;
+        }
+        pulse_program.records[pulse_index].applied_count = candidate_cursor;
+        if (record.candidate_count > 0xffffffffu - candidate_cursor) {
+            atomicStore(&pool_state.candidate_overflow, 1u);
+            atomicOr(
+                &pool_state.status,
+                EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED
+            );
+            candidate_cursor = 0xffffffffu;
+            break;
+        }
+        candidate_cursor += record.candidate_count;
+    }
+    atomicStore(&pool_state.candidate_count, candidate_cursor);
+    if (candidate_cursor > arrayLength(&effect_candidates.values)) {
+        atomicStore(&pool_state.candidate_overflow, 1u);
+        atomicOr(&pool_state.status, EFFECT_STATUS_CANDIDATE_CAPACITY_EXCEEDED);
+    }
+}
 
+// A second identical grid pass writes only after deterministic prefix offsets
+// exist.  Sensor hits never decrement a budget: every target bit is materialized
+// once, which is the Effect equivalent of infinite projectile penetration.
+@compute @workgroup_size(256)
+fn write_effect_pulse_candidates(
+    @builtin(local_invocation_id) local_id: vec3u,
+    @builtin(workgroup_id) workgroup_id: vec3u
+) {
+    let pulse_index = workgroup_id.x;
+    clear_effect_pulse_sensor_hits(local_id.x);
+    if (local_id.x == 0u) {
+        atomicStore(&effect_pulse_sensor_scan_enabled, 0u);
+        let safe_program_count = min(
+            pulse_program.header.count,
+            min(pulse_program.header.capacity, arrayLength(&pulse_program.records))
+        );
+        if (pulse_index < safe_program_count
+            && pulse_program.records[pulse_index].result == EFFECT_RESULT_PENDING
+            && atomicLoad(&pool_state.status) == 0u
+            && atomicLoad(&pool_state.candidate_overflow) == 0u) {
+            atomicStore(&effect_pulse_sensor_scan_enabled, 1u);
+        }
+    }
+    workgroupBarrier();
+
+    if (atomicLoad(&effect_pulse_sensor_scan_enabled) != 0u) {
+        let record = pulse_program.records[pulse_index];
+        emit_effect_pulse_sensor_hits(record, local_id.x);
+    }
+    workgroupBarrier();
+
+    if (local_id.x == 0u
+        && atomicLoad(&effect_pulse_sensor_scan_enabled) != 0u) {
+        let record = pulse_program.records[pulse_index];
+        let written_count = materialize_effect_pulse_sensor_hits(
+            pulse_index,
+            record
+        );
+        if (written_count != record.candidate_count) {
+            // No gameplay mutation has occurred; materialize_effect_batch will
+            // seal the mismatch as the usual whole-batch zero-partial failure.
+            atomicOr(&pool_state.status, EFFECT_STATUS_RECORD_INVALID);
+        }
+    }
 }
 
 fn write_effect_event(
@@ -1475,6 +1617,8 @@ export const GPU_EFFECT_RUNTIME_ENTRY_POINT = Object.freeze({
     RESET_TICK: 'reset_effect_tick',
     RETAIN_INSTANCES: 'retain_effect_instances',
     SCAN_PULSES: 'scan_effect_pulse_candidates',
+    PREFIX_PULSES: 'prefix_effect_pulse_candidates',
+    WRITE_PULSES: 'write_effect_pulse_candidates',
     MATERIALIZE_BATCH: 'materialize_effect_batch',
     FINISH_TICK: 'finish_effect_tick',
     CLEAR_SUMMARIES: 'clear_effect_summaries',

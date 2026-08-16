@@ -1378,7 +1378,7 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
         assert.equal(simulation.fixedUpdate(1 / 60, 1), true);
 
         const operations = device.computePasses[0];
-        assert.deepEqual(operations.slice(0, 12).map(({ entryPoint }) => (
+        assert.deepEqual(operations.slice(0, 11).map(({ entryPoint }) => (
             entryPoint
         )), [
             'update_indirect_args',
@@ -1387,7 +1387,6 @@ test('source-relative program은 validate→resolve 뒤 control을 적용하고 
             'reset_effect_tick',
             'clear_effect_summaries',
             'retain_effect_instances',
-            'scan_effect_pulse_candidates',
             'materialize_effect_batch',
             'finish_effect_tick',
             'accumulate_effect_summaries',

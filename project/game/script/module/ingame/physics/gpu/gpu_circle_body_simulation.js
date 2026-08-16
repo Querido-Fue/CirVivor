@@ -7086,6 +7086,7 @@ export class GpuCircleBodySimulation {
 
         const stagedSpawnCount = stagedPrograms?.sourceRelativeSpawns.length ?? 0;
         const stagedControlCount = stagedPrograms?.controls.length ?? 0;
+        const stagedEffectPulseCount = stagedEffectBatch?.records.length ?? 0;
         const stagedSelectedSpawnCount = stagedPrograms?.sourceRelativeSpawns.reduce(
             (count, program) => count + Number(
                 program.modeFlags
@@ -7641,11 +7642,23 @@ export class GpuCircleBodySimulation {
                 pass.dispatchWorkgroups(Math.ceil(
                     this.effectInstanceCapacity / BODY_WORKGROUP_SIZE
                 ));
-                this.#setEffectEntry(
-                    pass,
-                    GPU_EFFECT_RUNTIME_ENTRY_POINT.SCAN_PULSES
-                );
-                pass.dispatchWorkgroups(1);
+                if (stagedEffectPulseCount > 0) {
+                    this.#setEffectEntry(
+                        pass,
+                        GPU_EFFECT_RUNTIME_ENTRY_POINT.SCAN_PULSES
+                    );
+                    pass.dispatchWorkgroups(stagedEffectPulseCount);
+                    this.#setEffectEntry(
+                        pass,
+                        GPU_EFFECT_RUNTIME_ENTRY_POINT.PREFIX_PULSES
+                    );
+                    pass.dispatchWorkgroups(1);
+                    this.#setEffectEntry(
+                        pass,
+                        GPU_EFFECT_RUNTIME_ENTRY_POINT.WRITE_PULSES
+                    );
+                    pass.dispatchWorkgroups(stagedEffectPulseCount);
+                }
                 this.#setEffectEntry(
                     pass,
                     GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_BATCH
@@ -15045,6 +15058,12 @@ export class GpuCircleBodySimulation {
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.RESET_TICK]: [[0, 7, 8], [], true],
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.RETAIN_INSTANCES]: [[2, 8, 9, 10], [], true],
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.SCAN_PULSES]: [
+                [1, 2, 6, 7, 8, 11], [0, 1, 2], true
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.PREFIX_PULSES]: [
+                [7, 8, 11], [], false
+            ],
+            [GPU_EFFECT_RUNTIME_ENTRY_POINT.WRITE_PULSES]: [
                 [1, 2, 6, 7, 8, 11], [0, 1, 2], true
             ],
             [GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_BATCH]: [
