@@ -2,6 +2,10 @@ import {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
 import {
+    ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID,
+    normalizeEnemyAtomicTransformTopologyId
+} from '../../contract/enemy_atomic_transform_contract.js';
+import {
     acceptsFormationRouteProgress,
     compareFormationJoinCandidates,
     createFormationLineageHash
@@ -27,6 +31,10 @@ const PRIVILEGED_TRANSFORM_DISPOSITIONS = new Set([
     ENEMY_LIFECYCLE_DISPOSITION_ID.MERGE_CONSUMED,
     ENEMY_LIFECYCLE_DISPOSITION_ID.TRANSFORM_CONSUMED
 ]);
+const ATOMIC_TRANSFORM_OWNER = Object.freeze({
+    FORMATION: 'formation',
+    JORANG_LINEAGE: 'jorang-lineage'
+});
 
 function requirePositiveSafeInteger(value, label, maximum = Number.MAX_SAFE_INTEGER) {
     const number = Number(value);
@@ -78,6 +86,36 @@ function handleKey(handle) {
 function sameHandle(left, right) {
     return left.entityId === right.entityId
         && left.incarnation === right.incarnation;
+}
+
+function collectAtomicTransformProofs(entries) {
+    const proofsByParent = new Map();
+    for (let index = 0; index < entries.length; index++) {
+        const entry = entries[index];
+        const parentCommandId = requireNonEmptyString(
+            entry?.commandId,
+            `atomicTransforms[${index}].commandId`
+        );
+        const topologyId = normalizeEnemyAtomicTransformTopologyId(
+            entry?.topologyId,
+            `atomicTransforms[${index}].topologyId`
+        );
+        const owner = topologyId
+            === ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE
+            ? ATOMIC_TRANSFORM_OWNER.FORMATION
+            : ATOMIC_TRANSFORM_OWNER.JORANG_LINEAGE;
+        const known = proofsByParent.get(parentCommandId);
+        if (known && known.owner !== owner) {
+            throw new RangeError(
+                'atomic transform parent가 여러 runtime domain을 혼합했습니다.'
+            );
+        }
+        proofsByParent.set(parentCommandId, Object.freeze({
+            owner,
+            count: (known?.count ?? 0) + 1
+        }));
+    }
+    return proofsByParent;
 }
 
 function popcount6(mask) {
@@ -187,6 +225,7 @@ export class FormationRuntimeDirector {
         if (!Array.isArray(commit.spawned)
             || !Array.isArray(commit.despawned)
             || !Array.isArray(commit.rejected)
+            || !Array.isArray(commit.atomicTransforms)
             || commit.recoveryRequired === true) {
             return this.#fail('lifecycle-result-contract');
         }
@@ -194,6 +233,9 @@ export class FormationRuntimeDirector {
         const additions = [];
         const completedParents = new Set();
         try {
+            const atomicTransformProofs = collectAtomicTransformProofs(
+                commit.atomicTransforms
+            );
             const spawnedByParent = new Map();
             const despawnedByParent = new Map();
             const rejectedParents = new Set();
@@ -208,6 +250,38 @@ export class FormationRuntimeDirector {
                         entry.parentCommandId,
                         'spawned.parentCommandId'
                     );
+                    const proof = atomicTransformProofs.get(parent);
+                    if (proof?.owner
+                            === ATOMIC_TRANSFORM_OWNER.JORANG_LINEAGE) {
+                        const topologyId = normalizeEnemyAtomicTransformTopologyId(
+                            entry.topologyId,
+                            'spawned.topologyId'
+                        );
+                        if (topologyId
+                            === ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE) {
+                            throw new RangeError(
+                                'J lineage spawn이 Formation topology를 노출했습니다.'
+                            );
+                        }
+                        continue;
+                    }
+                    if (proof?.owner !== ATOMIC_TRANSFORM_OWNER.FORMATION) {
+                        throw new RangeError(
+                            'transform spawn의 atomic proof가 없습니다.'
+                        );
+                    }
+                    if (!this.pendingTransformsByParent.has(parent)) {
+                        throw new RangeError('unknown transform spawn parent입니다.');
+                    }
+                    if (entry.topologyId !== undefined
+                        && normalizeEnemyAtomicTransformTopologyId(
+                            entry.topologyId,
+                            'spawned.topologyId'
+                        ) !== ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE) {
+                        throw new RangeError(
+                            'Formation spawn topology가 다릅니다.'
+                        );
+                    }
                     const list = spawnedByParent.get(parent) ?? [];
                     list.push(entry);
                     spawnedByParent.set(parent, list);
@@ -219,6 +293,27 @@ export class FormationRuntimeDirector {
                         entry.parentCommandId,
                         'despawned.parentCommandId'
                     );
+                    const proof = atomicTransformProofs.get(parent);
+                    if (proof?.owner
+                            === ATOMIC_TRANSFORM_OWNER.JORANG_LINEAGE) {
+                        if (entry.reason !== 'atomic-transform'
+                            || PRIVILEGED_TRANSFORM_DISPOSITIONS.has(
+                                entry.disposition
+                            )) {
+                            throw new RangeError(
+                                'J lineage despawn provenance가 다릅니다.'
+                            );
+                        }
+                        continue;
+                    }
+                    if (proof?.owner !== ATOMIC_TRANSFORM_OWNER.FORMATION) {
+                        throw new RangeError(
+                            'transform despawn의 atomic proof가 없습니다.'
+                        );
+                    }
+                    if (!this.pendingTransformsByParent.has(parent)) {
+                        throw new RangeError('unknown transform despawn parent입니다.');
+                    }
                     const list = despawnedByParent.get(parent) ?? [];
                     list.push(entry);
                     despawnedByParent.set(parent, list);
@@ -229,20 +324,35 @@ export class FormationRuntimeDirector {
                 const spawned = spawnedByParent.get(parentCommandId) ?? [];
                 const despawned = despawnedByParent.get(parentCommandId) ?? [];
                 if (rejectedParents.has(parentCommandId)) {
-                    if (spawned.length !== 0 || despawned.length !== 0) {
+                    if (spawned.length !== 0
+                        || despawned.length !== 0
+                        || atomicTransformProofs.has(parentCommandId)) {
                         throw new RangeError(
-                            'rejected transform가 lifecycle mutation을 함께 노출했습니다.'
+                            'rejected transform가 commit proof/mutation을 함께 노출했습니다.'
                         );
                     }
                     completedParents.add(parentCommandId);
                     continue;
                 }
                 if (spawned.length === 0 && despawned.length === 0) {
+                    if (atomicTransformProofs.get(parentCommandId)?.owner
+                        === ATOMIC_TRANSFORM_OWNER.FORMATION) {
+                        throw new RangeError(
+                            'Formation atomic proof에 lifecycle child가 없습니다.'
+                        );
+                    }
                     continue;
                 }
                 const expectedRecords = [
                     ...pending.recordsByDestinationKey.values()
                 ];
+                const proof = atomicTransformProofs.get(parentCommandId);
+                if (proof?.owner !== ATOMIC_TRANSFORM_OWNER.FORMATION
+                    || proof.count !== expectedRecords.length) {
+                    throw new RangeError(
+                        'Formation atomic proof cardinality가 다릅니다.'
+                    );
+                }
                 if (spawned.length !== expectedRecords.length
                     || despawned.length !== expectedRecords.length * 2) {
                     throw new RangeError('transform lifecycle cardinality가 다릅니다.');
@@ -318,16 +428,16 @@ export class FormationRuntimeDirector {
                 completedParents.add(parentCommandId);
             }
 
-            for (const parentCommandId of spawnedByParent.keys()) {
-                if (!this.pendingTransformsByParent.has(parentCommandId)) {
-                    throw new RangeError('unknown transform spawn parent입니다.');
+            for (const [parentCommandId, proof] of atomicTransformProofs) {
+                if (proof.owner === ATOMIC_TRANSFORM_OWNER.FORMATION
+                    && !this.pendingTransformsByParent.has(parentCommandId)) {
+                    throw new RangeError(
+                        'unknown Formation atomic transform parent입니다.'
+                    );
                 }
             }
             for (const entry of commit.despawned) {
                 if (entry.parentCommandId !== undefined) {
-                    if (!this.pendingTransformsByParent.has(entry.parentCommandId)) {
-                        throw new RangeError('unknown transform despawn parent입니다.');
-                    }
                     continue;
                 }
                 if (PRIVILEGED_TRANSFORM_DISPOSITIONS.has(entry.disposition)) {

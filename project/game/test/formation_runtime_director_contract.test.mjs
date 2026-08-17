@@ -19,6 +19,11 @@ const {
     'ingame/contract/enemy_lifecycle_disposition_contract.js'
 );
 const {
+    ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID
+} = await loadGameModule(
+    'ingame/contract/enemy_atomic_transform_contract.js'
+);
+const {
     createFormationLineageHash
 } = await loadGameModule('ingame/contract/enemy_formation_contract.js');
 const {
@@ -67,13 +72,20 @@ function activateNaturalH(registry, spawnSequence, createdAtTick = 1) {
     });
 }
 
-function lifecycleCommit(fixedTick, spawned = [], despawned = [], rejected = []) {
+function lifecycleCommit(
+    fixedTick,
+    spawned = [],
+    despawned = [],
+    rejected = [],
+    atomicTransforms = []
+) {
     return Object.freeze({
         fixedTick,
         state: 'committed',
         spawned: Object.freeze(spawned),
         despawned: Object.freeze(despawned),
         rejected: Object.freeze(rejected),
+        atomicTransforms: Object.freeze(atomicTransforms),
         recoveryRequired: false
     });
 }
@@ -239,6 +251,122 @@ test('대규모 H roster prepare는 bounded overlapping round-robin batch로 전
     assert.equal(director.requiresRecovery(), false);
 });
 
+test('J/C′ atomic transform lifecycle은 독립 Formation roster를 오염시키지 않는다', () => {
+    const authority = Object.freeze({});
+    const registry = new WorldRegistry({
+        capacity: 4,
+        atomicTransformAuthority: authority
+    });
+    const hexa = activateNaturalH(registry, 1);
+    const director = new FormationRuntimeDirector({
+        registry,
+        formationCommandPort: createCommandHarness().port,
+        sessionGeneration: 72,
+        capacity: 4
+    });
+    director.observeLifecycle(lifecycleCommit(1, [
+        Object.freeze({ handle: hexa.handle })
+    ]), 1);
+
+    const parentCommandId = 'jorang-atomic-transform:1:561:443448905';
+    const sourceHandle = Object.freeze({ entityId: 10, incarnation: 1 });
+    const destinationHandles = Object.freeze([
+        Object.freeze({ entityId: 10, incarnation: 2 }),
+        Object.freeze({ entityId: 5, incarnation: 39 })
+    ]);
+    const topologyId = ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.ONE_TO_MANY;
+    director.observeLifecycle(lifecycleCommit(2, [
+        Object.freeze({
+            commandId: `${parentCommandId}:transform:0:destination:0`,
+            parentCommandId,
+            handle: destinationHandles[0],
+            transform: true,
+            topologyId,
+            transformIndex: 0,
+            destinationIndex: 0
+        }),
+        Object.freeze({
+            commandId: `${parentCommandId}:transform:0:destination:1`,
+            parentCommandId,
+            handle: destinationHandles[1],
+            transform: true,
+            topologyId,
+            transformIndex: 0,
+            destinationIndex: 1
+        })
+    ], [
+        Object.freeze({
+            commandId: `${parentCommandId}:transform:0:source:0`,
+            parentCommandId,
+            handle: sourceHandle,
+            reason: 'atomic-transform',
+            bountyEligible: false,
+            transformedInto: destinationHandles[0],
+            transformedIntoHandles: destinationHandles
+        })
+    ], [], [
+        Object.freeze({
+            commandId: parentCommandId,
+            topologyId,
+            sourceHandles: Object.freeze([sourceHandle]),
+            destinationHandles,
+            effectTransferDestinationIndex: 0,
+            disposition: 'atomic-transform'
+        })
+    ]), 2);
+
+    const status = director.getStatus();
+    assert.equal(status.recoveryRequired, false);
+    assert.equal(status.failure, null);
+    assert.equal(status.lastObservedFixedTick, 2);
+    assert.equal(status.activeGroupCount, 1);
+    assert.equal(status.totalOriginalMemberCount, 1);
+    assert.equal(director.hasExactMember(hexa.handle, hexa.handle), true);
+});
+
+test('미등록 MANY_TO_ONE parent는 topology routing 뒤에도 fail-close한다', () => {
+    const registry = new WorldRegistry({
+        capacity: 2,
+        atomicTransformAuthority: Object.freeze({})
+    });
+    const hexa = activateNaturalH(registry, 1);
+    const director = new FormationRuntimeDirector({
+        registry,
+        formationCommandPort: createCommandHarness().port,
+        sessionGeneration: 73,
+        capacity: 2
+    });
+    director.observeLifecycle(lifecycleCommit(1, [
+        Object.freeze({ handle: hexa.handle })
+    ]), 1);
+
+    const parentCommandId = 'formation-transform:73:2:forged';
+    const destinationHandle = Object.freeze({ entityId: 2, incarnation: 2 });
+    director.observeLifecycle(lifecycleCommit(2, [Object.freeze({
+        commandId: `${parentCommandId}:transform:0:spawn`,
+        parentCommandId,
+        handle: destinationHandle,
+        transform: true
+    })], [], [], [Object.freeze({
+        commandId: parentCommandId,
+        topologyId: ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE,
+        sourceHandles: Object.freeze([
+            hexa.handle,
+            Object.freeze({ entityId: 2, incarnation: 1 })
+        ]),
+        destinationHandles: Object.freeze([destinationHandle]),
+        effectTransferDestinationIndex: 0,
+        disposition: 'atomic-transform'
+    })]), 2);
+
+    const status = director.getStatus();
+    assert.equal(status.recoveryRequired, true);
+    assert.equal(status.failure?.code, 'lifecycle-preflight');
+    assert.match(status.failure?.detail ?? '', /unknown transform spawn parent/);
+    assert.equal(status.activeGroupCount, 1);
+    assert.equal(director.hasExactMember(hexa.handle, hexa.handle), true);
+});
+
 test('two-source exact lineage는 prepare→privileged lifecycle→destination SoA까지 보존된다', () => {
     const authority = Object.freeze({});
     const registry = new WorldRegistry({ capacity: 2, atomicTransformAuthority: authority });
@@ -348,7 +476,14 @@ test('two-source exact lineage는 prepare→privileged lifecycle→destination S
             bountyEligible: false,
             transformedInto: destinationHandle
         })
-    ]);
+    ], [], [Object.freeze({
+        commandId: parent,
+        topologyId: ENEMY_ATOMIC_TRANSFORM_TOPOLOGY_ID.MANY_TO_ONE,
+        sourceHandles: Object.freeze([left.handle, right.handle]),
+        destinationHandles: Object.freeze([destinationHandle]),
+        effectTransferDestinationIndex: 0,
+        disposition: 'atomic-transform'
+    })]);
     director.observeLifecycle(commit, 11);
     assert.equal(director.requiresRecovery(), false);
     assert.equal(director.getStatus().activeGroupCount, 1);

@@ -500,6 +500,20 @@ hygiene passed. Manual interactive smoke was not executed and is not claimed as 
   640-child execution with generated/cooldown/reserved all zero. Storage maximum remained 9; protocol failure,
   recovery, and uncaptured error counts remained zero.
 
+## Post-R3 Formation/J lifecycle stabilization (2026-08-17)
+
+- The reset captured at fixed tick 561 was a host-domain routing false positive, not device loss or body
+  capacity. A valid J `ONE_TO_MANY` lifecycle publication shared the common `transform: true` shape, and the H
+  `FormationRuntimeDirector` incorrectly treated its parent as an unknown H transform.
+- Formation lifecycle observation now authenticates the shared `atomicTransforms` ledger and owns only
+  `MANY_TO_ONE`. J/C′ `ONE_TO_MANY` and `ONE_TO_ONE_DELAYED` records remain exclusively validated by
+  `JorangSplitLineageDirector`; missing proof, mixed-domain parents, and unknown H parents still fail closed
+  before Formation roster mutation.
+- The exact logged J 1→2 shape is covered by a host regression. Focused Formation passed `7/7`, the related
+  H/J/lifecycle/recovery group passed `89/89`, and the full Node suite passed `1542/1542`. Actual NW.js/WebGPU
+  J split/return and one-cycle mixed O/J/R/Z/H/P/projectile churn both passed with recovery false,
+  `uncapturedErrorCount=0`, storage maximum 9, and orderly destroyed teardown.
+
 ## Post-R3 locked target not yet implemented
 
 - multiple Towers share a conserved living stat budget; death creates permanent Lost Share.

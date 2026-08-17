@@ -61,6 +61,11 @@ Regular death or Core-impact cleanup wins before publication and cancels the con
 source dispositions are `MERGE_CONSUMED` or `TRANSFORM_CONSUMED`; neither emits an ordinary kill bounty. A GPU
 failure after CPU publication is hard recovery with no rollback.
 
+The shared lifecycle commit may also contain J/C′ atomic transforms. `FormationRuntimeDirector` routes these
+records by the canonical `atomicTransforms[].topologyId`: it owns only `MANY_TO_ONE`, while `ONE_TO_MANY` and
+`ONE_TO_ONE_DELAYED` remain exclusively owned and validated by `JorangSplitLineageDirector`. Missing proof,
+mixed-domain parent identity, or an unknown `MANY_TO_ONE` parent still fails closed before roster mutation.
+
 ## HP and fixed n-table stats
 
 Current and maximum HP remain signed-int32 centi-HP. For each merge and for current/max independently:
