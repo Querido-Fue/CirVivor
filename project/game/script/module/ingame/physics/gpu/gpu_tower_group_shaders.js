@@ -120,8 +120,8 @@ struct TowerCommand {
     aim_world_point: vec2f,
     command_fingerprint: u32,
     flags: u32,
-    reserved_0: u32,
-    reserved_1: u32,
+    fallback_group_revision: u32,
+    fallback_roster_fingerprint: u32,
 }
 
 struct TowerFixedParams {
@@ -192,6 +192,8 @@ fn compute_command_fingerprint() -> u32 {
     hash = hash_word(hash, bitcast<u32>(command.aim_world_point.x));
     hash = hash_word(hash, bitcast<u32>(command.aim_world_point.y));
     hash = hash_word(hash, command.flags);
+    hash = hash_word(hash, command.fallback_group_revision);
+    hash = hash_word(hash, command.fallback_roster_fingerprint);
     return select(hash, 1u, hash == 0u);
 }
 
@@ -216,17 +218,25 @@ fn validate_protocol() -> u32 {
         && command.source_tick != 0u;
     if (!protocol_matches) { status |= STATUS_PROTOCOL_MISMATCH; }
     let roster_fingerprint = compute_roster_fingerprint();
+    let primary_roster_matches = command.group_revision
+            == roster.group_revision
+        && command.roster_fingerprint == roster.fingerprint;
+    let fallback_roster_matches = command.fallback_group_revision
+            == roster.group_revision
+        && command.fallback_roster_fingerprint == roster.fingerprint;
+    let fallback_tuple_valid = (command.fallback_group_revision == 0u
+            && command.fallback_roster_fingerprint == 0u)
+        || (command.fallback_group_revision != 0u
+            && command.fallback_roster_fingerprint != 0u);
     if (roster.group_revision == 0u
-        || command.group_revision != roster.group_revision
         || roster.fingerprint == 0u
         || roster.fingerprint != roster_fingerprint
-        || command.roster_fingerprint != roster.fingerprint
+        || (!primary_roster_matches && !fallback_roster_matches)
         || roster.member_count > counts.body_count) {
         status |= STATUS_ROSTER_INVALID;
     }
     if ((command.flags & COMMAND_FLAG_VALID) == 0u
-        || command.reserved_0 != 0u
-        || command.reserved_1 != 0u
+        || !fallback_tuple_valid
         || command.command_fingerprint != compute_command_fingerprint()) {
         status |= STATUS_COMMAND_FINGERPRINT_MISMATCH;
     }

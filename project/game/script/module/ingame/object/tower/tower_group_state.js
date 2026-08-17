@@ -475,7 +475,11 @@ export class TowerGroupState {
         });
     }
 
-    rejectCreation(source, reason = 'REJECTED') {
+    rejectCreation(
+        source,
+        reason = 'REJECTED',
+        result = TOWER_CREATION_RESULT.REJECTED_CAPACITY
+    ) {
         if (this.destroyed) {
             return freezeRejection(
                 TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
@@ -492,7 +496,9 @@ export class TowerGroupState {
         }
         this.#pendingCreation = null;
         this.lastCreation = freezeRejection(
-            TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+            Object.values(TOWER_CREATION_RESULT).includes(result)
+                ? result
+                : TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
             reason,
             { transactionId: plan.transactionId }
         );

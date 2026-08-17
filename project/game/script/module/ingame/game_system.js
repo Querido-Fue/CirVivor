@@ -502,6 +502,25 @@ export class GameSystem {
         return this.towerGroupState;
     }
 
+    /** Sentence/cooldown을 우회하지 않고 별도 technical API로만 Tower를 생성합니다. */
+    requestTowerCreation(request) {
+        if (!this.entered || this.destroyed || this.runOutcome.isDefeated()) {
+            return Object.freeze({
+                accepted: false,
+                result: 'REJECTED_SOURCE_CHANGED',
+                reason: 'GAME_SESSION_NOT_RUNNING',
+                recoveryRequired: false,
+                createdCount: 0,
+                handles: Object.freeze([])
+            });
+        }
+        return this.objectSystem.requestTowerCreation(request);
+    }
+
+    getTowerCreationStatus() {
+        return this.objectSystem?.getTowerCreationStatus?.() ?? null;
+    }
+
     /** GPU_WORLD의 lifecycle 기반 hostile attack producer 상태입니다. */
     getHostileAttackStatus() {
         return this.objectSystem?.getHostileAttackStatus() ?? null;
@@ -553,6 +572,7 @@ export class GameSystem {
             sessionMode: this.sessionMode,
             recoveryRequired: this.isGpuWorldRecoveryRequired(),
             tower: createTowerDiagnosticStatus(this.getTowerCombatStatus()),
+            towerCreation: this.getTowerCreationStatus(),
             core: createCoreDiagnosticStatus(this.coreIntegrity),
             outcome: createRunOutcomeDiagnosticStatus(this.runOutcome),
             terminal: this.objectSystem?.getTerminalStatus?.() ?? null,

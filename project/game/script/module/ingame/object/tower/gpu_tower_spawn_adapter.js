@@ -7,6 +7,7 @@ import {
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_LIFETIME,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
+    decodeGpuCircleBodyFixedPoint,
     encodeGpuCircleBodyFixedPoint
 } from '../../physics/gpu/gpu_circle_body_abi.js';
 import {
@@ -38,12 +39,35 @@ function requireLivingCurrentHp(value) {
     return currentHp;
 }
 
+function requirePositiveFixedPoint(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0
+        || number >= 0xffffffff) {
+        throw new RangeError(`${label}은 양의 uint32 fixed-point여야 합니다.`);
+    }
+    return number;
+}
+
+function optionalUint32(value, fallback, label) {
+    const number = Number(value ?? fallback);
+    if (!Number.isSafeInteger(number) || number < 0 || number > 0xffffffff) {
+        throw new RangeError(`${label}은 uint32여야 합니다.`);
+    }
+    return number;
+}
+
 /** TileMap의 authored Tower 위치를 persistent controlled GPU body intent로 바꿉니다. */
 export function createGpuTowerSpawnIntent(options) {
     const position = requireFinitePosition(options?.position, 'GPU Tower position');
-    const currentHp = requireLivingCurrentHp(
-        options?.currentHp ?? THE_TOWER_COMBAT_DATA.MAX_HEALTH
-    );
+    const currentHpFixedPoint = options?.currentHpFixedPoint === undefined
+        ? encodeGpuCircleBodyFixedPoint(requireLivingCurrentHp(
+            options?.currentHp ?? THE_TOWER_COMBAT_DATA.MAX_HEALTH
+        ))
+        : requirePositiveFixedPoint(
+            options.currentHpFixedPoint,
+            'GPU Tower currentHpFixedPoint'
+        );
+    const currentHp = decodeGpuCircleBodyFixedPoint(currentHpFixedPoint);
     return Object.freeze({
         kindId: GPU_TOWER_WORLD_KIND_ID,
         definitionId: GPU_TOWER_DEFINITION_ID,
@@ -66,6 +90,28 @@ export function createGpuTowerSpawnIntent(options) {
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         health: currentHp,
+        currentHpFixedPoint,
+        logicalTowerOrdinal: optionalUint32(
+            options?.logicalTowerOrdinal,
+            1,
+            'logicalTowerOrdinal'
+        ),
+        shareUnits: optionalUint32(options?.shareUnits, 0, 'shareUnits'),
+        maxHpFixedPoint: optionalUint32(
+            options?.maxHpFixedPoint,
+            encodeGpuCircleBodyFixedPoint(THE_TOWER_COMBAT_DATA.MAX_HEALTH),
+            'maxHpFixedPoint'
+        ),
+        powerFixedPoint: optionalUint32(
+            options?.powerFixedPoint,
+            encodeGpuCircleBodyFixedPoint(THE_TOWER_COMBAT_DATA.BASE_POWER),
+            'powerFixedPoint'
+        ),
+        towerGroupRevision: optionalUint32(
+            options?.towerGroupRevision,
+            1,
+            'towerGroupRevision'
+        ),
         lifetime: GPU_CIRCLE_BODY_LIFETIME.IMMORTAL,
         alive: true,
         countAsKill: false,

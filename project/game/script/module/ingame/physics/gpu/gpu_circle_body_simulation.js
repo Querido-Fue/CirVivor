@@ -1495,6 +1495,7 @@ export class GpuCircleBodySimulation {
             })
             : null;
         this.towerGroupControlRuntime = null;
+        this.towerCreationRuntime = null;
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
         this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
             this.capacity
@@ -2771,6 +2772,20 @@ export class GpuCircleBodySimulation {
             throw new TypeError('TowerGroup control runtime 계약이 올바르지 않습니다.');
         }
         this.towerGroupControlRuntime = runtime;
+        return true;
+    }
+
+    /** Atomic Tower creation runtime을 group control 직전 fixed pass에 결합합니다. */
+    attachTowerCreationRuntime(runtime = null) {
+        if (runtime !== null
+            && (typeof runtime.encode !== 'function'
+                || typeof runtime.encodeReadback !== 'function'
+                || typeof runtime.markSubmitted !== 'function'
+                || typeof runtime.getStagedTransaction !== 'function'
+                || typeof runtime.getStatus !== 'function')) {
+            throw new TypeError('Tower creation runtime 계약이 올바르지 않습니다.');
+        }
+        this.towerCreationRuntime = runtime;
         return true;
     }
 
@@ -7005,6 +7020,8 @@ export class GpuCircleBodySimulation {
         const stagedRouteCleanup = this.stagedRouteCleanupBatch;
         const stagedTowerGroupCommand
             = this.towerGroupControlRuntime?.getStagedCommand?.() ?? null;
+        const stagedTowerCreation
+            = this.towerCreationRuntime?.getStagedTransaction?.() ?? null;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
@@ -7089,6 +7106,15 @@ export class GpuCircleBodySimulation {
             this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
             return false;
         }
+        if (stagedTowerCreation
+            && requestedSourceTick !== stagedTowerCreation.sourceTick) {
+            this.failure = captureFailure(
+                'tower-creation-tick',
+                new Error('staged Tower creation tick mismatch')
+            );
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            return false;
+        }
         this.lastFixedDelta = delta;
         try {
             assertGpuCircleBodyAbiVersion(this.hostStorage);
@@ -7112,6 +7138,7 @@ export class GpuCircleBodySimulation {
             && !armedAtomicTransform?.commitRequested
             && !armedProjectileCaptureRelease?.commitRequested
             && !stagedRouteCleanup
+            && stagedTowerCreation?.sourceTick !== requestedSourceTick
             && stagedTowerGroupCommand?.sourceTick !== requestedSourceTick
             && terminalRouteAvailabilityCancel?.state !== 'armed') {
             return false;
@@ -7781,6 +7808,10 @@ export class GpuCircleBodySimulation {
                 pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
             }
             if (!terminalFinalSubmit
+                && stagedTowerCreation?.sourceTick === requestedSourceTick) {
+                this.towerCreationRuntime.encode(pass, requestedSourceTick);
+            }
+            if (!terminalFinalSubmit
                 && stagedTowerGroupCommand?.sourceTick === requestedSourceTick) {
                 this.towerGroupControlRuntime.encodeControl(
                     pass,
@@ -8212,6 +8243,14 @@ export class GpuCircleBodySimulation {
             }
             pass.end();
 
+            if (!terminalFinalSubmit
+                && stagedTowerCreation?.sourceTick === requestedSourceTick) {
+                this.towerCreationRuntime.encodeReadback(
+                    encoder,
+                    requestedSourceTick
+                );
+            }
+
             if (overflowSlot) {
                 encoder.copyBufferToBuffer(
                     this.buffers.gridOverflow,
@@ -8367,7 +8406,14 @@ export class GpuCircleBodySimulation {
                 );
             }
             device.queue.submit([encoder.finish()]);
+            if (!terminalFinalSubmit
+                && stagedTowerCreation?.sourceTick === requestedSourceTick) {
+                this.towerCreationRuntime.markSubmitted(requestedSourceTick);
+            }
         } catch (error) {
+            if (stagedTowerCreation?.sourceTick === requestedSourceTick) {
+                this.towerCreationRuntime?.failEncoded?.(error);
+            }
             this.#releaseClaimedOverflowReadbackSlot(overflowSlot);
             this.#releaseClaimedEventReadbackSlot(eventSlot);
             this.#releaseClaimedProjectileCaptureReadbackSlot(
@@ -9696,6 +9742,8 @@ export class GpuCircleBodySimulation {
             }),
             towerGroup: this.towerGroupControlRuntime?.getStatus?.()
                 ?? Object.freeze({ state: 'disabled' }),
+            towerCreation: this.towerCreationRuntime?.getStatus?.()
+                ?? Object.freeze({ state: 'disabled' }),
             presentation: Object.freeze({ ...this.presentationClock.getClockState({}) })
         });
     }
@@ -9743,6 +9791,7 @@ export class GpuCircleBodySimulation {
         }
         this.#releaseGpuResources();
         this.towerGroupControlRuntime = null;
+        this.towerCreationRuntime = null;
         this.activeBodyCount = 0;
         this.projectileBodyCount = 0;
         this.hasGpuAuthoritativeState = false;
@@ -16967,6 +17016,7 @@ export class GpuCircleBodySimulation {
         this.pendingFlowClosureKey = null;
         this.crowdDensityRuntime?.retire('simulation-resource-retired');
         this.transientVfxRuntime?.retire();
+        this.towerCreationRuntime?.retire?.('simulation-resource-retired');
         this.towerGroupControlRuntime?.retire?.('simulation-resource-retired');
         this.overflowReadbackLease++;
         this.#cancelEventReadbacks();

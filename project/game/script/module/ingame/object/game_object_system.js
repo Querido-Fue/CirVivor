@@ -57,6 +57,9 @@ import {
 import { TowerPlayerController } from './tower_player_controller.js';
 import { GpuTowerGroupFacade } from './tower/gpu_tower_group_facade.js';
 import {
+    TowerCreationCoordinator
+} from './tower/tower_creation_coordinator.js';
+import {
     GPU_TOWER_WORLD_KIND_ID,
     createGpuTowerSpawnIntent
 } from './tower/gpu_tower_spawn_adapter.js';
@@ -271,6 +274,7 @@ export class GameObjectSystem {
         this.enemySimulationBackend = null;
         this.worldRegistry = null;
         this.enemyLifecycleCommandOwner = null;
+        this.towerCreationCoordinator = null;
         this.#installGpuEndpoint(this.#createGpuEndpoint(true));
         this.goldLedgerOwned = !options?.goldLedger;
         this.goldLedger = options?.goldLedger ?? new GoldLedger();
@@ -612,6 +616,28 @@ export class GameObjectSystem {
         return this.towerCombatRoster?.getStatus() ?? null;
     }
 
+    /** Sentence cooldown과 무관한 technical Tower creation 요청입니다. */
+    requestTowerCreation(request) {
+        if (!this.towerCreationCoordinator) {
+            return Object.freeze({
+                accepted: false,
+                result: 'PROTOCOL_FAILURE',
+                reason: 'TOWER_CREATION_UNSUPPORTED',
+                recoveryRequired: false,
+                createdCount: 0,
+                handles: Object.freeze([])
+            });
+        }
+        return this.towerCreationCoordinator.requestTowerCreation(request);
+    }
+
+    getTowerCreationStatus() {
+        return this.towerCreationCoordinator?.getStatus() ?? Object.freeze({
+            state: 'unsupported',
+            requiresRecovery: false
+        });
+    }
+
     /** lifecycle 기반 hostile attack producer의 bounded 진단 snapshot입니다. */
     getHostileAttackStatus() {
         return this.hostileAttackDirector?.getStatus() ?? null;
@@ -702,6 +728,7 @@ export class GameObjectSystem {
             towerAlive: this.#isPrimaryTowerAlive(),
             towerCurrentHp: this.towerCombatRoster
                 ?.getPrimaryTowerCurrentHp() ?? null,
+            towerCreation: this.getTowerCreationStatus(),
             lastTowerCombatFacts: this.lastTowerCombatFacts,
             lastCoreImpactFacts: this.lastCoreImpactFacts,
             pentagonEffect: this.getPentagonEffectStatus(),
@@ -743,6 +770,7 @@ export class GameObjectSystem {
             || this.corkRouteClosureDirector?.requiresRecovery() === true
             || this.abilityRuntime?.requiresRecovery() === true
             || this.actorPayloadMaterializer?.requiresRecovery() === true
+            || this.towerCreationCoordinator?.requiresRecovery() === true
             || this.bountyRewardDirector?.requiresRecovery() === true;
     }
 
@@ -777,6 +805,19 @@ export class GameObjectSystem {
                 `미완료 GPU fixed tick이 있습니다: ${this.pendingEnemyFixedTick}`
             );
         }
+        if (this.pendingEnemyFixedTick === 0 && this.towerCreationCoordinator) {
+            const creationObservation = this.towerCreationCoordinator
+                .observeCompletedAtFixedBoundary(proposedFixedTick);
+            if (creationObservation?.pending === true) {
+                return false;
+            }
+            if (creationObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery(
+                    'tower-creation-completion',
+                    proposedFixedTick
+                );
+            }
+        }
         const gpuState = this.enemySimulationEndpoint.getRuntimeState();
         const gpuRequired = this.enemyWaveEnabled
             || this.gameplayWorldActorsEnabled
@@ -800,6 +841,8 @@ export class GameObjectSystem {
                 || this.corkRouteClosureDirector?.requiresRecovery() === true
                 || this.abilityRuntime?.requiresRecovery() === true
                 || this.actorPayloadMaterializer?.requiresRecovery()
+                    === true
+                || this.towerCreationCoordinator?.requiresRecovery()
                     === true
                 || this.bountyRewardDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery('director-preflight');
@@ -1215,6 +1258,14 @@ export class GameObjectSystem {
 
             let primaryProjectileShotReceipt = null;
             if (this.runOutcome.isRunning()) {
+                const towerCreationStage = this.towerCreationCoordinator
+                    ?.stageForFixedTick(proposedFixedTick) ?? null;
+                if (towerCreationStage?.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery(
+                        'tower-creation-stage',
+                        proposedFixedTick
+                    );
+                }
                 this.waveDirector?.queueSpawnsForFixedTick(
                     proposedFixedTick,
                     this.enemySimulationEndpoint,
@@ -1769,6 +1820,7 @@ export class GameObjectSystem {
                 || this.corkRouteClosureDirector?.requiresRecovery() === true
                 || this.abilityRuntime?.requiresRecovery() === true
                 || this.actorPayloadMaterializer?.requiresRecovery() === true
+                || this.towerCreationCoordinator?.requiresRecovery() === true
                 || this.bountyRewardDirector?.requiresRecovery() === true;
         return submitted;
     }
@@ -1925,6 +1977,8 @@ export class GameObjectSystem {
         this.#revokeCoreImpactCleanupBinding();
         this.enemySimulationEndpoint.configureTowerGameplayTarget?.(null);
         this.enemySimulationEndpoint.configureTrackedBody?.(null);
+        this.towerCreationCoordinator?.destroy();
+        this.towerCreationCoordinator = null;
         this.enemySimulationEndpoint.destroy();
         this.tower.resetGpuBinding();
         this.towerCombatRoster?.releaseGpuBinding();
@@ -2002,6 +2056,8 @@ export class GameObjectSystem {
         this.jorangSplitLineageDirector = null;
         this.enemyCoreImpactDirector?.destroy();
         this.enemyCoreImpactDirector = null;
+        this.towerCreationCoordinator?.destroy();
+        this.towerCreationCoordinator = null;
         this.#revokeCoreImpactCleanupBinding();
         this.waveDirector?.destroy();
         this.waveDirector = null;
@@ -2710,11 +2766,40 @@ export class GameObjectSystem {
 
     #installGpuEndpoint(bundle) {
         const endpoint = bundle.endpoint;
+        this.towerCreationCoordinator?.destroy();
         this.enemySimulationEndpoint = endpoint;
         this.enemySimulationBackend = endpoint.getBackend();
         this.worldRegistry = endpoint.getRegistry();
         this.enemyLifecycleCommandOwner = endpoint.getLifecycleCommandOwner();
         this.#coreImpactCleanupBinding = bundle.coreImpactCleanupBinding;
+        this.towerCreationCoordinator = this.#createTowerCreationCoordinator();
+    }
+
+    #createTowerCreationCoordinator() {
+        if (this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD
+            || !this.gameplayWorldActorsEnabled
+            || typeof this.towerCombatRoster?.getTowerGroupState !== 'function') {
+            return null;
+        }
+        const backend = this.enemySimulationBackend;
+        const registry = this.worldRegistry;
+        const requiredBackendMethods = [
+            'canStageTowerCreation',
+            'preleaseTowerCreationBodies',
+            'stageTowerCreationTransaction',
+            'drainCompletedTowerCreationTransactions',
+            'finalizeTowerCreationTransaction'
+        ];
+        if (!backend || !registry || requiredBackendMethods.some((method) => (
+            typeof backend[method] !== 'function'
+        ))) {
+            return null;
+        }
+        return new TowerCreationCoordinator({
+            towerGroupState: this.towerCombatRoster.getTowerGroupState(),
+            registry,
+            backend
+        });
     }
 
     #createHostileAttackDirector(endpoint) {
@@ -3221,11 +3306,19 @@ export class GameObjectSystem {
         }
         const requests = [];
         if (this.#isPrimaryTowerAlive()) {
+            const towerStatus = this.towerCombatRoster?.getStatus?.() ?? null;
             requests.push({
                 intent: createGpuTowerSpawnIntent({
                     position: this.tileMap.getTowerSpawnPosition(),
                     currentHp: this.towerCombatRoster
-                        ?.getPrimaryTowerCurrentHp()
+                        ?.getPrimaryTowerCurrentHp(),
+                    currentHpFixedPoint:
+                        towerStatus?.currentHpFixedPoint,
+                    logicalTowerOrdinal: 1,
+                    shareUnits: towerStatus?.shareUnits,
+                    maxHpFixedPoint: towerStatus?.maxHpFixedPoint,
+                    powerFixedPoint: towerStatus?.powerFixedPoint,
+                    towerGroupRevision: towerStatus?.groupRevision
                 }),
                 targetFixedTick: fixedTick,
                 commandId: this.towerSpawnCommandId

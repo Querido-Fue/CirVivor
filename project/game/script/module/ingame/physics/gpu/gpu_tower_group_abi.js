@@ -9,7 +9,7 @@ const UINT32_MAX = 0xffffffff;
 const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
-export const GPU_TOWER_GROUP_ABI_VERSION = 1;
+export const GPU_TOWER_GROUP_ABI_VERSION = 2;
 export const GPU_TOWER_GROUP_INVALID_COMPONENT = UINT32_MAX;
 
 export const GPU_TOWER_GROUP_MEMBER_FLAG = Object.freeze({
@@ -83,6 +83,8 @@ export const GPU_TOWER_GROUP_ABI = Object.freeze({
         AIM_WORLD_Y: 44,
         COMMAND_FINGERPRINT: 48,
         FLAGS: 52,
+        FALLBACK_GROUP_REVISION: 56,
+        FALLBACK_ROSTER_FINGERPRINT: 60,
         RESERVED_0: 56,
         RESERVED_1: 60
     }),
@@ -370,6 +372,17 @@ export function writeGpuTowerGroupRoster(storage, source = {}) {
 
 export function computeGpuTowerGroupCommandFingerprint(source = {}) {
     const protocol = normalizeProtocol(source.protocol);
+    const fallbackGroupRevision = requireUint32(
+        source.fallbackGroupRevision ?? 0,
+        'TowerGroup fallbackGroupRevision'
+    );
+    const fallbackRosterFingerprint = requireUint32(
+        source.fallbackRosterFingerprint ?? 0,
+        'TowerGroup fallbackRosterFingerprint'
+    );
+    if ((fallbackGroupRevision === 0) !== (fallbackRosterFingerprint === 0)) {
+        throw new RangeError('TowerGroup fallback roster tuple은 모두 zero이거나 모두 양수여야 합니다.');
+    }
     const words = [
         GPU_TOWER_GROUP_ABI_VERSION,
         protocol.sessionGeneration,
@@ -385,7 +398,9 @@ export function computeGpuTowerGroupCommandFingerprint(source = {}) {
         float32Word(source.moveIntent?.y ?? 0),
         float32Word(source.aimWorldPoint?.x ?? 0),
         float32Word(source.aimWorldPoint?.y ?? 0),
-        requireUint32(source.flags, 'TowerGroup command flags')
+        requireUint32(source.flags, 'TowerGroup command flags'),
+        fallbackGroupRevision,
+        fallbackRosterFingerprint
     ];
     let hash = FNV_OFFSET;
     for (const word of words) hash = hashWord(hash, word);
@@ -424,6 +439,17 @@ export function writeGpuTowerGroupCommand(storage, source = {}) {
         ),
         'TowerGroup command flags'
     );
+    const fallbackGroupRevision = requireUint32(
+        source.fallbackGroupRevision ?? 0,
+        'TowerGroup fallbackGroupRevision'
+    );
+    const fallbackRosterFingerprint = requireUint32(
+        source.fallbackRosterFingerprint ?? 0,
+        'TowerGroup fallbackRosterFingerprint'
+    );
+    if ((fallbackGroupRevision === 0) !== (fallbackRosterFingerprint === 0)) {
+        throw new RangeError('TowerGroup fallback roster tuple은 모두 zero이거나 모두 양수여야 합니다.');
+    }
     const commandFingerprint = computeGpuTowerGroupCommandFingerprint({
         protocol,
         sourceTick,
@@ -431,7 +457,9 @@ export function writeGpuTowerGroupCommand(storage, source = {}) {
         rosterFingerprint,
         moveIntent,
         aimWorldPoint,
-        flags
+        flags,
+        fallbackGroupRevision,
+        fallbackRosterFingerprint
     });
     const view = new DataView(storage.command);
     const abi = GPU_TOWER_GROUP_ABI.COMMAND;
@@ -449,8 +477,16 @@ export function writeGpuTowerGroupCommand(storage, source = {}) {
     view.setFloat32(abi.AIM_WORLD_Y, aimWorldPoint.y, LITTLE_ENDIAN);
     view.setUint32(abi.COMMAND_FINGERPRINT, commandFingerprint, LITTLE_ENDIAN);
     view.setUint32(abi.FLAGS, flags, LITTLE_ENDIAN);
-    view.setUint32(abi.RESERVED_0, 0, LITTLE_ENDIAN);
-    view.setUint32(abi.RESERVED_1, 0, LITTLE_ENDIAN);
+    view.setUint32(
+        abi.FALLBACK_GROUP_REVISION,
+        fallbackGroupRevision,
+        LITTLE_ENDIAN
+    );
+    view.setUint32(
+        abi.FALLBACK_ROSTER_FINGERPRINT,
+        fallbackRosterFingerprint,
+        LITTLE_ENDIAN
+    );
     return Object.freeze({
         protocol,
         sourceTick,
@@ -459,7 +495,9 @@ export function writeGpuTowerGroupCommand(storage, source = {}) {
         moveIntent,
         aimWorldPoint,
         commandFingerprint,
-        flags
+        flags,
+        fallbackGroupRevision,
+        fallbackRosterFingerprint
     });
 }
 

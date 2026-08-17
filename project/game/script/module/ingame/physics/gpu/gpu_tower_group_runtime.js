@@ -206,6 +206,7 @@ export class GpuTowerGroupRuntime {
         this.resourceLease = 0;
         this.pendingReadbacks = 0;
         this.roster = null;
+        this.pendingRosterTransition = null;
         this.stagedCommand = null;
         this.lastEncodedTick = 0;
         this.lastSubmittedTick = 0;
@@ -331,6 +332,7 @@ export class GpuTowerGroupRuntime {
         this.readbackCursor = 0;
         this.pendingReadbacks = 0;
         this.roster = null;
+        this.pendingRosterTransition = null;
         this.stagedCommand = null;
         this.lastEncodedTick = 0;
         this.lastSubmittedTick = 0;
@@ -350,6 +352,9 @@ export class GpuTowerGroupRuntime {
 
     synchronizeRoster(source = {}) {
         this.#requireReady();
+        if (this.pendingRosterTransition) {
+            throw new Error('TowerGroup roster transition 중에는 host roster를 덮어쓸 수 없습니다.');
+        }
         const protocol = normalizeProtocol(source.protocol ?? this.protocol);
         if (!sameProtocol(protocol, this.protocol)) {
             throw new Error('TowerGroup roster protocol이 runtime generation과 다릅니다.');
@@ -368,6 +373,76 @@ export class GpuTowerGroupRuntime {
         return roster;
     }
 
+    /** Tower creation이 성공할 때만 publish할 proposed roster를 GPU upload 없이 준비합니다. */
+    prepareRosterTransition(source = {}) {
+        this.#requireReady();
+        if (!this.roster || this.pendingRosterTransition) {
+            throw new Error('TowerGroup roster transition을 준비할 수 없는 상태입니다.');
+        }
+        const transactionId = String(source.transactionId ?? '');
+        if (transactionId.length === 0) {
+            throw new TypeError('TowerGroup roster transition transactionId가 필요합니다.');
+        }
+        const protocol = normalizeProtocol(source.protocol ?? this.protocol);
+        if (!sameProtocol(protocol, this.protocol)) {
+            throw new Error('TowerGroup proposed roster protocol이 runtime과 다릅니다.');
+        }
+        const host = createGpuTowerGroupHostStorage(this.capacity);
+        const target = writeGpuTowerGroupRoster(host, {
+            ...source,
+            protocol
+        });
+        if (target.groupRevision !== this.roster.groupRevision + 1) {
+            throw new RangeError('TowerGroup proposed revision은 current + 1이어야 합니다.');
+        }
+        this.pendingRosterTransition = {
+            transactionId,
+            source: this.roster,
+            target,
+            host
+        };
+        return Object.freeze({
+            transactionId,
+            source: this.roster,
+            target
+        });
+    }
+
+    finalizeRosterTransition(transactionId, committed) {
+        this.#requireReady();
+        const transition = this.pendingRosterTransition;
+        if (!transition || transition.transactionId !== String(transactionId)) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-roster-transition-token'
+            });
+        }
+        if (committed === true) {
+            new Uint8Array(this.host.memberStates).set(
+                new Uint8Array(transition.host.memberStates)
+            );
+            new Uint8Array(this.host.roster).set(
+                new Uint8Array(transition.host.roster)
+            );
+            this.roster = transition.target;
+        }
+        this.pendingRosterTransition = null;
+        return Object.freeze({
+            accepted: true,
+            committed: committed === true,
+            roster: this.roster
+        });
+    }
+
+    getCreationResources() {
+        this.#requireReady();
+        return Object.freeze({
+            members: this.buffers.members,
+            roster: this.buffers.roster,
+            capacity: this.capacity
+        });
+    }
+
     stageCommand(source = {}) {
         this.#requireReady();
         if (!this.roster) {
@@ -383,12 +458,17 @@ export class GpuTowerGroupRuntime {
                 && this.stagedCommand.sourceTick > this.lastEncodedTick)) {
             throw new Error(`TowerGroup fixed tick ${sourceTick} command는 정확히 한 번만 stage할 수 있습니다.`);
         }
+        const primaryRoster = this.pendingRosterTransition?.target
+            ?? this.roster;
+        const fallbackRoster = this.pendingRosterTransition?.source ?? null;
         const command = writeGpuTowerGroupCommand(this.host, {
             ...source,
             protocol,
             sourceTick,
-            groupRevision: this.roster.groupRevision,
-            rosterFingerprint: this.roster.fingerprint
+            groupRevision: primaryRoster.groupRevision,
+            rosterFingerprint: primaryRoster.fingerprint,
+            fallbackGroupRevision: fallbackRoster?.groupRevision ?? 0,
+            fallbackRosterFingerprint: fallbackRoster?.fingerprint ?? 0
         });
         writeGpuTowerGroupFixedParams(this.host, { protocol, sourceTick });
         this.device.queue.writeBuffer(this.buffers.command, 0, this.host.command);
@@ -443,11 +523,29 @@ export class GpuTowerGroupRuntime {
             this.lastSubmittedTick = Math.max(this.lastSubmittedTick, submittedTick);
             return false;
         }
+        const acceptedRosters = this.pendingRosterTransition
+            ? Object.freeze([
+                Object.freeze({
+                    groupRevision:
+                        this.pendingRosterTransition.target.groupRevision,
+                    rosterFingerprint:
+                        this.pendingRosterTransition.target.fingerprint
+                }),
+                Object.freeze({
+                    groupRevision:
+                        this.pendingRosterTransition.source.groupRevision,
+                    rosterFingerprint:
+                        this.pendingRosterTransition.source.fingerprint
+                })
+            ])
+            : Object.freeze([Object.freeze({
+                groupRevision: this.roster.groupRevision,
+                rosterFingerprint: this.roster.fingerprint
+            })]);
         const envelope = Object.freeze({
             sourceTick,
             submittedTick,
-            groupRevision: this.roster.groupRevision,
-            rosterFingerprint: this.roster.fingerprint,
+            acceptedRosters,
             ...this.protocol,
             resourceLease: this.resourceLease
         });
@@ -506,6 +604,18 @@ export class GpuTowerGroupRuntime {
             rosterMemberCount: this.roster?.memberCount ?? 0,
             groupRevision: this.roster?.groupRevision ?? 0,
             rosterFingerprint: this.roster?.fingerprint ?? 0,
+            pendingRosterTransition: this.pendingRosterTransition
+                ? Object.freeze({
+                    transactionId:
+                        this.pendingRosterTransition.transactionId,
+                    sourceGroupRevision:
+                        this.pendingRosterTransition.source.groupRevision,
+                    targetGroupRevision:
+                        this.pendingRosterTransition.target.groupRevision,
+                    targetRosterFingerprint:
+                        this.pendingRosterTransition.target.fingerprint
+                })
+                : null,
             pendingReadbacks: this.pendingReadbacks,
             readbackSlotCount: this.readbackSlotCount,
             groupCommandCount: this.groupCommandCount,
@@ -554,6 +664,7 @@ export class GpuTowerGroupRuntime {
         this.bindGroups = null;
         this.mapReadMode = null;
         this.roster = null;
+        this.pendingRosterTransition = null;
         this.stagedCommand = null;
         this.state = 'idle';
         this.latestSummary = createInvalidSummary(protocol, reason);
@@ -579,11 +690,17 @@ export class GpuTowerGroupRuntime {
             try {
                 const mapped = slot.buffer.getMappedRange();
                 const summary = readGpuTowerGroupSummary(mapped);
+                const rosterMatches = envelope.acceptedRosters.some(
+                    (candidate) => (
+                        summary.groupRevision === candidate.groupRevision
+                        && summary.rosterFingerprint
+                            === candidate.rosterFingerprint
+                    )
+                );
                 const provenanceMatches = summary.abiVersion === GPU_TOWER_GROUP_ABI_VERSION
                     && sameProtocol(summary, envelope)
                     && summary.sourceTick === envelope.sourceTick
-                    && summary.groupRevision === envelope.groupRevision
-                    && summary.rosterFingerprint === envelope.rosterFingerprint;
+                    && rosterMatches;
                 if (!provenanceMatches) {
                     this.staleSummaryCount++;
                     return;
