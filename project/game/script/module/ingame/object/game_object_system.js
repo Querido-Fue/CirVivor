@@ -159,6 +159,11 @@ function freezeHandle(handle) {
     });
 }
 
+function sameExactHandle(left, right) {
+    return Number(left?.entityId) === Number(right?.entityId)
+        && Number(left?.incarnation) === Number(right?.incarnation);
+}
+
 /**
  * @class GameObjectSystem
  * @description 한 session mode의 CPU fallback world 또는 mixed-body GPU world를 소유합니다.
@@ -438,7 +443,9 @@ export class GameObjectSystem {
         };
         this.actorSpawnTargetFixedTick = 0;
         this.towerSpawnCommandId = null;
+        this.towerSpawnCommands = Object.freeze([]);
         this.coreProxySpawnCommandId = null;
+        this.gpuWorldActorSpawnRequests = Object.freeze([]);
         this.actorLifecycleQueued = false;
         this.towerHandle = null;
         this.coreProxyHandle = null;
@@ -720,6 +727,7 @@ export class GameObjectSystem {
             enabled: this.gameplayWorldActorsEnabled,
             spawnTargetFixedTick: this.actorSpawnTargetFixedTick,
             lifecycleQueued: this.actorLifecycleQueued,
+            towerSpawnCommandCount: this.towerSpawnCommands.length,
             towerHandle: this.towerHandle,
             coreProxyHandle: this.coreProxyHandle,
             towerGameplayTargetConfigured:
@@ -1188,8 +1196,6 @@ export class GameObjectSystem {
             this.lastTowerCombatFacts = this.towerCombatRoster
                 ?.commitCompletedEvents(completedEvents, this.worldRegistry)
                 ?? EMPTY_TOWER_COMBAT_FACTS;
-            const towerDeathCutoverPending = !this.#isPrimaryTowerAlive()
-                && Boolean(this.towerHandle);
             const coreCompletedObservation = this.enemyCoreImpactDirector
                 ?.observeCompletedEvents(completedEvents, this.worldRegistry) ?? null;
             this.lastCoreImpactFacts = coreCompletedObservation?.facts
@@ -1236,8 +1242,7 @@ export class GameObjectSystem {
             // 같은 authentic completed snapshot의 Effect/Core/Hostile consumers가
             // 모두 관찰한 뒤에만 Tower gameplay binding을 끊습니다. clear failure가
             // 앞 consumer의 watermark를 영구 유실시키면 안 됩니다.
-            if (towerDeathCutoverPending
-                && !this.#cutoverCommittedTowerDeath()) {
+            if (!this.#reconcileCommittedPrimaryTowerBinding()) {
                 towerGameplayTargetClearFailure = this
                     .enemySimulationEndpoint.getStatus()
                     .towerGameplayTargetDiagnostic
@@ -1854,6 +1859,7 @@ export class GameObjectSystem {
         let replacementJorangSplitLineageDirector = null;
         let replacementProjectileCaptureDirector = null;
         let replacementCorkRouteClosureDirector = null;
+        let replacementActorSpawnPlan = null;
         try {
             const replacement = this.#createGpuEndpoint(false);
             replacementEndpoint = replacement.endpoint;
@@ -1905,6 +1911,22 @@ export class GameObjectSystem {
                 = this.corkRouteClosureDirector
                 ? this.#createCorkRouteClosureDirector(replacementEndpoint)
                 : null;
+            replacementActorSpawnPlan = this.#createGpuWorldActorSpawnPlan(
+                replacementEndpoint,
+                this.lastCompletedEnemyFixedTick
+            );
+            if (replacementActorSpawnPlan.requests.length > 0) {
+                const spawnReceipt = replacementEndpoint.requestSpawnBatch(
+                    replacementActorSpawnPlan.requests
+                );
+                if (!spawnReceipt?.accepted
+                    || spawnReceipt.queuedCount
+                        !== replacementActorSpawnPlan.requests.length) {
+                    throw new Error(
+                        'replacement GPU world actor 일괄 예약이 거부되었습니다.'
+                    );
+                }
+            }
         } catch {
             try {
                 replacementCorkRouteClosureDirector?.destroy();
@@ -2010,7 +2032,10 @@ export class GameObjectSystem {
         this.lastTowerCombatFacts = this.towerCombatRoster
             ?.getLastCommittedFacts?.() ?? EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
-        this.#armGpuWorldActors(this.lastCompletedEnemyFixedTick);
+        this.#applyGpuWorldActorSpawnPlan(
+            replacementActorSpawnPlan,
+            replacementActorSpawnPlan.requests.length > 0
+        );
         this.#refreshHostileParticipation();
         return true;
     }
@@ -3271,31 +3296,123 @@ export class GameObjectSystem {
     }
 
     #armGpuWorldActors(fixedTickOffset) {
+        this.#applyGpuWorldActorSpawnPlan(
+            this.#createGpuWorldActorSpawnPlan(
+                this.enemySimulationEndpoint,
+                fixedTickOffset
+            ),
+            false
+        );
+    }
+
+    #createGpuWorldActorSpawnPlan(endpoint, fixedTickOffset) {
+        const empty = Object.freeze([]);
+        if (!this.gameplayWorldActorsEnabled) {
+            return Object.freeze({
+                targetFixedTick: 0,
+                towerCommands: empty,
+                coreProxySpawnCommandId: null,
+                requests: empty
+            });
+        }
+        const targetFixedTick = fixedTickOffset + 1;
+        const sessionGeneration = endpoint.getStatus().sessionGeneration;
+        const towerGroupState = this.towerCombatRoster
+            ?.getTowerGroupState?.() ?? null;
+        const groupStatus = towerGroupState?.getStatus?.() ?? null;
+        const towerStatus = this.towerCombatRoster?.getStatus?.() ?? null;
+        const livingRecords = towerGroupState
+            ? towerGroupState.getTowerRecords().filter((record) => record.alive)
+            : this.#isPrimaryTowerAlive()
+                ? [Object.freeze({
+                    logicalTowerId: towerStatus?.logicalTowerId ?? 'tower:1',
+                    logicalTowerOrdinal: 1,
+                    currentHp: this.towerCombatRoster
+                        ?.getPrimaryTowerCurrentHp(),
+                    currentHpFixedPoint: towerStatus?.currentHpFixedPoint,
+                    shareUnits: towerStatus?.shareUnits,
+                    maxHpFixedPoint: towerStatus?.maxHpFixedPoint,
+                    powerFixedPoint: towerStatus?.powerFixedPoint,
+                    recoverySpawnDescriptor: null
+                })]
+                : [];
+        if (groupStatus
+            && livingRecords.length !== groupStatus.livingTowerCount) {
+            throw new Error('TowerGroup 생존 record snapshot이 일치하지 않습니다.');
+        }
+
+        const towerCommands = livingRecords.map((record, index) => {
+            const position = record.recoverySpawnDescriptor?.position
+                ?? (record.logicalTowerOrdinal === 1
+                    ? this.tileMap.getTowerSpawnPosition()
+                    : null);
+            if (!position) {
+                throw new Error(
+                    `${record.logicalTowerId} recovery spawn descriptor가 없습니다.`
+                );
+            }
+            const baseCommandId = [
+                'gpu-world-tower-spawn',
+                sessionGeneration,
+                targetFixedTick
+            ].join(':');
+            const commandId = index === 0
+                ? baseCommandId
+                : `${baseCommandId}:${record.logicalTowerOrdinal}`;
+            const intent = createGpuTowerSpawnIntent({
+                position,
+                currentHp: record.currentHp,
+                currentHpFixedPoint: record.currentHpFixedPoint,
+                logicalTowerOrdinal: record.logicalTowerOrdinal,
+                shareUnits: record.shareUnits,
+                maxHpFixedPoint: record.maxHpFixedPoint,
+                powerFixedPoint: record.powerFixedPoint,
+                towerGroupRevision: groupStatus?.groupRevision
+                    ?? towerStatus?.groupRevision
+            });
+            return Object.freeze({
+                logicalTowerId: record.logicalTowerId,
+                logicalTowerOrdinal: record.logicalTowerOrdinal,
+                commandId,
+                intent
+            });
+        });
+        const coreProxySpawnCommandId = [
+            'gpu-world-core-proxy-spawn',
+            sessionGeneration,
+            targetFixedTick
+        ].join(':');
+        const requests = towerCommands.map((command) => Object.freeze({
+            intent: command.intent,
+            targetFixedTick,
+            commandId: command.commandId
+        }));
+        requests.push(Object.freeze({
+            intent: createGpuCoreProxySpawnIntent({
+                position: this.tileMap.getCorePosition()
+            }),
+            targetFixedTick,
+            commandId: coreProxySpawnCommandId
+        }));
+        return Object.freeze({
+            targetFixedTick,
+            towerCommands: Object.freeze(towerCommands),
+            coreProxySpawnCommandId,
+            requests: Object.freeze(requests)
+        });
+    }
+
+    #applyGpuWorldActorSpawnPlan(plan, lifecycleQueued) {
         this.towerHandle = null;
         this.coreProxyHandle = null;
         this.towerGameplayTargetConfigured = false;
         this.trackedTowerConfigured = false;
-        this.actorLifecycleQueued = false;
-        this.towerSpawnCommandId = null;
-        this.coreProxySpawnCommandId = null;
-        if (!this.gameplayWorldActorsEnabled) {
-            this.actorSpawnTargetFixedTick = 0;
-            return;
-        }
-        this.actorSpawnTargetFixedTick = fixedTickOffset + 1;
-        const sessionGeneration = this.enemySimulationEndpoint.getStatus().sessionGeneration;
-        if (this.#isPrimaryTowerAlive()) {
-            this.towerSpawnCommandId = [
-                'gpu-world-tower-spawn',
-                sessionGeneration,
-                this.actorSpawnTargetFixedTick
-            ].join(':');
-        }
-        this.coreProxySpawnCommandId = [
-            'gpu-world-core-proxy-spawn',
-            sessionGeneration,
-            this.actorSpawnTargetFixedTick
-        ].join(':');
+        this.actorLifecycleQueued = lifecycleQueued === true;
+        this.actorSpawnTargetFixedTick = plan.targetFixedTick;
+        this.towerSpawnCommands = plan.towerCommands;
+        this.towerSpawnCommandId = plan.towerCommands[0]?.commandId ?? null;
+        this.coreProxySpawnCommandId = plan.coreProxySpawnCommandId;
+        this.gpuWorldActorSpawnRequests = plan.requests;
     }
 
     #queueGpuWorldActorsForFixedTick(fixedTick) {
@@ -3304,35 +3421,11 @@ export class GameObjectSystem {
             || fixedTick !== this.actorSpawnTargetFixedTick) {
             return true;
         }
-        const requests = [];
-        if (this.#isPrimaryTowerAlive()) {
-            const towerStatus = this.towerCombatRoster?.getStatus?.() ?? null;
-            requests.push({
-                intent: createGpuTowerSpawnIntent({
-                    position: this.tileMap.getTowerSpawnPosition(),
-                    currentHp: this.towerCombatRoster
-                        ?.getPrimaryTowerCurrentHp(),
-                    currentHpFixedPoint:
-                        towerStatus?.currentHpFixedPoint,
-                    logicalTowerOrdinal: 1,
-                    shareUnits: towerStatus?.shareUnits,
-                    maxHpFixedPoint: towerStatus?.maxHpFixedPoint,
-                    powerFixedPoint: towerStatus?.powerFixedPoint,
-                    towerGroupRevision: towerStatus?.groupRevision
-                }),
-                targetFixedTick: fixedTick,
-                commandId: this.towerSpawnCommandId
-            });
-        }
-        requests.push({
-            intent: createGpuCoreProxySpawnIntent({
-                position: this.tileMap.getCorePosition()
-            }),
-            targetFixedTick: fixedTick,
-            commandId: this.coreProxySpawnCommandId
-        });
-        const receipt = this.enemySimulationEndpoint.requestSpawnBatch(requests);
-        if (!receipt?.accepted || receipt.queuedCount !== requests.length) {
+        const receipt = this.enemySimulationEndpoint.requestSpawnBatch(
+            this.gpuWorldActorSpawnRequests
+        );
+        if (!receipt?.accepted
+            || receipt.queuedCount !== this.gpuWorldActorSpawnRequests.length) {
             return false;
         }
         this.actorLifecycleQueued = true;
@@ -3349,20 +3442,22 @@ export class GameObjectSystem {
                 [commandId, handle]
             ))
         );
-        const towerAlive = this.#isPrimaryTowerAlive();
-        const towerHandle = this.towerSpawnCommandId
-            ? handleByCommandId.get(this.towerSpawnCommandId)
-            : null;
+        const towerBindings = this.towerSpawnCommands.map((command) => (
+            Object.freeze({
+                ...command,
+                handle: handleByCommandId.get(command.commandId) ?? null
+            })
+        ));
         const coreProxyHandle = handleByCommandId.get(this.coreProxySpawnCommandId);
-        const expectedTowerCount = towerAlive ? 1 : 0;
+        const expectedTowerCount = towerBindings.length;
         if (!coreProxyHandle
-            || (towerAlive && !towerHandle)
+            || towerBindings.some((binding) => !binding.handle)
             || this.worldRegistry.getActiveCount(GPU_TOWER_WORLD_KIND_ID)
                 !== expectedTowerCount
             || this.worldRegistry.getActiveCount(GPU_CORE_PROXY_WORLD_KIND_ID) !== 1) {
             return false;
         }
-        if (!towerAlive) {
+        if (expectedTowerCount === 0) {
             const gameplayTarget = this.enemySimulationEndpoint
                 .configureTowerGameplayTarget?.(null);
             this.enemySimulationEndpoint.configureTrackedBody?.(null);
@@ -3376,36 +3471,28 @@ export class GameObjectSystem {
         if (this.towerCombatRoster && !protocol) {
             return false;
         }
-        const gameplayTarget = this.enemySimulationEndpoint
-            .configureTowerGameplayTarget(towerHandle);
-        if (gameplayTarget?.accepted !== true) {
-            return false;
-        }
         try {
-            const sessionGeneration = this.enemySimulationEndpoint
-                .getStatus().sessionGeneration;
-            const boundTowerHandle = this.tower.bindGpuBody(
-                towerHandle,
-                sessionGeneration
-            );
-            this.towerCombatRoster?.bindGpuBody(boundTowerHandle, protocol);
-            this.towerHandle = boundTowerHandle;
-            this.coreProxyHandle = freezeHandle(coreProxyHandle);
-            this.towerGameplayTargetConfigured = true;
-            if (typeof this.enemySimulationBackend
-                    ?.synchronizeTowerGroupRoster === 'function') {
-                const groupRoster = this.tower.synchronizeGpuRoster(
-                    this.enemySimulationBackend,
-                    true
+            const towerGroupState = this.towerCombatRoster
+                ?.getTowerGroupState?.() ?? null;
+            if (towerGroupState) {
+                for (const binding of towerBindings) {
+                    towerGroupState.bindGpuBody(
+                        binding.logicalTowerId,
+                        binding.handle,
+                        protocol
+                    );
+                }
+            } else if (towerBindings[0]) {
+                this.towerCombatRoster?.bindGpuBody(
+                    towerBindings[0].handle,
+                    protocol
                 );
-                this.trackedTowerConfigured = groupRoster?.accepted === true;
-                return this.trackedTowerConfigured;
-            } else {
-                const tracking = this.enemySimulationEndpoint
-                    .configureTrackedBody(boundTowerHandle);
-                this.trackedTowerConfigured = tracking?.accepted === true;
-                return true;
             }
+            this.coreProxyHandle = freezeHandle(coreProxyHandle);
+            const primaryBinding = towerGroupState
+                ?.getPrimaryTowerRecord?.()?.exactGpuBinding
+                ?? towerBindings[0].handle;
+            return this.#activatePrimaryTowerBinding(primaryBinding, true);
         } catch {
             this.tower.resetGpuBinding();
             this.towerCombatRoster?.releaseGpuBinding();
@@ -3421,6 +3508,61 @@ export class GameObjectSystem {
 
     #isPrimaryTowerAlive() {
         return this.towerCombatRoster?.isPrimaryTowerAlive() ?? true;
+    }
+
+    #reconcileCommittedPrimaryTowerBinding() {
+        const towerGroupState = this.towerCombatRoster
+            ?.getTowerGroupState?.() ?? null;
+        if (!towerGroupState) {
+            return !this.#isPrimaryTowerAlive() && this.towerHandle
+                ? this.#cutoverCommittedTowerDeath()
+                : true;
+        }
+        const primary = towerGroupState.getPrimaryTowerRecord();
+        if (!primary?.alive) {
+            return this.towerHandle
+                ? this.#cutoverCommittedTowerDeath()
+                : true;
+        }
+        if (!primary.exactGpuBinding) {
+            return this.towerHandle === null;
+        }
+        if (sameExactHandle(primary.exactGpuBinding, this.towerHandle)) {
+            return true;
+        }
+        return this.#activatePrimaryTowerBinding(
+            primary.exactGpuBinding,
+            true
+        );
+    }
+
+    #activatePrimaryTowerBinding(handle, forceRosterSync) {
+        const gameplayTarget = this.enemySimulationEndpoint
+            .configureTowerGameplayTarget(handle);
+        if (gameplayTarget?.accepted !== true) {
+            return false;
+        }
+        const sessionGeneration = this.enemySimulationEndpoint
+            .getStatus().sessionGeneration;
+        const boundTowerHandle = this.tower.bindGpuBody(
+            handle,
+            sessionGeneration
+        );
+        this.towerHandle = boundTowerHandle;
+        this.towerGameplayTargetConfigured = true;
+        if (typeof this.enemySimulationBackend
+                ?.synchronizeTowerGroupRoster === 'function') {
+            const groupRoster = this.tower.synchronizeGpuRoster(
+                this.enemySimulationBackend,
+                forceRosterSync === true
+            );
+            this.trackedTowerConfigured = groupRoster?.accepted === true;
+            return this.trackedTowerConfigured;
+        }
+        const tracking = this.enemySimulationEndpoint
+            .configureTrackedBody(boundTowerHandle);
+        this.trackedTowerConfigured = tracking?.accepted === true;
+        return true;
     }
 
     #cutoverCommittedTowerDeath() {

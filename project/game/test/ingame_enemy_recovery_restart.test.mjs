@@ -25,6 +25,15 @@ const {
     'ingame/object/projectile/gpu_projectile_spawn_adapter.js'
 );
 const {
+    createGpuTowerSpawnIntent
+} = await loadGameModule(
+    'ingame/object/tower/gpu_tower_spawn_adapter.js'
+);
+const {
+    R3_ENEMIES_SHOOT_ENEMIES_SENTENCE,
+    R3_TOWER_SHOOTS_ENEMY_SENTENCE
+} = await loadGameModule('data/word/r3_word_catalog_data.js');
+const {
     PROJECTILE_TARGET_POLICY_ID
 } = await loadGameModule(
     'ingame/contract/projectile_target_policy_contract.js'
@@ -117,6 +126,11 @@ function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
+function sameHandle(left, right) {
+    return left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation;
+}
+
 class RecoveryBackend {
     constructor(mode) {
         this.mode = mode;
@@ -131,7 +145,7 @@ class RecoveryBackend {
     }
 
     getCapacity() {
-        return 64;
+        return this.mode === 'capacity-one' ? 1 : 64;
     }
 
     init() {
@@ -361,6 +375,124 @@ class CombatRecoveryBackend extends RecoveryBackend {
         return Object.freeze({
             state: this.getRuntimeState(),
             ...this.eventProtocol
+        });
+    }
+}
+
+class GroupCombatRecoveryBackend extends CombatRecoveryBackend {
+    constructor(mode, sessionGeneration) {
+        super(mode, sessionGeneration);
+        this.towerGroupRevision = 0;
+        this.towerGroupRecordCount = 0;
+        this.towerGroupRosters = [];
+        this.towerGroupCommands = [];
+        this.towerCreationStageCalls = [];
+    }
+
+    synchronizeTowerGroupRoster(source) {
+        const roster = Object.freeze({
+            groupRevision: source.groupRevision,
+            records: Object.freeze(Array.from(source.records))
+        });
+        this.towerGroupRosters.push(roster);
+        this.towerGroupRevision = source.groupRevision;
+        this.towerGroupRecordCount = source.records.filter(
+            (record) => record.alive
+        ).length;
+        return Object.freeze({
+            accepted: true,
+            groupRevision: this.towerGroupRevision,
+            recordCount: source.records.length,
+            livingTowerCount: this.towerGroupRecordCount,
+            requiresRecovery: false
+        });
+    }
+
+    getTowerGroupRuntimeStatus() {
+        return Object.freeze({
+            state: 'ready',
+            capacity: 64,
+            groupRevision: this.towerGroupRevision,
+            recordCount: this.towerGroupRecordCount,
+            deviceGeneration: this.eventProtocol.deviceGeneration,
+            authoritativeEpoch: this.eventProtocol.authoritativeEpoch,
+            requiresRecovery: false
+        });
+    }
+
+    stageTowerGroupCommand(command) {
+        const snapshot = Object.freeze({
+            ...command,
+            moveIntent: Object.freeze({ ...command.moveIntent }),
+            aimWorldPoint: Object.freeze({ ...command.aimWorldPoint })
+        });
+        this.towerGroupCommands.push(snapshot);
+        return Object.freeze({
+            accepted: true,
+            acceptedCount: this.towerGroupRecordCount,
+            rejectedCount: 0,
+            requiresRecovery: false
+        });
+    }
+
+    canStageTowerCreation() {
+        return true;
+    }
+
+    getTowerCreationRuntimeStatus() {
+        return Object.freeze({
+            state: 'ready',
+            recordCapacity: 64,
+            requiresRecovery: false
+        });
+    }
+
+    getAvailableTowerCreationBodyCapacity() {
+        return 64;
+    }
+
+    preleaseTowerCreationBodies() {
+        return Object.freeze({
+            accepted: false,
+            reason: 'unused-test-prelease',
+            requiresRecovery: false
+        });
+    }
+
+    cancelTowerCreationBodyPrelease() {
+        return Object.freeze({
+            accepted: true,
+            cancelledCount: 0,
+            requiresRecovery: false
+        });
+    }
+
+    stageTowerCreationTransaction(request) {
+        this.towerCreationStageCalls.push(request);
+        return Object.freeze({
+            accepted: false,
+            reason: 'unused-test-stage',
+            recoveryRequired: false
+        });
+    }
+
+    drainCompletedTowerCreationTransactions(out = []) {
+        return out;
+    }
+
+    finalizeTowerCreationTransaction() {
+        return Object.freeze({
+            accepted: true,
+            committed: false,
+            requiresRecovery: false
+        });
+    }
+
+    cancelAllTowerCreations(reason = 'cancelled') {
+        return Object.freeze({
+            cancelledPreleaseCount: 0,
+            reason,
+            requiresRecovery: false
         });
     }
 }
@@ -1259,6 +1391,395 @@ test('replacement gpu-unavailable/예외와 Director factory 예외는 기존 GP
     assert.equal(backends[2].destroyCount, 1);
     assert.equal(backends[3].destroyCount, 1);
     assert.equal(hostileAttackDirector.destroyCount, 1);
+});
+
+test('1→2 TowerGroup recovery는 모든 논리 상태를 보존하고 exact 재바인딩·primary 승계를 수행한다', () => {
+    const backends = [];
+    const backendModes = ['normal', 'capacity-one', 'normal'];
+    const hostileDirectors = createTrackingHostileAttackDirectorFactory();
+    const heldInput = {
+        actions: new Set(),
+        primary: false,
+        pointerX: 320,
+        pointerY: 180
+    };
+    const dependencies = {
+        inputActionSource: {
+            isPressed(actionId) {
+                return heldInput.actions.has(actionId);
+            },
+            getPointerPosition(out) {
+                out.x = heldInput.pointerX;
+                out.y = heldInput.pointerY;
+                return out;
+            },
+            isPrimaryPointerPressed() {
+                return heldInput.primary;
+            },
+            getWheelTotals(out) {
+                out.x = 0;
+                out.y = 0;
+                return out;
+            }
+        },
+        animationPort: {
+            animate() {
+                return createAnimationHandle();
+            }
+        },
+        timePort: {
+            getDelta: () => 1 / 120,
+            getFixedDelta: () => 1 / 60,
+            getFixedInterpolationAlpha: () => 0.5
+        },
+        viewportPort: {
+            getSnapshot(out) {
+                out.ww = 1920;
+                out.wh = 1080;
+                return out;
+            }
+        },
+        worldRenderPort: {
+            drawCircle() {},
+            drawSquareInstances() {}
+        },
+        webGpuPlatformPort: {
+            getState() {
+                return { ready: true, deviceGeneration: 7 };
+            }
+        },
+        enemySimulationBackendFactory(_backendDependencies, options) {
+            const backend = new GroupCombatRecoveryBackend(
+                backendModes[backends.length] ?? 'normal',
+                options.sessionGeneration
+            );
+            backends.push(backend);
+            return backend;
+        },
+        hostileAttackDirectorFactory: hostileDirectors.factory,
+        jorangSplitLineageDirectorFactory:
+            createIdleJorangSplitLineageDirector,
+        projectileCaptureDirectorFactory:
+            createIdleProjectileCaptureDirector
+    };
+    const gameSystem = new GameSystem(dependencies, {
+        enemyWaveEnabled: false
+    });
+    assert.equal(gameSystem.enter(), true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const wordSystem = gameSystem.getWordSystem();
+    wordSystem.setSlotSentence(
+        'Q',
+        R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    );
+    wordSystem.setSlotSentence(
+        'E',
+        R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
+    );
+
+    const objectSystem = gameSystem.getObjectSystem();
+    const initialEndpoint = gameSystem.getGpuSimulationEndpoint();
+    const towerFacade = objectSystem.getTower();
+    const primaryController = objectSystem.primaryProjectileController;
+    const towerGroupState = gameSystem.getTowerGroupState();
+    const initialTowerHandle = towerGroupState
+        .getPrimaryTowerRecord().exactGpuBinding;
+    const qViewBeforeCreation = gameSystem.getAbilitySlotViews().find(
+        ({ slotId }) => slotId === 'Q'
+    );
+    assert.equal(qViewBeforeCreation.preview.subjectCount, 1);
+
+    const childDescriptor = Object.freeze({
+        position: Object.freeze({ x: 7, y: 4 })
+    });
+    const creationPlan = towerGroupState.planCreation({
+        transactionId: 'recovery-manual-1-to-2',
+        childCount: 1,
+        childRecoverySpawnDescriptors: [childDescriptor]
+    });
+    assert.equal(creationPlan.accepted, true);
+    const childPlan = creationPlan.children[0];
+    const childSpawnTick = gameSystem.getNextGpuLifecycleFixedTick();
+    const childSpawnReceipt = initialEndpoint.requestSpawn(
+        createGpuTowerSpawnIntent({
+            position: childDescriptor.position,
+            currentHpFixedPoint: childPlan.currentHpFixedPoint,
+            logicalTowerOrdinal: childPlan.logicalTowerOrdinal,
+            shareUnits: childPlan.shareUnits,
+            maxHpFixedPoint: childPlan.maxHpFixedPoint,
+            powerFixedPoint: childPlan.powerFixedPoint,
+            towerGroupRevision: creationPlan.targetGroupRevision
+        }),
+        childSpawnTick,
+        `recovery-manual-child:${childSpawnTick}`
+    );
+    assert.equal(childSpawnReceipt.accepted, true);
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const technicalTowerHandles = initialEndpoint.getRegistry()
+        .copyActiveHandlesInto([], { kindId: 'tower' });
+    assert.equal(technicalTowerHandles.length, 2);
+    const childHandle = technicalTowerHandles.find(
+        (handle) => !sameHandle(handle, initialTowerHandle)
+    );
+    assert.ok(childHandle);
+    const creationCommit = towerGroupState.commitCreation(creationPlan);
+    assert.equal(creationCommit.accepted, true);
+    towerGroupState.bindGpuBody(
+        childPlan.logicalTowerId,
+        childHandle,
+        backends[0].eventProtocol
+    );
+    assert.equal(
+        towerFacade.synchronizeGpuRoster(backends[0], true).accepted,
+        true
+    );
+    const qViewAfterCreation = gameSystem.getAbilitySlotViews().find(
+        ({ slotId }) => slotId === 'Q'
+    );
+    assert.equal(qViewAfterCreation.preview.subjectCount, 2);
+
+    const snapshotLogicalRecords = () => towerGroupState.getTowerRecords().map(
+        (record) => ({
+            logicalTowerId: record.logicalTowerId,
+            logicalTowerOrdinal: record.logicalTowerOrdinal,
+            shareUnits: record.shareUnits,
+            currentHpFixedPoint: record.currentHpFixedPoint,
+            maxHpFixedPoint: record.maxHpFixedPoint,
+            powerFixedPoint: record.powerFixedPoint,
+            recoverySpawnDescriptor: record.recoverySpawnDescriptor,
+            state: record.state
+        })
+    );
+    const logicalRecordsBeforeRecovery = snapshotLogicalRecords();
+    const groupStatusBeforeRecovery = towerGroupState.getStatus();
+    const equippedAbilityIdsBeforeRecovery = gameSystem.getAbilitySlotViews()
+        .map(({ compiledAbilityId }) => compiledAbilityId);
+    const hostileStatusBeforeRecovery = gameSystem
+        .getHostileParticipationStatus();
+    const coreIntegrity = gameSystem.getCoreIntegrity();
+    const snapshotCoreStatus = () => ({
+        current: coreIntegrity.getCurrentIntegrity(),
+        max: coreIntegrity.getMaxIntegrity(),
+        depleted: coreIntegrity.isDepleted(),
+        terminallySealed: coreIntegrity.isTerminallySealed()
+    });
+    const coreStatusBeforeRecovery = snapshotCoreStatus();
+    const runStatusBeforeRecovery = gameSystem.getRunOutcome().getStatus();
+    const goldBeforeRecovery = gameSystem.getGold();
+    const oldHostileHandle = requestHostileProjectileForNextTick(gameSystem, 10);
+
+    const queuedCreation = gameSystem.requestTowerCreation({
+        transactionId: 'recovery-must-not-replay',
+        childCount: 1,
+        requestedFixedTick: gameSystem.getFixedTick() + 10,
+        childSpawnDescriptors: [{ position: { x: 9, y: 6 } }]
+    });
+    assert.equal(queuedCreation.accepted, true);
+    assert.equal(gameSystem.getTowerCreationStatus().state, 'queued');
+
+    heldInput.actions.add('moveRight');
+    heldInput.primary = true;
+    heldInput.pointerX = 640;
+    heldInput.pointerY = 360;
+
+    backends[0].hardFailNextFixed = true;
+    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(towerGroupState.getStatus().livingTowerCount, 2);
+    assert.equal(towerFacade.getStatus().primaryPressed, true);
+    assert.equal(gameSystem.isGpuWorldRecoveryRequired(), true);
+    const oldBindings = towerGroupState.getTowerRecords().map(
+        ({ exactGpuBinding }) => exactGpuBinding
+    );
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), false);
+    assert.equal(backends.length, 2);
+    assert.equal(backends[1].destroyCount, 1);
+    assert.strictEqual(gameSystem.getGpuSimulationEndpoint(), initialEndpoint);
+    assert.deepEqual(snapshotLogicalRecords(), logicalRecordsBeforeRecovery);
+    assert.deepEqual(
+        towerGroupState.getTowerRecords().map(({ exactGpuBinding }) => (
+            exactGpuBinding
+        )),
+        oldBindings
+    );
+    assert.equal(gameSystem.getTowerCreationStatus().state, 'queued');
+    assert.equal(backends[0].destroyCount, 0);
+    assert.equal(towerFacade.getStatus().primaryPressed, true);
+
+    assert.equal(gameSystem.restartGpuWorldAtSafeWaveBoundary(), true);
+    const replacementEndpoint = gameSystem.getGpuSimulationEndpoint();
+    assert.notStrictEqual(replacementEndpoint, initialEndpoint);
+    assert.equal(backends[0].destroyCount, 1);
+    assert.deepEqual(snapshotLogicalRecords(), logicalRecordsBeforeRecovery);
+    assert.equal(
+        towerGroupState.getStatus().groupRevision,
+        groupStatusBeforeRecovery.groupRevision
+    );
+    assert.equal(
+        towerGroupState.getTowerRecords().every(
+            ({ exactGpuBinding }) => exactGpuBinding === null
+        ),
+        true
+    );
+    assert.equal(gameSystem.getTowerCreationStatus().state, 'idle');
+    assert.equal(backends[2].towerCreationStageCalls.length, 0);
+    assert.equal(towerFacade.getStatus().primaryPressed, true);
+    assert.deepEqual(
+        { ...towerFacade.moveIntent },
+        { x: 1, y: 0 }
+    );
+    assert.deepEqual(snapshotCoreStatus(), coreStatusBeforeRecovery);
+    assert.deepEqual(gameSystem.getRunOutcome().getStatus(), runStatusBeforeRecovery);
+    assert.equal(gameSystem.getGold(), goldBeforeRecovery);
+    assert.strictEqual(gameSystem.getWordSystem(), wordSystem);
+    assert.deepEqual(
+        gameSystem.getAbilitySlotViews().map(
+            ({ compiledAbilityId }) => compiledAbilityId
+        ),
+        equippedAbilityIdsBeforeRecovery
+    );
+    assert.equal(
+        gameSystem.getAbilitySlotViews().find(({ slotId }) => slotId === 'E')
+            .preview.subjectCount,
+        0
+    );
+    assert.deepEqual(
+        {
+            hostileActorCount: gameSystem.getHostileParticipationStatus()
+                .hostileActorCount,
+            siegeWeight: gameSystem.getHostileParticipationStatus().siegeWeight,
+            bountyPotential: gameSystem.getHostileParticipationStatus()
+                .bountyPotential
+        },
+        {
+            hostileActorCount: hostileStatusBeforeRecovery.hostileActorCount,
+            siegeWeight: hostileStatusBeforeRecovery.siegeWeight,
+            bountyPotential: hostileStatusBeforeRecovery.bountyPotential
+        }
+    );
+
+    backends[0].queueCompletedEvents(
+        gameSystem.getFixedTick() + 1,
+        createTowerDamageEvents(oldHostileHandle, initialTowerHandle, 5)
+    );
+    assert.equal(gameSystem.fixedUpdate(), true);
+    assert.equal(backends[2].spawnBatches.length, 1);
+    const restoredTowerBodies = backends[2].spawnBatches[0]
+        .filter(({ kindId }) => kindId === 'tower')
+        .sort((left, right) => (
+            left.logicalTowerOrdinal - right.logicalTowerOrdinal
+        ));
+    assert.equal(restoredTowerBodies.length, 2);
+    assert.equal(backends[2].spawnBatches[0].length, 3);
+    for (let index = 0; index < restoredTowerBodies.length; index++) {
+        const body = restoredTowerBodies[index];
+        const record = logicalRecordsBeforeRecovery[index];
+        assert.equal(body.teamId, GAMEPLAY_TEAM_ID.PLAYER);
+        assert.equal(body.logicalTowerOrdinal, record.logicalTowerOrdinal);
+        assert.equal(body.shareUnits, record.shareUnits);
+        assert.equal(body.currentHpFixedPoint, record.currentHpFixedPoint);
+        assert.equal(body.maxHpFixedPoint, record.maxHpFixedPoint);
+        assert.equal(body.powerFixedPoint, record.powerFixedPoint);
+        assert.equal(
+            body.towerGroupRevision,
+            groupStatusBeforeRecovery.groupRevision
+        );
+    }
+    assert.deepEqual(
+        { ...restoredTowerBodies[1].position },
+        { ...childDescriptor.position }
+    );
+    assert.deepEqual(snapshotLogicalRecords(), logicalRecordsBeforeRecovery);
+    const reboundRecords = towerGroupState.getTowerRecords();
+    assert.equal(reboundRecords.every(({ exactGpuBinding }) => (
+        exactGpuBinding?.sessionGeneration
+            === replacementEndpoint.getStatus().sessionGeneration
+    )), true);
+    assert.equal(reboundRecords.every((record, index) => (
+        record.exactGpuBinding !== oldBindings[index]
+            && record.exactGpuBinding.sessionGeneration
+                !== oldBindings[index].sessionGeneration
+    )), true);
+    assert.equal(towerGroupState.getPrimaryTowerRecord().currentHpFixedPoint,
+        logicalRecordsBeforeRecovery[0].currentHpFixedPoint);
+    assert.equal(backends[2].towerGroupRosters.at(-1).records.length, 2);
+    assert.deepEqual(snapshotCoreStatus(), coreStatusBeforeRecovery);
+    assert.deepEqual(gameSystem.getRunOutcome().getStatus(), runStatusBeforeRecovery);
+    assert.equal(gameSystem.getGold(), goldBeforeRecovery);
+
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const restagedCommand = backends[2].towerGroupCommands.at(-1);
+    assert.ok(restagedCommand);
+    assert.deepEqual({ ...restagedCommand.moveIntent }, { x: 1, y: 0 });
+    assert.equal(Number.isFinite(restagedCommand.aimWorldPoint.x), true);
+    assert.equal(Number.isFinite(restagedCommand.aimWorldPoint.y), true);
+    assert.equal(gameSystem.getTowerCreationStatus().state, 'idle');
+    assert.equal(backends[2].towerCreationStageCalls.length, 0);
+    assert.equal(
+        gameSystem.getAbilitySlotViews().find(({ slotId }) => slotId === 'Q')
+            .preview.subjectCount,
+        2
+    );
+
+    const recoveryHostileHandle = requestHostileProjectileForNextTick(
+        gameSystem,
+        11
+    );
+    const primaryBeforeDeath = towerGroupState.getPrimaryTowerRecord();
+    const survivingBeforeDeath = towerGroupState.getTowerRecords()[1];
+    backends[2].queueCompletedEvents(
+        gameSystem.getFixedTick(),
+        createTowerDamageEvents(
+            recoveryHostileHandle,
+            primaryBeforeDeath.exactGpuBinding,
+            primaryBeforeDeath.currentHp,
+            true
+        )
+    );
+    assert.equal(gameSystem.fixedUpdate(), true);
+    const groupAfterPrimaryDeath = towerGroupState.getStatus();
+    assert.equal(groupAfterPrimaryDeath.livingTowerCount, 1);
+    assert.equal(
+        groupAfterPrimaryDeath.primaryLogicalTowerId,
+        survivingBeforeDeath.logicalTowerId
+    );
+    assert.equal(
+        groupAfterPrimaryDeath.lostShareUnits,
+        primaryBeforeDeath.shareUnits
+    );
+    assert.equal(
+        groupAfterPrimaryDeath.lastCommittedFacts.some(
+            ({ type }) => type === 'TowerShareLost'
+        ),
+        true
+    );
+    const survivingPrimary = towerGroupState.getPrimaryTowerRecord();
+    const gpuActorStatus = objectSystem.getGpuWorldActorStatus();
+    assert.deepEqual(
+        { ...gpuActorStatus.towerHandle },
+        {
+            entityId: survivingPrimary.exactGpuBinding.entityId,
+            incarnation: survivingPrimary.exactGpuBinding.incarnation
+        }
+    );
+    assert.deepEqual(
+        { ...backends[2].towerGameplayTargetHandle },
+        { ...gpuActorStatus.towerHandle }
+    );
+    assert.equal(towerFacade.getStatus().active, true);
+    assert.equal(primaryController.getStatus().enabled, true);
+    assert.equal(
+        gameSystem.getAbilitySlotViews().find(({ slotId }) => slotId === 'Q')
+            .preview.subjectCount,
+        1
+    );
+    assert.equal(objectSystem.getWorldRegistry().getActiveCount('tower'), 1);
+    assert.deepEqual(snapshotCoreStatus(), coreStatusBeforeRecovery);
+    assert.deepEqual(gameSystem.getRunOutcome().getStatus(), runStatusBeforeRecovery);
+    assert.equal(gameSystem.getGold(), goldBeforeRecovery);
+
+    gameSystem.destroy();
+    assert.equal(backends[2].destroyCount, 1);
 });
 
 test('Tower HP 17 recovery, exact death cutover, zero-Tower 진행과 dead Core-only recovery를 보존한다', () => {
