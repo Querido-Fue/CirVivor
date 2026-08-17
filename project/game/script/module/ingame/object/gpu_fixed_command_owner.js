@@ -674,7 +674,8 @@ function normalizeBackendDomainResult(
 function normalizePriorityControlCompletionOutcome(
     source,
     pending,
-    sourceTick
+    sourceTick,
+    isValidRosterTowerTarget
 ) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('BodyControlProgram priority outcome 객체가 필요합니다.');
@@ -763,7 +764,7 @@ function normalizePriorityControlCompletionOutcome(
         expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
         expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
             | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
-        expectedTargetHandle = pending.payload.towerTargetHandle;
+        expectedTargetHandle = selectedTargetHandle;
     } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
         outcome = 'source-invalid';
     } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
@@ -773,10 +774,14 @@ function normalizePriorityControlCompletionOutcome(
             `지원하지 않는 BodyControlProgram priority result입니다: ${result}`
         );
     }
+    const targetMatches = outcome === 'tower'
+        ? selectedTargetHandle !== null
+            && isValidRosterTowerTarget(selectedTargetHandle)
+        : sameOptionalHandle(selectedTargetHandle, expectedTargetHandle);
     if (source.outcome !== outcome
         || selectedTargetKind !== expectedKind
         || stateFlags !== expectedStateFlags
-        || !sameOptionalHandle(selectedTargetHandle, expectedTargetHandle)) {
+        || !targetMatches) {
         throw new RangeError(
             'BodyControlProgram priority result/kind/state/target 조합이 올바르지 않습니다.'
         );
@@ -801,6 +806,28 @@ function normalizePriorityControlCompletionOutcome(
         selectedTargetHandle,
         stateFlags
     });
+}
+
+function isCanonicalLivingTowerTarget(registry, backend, handle) {
+    if (!handle || !registry.has(handle) || !backend.hasBody(handle)) {
+        return false;
+    }
+    const view = registry.copyEntityView(handle, {});
+    return view?.entityId === handle.entityId
+        && view?.incarnation === handle.incarnation
+        && view?.kindId === GPU_TOWER_WORLD_KIND_ID
+        && view?.definitionId === GPU_TOWER_DEFINITION_ID
+        && view?.metadata?.definitionId === GPU_TOWER_DEFINITION_ID
+        && view?.metadata?.teamId === GAMEPLAY_TEAM_ID.PLAYER;
+}
+
+function hasAuthoritativeTowerRoster(backend) {
+    const status = backend.getTowerGroupRuntimeStatus?.();
+    return status?.state === 'ready'
+        && Number.isSafeInteger(status.groupRevision)
+        && status.groupRevision > 0
+        && Number.isSafeInteger(status.rosterFingerprint)
+        && status.rosterFingerprint > 0;
 }
 
 function requireUint32Like(value, label) {
@@ -1525,7 +1552,17 @@ export class GpuFixedCommandOwner {
                     const result = normalizePriorityControlCompletionOutcome(
                         outcome,
                         pending,
-                        sourceTick
+                        sourceTick,
+                        (handle) => hasAuthoritativeTowerRoster(this.backend)
+                            ? isCanonicalLivingTowerTarget(
+                                this.registry,
+                                this.backend,
+                                handle
+                            )
+                            : sameOptionalHandle(
+                                handle,
+                                pending.payload.towerTargetHandle
+                            )
                     );
                     preparedControlKeys.add(bindingKey);
                     preparedControlResults.push(Object.freeze({
@@ -1593,6 +1630,12 @@ export class GpuFixedCommandOwner {
                     const selectedTargetSpawn = isSelectedTargetSpawnCommand(pending);
                     const pendingTargetHandle = pending?.payload?.targetHandle ?? null;
                     const outcomeTargetHandle = outcome?.targetHandle ?? null;
+                    const rosterTowerQuery = !selectedTargetSpawn
+                        && pending?.payload?.modeFlags
+                            === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
+                        && (pending?.payload?.requestFlags
+                            & GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL)
+                            !== 0;
                     if (!pending
                         || preparedDestinationKeys.has(key)
                         || batch.sourceTick !== pending.targetFixedTick
@@ -1614,14 +1657,28 @@ export class GpuFixedCommandOwner {
                                 : selectedTargetKind === 'tower'
                                     ? pending.payload.towerTargetHandle
                                     : null;
-                            if (!expectedTargetHandle
+                            const targetAccepted = selectedTargetKind === 'tower'
+                                ? hasAuthoritativeTowerRoster(this.backend)
+                                    ? isCanonicalLivingTowerTarget(
+                                        this.registry,
+                                        this.backend,
+                                        outcomeTargetHandle
+                                    )
+                                    : expectedTargetHandle
+                                        && outcomeTargetHandle
+                                        && handleKey(outcomeTargetHandle)
+                                            === handleKey(expectedTargetHandle)
+                                : expectedTargetHandle
+                                    && outcomeTargetHandle
+                                    && handleKey(outcomeTargetHandle)
+                                        === handleKey(expectedTargetHandle);
+                            if (!targetAccepted
                                 || !outcomeTargetHandle
-                                || handleKey(outcomeTargetHandle)
-                                    !== handleKey(expectedTargetHandle)) {
+                            ) {
                                 protocolFailure = Object.freeze({
                                     stage: 'spawn-program-completion',
                                     code: 'selected-target-contract',
-                                    message: 'resolved selected target이 authored exact candidate와 다릅니다.'
+                                    message: 'resolved selected target이 Core exact/Tower roster 계약과 다릅니다.'
                                 });
                                 break;
                             }
@@ -1646,15 +1703,40 @@ export class GpuFixedCommandOwner {
                             });
                             break;
                         }
-                    } else if (((pendingTargetHandle === null)
+                    } else if (!rosterTowerQuery
+                        && (((pendingTargetHandle === null)
                             !== (outcomeTargetHandle === null))
                         || (pendingTargetHandle !== null
                             && handleKey(outcomeTargetHandle)
-                                !== handleKey(pendingTargetHandle))) {
+                                !== handleKey(pendingTargetHandle)))) {
                         protocolFailure = Object.freeze({
                             stage: 'spawn-program-completion',
                             code: 'target-contract',
                             message: 'SpawnProgram target outcome이 ingress와 다릅니다.'
+                        });
+                        break;
+                    }
+                    if (rosterTowerQuery
+                        && outcomeTargetHandle !== null
+                        && !isCanonicalLivingTowerTarget(
+                            this.registry,
+                            this.backend,
+                            outcomeTargetHandle
+                        )) {
+                        protocolFailure = Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'tower-roster-target-contract',
+                            message: 'Archer GPU roster target이 living PLAYER Tower가 아닙니다.'
+                        });
+                        break;
+                    }
+                    if (rosterTowerQuery
+                        && outcome.reason === 'resolved'
+                        && outcomeTargetHandle === null) {
+                        protocolFailure = Object.freeze({
+                            stage: 'spawn-program-completion',
+                            code: 'tower-roster-target-contract',
+                            message: 'resolved Archer projectile에 roster target identity가 없습니다.'
                         });
                         break;
                     }
@@ -1722,7 +1804,16 @@ export class GpuFixedCommandOwner {
                         key,
                         outcome,
                         pending,
-                        activationEvidence
+                        activationEvidence,
+                        activationIntent: rosterTowerQuery
+                                && outcome.reason === 'resolved'
+                            ? Object.freeze({
+                                ...pending.payload.destinationSpawn,
+                                targetEntityId: outcomeTargetHandle.entityId,
+                                targetIncarnation: outcomeTargetHandle.incarnation
+                            })
+                            : pending.payload.destinationSpawn,
+                        rosterTowerQuery
                     });
                 }
                 if (protocolFailure) {
@@ -1742,7 +1833,7 @@ export class GpuFixedCommandOwner {
                     prepared.activationMetadata = prepared.outcome.reason
                             === 'resolved'
                         ? preflightGpuRegistryActivationMetadata(
-                            prepared.pending.payload.destinationSpawn,
+                            prepared.activationIntent,
                             prepared.activationEvidence
                         )
                         : null;
@@ -1790,7 +1881,8 @@ export class GpuFixedCommandOwner {
                 outcome,
                 pending,
                 activationEvidence,
-                activationMetadata
+                activationMetadata,
+                rosterTowerQuery
             } of preparedOutcomes) {
                 const applied = outcome.reason === 'resolved'
                     ? this.registry.activateReserved(
@@ -1833,6 +1925,8 @@ export class GpuFixedCommandOwner {
                             activationEvidence.selectedTargetKind,
                         targetHandle:
                             activationEvidence.selectedTargetHandle
+                    } : rosterTowerQuery && outcome.targetHandle ? {
+                        targetHandle: outcome.targetHandle
                     } : {})
                 }));
             }
@@ -1977,7 +2071,11 @@ export class GpuFixedCommandOwner {
                 continue;
             }
             if (command.type === 'source-relative-spawn'
-                && command.payload.targetHandle) {
+                && command.payload.targetHandle
+                && (((command.payload.requestFlags
+                    & GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL)
+                    === 0)
+                    || !hasAuthoritativeTowerRoster(this.backend))) {
                 const targetDisposition = this.#getExactActiveDisposition(
                     command.payload.targetHandle
                 );

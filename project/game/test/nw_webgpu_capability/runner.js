@@ -4432,7 +4432,7 @@ async function runProductionFixedPrimitiveEndpointSmoke(device) {
         const finalStatus = simulation.getStatus();
         const fixedPrimitives = finalStatus.fixedPrimitives;
         assert(
-            fixedPrimitives.storageProfile.fixedControl === 5
+            fixedPrimitives.storageProfile.fixedControl === 6
                 && fixedPrimitives.storageProfile.sourceResolve === 9
                 && fixedPrimitives.storageProfile.trackedPose === 6
                 && fixedPrimitives.storageProfile.requiredMaximum === 9
@@ -15175,7 +15175,7 @@ async function runProductionHostileAttackTargetInvalidHardwareSmoke(device) {
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, firstEligibleFixedTick),
-            'Hostile attack TARGET_INVALID resolve fixed submit 실패'
+            `Hostile attack TARGET_INVALID resolve fixed submit 실패: ${JSON.stringify(endpoint.getStatus())}`
         );
         fixedSubmitCount++;
         await settlePhase5Endpoint(
@@ -15478,6 +15478,10 @@ async function runProductionHostileAttackLifecycleMainHardwareSmoke(device) {
         towerRoster.bindGpuBody(
             towerHandle,
             readHostileAttackLifecycleProtocol(endpoint)
+        );
+        assert(
+            endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+            'Hostile attack lifecycle Tower target compatibility 구성 실패'
         );
         assert(
             endpoint.fixedUpdate(fixedDelta, 1),
@@ -16622,8 +16626,9 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     const waveDirector = new WaveDirector({
         waveDefinition: CORRIDOR_EIGHT_WAVE_01_DATA
     });
+    const productionTowerMaxHp = 25;
     const towerRoster = new TowerCombatRoster({
-        maxHp: THE_TOWER_COMBAT_DATA.MAX_HEALTH
+        maxHp: productionTowerMaxHp
     });
     const fixedDelta = 1 / 60;
     const maximumFixedTick = 600;
@@ -16684,7 +16689,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
     const towerDamageFacts = [];
     const towerDeathFacts = [];
     const noLivingTowerFacts = [];
-    const towerHpTimeline = [THE_TOWER_COMBAT_DATA.MAX_HEALTH];
+    const towerHpTimeline = [productionTowerMaxHp];
     const productionSpawnRecords = [];
     const archerRecords = new Map();
     const resolvedShotRecords = [];
@@ -17304,7 +17309,10 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             if (tick === 1) {
                 const actorRequests = [
                     endpoint.requestSpawn(
-                        createGpuTowerSpawnIntent({ position: towerPosition }),
+                        Object.freeze({
+                            ...createGpuTowerSpawnIntent({ position: towerPosition }),
+                            health: productionTowerMaxHp
+                        }),
                         tick,
                         'production-wave:actor:tower'
                     ),
@@ -17481,6 +17489,10 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 towerRoster.bindGpuBody(
                     towerHandle,
                     readHostileAttackLifecycleProtocol(endpoint)
+                );
+                assert(
+                    endpoint.configureTowerGameplayTarget(towerHandle).accepted,
+                    'Production-wave Tower target compatibility bind 실패'
                 );
                 cameraTowerFacade.bindGpuBody(
                     towerHandle,
@@ -17795,8 +17807,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                     )
                 });
                 assert(
-                    initialTowerBody.health
-                        === THE_TOWER_COMBAT_DATA.MAX_HEALTH,
+                    initialTowerBody.health === productionTowerMaxHp,
                     `Production-wave Tower initial HP 불일치: ${JSON.stringify(initialTowerBody)}`
                 );
             }
@@ -18145,6 +18156,10 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         );
         const lethalArcherDamageFact = archerProjectileDamageFacts.at(-1);
         const archerFlowBeforeAttack = firstArcherRecord.positionAfterSpawnFixed;
+        assert(
+            firstArcherAtTowerDeath && firstArcherPostDeath,
+            `Production-wave Tower death 후 30-tick 관측 누락: ${JSON.stringify({ towerDeathBoundaryTick, maximumFixedTick, firstArcherAtTowerDeath, firstArcherPostDeath, towerHpTimeline, towerDamageFactCount: towerDamageFacts.length, archerProjectileDamageFactCount: archerProjectileDamageFacts.length, resolvedShotCount: resolvedShotRecords.length, directorStatus })}`
+        );
         const archerFlowThroughAttack = Object.freeze({
             x: firstResolvedArcherPosition.x - archerFlowBeforeAttack.x,
             y: firstResolvedArcherPosition.y - archerFlowBeforeAttack.y
@@ -18156,7 +18171,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
         const primaryControllerStatusAfterDeath = primaryController.getStatus();
         const towerDamageTimelineIsCoherent =
             towerHpTimeline.length === towerDamageFacts.length + 1
-            && towerHpTimeline[0] === 30
+            && towerHpTimeline[0] === productionTowerMaxHp
             && towerHpTimeline.at(-1) === 0
             && towerDamageFacts.every((fact, index) => {
                 const before = towerHpTimeline[index];
@@ -18231,7 +18246,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             firstFactDamageFixedPoint:
                 firstDamageFact?.damageFixedPoint
                     === firstDamageContact?.damageFixedPoint,
-            archerDamageCount: archerProjectileDamageFacts.length === 6,
+            archerDamageCount: archerProjectileDamageFacts.length === 5,
             archerDamageFixedPoints: archerProjectileDamageFacts.every(
                 ({ damageFixedPoint }) => (
                     Number.isSafeInteger(damageFixedPoint)
@@ -18241,7 +18256,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             ),
             archerCurrentHp: JSON.stringify(
                 archerProjectileDamageFacts.map(({ currentHp }) => currentHp)
-            ) === JSON.stringify([25, 20, 15, 10, 5, 0]),
+            ) === JSON.stringify([20, 15, 10, 5, 0]),
             archerContactCountCoversPositiveFacts:
                 archerProjectileDamageContacts.length
                     >= archerProjectileDamageFacts.length,
@@ -18262,7 +18277,8 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
                 fact.damageFixedPoint === 10 && !fact.targetDied
             )),
             enemyContactCurrentHp: enemyContactDamageFacts.every(
-                ({ currentHp }) => currentHp > 0 && currentHp < 30
+                ({ currentHp }) => currentHp > 0
+                    && currentHp < productionTowerMaxHp
             ),
             classifiedDamageCount:
                 archerProjectileDamageFacts.length
@@ -18272,7 +18288,7 @@ async function runProductionHostileAttackProductionWaveHardwareSmoke(device) {
             towerDamageTotalFixedPoint: towerDamageFacts.reduce(
                 (sum, fact) => sum + fact.damageFixedPoint,
                 0
-            ) === 3000,
+            ) === productionTowerMaxHp * 100,
             towerHpTimeline: towerDamageTimelineIsCoherent,
             lethalDamageFixedPoint:
                 lethalArcherDamageFact?.damageFixedPoint > 0

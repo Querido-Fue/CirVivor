@@ -54,6 +54,9 @@ import {
     GpuTowerCreationRuntime
 } from '../../physics/gpu/gpu_tower_creation_runtime.js';
 import {
+    GpuTowerTargetQueryRuntime
+} from '../../physics/gpu/gpu_tower_target_query_runtime.js';
+import {
     GPU_TOWER_CREATION_RECORD_KIND
 } from '../../physics/gpu/gpu_tower_creation_abi.js';
 import {
@@ -255,6 +258,9 @@ export class EnemySimulationBackend {
             bodyCapacity: this.capacity,
             recordCapacity: this.towerGroupMemberCapacity,
             readbackSlotCount: this.towerCreationReadbackSlotCount
+        });
+        this.towerTargetQueryRuntime = new GpuTowerTargetQueryRuntime({
+            capacity: this.capacity
         });
         this.towerCreationBodyPreleases = new Map();
         this.towerCreationPreleaseHighWater = 0;
@@ -2383,6 +2389,9 @@ export class EnemySimulationBackend {
             return false;
         }
         const hadActiveBodies = this.simulation.getActiveBodyCount() > 0;
+        // 모든 적 행동이 같은 TowerGroup query 결과를 소비하므로, actor payload나
+        // group command가 없는 저수준 endpoint에서도 fixed pass 전에 runtime을 붙인다.
+        if (hadActiveBodies) this.#ensureTowerGroupRuntime();
         const payloadSubmission = Number.isSafeInteger(Number(sourceTick))
             && Number(sourceTick) >= 0
             ? this.submitActorPayloadMaterializations(sourceTick)
@@ -2475,7 +2484,8 @@ export class EnemySimulationBackend {
                 actorPayloadMaterializations:
                     this.getActorPayloadMaterializationStatus(),
                 towerGroup: this.towerGroupRuntime.getStatus(),
-                towerCreation: this.getTowerCreationRuntimeStatus()
+                towerCreation: this.getTowerCreationRuntimeStatus(),
+                towerTargetQuery: this.towerTargetQueryRuntime.getStatus()
             } : {}),
             gpu
         });
@@ -2539,6 +2549,7 @@ export class EnemySimulationBackend {
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
             || this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
+            || this.towerTargetQueryRuntime.requiresRecovery()
             || this.towerCreationFailure !== null
             || this.actorPayloadPreleaseFailure !== null;
     }
@@ -2555,6 +2566,8 @@ export class EnemySimulationBackend {
         this.abilitySubjectSnapshotRuntime.destroy();
         this.simulation?.attachTowerCreationRuntime?.(null);
         this.towerCreationRuntime.destroy();
+        this.simulation?.attachTowerTargetQueryRuntime?.(null);
+        this.towerTargetQueryRuntime.destroy();
         this.simulation?.attachTowerGroupControlRuntime?.(null);
         this.towerGroupRuntime.destroy();
         this.simulation?.destroy();
@@ -2571,6 +2584,7 @@ export class EnemySimulationBackend {
     #syncState() {
         if (this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
+            || this.towerTargetQueryRuntime.requiresRecovery()
             || this.towerCreationFailure !== null) {
             this.state = 'gpu-requires-rebuild';
             return;
@@ -2609,6 +2623,7 @@ export class EnemySimulationBackend {
     #ensureTowerGroupRuntime() {
         if (this.destroyed || !this.simulation) return false;
         if (!this.simulation.device || !this.simulation.buffers) {
+            if (typeof this.simulation.init !== 'function') return false;
             this.simulation.init();
         }
         const simulation = this.simulation;
@@ -2637,6 +2652,52 @@ export class EnemySimulationBackend {
             }
         }
         simulation.attachTowerGroupControlRuntime(this.towerGroupRuntime);
+        return this.#ensureTowerTargetQueryRuntime(simulation, protocol);
+    }
+
+    #ensureTowerTargetQueryRuntime(simulation, protocol) {
+        const groupResources = this.towerGroupRuntime.getCreationResources?.();
+        if (!groupResources?.members
+            || !groupResources?.roster
+            || !simulation?.device
+            || !simulation?.buffers?.towerTargetQueryResults
+            || !simulation.buffers.towerGameplayTargetConfig
+            || !simulation.buffers.spawnProgram) {
+            return false;
+        }
+        const resources = {
+            counts: simulation.buffers.counts,
+            physics: simulation.buffers.physics,
+            simulation: simulation.buffers.simulation,
+            enemyBehaviorStates: simulation.buffers.enemyBehaviorStates,
+            members: groupResources.members,
+            roster: groupResources.roster,
+            results: simulation.buffers.towerTargetQueryResults,
+            compatibilityTarget: simulation.buffers.towerGameplayTargetConfig,
+            spawnProgram: simulation.buffers.spawnProgram
+        };
+        const status = this.towerTargetQueryRuntime.getStatus();
+        const alreadyCurrent = status.state === 'ready'
+            && this.towerTargetQueryRuntime.device === simulation.device
+            && status.sessionGeneration === protocol.sessionGeneration
+            && status.deviceGeneration === protocol.deviceGeneration
+            && status.authoritativeEpoch === protocol.authoritativeEpoch
+            && Object.entries(resources).every(
+                ([key, buffer]) => this.towerTargetQueryRuntime.resources?.[key]
+                    === buffer
+            );
+        if (!alreadyCurrent) {
+            try {
+                this.towerTargetQueryRuntime.initialize(
+                    simulation.device,
+                    resources,
+                    protocol
+                );
+            } catch {
+                return false;
+            }
+        }
+        simulation.attachTowerTargetQueryRuntime(this.towerTargetQueryRuntime);
         return true;
     }
 
@@ -2730,14 +2791,18 @@ export class EnemySimulationBackend {
 
     #ensureActorPayloadMaterializationRuntime(snapshotBinding) {
         if (this.destroyed || !this.simulation) return false;
-        if (!this.#ensureAbilitySubjectSnapshotRuntime()) return false;
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()
+            || !this.#ensureTowerGroupRuntime()) return false;
         const snapshotBuffer = snapshotBinding?.buffer
             ?? this.abilitySubjectSnapshotRuntime.buffers?.output;
         const simulation = this.simulation;
+        const groupResources = this.towerGroupRuntime.getCreationResources?.();
         if (!snapshotBuffer
             || !simulation.device
             || !simulation.buffers
-            || !this.abilitySubjectSnapshotRuntime.buffers?.metadata) {
+            || !this.abilitySubjectSnapshotRuntime.buffers?.metadata
+            || !groupResources?.members
+            || !groupResources?.roster) {
             return false;
         }
         try {
@@ -2753,7 +2818,9 @@ export class EnemySimulationBackend {
                         simulation.buffers.routeRuntimeStates,
                     enemyBehaviorStates:
                         simulation.buffers.enemyBehaviorStates,
-                    sdf: simulation.buffers.sdf
+                    sdf: simulation.buffers.sdf,
+                    towerMembers: groupResources.members,
+                    towerRoster: groupResources.roster
                 },
                 {
                     deviceGeneration: simulation.deviceGeneration,

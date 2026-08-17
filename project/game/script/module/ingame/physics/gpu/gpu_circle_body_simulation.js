@@ -71,6 +71,9 @@ import {
     GPU_COLLISION_RENDER_WGSL
 } from './gpu_collision_shaders.js';
 import {
+    GPU_TOWER_TARGET_QUERY_ABI
+} from './gpu_tower_target_query_abi.js';
+import {
     GPU_EFFECT_EVENT_TYPE,
     GPU_EFFECT_PULSE_PROGRAM_FLAG,
     GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
@@ -1496,6 +1499,7 @@ export class GpuCircleBodySimulation {
             : null;
         this.towerGroupControlRuntime = null;
         this.towerCreationRuntime = null;
+        this.towerTargetQueryRuntime = null;
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
         this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
             this.capacity
@@ -2786,6 +2790,17 @@ export class GpuCircleBodySimulation {
             throw new TypeError('Tower creation runtime 계약이 올바르지 않습니다.');
         }
         this.towerCreationRuntime = runtime;
+        return true;
+    }
+
+    /** Source-local Tower roster query를 main fixed pass에 결합하거나 해제합니다. */
+    attachTowerTargetQueryRuntime(runtime = null) {
+        if (runtime !== null
+            && (typeof runtime.encode !== 'function'
+                || typeof runtime.getStatus !== 'function')) {
+            throw new TypeError('Tower target query runtime 계약이 올바르지 않습니다.');
+        }
+        this.towerTargetQueryRuntime = runtime;
         return true;
     }
 
@@ -7758,6 +7773,10 @@ export class GpuCircleBodySimulation {
                 pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
             }
 
+            if (!terminalFinalSubmit && this.towerTargetQueryRuntime) {
+                this.towerTargetQueryRuntime.encode(pass, resolvedSourceTick);
+            }
+
             if (stagedLegacySpawnCount > 0) {
                 this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.SOURCE_RESOLVE);
                 pass.setPipeline(
@@ -9625,6 +9644,14 @@ export class GpuCircleBodySimulation {
                     recordByteSize: TOWER_GAMEPLAY_TARGET_CONFIG_BYTE_SIZE,
                     storageBuffersPerStage: 8
                 }),
+                towerTargetQuery: Object.freeze({
+                    resultStride: GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE,
+                    resultByteSize:
+                        GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE * this.capacity,
+                    sourceLocal: true,
+                    noCpuRosterOrPoseReadback: true,
+                    storageBuffersPerStage: 9
+                }),
                 trackedPose: Object.freeze({
                     configured: Boolean(this.trackedPoseHandle),
                     ringSlotCount: TRACKED_POSE_READBACK_SLOT_COUNT,
@@ -9688,7 +9715,7 @@ export class GpuCircleBodySimulation {
                     worldContacts: 7,
                     contactHandling: 9,
                     maximumDamageWindow: 9,
-                    fixedControl: 5,
+                    fixedControl: 6,
                     sourceResolve: 9,
                     enemyBehavior: 9,
                     directionalDefenseClassifier: 8,
@@ -9744,6 +9771,8 @@ export class GpuCircleBodySimulation {
                 ?? Object.freeze({ state: 'disabled' }),
             towerCreation: this.towerCreationRuntime?.getStatus?.()
                 ?? Object.freeze({ state: 'disabled' }),
+            towerTargetQuery: this.towerTargetQueryRuntime?.getStatus?.()
+                ?? Object.freeze({ state: 'disabled' }),
             presentation: Object.freeze({ ...this.presentationClock.getClockState({}) })
         });
     }
@@ -9792,6 +9821,7 @@ export class GpuCircleBodySimulation {
         this.#releaseGpuResources();
         this.towerGroupControlRuntime = null;
         this.towerCreationRuntime = null;
+        this.towerTargetQueryRuntime = null;
         this.activeBodyCount = 0;
         this.projectileBodyCount = 0;
         this.hasGpuAuthoritativeState = false;
@@ -10633,6 +10663,10 @@ export class GpuCircleBodySimulation {
                     const isSelectedTarget = expected.modeFlags
                         === GPU_SPAWN_PROGRAM_MODE
                             .SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+                    const usesTowerRosterQuery = isTargetEntity
+                        && (expected.requestFlags
+                            & GPU_SPAWN_PROGRAM_REQUEST_FLAGS
+                                .TOWER_DAMAGE_CHANNEL) !== 0;
                     let expectedTargetSlot = isTargetEntity
                         ? expected.targetSlot
                         : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
@@ -10653,7 +10687,10 @@ export class GpuCircleBodySimulation {
                         } else if (record.selectedTargetKind
                             === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER) {
                             selectedTargetKind = 'tower';
-                            selectedTargetHandle = expected.towerTargetHandle;
+                            selectedTargetHandle = Object.freeze({
+                                entityId: record.targetEntityId,
+                                incarnation: record.targetIncarnation
+                            });
                         }
                         if (!selectedTargetHandle) {
                             throw new RangeError(
@@ -10662,9 +10699,30 @@ export class GpuCircleBodySimulation {
                         }
                         expectedTargetSlot = selectedTargetKind === 'core'
                             ? expected.coreTargetSlot
-                            : expected.towerTargetSlot;
+                            : record.targetSlot;
                         expectedTargetEntityId = selectedTargetHandle.entityId;
                         expectedTargetIncarnation = selectedTargetHandle.incarnation;
+                    }
+                    const recordTargetIsInvalid = record.targetSlot
+                            === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                        && record.targetEntityId
+                            === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                        && record.targetIncarnation
+                            === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    const recordTargetIsExact = record.targetSlot < this.capacity
+                        && record.targetEntityId > 0
+                        && record.targetEntityId
+                            !== GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                        && record.targetIncarnation > 0
+                        && record.targetIncarnation
+                            !== GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
+                    const rosterQueryTargetShapeValid = !usesTowerRosterQuery
+                        || recordTargetIsInvalid
+                        || recordTargetIsExact;
+                    if (usesTowerRosterQuery) {
+                        expectedTargetSlot = record.targetSlot;
+                        expectedTargetEntityId = record.targetEntityId;
+                        expectedTargetIncarnation = record.targetIncarnation;
                     }
                     const resultIsAccepted = record.result
                             === GPU_SPAWN_PROGRAM_RESULT.RESOLVED
@@ -10689,6 +10747,7 @@ export class GpuCircleBodySimulation {
                         || record.targetSlot !== expectedTargetSlot
                         || record.targetEntityId !== expectedTargetEntityId
                         || record.targetIncarnation !== expectedTargetIncarnation
+                        || !rosterQueryTargetShapeValid
                         || record.modeFlags !== expected.modeFlags
                         || record.sourceTick !== queueEntry.sourceTick
                         || (isSelectedTarget
@@ -10732,7 +10791,14 @@ export class GpuCircleBodySimulation {
                         sourceHandle: expected.sourceHandle,
                         ...((isTargetEntity || isSelectedTarget)
                             ? { targetHandle: isTargetEntity
-                                ? expected.targetHandle
+                                ? usesTowerRosterQuery
+                                    ? recordTargetIsExact
+                                        ? Object.freeze({
+                                            entityId: record.targetEntityId,
+                                            incarnation: record.targetIncarnation
+                                        })
+                                        : null
+                                    : expected.targetHandle
                                 : selectedTargetHandle }
                             : {}),
                         ...(isSelectedTarget ? { selectedTargetKind } : {}),
@@ -13835,7 +13901,21 @@ export class GpuCircleBodySimulation {
                             outcome = 'tower';
                             selectedTargetKind
                                 = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
-                            selectedTargetHandle = expected.towerTargetHandle;
+                            if (record.selectedTargetSlot >= this.capacity
+                                || record.selectedTargetEntityId <= 0
+                                || record.selectedTargetEntityId
+                                    === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT
+                                || record.selectedTargetIncarnation <= 0
+                                || record.selectedTargetIncarnation
+                                    === GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT) {
+                                throw new RangeError(
+                                    `priority Tower roster result identity가 올바르지 않습니다: index=${index}`
+                                );
+                            }
+                            selectedTargetHandle = Object.freeze({
+                                entityId: record.selectedTargetEntityId,
+                                incarnation: record.selectedTargetIncarnation
+                            });
                             expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
                                 | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
                         } else if (record.result
@@ -13854,7 +13934,7 @@ export class GpuCircleBodySimulation {
                             ? expected.coreTargetSlot
                             : selectedTargetKind
                                 === GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER
-                                ? expected.towerTargetSlot
+                                ? record.selectedTargetSlot
                                 : GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
                         const expectedTargetEntityId = selectedTargetHandle?.entityId
                             ?? GPU_FIXED_PRIMITIVE_IDENTITY.INVALID_COMPONENT;
@@ -14623,6 +14703,12 @@ export class GpuCircleBodySimulation {
                 TOWER_GAMEPLAY_TARGET_CONFIG_BYTE_SIZE,
                 usage.STORAGE | usage.COPY_DST
             ),
+            towerTargetQueryResults: createBuffer(
+                device,
+                'cirvivor-gpu-circle-tower-target-query-results',
+                GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE * this.capacity,
+                usage.STORAGE | usage.COPY_SRC | usage.COPY_DST
+            ),
             gridCounts: createBuffer(
                 device,
                 'cirvivor-gpu-circle-grid-counts',
@@ -15077,7 +15163,8 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(1),
                 storageLayoutEntry(2),
                 storageLayoutEntry(5),
-                storageLayoutEntry(6)
+                storageLayoutEntry(6),
+                storageLayoutEntry(13, 'read-only-storage')
             ]
         });
         const computeSourceResolveLayout = device.createBindGroupLayout({
@@ -16064,7 +16151,7 @@ export class GpuCircleBodySimulation {
                 { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) },
                 {
                     binding: 13,
-                    resource: resource(this.buffers.towerGameplayTargetConfig)
+                    resource: resource(this.buffers.towerTargetQueryResults)
                 }
             ]
         });
@@ -16079,7 +16166,7 @@ export class GpuCircleBodySimulation {
                 { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) },
                 {
                     binding: 13,
-                    resource: resource(this.buffers.towerGameplayTargetConfig)
+                    resource: resource(this.buffers.towerTargetQueryResults)
                 }
             ]
         });
@@ -16184,7 +16271,11 @@ export class GpuCircleBodySimulation {
                 { binding: 1, resource: resource(this.buffers.physics) },
                 { binding: 2, resource: resource(this.buffers.simulation) },
                 { binding: 5, resource: resource(this.buffers.bodyControlStates) },
-                { binding: 6, resource: resource(this.buffers.bodyControlProgram) }
+                { binding: 6, resource: resource(this.buffers.bodyControlProgram) },
+                {
+                    binding: 13,
+                    resource: resource(this.buffers.towerTargetQueryResults)
+                }
             ]
         });
         const computeSourceResolve = device.createBindGroup({
@@ -17018,6 +17109,7 @@ export class GpuCircleBodySimulation {
         this.transientVfxRuntime?.retire();
         this.towerCreationRuntime?.retire?.('simulation-resource-retired');
         this.towerGroupControlRuntime?.retire?.('simulation-resource-retired');
+        this.towerTargetQueryRuntime?.retire?.('simulation-resource-retired');
         this.overflowReadbackLease++;
         this.#cancelEventReadbacks();
         this.spawnProgramReadbackLease++;

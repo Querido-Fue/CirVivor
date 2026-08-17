@@ -2857,7 +2857,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'maximum-damage-window': 9,
             'core-damage-request': 9,
             'direct-core-damage-request': 8,
-            'fixed-control': 5,
+            'fixed-control': 6,
             'source-resolve': 9,
             'enemy-behavior': 9,
             'directional-defense-classifier': 8,

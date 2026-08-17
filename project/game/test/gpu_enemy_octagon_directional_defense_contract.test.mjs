@@ -113,7 +113,11 @@ test('orbit pass는 route-flow SEEK→radius capture→bounded angular settle와
     assert.match(orbitPass,
         /state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK[\s\S]*enter_enemy_core_fallback\(body_id\)[\s\S]*return;/);
     assert.match(orbitPass,
-        /state != ENEMY_BEHAVIOR_STATE_SEEK_TOWER[\s\S]*state != ENEMY_BEHAVIOR_STATE_ORBIT_TOWER[\s\S]*!tower_gameplay_target_is_valid\(\)[\s\S]*enter_enemy_core_fallback\(body_id\)/);
+        /state != ENEMY_BEHAVIOR_STATE_SEEK_TOWER[\s\S]*state != ENEMY_BEHAVIOR_STATE_ORBIT_TOWER[\s\S]*!tower_target_query_is_valid\(body_id\)[\s\S]*enter_enemy_core_fallback\(body_id\)/);
+    assert.match(orbitPass,
+        /state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK[\s\S]*!tower_target_query_is_valid\(body_id\)[\s\S]*!tower_target_query_roster_changed\(body_id\)[\s\S]*enter_enemy_core_fallback\(body_id\)/);
+    assert.match(orbitPass,
+        /!behavior_target_matches_gameplay_tower\(body_id\)[\s\S]*!tower_target_query_roster_changed\(body_id\)[\s\S]*ENEMY_BEHAVIOR_STATE_SEEK_TOWER/);
     assert.match(orbitPass,
         /behavior_target_matches_gameplay_tower\(body_id\)/);
     assert.match(orbitPass,

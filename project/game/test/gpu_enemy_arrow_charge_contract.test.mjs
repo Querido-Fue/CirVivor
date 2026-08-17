@@ -245,7 +245,7 @@ test('Arrow SDF 가시성은 route ownership/WINDUP/terrain CHARGE 회복을 분
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /if \(!tower_gameplay_target_is_valid\(\)\) \{[\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?enter_enemy_core_fallback\(body_id\)/u
+        /if \(!tower_target_query_is_valid\(body_id\)\) \{[\s\S]*?physics\.values\[body_id\]\.velocity = vec2f\(0\.0\);[\s\S]*?enter_enemy_core_fallback\(body_id\)/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
@@ -442,13 +442,13 @@ test('Arrow 본체 반경은 WINDUP/effect tag와 무관하고 telegraph는 colo
     );
 });
 
-test('exact gameplay Tower config는 tracked pose와 독립이고 single-submit pass order를 유지한다', () => {
+test('source-local Tower query는 tracked pose와 독립이고 single-submit pass order를 유지한다', () => {
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /tower_gameplay_target\.target_slot[\s\S]*?tower_gameplay_target\.entity_id[\s\S]*?tower_gameplay_target\.incarnation[\s\S]*?body_id_is_alive[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?GAMEPLAY_TEAM_PLAYER/u
+        /fn tower_target_query_is_valid\(source_body_id: u32\)[\s\S]*?query\.source_entity_id[\s\S]*?simulations\.values\[source_body_id\]\.entity_id[\s\S]*?query\.source_incarnation[\s\S]*?simulations\.values\[source_body_id\]\.incarnation[\s\S]*?query\.target_slot[\s\S]*?query\.target_entity_id[\s\S]*?query\.target_incarnation[\s\S]*?body_id_is_alive[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?GAMEPLAY_TEAM_PLAYER/u
     );
     const arrowGameplayStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
-        'fn tower_gameplay_target_is_valid()'
+        'fn tower_target_query_is_valid(source_body_id: u32)'
     );
     const trackedPackStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
         'fn pack_tracked_pose()'

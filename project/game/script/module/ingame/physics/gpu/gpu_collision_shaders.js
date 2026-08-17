@@ -48,6 +48,9 @@ import {
     GPU_EFFECT_SUMMARY_FLAG
 } from './gpu_effect_runtime_abi.js';
 import {
+    GPU_TOWER_TARGET_QUERY_FLAG
+} from './gpu_tower_target_query_abi.js';
+import {
     GPU_FORMATION_BODY_STATE_FLAG
 } from './gpu_formation_runtime_abi.js';
 import {
@@ -254,6 +257,9 @@ const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVI
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.DIRECTIONAL_DEFENSE_ACTIVE}u;
+const TOWER_TARGET_QUERY_FLAG_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.VALID}u;
+const TOWER_TARGET_QUERY_FLAG_SOURCE_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.SOURCE_VALID}u;
+const TOWER_TARGET_QUERY_FLAG_ROSTER_CHANGED: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.ROSTER_CHANGED}u;
 // Arrow program-local latch. It intentionally stays out of the public behavior
 // flag enum/host input: the 80-byte side-plane layout is unchanged and this bit
 // only distinguishes the first direct->route handoff from later route ticks.
@@ -619,12 +625,20 @@ struct TrackedPoseConfig {
     enabled: u32,
 }
 
-struct TowerGameplayTargetConfig {
+struct TowerTargetQueryResult {
+    source_entity_id: u32,
+    source_incarnation: u32,
     target_slot: u32,
-    entity_id: u32,
-    incarnation: u32,
-    enabled: u32,
+    target_entity_id: u32,
+    target_incarnation: u32,
+    share_units: u32,
+    group_revision: u32,
+    roster_fingerprint: u32,
+    distance_squared: f32,
+    flags: u32,
 }
+
+struct TowerTargetQueryResultBuffer { values: array<TowerTargetQueryResult> }
 
 struct TrackedPoseRecord {
     position: vec2f,
@@ -689,7 +703,7 @@ struct SimulationParams {
 @group(0) @binding(10) var<storage, read_write> combat_states: CombatStateBuffer;
 @group(0) @binding(11) var<storage, read_write> enemy_behavior_states: EnemyBehaviorStateBuffer;
 @group(0) @binding(12) var<storage, read_write> effect_summaries: EffectSummaryBuffer;
-@group(0) @binding(13) var<storage, read> tower_gameplay_target: TowerGameplayTargetConfig;
+@group(0) @binding(13) var<storage, read> tower_target_queries: TowerTargetQueryResultBuffer;
 @group(0) @binding(14) var<storage, read_write> atomic_transform_states: AtomicTransformStateBuffer;
 @group(0) @binding(15) var<storage, read_write> atomic_transform_candidates: AtomicTransformCandidateBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
@@ -1316,22 +1330,33 @@ fn apply_body_control_commands(@builtin(global_invocation_id) global_id: vec3u) 
         selected_incarnation = command.core_target_incarnation;
         state_flags = BODY_CONTROL_STATE_FLAG_STOP
             | BODY_CONTROL_STATE_FLAG_CORE_SELECTED;
-    } else if (exact_living_body(
-            command.tower_target_slot,
-            command.tower_target_entity_id,
-            command.tower_target_incarnation
-        ) && exact_target_is_in_range(
-            command.destination_slot,
-            command.tower_target_slot,
-            command.attack_range
-        )) {
-        result = BODY_CONTROL_RESULT_TOWER_SELECTED;
-        selected_kind = BODY_CONTROL_SELECTED_TARGET_TOWER;
-        selected_slot = command.tower_target_slot;
-        selected_entity_id = command.tower_target_entity_id;
-        selected_incarnation = command.tower_target_incarnation;
-        state_flags = BODY_CONTROL_STATE_FLAG_STOP
-            | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED;
+    } else {
+        var tower_slot = command.tower_target_slot;
+        var tower_entity_id = command.tower_target_entity_id;
+        var tower_incarnation = command.tower_target_incarnation;
+        if (tower_target_query_is_valid(command.destination_slot)) {
+            let query = tower_target_queries.values[command.destination_slot];
+            tower_slot = query.target_slot;
+            tower_entity_id = query.target_entity_id;
+            tower_incarnation = query.target_incarnation;
+        }
+        if (exact_living_body(
+                tower_slot,
+                tower_entity_id,
+                tower_incarnation
+            ) && exact_target_is_in_range(
+                command.destination_slot,
+                tower_slot,
+                command.attack_range
+            )) {
+            result = BODY_CONTROL_RESULT_TOWER_SELECTED;
+            selected_kind = BODY_CONTROL_SELECTED_TARGET_TOWER;
+            selected_slot = tower_slot;
+            selected_entity_id = tower_entity_id;
+            selected_incarnation = tower_incarnation;
+            state_flags = BODY_CONTROL_STATE_FLAG_STOP
+                | BODY_CONTROL_STATE_FLAG_TOWER_SELECTED;
+        }
     }
     body_control_program.records[command_index].result = result;
     body_control_program.records[command_index].selected_target_kind
@@ -1489,6 +1514,12 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
         == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY;
     let selected_target_mode = program.mode_flags
         == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_SELECTED_PRIORITY_TARGET;
+    let query_no_target = target_mode
+        && program.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL
+        && program.result == SPAWN_PROGRAM_RESULT_NO_TARGET
+        && program.target_slot == INVALID_IDENTITY_COMPONENT
+        && program.target_entity_id == INVALID_IDENTITY_COMPONENT
+        && program.target_incarnation == INVALID_IDENTITY_COMPONENT;
     // Legacy modes 1-3 keep their pre-control tick-start resolve. Mode 4 is
     // validated only by the post-priority-control entrypoint below.
     if (selected_target_mode) {
@@ -1499,7 +1530,7 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
             && program.target_entity_id == INVALID_IDENTITY_COMPONENT
             && program.target_incarnation == INVALID_IDENTITY_COMPONENT
             && all(program.target_offset == vec2f(0.0)));
-    let target_payload_valid = !target_mode
+    let target_payload_valid = !target_mode || query_no_target
         || (program.target_slot < body_capacity
             && program.target_entity_id != INVALID_IDENTITY_COMPONENT
             && program.target_incarnation != INVALID_IDENTITY_COMPONENT
@@ -1539,7 +1570,7 @@ fn validate_source_relative_spawns(@builtin(global_invocation_id) global_id: vec
                 == INVALID_IDENTITY_COMPONENT
             && enemy_behavior_states.values[program.destination_slot].target_incarnation
                 == INVALID_IDENTITY_COMPONENT);
-    if (program.result != SPAWN_PROGRAM_RESULT_PENDING
+    if ((program.result != SPAWN_PROGRAM_RESULT_PENDING && !query_no_target)
         || !supported_mode
         || !finite_payload
         || !non_target_payload_valid
@@ -1712,6 +1743,11 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
         || !body_id_is_simulation_active(program.source_slot)) {
         spawn_program.records[program_index].result
             = SPAWN_PROGRAM_RESULT_SOURCE_INVALID;
+        return;
+    }
+    if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
+        && program.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL
+        && program.result == SPAWN_PROGRAM_RESULT_NO_TARGET) {
         return;
     }
     if (program.mode_flags
@@ -2165,16 +2201,28 @@ fn resolve_selected_target_spawns(@builtin(global_invocation_id) global_id: vec3
         = SPAWN_PROGRAM_RESULT_RESOLVED;
 }
 
-fn tower_gameplay_target_is_valid() -> bool {
-    if (tower_gameplay_target.enabled == 0u
-        || tower_gameplay_target.target_slot >= counts.body_count) {
+fn tower_target_query_is_valid(source_body_id: u32) -> bool {
+    if (source_body_id >= counts.body_count
+        || source_body_id >= arrayLength(&tower_target_queries.values)) {
         return false;
     }
-    let target_slot = tower_gameplay_target.target_slot;
+    let query = tower_target_queries.values[source_body_id];
+    if ((query.flags & (TOWER_TARGET_QUERY_FLAG_VALID
+            | TOWER_TARGET_QUERY_FLAG_SOURCE_VALID))
+            != (TOWER_TARGET_QUERY_FLAG_VALID
+                | TOWER_TARGET_QUERY_FLAG_SOURCE_VALID)
+        || query.source_entity_id
+            != simulations.values[source_body_id].entity_id
+        || query.source_incarnation
+            != simulations.values[source_body_id].incarnation
+        || query.target_slot >= counts.body_count) {
+        return false;
+    }
+    let target_slot = query.target_slot;
     return simulations.values[target_slot].entity_id
-            == tower_gameplay_target.entity_id
+            == query.target_entity_id
         && simulations.values[target_slot].incarnation
-            == tower_gameplay_target.incarnation
+            == query.target_incarnation
         && body_id_is_alive(target_slot)
         && body_interaction_layer(physics.values[target_slot].interaction_meta)
             == BODY_LAYER_PLAYER_DAMAGEABLE
@@ -2183,25 +2231,33 @@ fn tower_gameplay_target_is_valid() -> bool {
             == GAMEPLAY_TEAM_PLAYER;
 }
 
+fn tower_target_query_roster_changed(source_body_id: u32) -> bool {
+    return source_body_id < arrayLength(&tower_target_queries.values)
+        && (tower_target_queries.values[source_body_id].flags
+            & TOWER_TARGET_QUERY_FLAG_ROSTER_CHANGED) != 0u;
+}
+
 fn behavior_target_matches_gameplay_tower(body_id: u32) -> bool {
+    if (!tower_target_query_is_valid(body_id)) { return false; }
+    let query = tower_target_queries.values[body_id];
     let flags = atomicLoad(&enemy_behavior_states.values[body_id].flags);
     return (flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
-        && tower_gameplay_target_is_valid()
         && enemy_behavior_states.values[body_id].target_slot
-            == tower_gameplay_target.target_slot
+            == query.target_slot
         && enemy_behavior_states.values[body_id].target_entity_id
-            == tower_gameplay_target.entity_id
+            == query.target_entity_id
         && enemy_behavior_states.values[body_id].target_incarnation
-            == tower_gameplay_target.incarnation;
+            == query.target_incarnation;
 }
 
 fn bind_behavior_target_to_gameplay_tower(body_id: u32) {
+    let query = tower_target_queries.values[body_id];
     enemy_behavior_states.values[body_id].target_slot
-        = tower_gameplay_target.target_slot;
+        = query.target_slot;
     enemy_behavior_states.values[body_id].target_entity_id
-        = tower_gameplay_target.entity_id;
+        = query.target_entity_id;
     enemy_behavior_states.values[body_id].target_incarnation
-        = tower_gameplay_target.incarnation;
+        = query.target_incarnation;
     atomicOr(
         &enemy_behavior_states.values[body_id].flags,
         ENEMY_BEHAVIOR_FLAG_TARGET_VALID
@@ -2403,16 +2459,22 @@ fn advance_octagon_orbit(@builtin(global_invocation_id) global_id: vec3u) {
         || !body_id_is_alive(body_id)) {
         return;
     }
-    let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
-    // Tower loss is a same-world latch. A later exact Tower config cannot re-enter orbit.
+    var state = atomicLoad(&enemy_behavior_states.values[body_id].state);
+    // O의 data-owned 정책은 roster revision이 바뀐 경우에만 fallback latch를 풉니다.
     if (state == ENEMY_BEHAVIOR_STATE_CORE_FALLBACK) {
-        enter_enemy_core_fallback(body_id);
-        return;
+        if (!tower_target_query_is_valid(body_id)
+            || !tower_target_query_roster_changed(body_id)) {
+            enter_enemy_core_fallback(body_id);
+            return;
+        }
+        bind_behavior_target_to_gameplay_tower(body_id);
+        set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
+        state = ENEMY_BEHAVIOR_STATE_SEEK_TOWER;
     }
     if ((state != ENEMY_BEHAVIOR_STATE_SEEK_TOWER
             && state != ENEMY_BEHAVIOR_STATE_ORBIT_TOWER)
         || !octagon_orbit_config_is_valid(body_id)
-        || !tower_gameplay_target_is_valid()) {
+        || !tower_target_query_is_valid(body_id)) {
         enter_enemy_core_fallback(body_id);
         return;
     }
@@ -2425,11 +2487,18 @@ fn advance_octagon_orbit(@builtin(global_invocation_id) global_id: vec3u) {
         previous_flags == 0u || previous_flags == allowed_seek_flags,
         state == ENEMY_BEHAVIOR_STATE_SEEK_TOWER
     );
-    if (!flags_match_state
-        || ((previous_flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
-            && !behavior_target_matches_gameplay_tower(body_id))) {
+    if (!flags_match_state) {
         enter_enemy_core_fallback(body_id);
         return;
+    }
+    if ((previous_flags & ENEMY_BEHAVIOR_FLAG_TARGET_VALID) != 0u
+        && !behavior_target_matches_gameplay_tower(body_id)) {
+        if (!tower_target_query_roster_changed(body_id)) {
+            enter_enemy_core_fallback(body_id);
+            return;
+        }
+        set_enemy_behavior_state(body_id, ENEMY_BEHAVIOR_STATE_SEEK_TOWER, 0u);
+        state = ENEMY_BEHAVIOR_STATE_SEEK_TOWER;
     }
     bind_behavior_target_to_gameplay_tower(body_id);
 
@@ -2439,7 +2508,8 @@ fn advance_octagon_orbit(@builtin(global_invocation_id) global_id: vec3u) {
             * enemy_behavior_states.values[body_id].recover_ticks);
     let angle = f32(phase_word) * ENEMY_ORBIT_PHASE_RADIANS_PER_Q32;
     let desired_radial = vec2f(cos(angle), sin(angle));
-    let target_position = physics.values[tower_gameplay_target.target_slot].position;
+    let target_slot = tower_target_queries.values[body_id].target_slot;
+    let target_position = physics.values[target_slot].position;
     var facing = target_position - physics.values[body_id].position;
     let facing_length_squared = dot(facing, facing);
     if (facing_length_squared <= EPSILON_DISTANCE_SQUARED) {
@@ -2539,7 +2609,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let state = atomicLoad(&enemy_behavior_states.values[body_id].state);
-    if (!tower_gameplay_target_is_valid()) {
+    if (!tower_target_query_is_valid(body_id)) {
         physics.values[body_id].velocity = vec2f(0.0);
         enter_enemy_core_fallback(body_id);
         return;
@@ -2563,7 +2633,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             return;
         }
         bind_behavior_target_to_gameplay_tower(body_id);
-        let target_slot = tower_gameplay_target.target_slot;
+        let target_slot = tower_target_queries.values[body_id].target_slot;
         let target_position = physics.values[target_slot].position;
         let to_target = target_position - physics.values[body_id].position;
         let distance_squared = dot(to_target, to_target);

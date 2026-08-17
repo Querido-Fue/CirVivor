@@ -26,10 +26,16 @@ import {
 } from './gpu_actor_payload_materialization_abi.js';
 import {
     GPU_CIRCLE_BODY_ABI_VERSION,
+    GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
+import {
+    GPU_TOWER_GROUP_ABI_VERSION,
+    GPU_TOWER_GROUP_INVALID_COMPONENT,
+    GPU_TOWER_GROUP_MEMBER_FLAG
+} from './gpu_tower_group_abi.js';
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT = 9;
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_DEFAULT_COMMAND_CAPACITY = 4;
@@ -473,9 +479,6 @@ fn validate_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
     if (rank >= subject_count) {
         return;
     }
-    for (var word = 0u; word < VALIDATION_WORDS; word++) {
-        store_validation(rank, word, 0u);
-    }
     if (atomicLoad(&aggregate.values[8u]) != STATUS_PENDING) {
         return;
     }
@@ -531,7 +534,10 @@ fn validate_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
 
     if (errors == 0u) {
         let destination_radius = physics.values[destination_slot].radius;
-        let direction = resolve_launch_direction(rank);
+        let direction = vec2f(
+            bitcast<f32>(validation_word(rank, ${V.DIRECTION_X}u)),
+            bitcast<f32>(validation_word(rank, ${V.DIRECTION_Y}u))
+        );
         let position = candidate_position(rank, destination_slot, direction);
         if (!(destination_radius > 0.0)
             || !valid_spawn_point(position, destination_radius)) {
@@ -683,6 +689,317 @@ fn materialize_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
 }
 `;
 
+export const GPU_ACTOR_PAYLOAD_TOWER_TARGET_QUERY_WGSL = /* wgsl */`
+struct QueryBodyPhysics {
+    position: vec2f,
+    velocity: vec2f,
+    radius: f32,
+    inverse_mass: f32,
+    physical_meta: u32,
+    interaction_meta: u32,
+}
+
+struct QueryBodySimulation {
+    lifetime: f32,
+    health: i32,
+    gameplay_meta: u32,
+    flags: u32,
+    flow_field_index: u32,
+    flow_speed: f32,
+    entity_id: u32,
+    incarnation: u32,
+}
+
+struct QueryAbilityMetadata {
+    abi_version: u32,
+    noun_mask: u32,
+    definition_code: u32,
+    owner_entity_id: u32,
+    owner_incarnation: u32,
+    source_ability_code: u32,
+    source_execution_fingerprint: u32,
+    source_execution_ordinal: u32,
+    generation: u32,
+    visible_from_execution_ordinal: u32,
+    creation_origin_code: u32,
+    power_fixed_point: u32,
+}
+
+struct QueryTowerMember {
+    entity_id: u32,
+    incarnation: u32,
+    logical_ordinal: u32,
+    share_units: u32,
+    max_hp_fixed_point: u32,
+    power_fixed_point: u32,
+    group_revision: u32,
+    flags: u32,
+    roster_rank: u32,
+    reserved: u32,
+}
+
+struct QueryTowerRoster {
+    abi_version: u32,
+    member_count: u32,
+    capacity: u32,
+    fingerprint: u32,
+    group_revision: u32,
+    session_generation: u32,
+    device_generation: u32,
+    authoritative_epoch: u32,
+    slots: array<u32>,
+}
+
+struct QueryRawReadBuffer { values: array<u32> }
+struct QueryRawAtomicBuffer { values: array<atomic<u32>> }
+struct QueryPhysicsBuffer { values: array<QueryBodyPhysics> }
+struct QuerySimulationBuffer { values: array<QueryBodySimulation> }
+struct QueryAbilityMetadataBuffer { values: array<QueryAbilityMetadata> }
+struct QueryTowerMemberBuffer { values: array<QueryTowerMember> }
+
+@group(0) @binding(0) var<storage, read> query_snapshots: QueryRawReadBuffer;
+@group(0) @binding(1) var<storage, read> query_leases: QueryRawReadBuffer;
+@group(0) @binding(2) var<storage, read> query_physics: QueryPhysicsBuffer;
+@group(0) @binding(3) var<storage, read> query_simulations: QuerySimulationBuffer;
+@group(0) @binding(4) var<storage, read> query_metadata: QueryAbilityMetadataBuffer;
+@group(0) @binding(5) var<storage, read> query_members: QueryTowerMemberBuffer;
+@group(0) @binding(6) var<storage, read> query_roster: QueryTowerRoster;
+@group(0) @binding(7) var<storage, read_write> query_aggregate: QueryRawAtomicBuffer;
+
+const QUERY_HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
+const QUERY_LEASE_WORDS: u32 = ${LEASE_WORD_COUNT}u;
+const QUERY_SNAPSHOT_WORDS: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const QUERY_AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
+const QUERY_VALIDATION_WORDS: u32 = ${VALIDATION_WORD_COUNT}u;
+const QUERY_INVALID: u32 = ${GPU_TOWER_GROUP_INVALID_COMPONENT}u;
+const QUERY_BODY_ALIVE: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
+const QUERY_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
+const QUERY_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
+const QUERY_PLAYER_TEAM: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
+const QUERY_NEUTRAL_TEAM: u32 = ${GAMEPLAY_TEAM_ID.NEUTRAL}u;
+const QUERY_TOWER_SELECTOR: u32 = ${SUBJECT_SELECTOR_CODE.TOWER}u;
+const QUERY_TOWER_NOUN: u32 = ${GAMEPLAY_NOUN_MASK.TOWER}u;
+const QUERY_METADATA_ABI: u32 = ${ABILITY_ENTITY_METADATA_ABI_VERSION}u;
+const QUERY_GROUP_ABI: u32 = ${GPU_TOWER_GROUP_ABI_VERSION}u;
+const QUERY_TOWER_FLAG: u32 = ${GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN}u;
+const QUERY_LIVING_FLAG: u32 = ${GPU_TOWER_GROUP_MEMBER_FLAG.LIVING}u;
+const QUERY_PLAYER_DAMAGEABLE_LAYER: u32 = ${GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE}u;
+
+fn query_header(field: u32) -> u32 {
+    return query_leases.values[field];
+}
+
+fn query_snapshot_word(rank: u32, field: u32) -> u32 {
+    return query_snapshots.values[
+        query_header(${H.SNAPSHOT_WORD_OFFSET}u)
+            + rank * QUERY_SNAPSHOT_WORDS + field
+    ];
+}
+
+fn query_store_validation(rank: u32, field: u32, value: u32) {
+    atomicStore(
+        &query_aggregate.values[
+            QUERY_AGGREGATE_WORDS + rank * QUERY_VALIDATION_WORDS + field
+        ],
+        value
+    );
+}
+
+fn query_normalized_or_fallback(value: vec2f, fallback: vec2f) -> vec2f {
+    let value_squared = dot(value, value);
+    if (value_squared > 0.000001) {
+        return value * inverseSqrt(value_squared);
+    }
+    let fallback_squared = dot(fallback, fallback);
+    if (fallback_squared > 0.000001) {
+        return fallback * inverseSqrt(fallback_squared);
+    }
+    return vec2f(1.0, 0.0);
+}
+
+fn query_source_position(rank: u32) -> vec2f {
+    return vec2f(
+        bitcast<f32>(query_snapshot_word(rank, ${S.POSITION_X}u)),
+        bitcast<f32>(query_snapshot_word(rank, ${S.POSITION_Y}u))
+    );
+}
+
+fn query_source_facing(rank: u32) -> vec2f {
+    return query_normalized_or_fallback(vec2f(
+        bitcast<f32>(query_snapshot_word(rank, ${S.FACING_X}u)),
+        bitcast<f32>(query_snapshot_word(rank, ${S.FACING_Y}u))
+    ), vec2f(1.0, 0.0));
+}
+
+fn query_body_team(slot: u32) -> u32 {
+    return (query_simulations.values[slot].gameplay_meta
+        >> QUERY_TEAM_SHIFT) & QUERY_TEAM_MASK;
+}
+
+fn query_exact_target(
+    slot: u32,
+    entity_id: u32,
+    incarnation: u32,
+    team_id: u32,
+    noun_mask: u32
+) -> bool {
+    return slot < arrayLength(&query_simulations.values)
+        && slot < arrayLength(&query_physics.values)
+        && slot < arrayLength(&query_metadata.values)
+        && entity_id != 0u && entity_id != QUERY_INVALID
+        && incarnation != 0u && incarnation != QUERY_INVALID
+        && (query_simulations.values[slot].flags & QUERY_BODY_ALIVE) != 0u
+        && query_body_team(slot) == team_id
+        && query_simulations.values[slot].entity_id == entity_id
+        && query_simulations.values[slot].incarnation == incarnation
+        && (noun_mask == 0u
+            || (query_metadata.values[slot].abi_version == QUERY_METADATA_ABI
+                && (query_metadata.values[slot].noun_mask & noun_mask)
+                    == noun_mask));
+}
+
+fn query_member_matches(slot: u32, member: QueryTowerMember) -> bool {
+    return slot < arrayLength(&query_simulations.values)
+        && slot < arrayLength(&query_physics.values)
+        && slot < arrayLength(&query_metadata.values)
+        && member.group_revision == query_roster.group_revision
+        && (member.flags & QUERY_TOWER_FLAG) != 0u
+        && (member.flags & QUERY_LIVING_FLAG) != 0u
+        && query_exact_target(
+            slot,
+            member.entity_id,
+            member.incarnation,
+            QUERY_PLAYER_TEAM,
+            QUERY_TOWER_NOUN
+        )
+        && (query_physics.values[slot].interaction_meta & 0xffffu)
+            == QUERY_PLAYER_DAMAGEABLE_LAYER;
+}
+
+fn query_identity_less(
+    entity_id: u32,
+    incarnation: u32,
+    selected_entity_id: u32,
+    selected_incarnation: u32
+) -> bool {
+    return entity_id < selected_entity_id
+        || (entity_id == selected_entity_id
+            && incarnation < selected_incarnation);
+}
+
+@compute @workgroup_size(${GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE})
+fn query_actor_payload_tower_target(
+    @builtin(global_invocation_id) invocation: vec3u
+) {
+    let rank = invocation.x;
+    if (rank >= query_header(${H.SUBJECT_COUNT}u)) { return; }
+    for (var word = 0u; word < QUERY_VALIDATION_WORDS; word++) {
+        query_store_validation(rank, word, 0u);
+    }
+    let position = query_source_position(rank);
+    let facing = query_source_facing(rank);
+    var direction = facing;
+    if (query_header(${H.SOURCE_SELECTOR_CODE}u) == QUERY_TOWER_SELECTOR) {
+        let aim = vec2f(
+            bitcast<f32>(query_header(${H.AIM_POINT_X}u)),
+            bitcast<f32>(query_header(${H.AIM_POINT_Y}u))
+        );
+        direction = query_normalized_or_fallback(aim - position, facing);
+    } else {
+        let roster_valid = query_roster.abi_version == QUERY_GROUP_ABI
+            && query_roster.capacity == arrayLength(&query_members.values)
+            && query_roster.capacity == arrayLength(&query_roster.slots)
+            && query_roster.member_count <= query_roster.capacity
+            && query_roster.group_revision != 0u
+            && query_roster.fingerprint != 0u;
+        var found = false;
+        var selected_slot = QUERY_INVALID;
+        var selected_entity_id = QUERY_INVALID;
+        var selected_incarnation = QUERY_INVALID;
+        var selected_share = 0u;
+        var selected_distance_squared = 3.402823466e+38;
+        if (roster_valid) {
+            var roster_rank = 0u;
+            loop {
+                if (roster_rank >= query_roster.member_count) { break; }
+                let slot = query_roster.slots[roster_rank];
+                if (slot < arrayLength(&query_members.values)) {
+                    let member = query_members.values[slot];
+                    if (member.roster_rank == roster_rank
+                        && query_member_matches(slot, member)) {
+                        let delta = query_physics.values[slot].position - position;
+                        let distance_squared = dot(delta, delta);
+                        let better_identity = query_identity_less(
+                            member.entity_id,
+                            member.incarnation,
+                            selected_entity_id,
+                            selected_incarnation
+                        );
+                        let better = distance_squared
+                                < selected_distance_squared
+                            || (distance_squared == selected_distance_squared
+                                && (member.share_units > selected_share
+                                    || (member.share_units == selected_share
+                                        && better_identity)));
+                        if (!found || better) {
+                            found = true;
+                            selected_slot = slot;
+                            selected_entity_id = member.entity_id;
+                            selected_incarnation = member.incarnation;
+                            selected_share = member.share_units;
+                            selected_distance_squared = distance_squared;
+                        }
+                    }
+                }
+                roster_rank += 1u;
+            }
+        } else {
+            let exact_slot = query_header(${H.TOWER_SLOT}u);
+            if (query_exact_target(
+                exact_slot,
+                query_header(${H.TOWER_ENTITY_ID}u),
+                query_header(${H.TOWER_INCARNATION}u),
+                QUERY_PLAYER_TEAM,
+                QUERY_TOWER_NOUN
+            )) {
+                found = true;
+                selected_slot = exact_slot;
+            }
+        }
+        if (found) {
+            direction = query_normalized_or_fallback(
+                query_physics.values[selected_slot].position - position,
+                facing
+            );
+        } else {
+            let core_slot = query_header(${H.CORE_SLOT}u);
+            if (query_exact_target(
+                core_slot,
+                query_header(${H.CORE_ENTITY_ID}u),
+                query_header(${H.CORE_INCARNATION}u),
+                QUERY_NEUTRAL_TEAM,
+                0u
+            )) {
+                direction = query_normalized_or_fallback(
+                    query_physics.values[core_slot].position - position,
+                    facing
+                );
+            }
+        }
+    }
+    query_store_validation(
+        rank,
+        ${V.DIRECTION_X}u,
+        bitcast<u32>(direction.x)
+    );
+    query_store_validation(
+        rank,
+        ${V.DIRECTION_Y}u,
+        bitcast<u32>(direction.y)
+    );
+}
+`;
+
 function requirePositiveInteger(value, label) {
     const number = Number(value);
     if (!Number.isSafeInteger(number) || number <= 0 || number > 0xffffffff) {
@@ -756,6 +1073,20 @@ function getPipelines(device, stage) {
         label: 'cirvivor-gpu-actor-payload-materialization-shader',
         code: GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL
     });
+    const queryLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-payload-tower-target-query-layout',
+        entries: Array.from({ length: 8 }, (_, binding) => ({
+            binding,
+            visibility: stage.COMPUTE,
+            buffer: {
+                type: binding === 7 ? 'storage' : 'read-only-storage'
+            }
+        }))
+    });
+    const queryModule = device.createShaderModule({
+        label: 'cirvivor-gpu-actor-payload-tower-target-query-shader',
+        code: GPU_ACTOR_PAYLOAD_TOWER_TARGET_QUERY_WGSL
+    });
     const pipelineLayout = device.createPipelineLayout({
         label: 'cirvivor-gpu-actor-payload-materialization-pipeline-layout',
         bindGroupLayouts: [layout]
@@ -767,6 +1098,18 @@ function getPipelines(device, stage) {
     });
     cached = Object.freeze({
         layout,
+        queryLayout,
+        query: device.createComputePipeline({
+            label: 'cirvivor-gpu-actor-payload-tower-target-query-pipeline',
+            layout: device.createPipelineLayout({
+                label: 'cirvivor-gpu-actor-payload-tower-target-query-pipeline-layout',
+                bindGroupLayouts: [queryLayout]
+            }),
+            compute: {
+                module: queryModule,
+                entryPoint: 'query_actor_payload_tower_target'
+            }
+        }),
         initialize: createPipeline(
             'initialize_actor_payload',
             'cirvivor-gpu-actor-payload-initialize-pipeline'
@@ -795,7 +1138,9 @@ function sameResources(left, right) {
         && left?.abilityMetadata === right?.abilityMetadata
         && left?.routeRuntimeStates === right?.routeRuntimeStates
         && left?.enemyBehaviorStates === right?.enemyBehaviorStates
-        && left?.sdf === right?.sdf;
+        && left?.sdf === right?.sdf
+        && left?.towerMembers === right?.towerMembers
+        && left?.towerRoster === right?.towerRoster;
 }
 
 function freezeCompletion(entry, aggregate, extra = {}) {
@@ -870,7 +1215,9 @@ export class GpuActorPayloadMaterializationRuntime {
             'abilityMetadata',
             'routeRuntimeStates',
             'enemyBehaviorStates',
-            'sdf'
+            'sdf',
+            'towerMembers',
+            'towerRoster'
         ]) {
             if (!resources?.[key]) {
                 throw new TypeError(`ActorPayloadMaterialization ${key} buffer가 없습니다.`);
@@ -1122,12 +1469,31 @@ export class GpuActorPayloadMaterializationRuntime {
                         { binding: 8, resource: { buffer: entry.aggregateBuffer } }
                     ]
                 });
-                const dispatch = (pipeline, workgroupCount, phase) => {
+                const targetQueryBindGroup = this.device.createBindGroup({
+                    label: `cirvivor-gpu-actor-payload-target-query-bind-${entry.transactionId}`,
+                    layout: this.pipeline.queryLayout,
+                    entries: [
+                        { binding: 0, resource: { buffer: this.resources.snapshot } },
+                        { binding: 1, resource: { buffer: entry.leaseBuffer } },
+                        { binding: 2, resource: { buffer: this.resources.physics } },
+                        { binding: 3, resource: { buffer: this.resources.simulation } },
+                        { binding: 4, resource: { buffer: this.resources.abilityMetadata } },
+                        { binding: 5, resource: { buffer: this.resources.towerMembers } },
+                        { binding: 6, resource: { buffer: this.resources.towerRoster } },
+                        { binding: 7, resource: { buffer: entry.aggregateBuffer } }
+                    ]
+                });
+                const dispatch = (
+                    pipeline,
+                    workgroupCount,
+                    phase,
+                    activeBindGroup = bindGroup
+                ) => {
                     const pass = encoder.beginComputePass({
                         label: `cirvivor-gpu-actor-payload-${phase}-pass`
                     });
                     pass.setPipeline(pipeline);
-                    pass.setBindGroup(0, bindGroup);
+                    pass.setBindGroup(0, activeBindGroup);
                     pass.dispatchWorkgroups(workgroupCount);
                     pass.end();
                 };
@@ -1136,6 +1502,12 @@ export class GpuActorPayloadMaterializationRuntime {
                         / GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE
                 );
                 dispatch(this.pipeline.initialize, 1, 'initialize');
+                dispatch(
+                    this.pipeline.query,
+                    parallelWorkgroupCount,
+                    'tower-target-query',
+                    targetQueryBindGroup
+                );
                 dispatch(
                     this.pipeline.validate,
                     parallelWorkgroupCount,
@@ -1260,6 +1632,10 @@ export class GpuActorPayloadMaterializationRuntime {
             dispatchModel: 'parallel-multi-pass',
             storageBindingCount:
                 GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT,
+            towerTargetQueryStorageBindingCount: 8,
+            towerTargetPolicy:
+                'source-local-distance-share-identity-then-core-then-facing',
+            targetReadbackPolicy: 'none',
             pendingCount: this.pending.length,
             inFlightCount: this.inFlight.size,
             completedQueueCount: this.completed.length,

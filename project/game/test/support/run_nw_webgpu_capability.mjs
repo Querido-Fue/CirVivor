@@ -131,6 +131,9 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_tower_creation_abi.js',
     'module/ingame/physics/gpu/gpu_tower_creation_runtime.js',
     'module/ingame/physics/gpu/gpu_tower_creation_shaders.js',
+    'module/ingame/physics/gpu/gpu_tower_target_query_abi.js',
+    'module/ingame/physics/gpu/gpu_tower_target_query_runtime.js',
+    'module/ingame/physics/gpu/gpu_tower_target_query_shaders.js',
     'module/ingame/physics/gpu/gpu_transient_vfx_runtime.js',
     'module/object/enemy/_hexa_hive_layout.js',
     'module/object/enemy/_hexa_hive_layout_accessors.js',
@@ -436,7 +439,21 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
     let fixture = null;
     let scenarioValid = true;
 
-    if (fixtureStage === 'enemy-arrow-charge') {
+    if (fixtureStage === 'tower-group-target-query') {
+        fixture = result?.towerGroupTargetQuery;
+        scenarioValid = fixture?.nearestEntityId === 50
+            && fixture.octagonIdentityEntityId === 20
+            && fixture.shareTieEntityId === 20
+            && fixture.revisionEntityId === 20
+            && fixture.revisionChanged === true
+            && fixture.deathRetargetEntityId === 30
+            && fixture.deathInventedRevision === false
+            && fixture.zeroRosterValid === false
+            && fixture.archerRewrittenEntityId === 50
+            && fixture.resultStride === 40
+            && fixture.storageMaximum === 9
+            && fixture.noCpuRosterOrPoseReadback === true;
+    } else if (fixtureStage === 'enemy-arrow-charge') {
         fixture = result?.productionEnemyArrowCharge;
         scenarioValid = fixture?.states?.trackedPoseIndependent?.entered === 1
             && fixture.states.trackedPoseIndependent.expires === 31
@@ -2543,6 +2560,7 @@ function assertFixtureStageResult(result) {
     }
     if (
         fixtureStage === 'enemy-arrow-charge'
+        || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
         || fixtureStage === 'enemy-rhom-source-death-projectile'
@@ -2657,7 +2675,9 @@ async function prepareHarnessApp(
         'utf8'
     );
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
-    const runnerFileName = fixtureStage === 'enemy-pentagon-effect'
+    const runnerFileName = fixtureStage === 'tower-group-target-query'
+        ? 'tower_group_target_query_runner.js'
+        : fixtureStage === 'enemy-pentagon-effect'
         ? 'enemy_pentagon_effect_runner.js'
         : fixtureStage === 'enemy-rhom-source-death-projectile'
             ? 'enemy_rhom_source_death_projectile_runner.js'
@@ -2725,6 +2745,10 @@ async function runHarness() {
             fs.access(path.join(harnessDirectory, 'package.json')),
             fs.access(path.join(harnessDirectory, 'index.html')),
             fs.access(path.join(harnessDirectory, 'runner.js')),
+            fs.access(path.join(
+                harnessDirectory,
+                'tower_group_target_query_runner.js'
+            )),
             fs.access(path.join(
                 harnessDirectory,
                 'enemy_pentagon_effect_runner.js'
