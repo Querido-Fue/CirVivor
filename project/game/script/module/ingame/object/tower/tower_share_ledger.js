@@ -99,11 +99,9 @@ export function apportionLargestRemainder(source = {}) {
             quotient,
             `claims[${index}] quotient`
         );
-        if (quotientNumber > cap) {
-            throw new RangeError('apportion floor가 claim cap을 초과합니다.');
-        }
+        const boundedFloor = Math.min(quotientNumber, cap);
         numeratorTotal += numerator;
-        floorTotal += quotient;
+        floorTotal += BigInt(boundedFloor);
         return {
             key,
             logicalTowerOrdinal,
@@ -114,7 +112,7 @@ export function apportionLargestRemainder(source = {}) {
                 ? claim.incarnation
                 : 0xffffffff,
             cap,
-            value: quotientNumber,
+            value: boundedFloor,
             remainder: numerator % denominator
         };
     });
@@ -122,35 +120,58 @@ export function apportionLargestRemainder(source = {}) {
     const targetTotal = source.targetTotal === undefined
         ? numeratorTotal / denominator
         : toNonNegativeBigInt(source.targetTotal, 'apportion targetTotal');
-    if (targetTotal < floorTotal) {
-        throw new RangeError('apportion targetTotal이 floor 합보다 작습니다.');
-    }
-    let residual = toSafeInteger(
-        targetTotal - floorTotal,
-        'apportion residual'
-    );
     const priority = [...normalized].sort(compareAllocationPriority);
-    while (residual > 0) {
-        let distributed = 0;
-        for (const claim of priority) {
-            if (residual === 0) break;
-            if (claim.value >= claim.cap) continue;
-            claim.value++;
-            residual--;
-            distributed++;
+    if (targetTotal >= floorTotal) {
+        let residual = toSafeInteger(
+            targetTotal - floorTotal,
+            'apportion residual'
+        );
+        while (residual > 0) {
+            let distributed = 0;
+            for (const claim of priority) {
+                if (residual === 0) break;
+                if (claim.value >= claim.cap) continue;
+                claim.value++;
+                residual--;
+                distributed++;
+            }
+            if (distributed === 0) break;
         }
-        if (distributed === 0) break;
-    }
-    if (residual !== 0) {
-        const capacity = normalized.reduce(
-            (total, claim) => total + (claim.cap - claim.value),
-            0
+        if (residual !== 0) {
+            const capacity = normalized.reduce(
+                (total, claim) => total + (claim.cap - claim.value),
+                0
+            );
+            throw new RangeError(
+                `apportion residual을 cap 안에서 배분할 수 없습니다. `
+                + `(residual=${residual}, remainingCapacity=${capacity}, `
+                + `target=${targetTotal}, floor=${floorTotal})`
+            );
+        }
+    } else {
+        let deficit = toSafeInteger(
+            floorTotal - targetTotal,
+            'apportion deficit'
         );
-        throw new RangeError(
-            `apportion residual을 cap 안에서 배분할 수 없습니다. `
-            + `(residual=${residual}, remainingCapacity=${capacity}, `
-            + `target=${targetTotal}, floor=${floorTotal})`
-        );
+        const removalPriority = [...priority].reverse();
+        while (deficit > 0) {
+            let removed = 0;
+            for (const claim of removalPriority) {
+                if (deficit === 0) break;
+                if (claim.value === 0) continue;
+                claim.value--;
+                deficit--;
+                removed++;
+            }
+            if (removed === 0) break;
+        }
+        if (deficit !== 0) {
+            throw new RangeError(
+                `apportion floor를 target까지 줄일 수 없습니다. `
+                + `(deficit=${deficit}, target=${targetTotal}, `
+                + `floor=${floorTotal})`
+            );
+        }
     }
 
     const allocations = normalized

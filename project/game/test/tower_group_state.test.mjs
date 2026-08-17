@@ -12,7 +12,7 @@ const {
     TOWER_SHARE_SCALE,
     TowerGroupState
 } = await loadGameModule('ingame/object/tower/tower_group_state.js');
-const { TowerShareLedger } = await loadGameModule(
+const { TowerShareLedger, apportionLargestRemainder } = await loadGameModule(
     'ingame/object/tower/tower_share_ledger.js'
 );
 
@@ -67,6 +67,58 @@ function valuesById(plan) {
         }
     ]));
 }
+
+test('cap보다 큰 raw floor는 clamp 후 잔여량을 다른 claim에 결정론적으로 재배분한다', () => {
+    const result = apportionLargestRemainder({
+        denominator: 3,
+        targetTotal: 4,
+        claims: [
+            {
+                key: 'tower-a',
+                logicalTowerOrdinal: 1,
+                numerator: 8,
+                cap: 1
+            },
+            {
+                key: 'tower-b',
+                logicalTowerOrdinal: 2,
+                numerator: 4,
+                cap: 3
+            }
+        ]
+    });
+
+    assert.deepEqual(result.allocations, [
+        { key: 'tower-a', logicalTowerOrdinal: 1, value: 1 },
+        { key: 'tower-b', logicalTowerOrdinal: 2, value: 3 }
+    ]);
+    assert.equal(result.total, 4);
+});
+
+test('보존할 target이 raw floor 합보다 작으면 작은 remainder부터 결정론적으로 감산한다', () => {
+    const result = apportionLargestRemainder({
+        denominator: 10,
+        targetTotal: 1,
+        claims: [
+            {
+                key: 'tower-a',
+                logicalTowerOrdinal: 1,
+                numerator: 19
+            },
+            {
+                key: 'tower-b',
+                logicalTowerOrdinal: 2,
+                numerator: 10
+            }
+        ]
+    });
+
+    assert.deepEqual(result.allocations, [
+        { key: 'tower-a', logicalTowerOrdinal: 1, value: 1 },
+        { key: 'tower-b', logicalTowerOrdinal: 2, value: 0 }
+    ]);
+    assert.equal(result.total, 1);
+});
 
 test('초기 TowerGroup은 full Share, 30 HP, Power 10의 단일 logical Tower다', () => {
     const state = new TowerGroupState();
@@ -431,37 +483,119 @@ test('동일 exact GPU binding 재확인은 state revision과 pending creation�
     assert.equal(state.auditInvariants().valid, true);
 });
 
-test('160-step create/death churn은 Share, HP bound, identity, Lost monotonic을 보존한다', () => {
+test('480-step deterministic create/reject/death/ABA/rebind churn은 모든 불변식을 보존한다', () => {
     const state = new TowerGroupState();
-    let nextEntityId = 1000;
     let sourceTick = 1;
     let previousLostShareUnits = 0;
+    let randomState = 0x0817c1f0;
+    let bindingEpoch = 0;
 
-    for (let step = 0; step < 160; step++) {
+    const nextRandom = () => {
+        randomState = (
+            Math.imul(randomState, 1_664_525) + 1_013_904_223
+        ) >>> 0;
+        return randomState;
+    };
+    const stableSnapshot = () => {
+        const status = state.getStatus();
+        return {
+            records: state.getTowerRecords(),
+            livingShareUnits: status.livingShareUnits,
+            lostShareUnits: status.lostShareUnits,
+            livingTowerCount: status.livingTowerCount,
+            primaryLogicalTowerId: status.primaryLogicalTowerId,
+            groupRevision: status.groupRevision,
+            stateRevision: status.stateRevision,
+            pendingCreation: status.pendingCreation
+        };
+    };
+    const handleFor = (record) => Object.freeze({
+        entityId: 2_000 + ((record.logicalTowerOrdinal - 1) % 113),
+        incarnation: 1
+            + Math.floor((record.logicalTowerOrdinal - 1) / 113)
+            + (bindingEpoch * 10_000)
+    });
+    const bindMissingLiving = () => {
+        for (const record of state.getTowerRecords()) {
+            if (record.state !== TOWER_GROUP_RECORD_STATE.LIVING
+                || record.exactGpuBinding) {
+                continue;
+            }
+            state.bindGpuBody(record.logicalTowerId, handleFor(record), PROTOCOL);
+        }
+    };
+
+    bindMissingLiving();
+
+    for (let step = 0; step < 480; step++) {
+        const beforeCreation = stableSnapshot();
+        const transactionId = `property-create-${step}`;
         const plan = state.planCreation({
-            transactionId: `property-create-${step}`,
-            childCount: 1
+            transactionId,
+            childCount: 1 + (nextRandom() % 3)
         });
         assert.equal(plan.accepted, true, `step ${step} creation`);
-        state.commitCreation(plan);
 
-        if (step % 4 === 3) {
+        if (step % 6 === 0) {
+            const rejection = state.rejectCreation(plan, 'technical-capacity');
+            assert.equal(rejection.result, TOWER_CREATION_RESULT.REJECTED_CAPACITY);
+            assert.deepEqual(stableSnapshot(), beforeCreation);
+        } else {
+            const committed = state.commitCreation(plan);
+            assert.equal(committed.result, TOWER_CREATION_RESULT.COMMITTED);
+        }
+
+        bindMissingLiving();
+
+        if (step % 5 === 4) {
             const living = state.getTowerRecords().filter((record) => (
                 record.state === TOWER_GROUP_RECORD_STATE.LIVING
             ));
-            const victim = living[living.length - 1];
-            const handle = Object.freeze({
-                entityId: nextEntityId++,
-                incarnation: 1
-            });
-            state.bindGpuBody(victim.logicalTowerId, handle, PROTOCOL);
-            state.commitCompletedEvents({
+            const victim = living[nextRandom() % living.length];
+            const handle = victim.exactGpuBinding;
+            const event = deathEvent(
+                handle,
+                sourceTick++,
+                `property-death-${step}`
+            );
+            const facts = state.commitCompletedEvents({ events: [event] });
+            assert.equal(facts.some((fact) => (
+                fact.type === TOWER_COMBAT_FACT_TYPE.SHARE_LOST
+            )), true);
+
+            const afterDeath = stableSnapshot();
+            assert.deepEqual(state.commitCompletedEvents({ events: [event] }), []);
+            assert.deepEqual(state.commitCompletedEvents({
                 events: [deathEvent(
-                    handle,
+                    {
+                        entityId: handle.entityId,
+                        incarnation: handle.incarnation + 50_000
+                    },
                     sourceTick++,
-                    `property-death-${step}`
+                    `property-aba-${step}`
                 )]
-            });
+            }), []);
+            assert.deepEqual(stableSnapshot(), afterDeath);
+        }
+
+        if (step % 97 === 96) {
+            const oldBindings = state.getTowerRecords()
+                .filter((record) => record.exactGpuBinding)
+                .map((record) => record.exactGpuBinding);
+            assert.equal(state.releaseGpuBindings(), oldBindings.length);
+            bindingEpoch++;
+            bindMissingLiving();
+
+            const afterRebind = stableSnapshot();
+            const oldHandle = oldBindings[nextRandom() % oldBindings.length];
+            assert.deepEqual(state.commitCompletedEvents({
+                events: [deathEvent(
+                    oldHandle,
+                    sourceTick++,
+                    `property-old-callback-${step}`
+                )]
+            }), []);
+            assert.deepEqual(stableSnapshot(), afterRebind);
         }
 
         const audit = state.auditInvariants();
@@ -472,6 +606,19 @@ test('160-step create/death churn은 Share, HP bound, identity, Lost monotonic�
         );
         assert.equal(audit.lostShareUnits >= previousLostShareUnits, true);
         previousLostShareUnits = audit.lostShareUnits;
+
+        const records = state.getTowerRecords();
+        const living = records.filter((record) => (
+            record.state === TOWER_GROUP_RECORD_STATE.LIVING
+        ));
+        const exactBindings = living.map((record) => (
+            `${record.exactGpuBinding.entityId}:${record.exactGpuBinding.incarnation}`
+        ));
+        assert.equal(new Set(exactBindings).size, exactBindings.length);
+        assert.equal(living.every((record) => (
+            record.currentHpFixedPoint >= 0
+            && record.currentHpFixedPoint <= record.maxHpFixedPoint
+        )), true);
     }
 
     const records = state.getTowerRecords();

@@ -5,8 +5,6 @@ prototype values.
 
 | ID | Question | Current baseline / constraint |
 | --- | --- | --- |
-| O-G01 | Tower share numeric representation | deterministic fixed-point/rational; exact scale undecided |
-| O-G02 | Remainder distribution during hundreds-way dilution | deterministic identity/order rule required |
 | O-G03 | Zero-share Tower presentation | cannot restore positive share; immediate death vs non-viable actor undecided |
 | O-G04 | Merge execution | staged movement preferred; speed/channel/interruption undecided |
 | O-G05 | Actor spawn grace | narrow source-pair grace; exact ticks/pairs data-owned |

@@ -22,8 +22,18 @@ Invariant:
 sum(living Tower shares) + lostShare = 1.0
 ```
 
-Use a deterministic fixed-point or rational representation for share. Do not accumulate unbounded f32
-rounding error across hundreds of split/merge operations.
+R4 locks Share to the integer fixed-point scale below:
+
+```text
+TOWER_SHARE_SCALE = 1_000_000_000
+sum(living Tower share units) + lostShareUnits = TOWER_SHARE_SCALE
+```
+
+Dilution uses deterministic cap-aware largest-remainder allocation. Each raw quotient is floored and
+clamped to that claim's cap. Residual units are distributed by remainder descending, then logical Tower
+ordinal, entity ID, incarnation, and logical ID ascending. If an explicit preserved target is below the
+sum of the bounded floors, units are removed in the exact reverse priority. The result is independent of
+input array order and never uses cumulative f32 Share arithmetic.
 
 ## 2. Derived stats
 
