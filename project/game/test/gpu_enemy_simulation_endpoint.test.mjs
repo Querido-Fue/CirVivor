@@ -177,6 +177,115 @@ function createFakeBackend(options = {}) {
     };
 }
 
+function installAbilitySubjectBackend(backend) {
+    const publications = [];
+    const unavailableHandleKeys = new Set();
+    const slotsByHandleKey = new Map();
+    let bindingsEnabled = true;
+    Object.assign(backend, {
+        resolveExactAbilityBodySlot(handle) {
+            const key = handleKey(handle);
+            if (!bindingsEnabled
+                || unavailableHandleKeys.has(key)
+                || !backend.bodies.has(key)) {
+                return null;
+            }
+            if (!slotsByHandleKey.has(key)) {
+                slotsByHandleKey.set(key, slotsByHandleKey.size);
+            }
+            return Object.freeze({
+                slot: slotsByHandleKey.get(key),
+                entityId: handle.entityId,
+                incarnation: handle.incarnation
+            });
+        },
+        synchronizeAbilityEntityMetadata(entries) {
+            publications.push(Object.freeze([...entries]));
+            return Object.freeze({
+                accepted: true,
+                updatedCount: entries.length
+            });
+        },
+        stageAbilityExecutionCommand() {
+            return Object.freeze({ accepted: true });
+        },
+        drainCompletedAbilitySubjectSnapshots(out = []) { return out; },
+        getAbilitySubjectSnapshotGpuBinding() { return null; },
+        releaseAbilitySubjectSnapshot() { return false; },
+        cancelPendingAbilityExecutions() {
+            return Object.freeze({ cancelledCount: 0 });
+        },
+        getAbilitySubjectSnapshotStatus() {
+            return Object.freeze({
+                abiVersion: 1,
+                state: 'ready',
+                pendingCommandCount: 0,
+                pendingReadbackCount: 0,
+                retainedSnapshotCount: 0,
+                aggregateReadbackByteSize: 64,
+                storageBindingCount: 6,
+                requiresRecovery: false,
+                subjectReadbackPolicy: 'aggregate-only'
+            });
+        }
+    });
+    return {
+        publications,
+        clearPublications() {
+            publications.length = 0;
+        },
+        setBindingsEnabled(enabled) {
+            bindingsEnabled = enabled === true;
+        },
+        setHandleAvailable(handle, available) {
+            const key = handleKey(handle);
+            if (available === true) {
+                unavailableHandleKeys.delete(key);
+            } else {
+                unavailableHandleKeys.add(key);
+            }
+        }
+    };
+}
+
+function installOneShotTransformPublication(endpoint, handle, fixedTick) {
+    const owner = endpoint.getLifecycleCommandOwner();
+    const commitAtFixedBoundary = owner.commitAtFixedBoundary.bind(owner);
+    const getLastCommitResult = owner.getLastCommitResult.bind(owner);
+    let lastCommitResult = getLastCommitResult();
+    let pending = true;
+    owner.commitAtFixedBoundary = (tick) => {
+        if (pending && tick === fixedTick) {
+            pending = false;
+            lastCommitResult = Object.freeze({
+                ...lastCommitResult,
+                fixedTick,
+                state: 'committed',
+                spawned: Object.freeze([Object.freeze({
+                    commandId: `fixture:transform:${fixedTick}`,
+                    handle: Object.freeze({ ...handle }),
+                    transform: true
+                })]),
+                despawned: Object.freeze([]),
+                atomicTransforms: Object.freeze([]),
+                projectileCaptureReleases: Object.freeze([]),
+                routeLifecycle: Object.freeze([]),
+                rejected: Object.freeze([]),
+                recoveryRequired: false,
+                registryRevision: endpoint.getRegistry().getRevision()
+            });
+            return lastCommitResult;
+        }
+        lastCommitResult = commitAtFixedBoundary(tick);
+        return lastCommitResult;
+    };
+    owner.getLastCommitResult = () => lastCommitResult;
+    return () => {
+        owner.commitAtFixedBoundary = commitAtFixedBoundary;
+        owner.getLastCommitResult = getLastCommitResult;
+    };
+}
+
 function installIdleProjectileCaptureBackend(backend, getSessionGeneration) {
     const completedCaptureBatches = [];
     const captureBodyStates = new Map();
@@ -580,6 +689,101 @@ test('GPU enemy endpoint는 lifecycle mutation을 target fixed boundary까지 �
     assert.equal(despawnedStatus.backend.bodyCount, 0);
 
     endpoint.destroy();
+});
+
+test('transform Ability metadata는 fixed submit 뒤 exact slot에 게시하고 일반 spawn mismatch는 즉시 실패한다', () => {
+    const createFixture = (label) => {
+        const backend = createFakeBackend({ capacity: 4 });
+        const ability = installAbilitySubjectBackend(backend);
+        const endpoint = createGpuEnemySimulationEndpoint({
+            enemySimulationBackend: backend
+        });
+        endpoint.init({ id: `ability-transform-publication-${label}` });
+        endpoint.requestSpawn(
+            createSpawnIntent(),
+            1,
+            `${label}:spawn`
+        );
+        const initial = endpoint.commitAtFixedBoundary(1);
+        assert.equal(initial.state, 'committed');
+        assert.equal(initial.abilityEntityMetadata.updatedCount, 1);
+        const handle = initial.spawned[0].handle;
+        ability.clearPublications();
+        return { backend, ability, endpoint, handle };
+    };
+
+    const accepted = createFixture('accepted');
+    accepted.ability.setHandleAvailable(accepted.handle, false);
+    const restoreAcceptedLifecycle = installOneShotTransformPublication(
+        accepted.endpoint,
+        accepted.handle,
+        2
+    );
+    const deferred = accepted.endpoint.commitAtFixedBoundary(2);
+    restoreAcceptedLifecycle();
+    assert.equal(deferred.state, 'committed');
+    assert.equal(deferred.abilityEntityMetadata.updatedCount, 0);
+    assert.equal(deferred.abilityEntityMetadata.deferredCount, 1);
+    assert.equal(deferred.abilityEntityMetadata.pendingCount, 1);
+    assert.equal(accepted.ability.publications.length, 0);
+    assert.equal(
+        accepted.endpoint.getStatus()
+            .pendingAbilityEntityMetadataPublicationCount,
+        1
+    );
+    const submitAccepted = accepted.backend.fixedUpdate.bind(
+        accepted.backend
+    );
+    accepted.backend.fixedUpdate = (delta, sourceTick) => {
+        accepted.ability.setHandleAvailable(accepted.handle, true);
+        return submitAccepted(delta, sourceTick);
+    };
+    assert.equal(accepted.endpoint.fixedUpdate(1 / 60, 2), true);
+    assert.equal(accepted.ability.publications.length, 1);
+    assert.equal(accepted.ability.publications[0].length, 1);
+    assert.equal(
+        accepted.endpoint.getStatus()
+            .pendingAbilityEntityMetadataPublicationCount,
+        0
+    );
+    assert.equal(accepted.endpoint.requiresRecovery(), false);
+    accepted.endpoint.destroy();
+
+    const missing = createFixture('missing-after-submit');
+    missing.ability.setHandleAvailable(missing.handle, false);
+    const restoreMissingLifecycle = installOneShotTransformPublication(
+        missing.endpoint,
+        missing.handle,
+        2
+    );
+    assert.equal(missing.endpoint.commitAtFixedBoundary(2).state, 'committed');
+    restoreMissingLifecycle();
+    assert.equal(missing.endpoint.fixedUpdate(1 / 60, 2), false);
+    assert.equal(missing.endpoint.requiresRecovery(), true);
+    assert.equal(
+        missing.endpoint.getStatus().events.protocolFailure?.code,
+        'ability-entity-slot-identity-mismatch'
+    );
+    missing.endpoint.destroy();
+
+    const ordinaryBackend = createFakeBackend({ capacity: 2 });
+    const ordinaryAbility = installAbilitySubjectBackend(ordinaryBackend);
+    const ordinaryEndpoint = createGpuEnemySimulationEndpoint({
+        enemySimulationBackend: ordinaryBackend
+    });
+    ordinaryEndpoint.init({ id: 'ability-ordinary-publication-mismatch' });
+    ordinaryAbility.setBindingsEnabled(false);
+    ordinaryEndpoint.requestSpawn(
+        createSpawnIntent(),
+        1,
+        'ordinary-mismatch:spawn'
+    );
+    const rejected = ordinaryEndpoint.commitAtFixedBoundary(1);
+    assert.equal(rejected.state, 'failed');
+    assert.equal(rejected.abilityEntityMetadata.deferredCount, 0);
+    assert.equal(ordinaryAbility.publications.length, 0);
+    assert.equal(ordinaryEndpoint.requiresRecovery(), true);
+    ordinaryEndpoint.destroy();
 });
 
 test('generic GPU endpoint는 atomic spawn batch ingress를 lifecycle owner에 위임한다', () => {

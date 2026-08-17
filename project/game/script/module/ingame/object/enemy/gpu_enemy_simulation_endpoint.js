@@ -1000,6 +1000,7 @@ export class GpuEnemySimulationEndpoint {
             = ABILITY_SUBJECT_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
+        this.deferredAbilityEntityMetadataPublications = new Map();
         this.actorPayloadBackendSupported
             = ACTOR_PAYLOAD_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
@@ -3783,16 +3784,11 @@ export class GpuEnemySimulationEndpoint {
             });
         }
         const abilityEntityMetadata = this
-            .#synchronizeAbilityEntityMetadataForLifecycle(lifecycle);
+            .#synchronizeAbilityEntityMetadataForLifecycle(lifecycle, tick);
         if (abilityEntityMetadata.recoveryRequired === true) {
-            this.completedEventRecoveryRequired = true;
-            this.completedEventProtocolFailure = Object.freeze({
-                stage: 'ability-entity-metadata-publication',
-                code: abilityEntityMetadata.reason
-                    ?? 'ability-entity-metadata-publication-failed',
-                name: 'AbilityEntityMetadataPublicationFailure',
-                message: 'lifecycle identity를 ability metadata plane에 게시하지 못했습니다.'
-            });
+            this.#latchAbilityEntityMetadataPublicationFailure(
+                abilityEntityMetadata
+            );
             this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 ...lifecycle,
@@ -4796,6 +4792,16 @@ export class GpuEnemySimulationEndpoint {
             sourceTick,
             submitted === true
         );
+        if (submitted === true) {
+            const abilityEntityMetadata = this
+                .#flushDeferredAbilityEntityMetadataThrough(sourceTick);
+            if (abilityEntityMetadata.recoveryRequired === true) {
+                this.#latchAbilityEntityMetadataPublicationFailure(
+                    abilityEntityMetadata
+                );
+                return false;
+            }
+        }
         return submitted;
     }
 
@@ -4955,6 +4961,8 @@ export class GpuEnemySimulationEndpoint {
                 fixedCommands.pendingPriorityTargetControlCount ?? 0,
             pendingEffectPulseProgramCount:
                 effectCommands.pendingPulseProgramCount,
+            pendingAbilityEntityMetadataPublicationCount:
+                this.deferredAbilityEntityMetadataPublications.size,
             effectRuntimeSupported: this.effectBackendPort.isSupported(),
             formationRuntimeSupported: this.#formationBackendPort.isSupported(),
             atomicTransformRuntimeSupported:
@@ -5021,6 +5029,7 @@ export class GpuEnemySimulationEndpoint {
         this.backend.destroy();
         this.completedEventBatchScratch.length = 0;
         this.deferredCompletedEventBatches.length = 0;
+        this.deferredAbilityEntityMetadataPublications.clear();
         this.knownCompletedBatchKeys.clear();
         this.completedBatchKeys.length = 0;
         this.completedBatchKeyHead = 0;
@@ -6512,38 +6521,211 @@ export class GpuEnemySimulationEndpoint {
         });
     }
 
-    #synchronizeAbilityEntityMetadataForLifecycle(lifecycle) {
+    #synchronizeAbilityEntityMetadataForLifecycle(lifecycle, fixedTick) {
         if (!this.abilitySubjectBackendSupported) {
             return Object.freeze({
                 accepted: true,
                 updatedCount: 0,
+                deferredCount: 0,
+                pendingCount: 0,
                 unsupported: true,
                 recoveryRequired: false
             });
         }
         const spawned = lifecycle?.spawned ?? [];
+        const pendingCount
+            = this.deferredAbilityEntityMetadataPublications.size;
         if (spawned.length === 0) {
+            return Object.freeze({
+                accepted: true,
+                updatedCount: 0,
+                deferredCount: 0,
+                pendingCount,
+                recoveryRequired: false
+            });
+        }
+        for (const pending of this
+            .deferredAbilityEntityMetadataPublications.values()) {
+            if (pending.fixedTick !== fixedTick) {
+                return this.#createAbilityEntityMetadataFailure(
+                    'ability-entity-metadata-deferred-identity-conflict',
+                    null,
+                    {
+                        deferredCount: 0,
+                        pendingCount
+                    }
+                );
+            }
+        }
+        const immediate = [];
+        const deferred = [];
+        try {
+            for (const publication of spawned) {
+                if (publication?.transform !== true) {
+                    immediate.push(publication);
+                    continue;
+                }
+                const handle = publication?.handle;
+                const view = this.registry.copyEntityView(handle, {});
+                if (!view
+                    || view.entityId !== handle?.entityId
+                    || view.incarnation !== handle?.incarnation) {
+                    return this.#createAbilityEntityMetadataFailure(
+                        'ability-entity-slot-identity-mismatch',
+                        null,
+                        {
+                            deferredCount: 0,
+                            pendingCount
+                        }
+                    );
+                }
+                deferred.push(Object.freeze({
+                    key: `${view.entityId}:${view.incarnation}`,
+                    fixedTick,
+                    handle: Object.freeze({
+                        entityId: view.entityId,
+                        incarnation: view.incarnation
+                    })
+                }));
+            }
+            const immediateResult = this
+                .#publishAbilityEntityMetadata(immediate);
+            if (immediateResult.recoveryRequired === true) {
+                return Object.freeze({
+                    ...immediateResult,
+                    deferredCount: 0,
+                    pendingCount
+                });
+            }
+            let deferredCount = 0;
+            for (const publication of deferred) {
+                const existing = this
+                    .deferredAbilityEntityMetadataPublications
+                    .get(publication.key);
+                if (existing) {
+                    if (existing.fixedTick !== fixedTick) {
+                        return this.#createAbilityEntityMetadataFailure(
+                            'ability-entity-metadata-deferred-identity-conflict',
+                            null,
+                            {
+                                updatedCount:
+                                    immediateResult.updatedCount ?? 0,
+                                deferredCount,
+                                pendingCount: this
+                                    .deferredAbilityEntityMetadataPublications
+                                    .size
+                            }
+                        );
+                    }
+                    continue;
+                }
+                if (this.deferredAbilityEntityMetadataPublications.size
+                    >= this.capacity) {
+                    return this.#createAbilityEntityMetadataFailure(
+                        'ability-entity-metadata-deferred-capacity',
+                        null,
+                        {
+                            updatedCount:
+                                immediateResult.updatedCount ?? 0,
+                            deferredCount,
+                            pendingCount: this
+                                .deferredAbilityEntityMetadataPublications.size
+                        }
+                    );
+                }
+                this.deferredAbilityEntityMetadataPublications.set(
+                    publication.key,
+                    publication
+                );
+                deferredCount++;
+            }
+            return Object.freeze({
+                ...immediateResult,
+                deferredCount,
+                pendingCount:
+                    this.deferredAbilityEntityMetadataPublications.size,
+                recoveryRequired: false
+            });
+        } catch (error) {
+            return this.#createAbilityEntityMetadataFailure(
+                'ability-entity-metadata-contract',
+                error,
+                {
+                    deferredCount: 0,
+                    pendingCount:
+                        this.deferredAbilityEntityMetadataPublications.size
+                }
+            );
+        }
+    }
+
+    #flushDeferredAbilityEntityMetadataThrough(sourceTick) {
+        if (!this.abilitySubjectBackendSupported
+            || this.deferredAbilityEntityMetadataPublications.size === 0) {
+            return Object.freeze({
+                accepted: true,
+                updatedCount: 0,
+                pendingCount: 0,
+                unsupported: !this.abilitySubjectBackendSupported,
+                recoveryRequired: false
+            });
+        }
+        const tick = Number(sourceTick);
+        if (!Number.isSafeInteger(tick) || tick <= 0) {
+            return this.#createAbilityEntityMetadataFailure(
+                'ability-entity-metadata-submit-tick-invalid',
+                null,
+                {
+                    pendingCount:
+                        this.deferredAbilityEntityMetadataPublications.size
+                }
+            );
+        }
+        const due = Array.from(
+            this.deferredAbilityEntityMetadataPublications.values()
+        ).filter((publication) => publication.fixedTick <= tick);
+        const result = this.#publishAbilityEntityMetadata(due);
+        if (result.recoveryRequired === true) {
+            return Object.freeze({
+                ...result,
+                pendingCount:
+                    this.deferredAbilityEntityMetadataPublications.size
+            });
+        }
+        for (const publication of due) {
+            this.deferredAbilityEntityMetadataPublications.delete(
+                publication.key
+            );
+        }
+        return Object.freeze({
+            ...result,
+            pendingCount:
+                this.deferredAbilityEntityMetadataPublications.size
+        });
+    }
+
+    #publishAbilityEntityMetadata(publications) {
+        if (publications.length === 0) {
             return Object.freeze({
                 accepted: true,
                 updatedCount: 0,
                 recoveryRequired: false
             });
         }
-        const entries = [];
         try {
-            for (const publication of spawned) {
+            const entries = [];
+            for (const publication of publications) {
                 const handle = publication?.handle;
                 const view = this.registry.copyEntityView(handle, {});
-                const binding = this.backend.resolveExactAbilityBodySlot(handle);
+                const binding = this.backend.resolveExactAbilityBodySlot(
+                    handle
+                );
                 if (!view || !binding
                     || binding.entityId !== view.entityId
                     || binding.incarnation !== view.incarnation) {
-                    return Object.freeze({
-                        accepted: false,
-                        reason: 'ability-entity-slot-identity-mismatch',
-                        updatedCount: 0,
-                        recoveryRequired: true
-                    });
+                    return this.#createAbilityEntityMetadataFailure(
+                        'ability-entity-slot-identity-mismatch'
+                    );
                 }
                 entries.push(Object.freeze({
                     slot: binding.slot,
@@ -6558,14 +6740,33 @@ export class GpuEnemySimulationEndpoint {
                 recoveryRequired: result?.accepted !== true
             });
         } catch (error) {
-            return Object.freeze({
-                accepted: false,
-                reason: 'ability-entity-metadata-contract',
-                message: String(error?.message ?? error),
-                updatedCount: 0,
-                recoveryRequired: true
-            });
+            return this.#createAbilityEntityMetadataFailure(
+                'ability-entity-metadata-contract',
+                error
+            );
         }
+    }
+
+    #createAbilityEntityMetadataFailure(reason, error = null, extra = null) {
+        return Object.freeze({
+            accepted: false,
+            reason,
+            ...(error ? { message: String(error?.message ?? error) } : {}),
+            updatedCount: 0,
+            ...(extra ?? {}),
+            recoveryRequired: true
+        });
+    }
+
+    #latchAbilityEntityMetadataPublicationFailure(result) {
+        this.completedEventRecoveryRequired = true;
+        this.completedEventProtocolFailure = Object.freeze({
+            stage: 'ability-entity-metadata-publication',
+            code: result?.reason
+                ?? 'ability-entity-metadata-publication-failed',
+            name: 'AbilityEntityMetadataPublicationFailure',
+            message: 'lifecycle identity를 ability metadata plane에 게시하지 못했습니다.'
+        });
     }
 
     #rememberPendingHostileSpawn(intent, targetFixedTick) {
