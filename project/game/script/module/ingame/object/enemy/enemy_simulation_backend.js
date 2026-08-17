@@ -45,6 +45,12 @@ import {
     GpuActorPayloadMaterializationRuntime
 } from '../../physics/gpu/gpu_actor_payload_materialization_runtime.js';
 import {
+    GPU_TOWER_GROUP_MEMBER_FLAG
+} from '../../physics/gpu/gpu_tower_group_abi.js';
+import {
+    GpuTowerGroupRuntime
+} from '../../physics/gpu/gpu_tower_group_runtime.js';
+import {
     GPU_CIRCLE_BODY_ABI,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
@@ -59,6 +65,7 @@ import {
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
 const DEFAULT_BODY_CAPACITY = 16384;
+const DEFAULT_TOWER_GROUP_MEMBER_CAPACITY = 256;
 const LITTLE_ENDIAN = true;
 const ABILITY_PAYLOAD_FNV_OFFSET = 0x811c9dc5;
 const ABILITY_PAYLOAD_FNV_PRIME = 0x01000193;
@@ -200,6 +207,16 @@ export class EnemySimulationBackend {
             = options.actorPayloadCommandCapacity;
         this.actorPayloadReadbackSlotCount
             = options.actorPayloadReadbackSlotCount;
+        const towerGroupMemberCapacity = requirePositiveSafeInteger(
+            options.towerGroupMemberCapacity
+                ?? Math.min(this.capacity, DEFAULT_TOWER_GROUP_MEMBER_CAPACITY),
+            'towerGroupMemberCapacity'
+        );
+        if (towerGroupMemberCapacity > this.capacity) {
+            throw new RangeError('towerGroupMemberCapacity는 body capacity를 넘을 수 없습니다.');
+        }
+        this.towerGroupMemberCapacity = towerGroupMemberCapacity;
+        this.towerGroupReadbackSlotCount = options.towerGroupReadbackSlotCount;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -218,6 +235,10 @@ export class EnemySimulationBackend {
                 commandCapacity: this.actorPayloadCommandCapacity,
                 readbackSlotCount: this.actorPayloadReadbackSlotCount
             });
+        this.towerGroupRuntime = new GpuTowerGroupRuntime({
+            capacity: this.capacity,
+            readbackSlotCount: this.towerGroupReadbackSlotCount
+        });
         this.actorPayloadBodyPreleases = new Map();
         this.actorPayloadPreleaseHighWater = 0;
         this.actorPayloadPreleaseFailure = null;
@@ -1612,6 +1633,131 @@ export class EnemySimulationBackend {
         return this.simulation?.getLatestCrowdDensitySnapshot?.() ?? null;
     }
 
+    /** CPU TowerGroupState의 living exact roster를 독립 GPU mirror에 동기화합니다. */
+    synchronizeTowerGroupRoster(source = {}) {
+        if (!this.#ensureTowerGroupRuntime()) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-runtime-unavailable'
+            });
+        }
+        if (!Array.isArray(source.records)) {
+            throw new TypeError('TowerGroup roster records 배열이 필요합니다.');
+        }
+        const livingRecords = source.records.filter((record) => (
+            record?.alive === true
+        ));
+        if (livingRecords.length > this.towerGroupMemberCapacity) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-member-capacity',
+                memberCount: livingRecords.length,
+                capacity: this.towerGroupMemberCapacity
+            });
+        }
+        const protocol = this.getEventProtocolState();
+        const members = [];
+        for (const record of livingRecords) {
+            const binding = record.exactGpuBinding;
+            if (binding
+                && (binding.sessionGeneration !== protocol.sessionGeneration
+                    || binding.deviceGeneration !== protocol.deviceGeneration
+                    || binding.authoritativeEpoch
+                        !== protocol.authoritativeEpoch)) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'tower-group-member-stale-protocol',
+                    logicalTowerId: record.logicalTowerId ?? null
+                });
+            }
+            const exact = binding
+                ? this.simulation.resolveExactBodySlot?.(binding)
+                : null;
+            if (!exact) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'tower-group-member-unbound',
+                    logicalTowerId: record.logicalTowerId ?? null
+                });
+            }
+            members.push(Object.freeze({
+                slot: exact.slot,
+                entityId: exact.handle.entityId,
+                incarnation: exact.handle.incarnation,
+                logicalTowerOrdinal: record.logicalTowerOrdinal,
+                shareUnits: record.shareUnits,
+                maxHpFixedPoint: record.maxHpFixedPoint,
+                powerFixedPoint: record.powerFixedPoint,
+                flags: GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
+                    | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING
+            }));
+        }
+        try {
+            const roster = this.towerGroupRuntime.synchronizeRoster({
+                groupRevision: source.groupRevision,
+                members,
+                protocol
+            });
+            return Object.freeze({ accepted: true, roster });
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-roster-rejected',
+                failure: Object.freeze({
+                    name: String(error?.name ?? 'Error'),
+                    message: String(error?.message ?? error)
+                })
+            });
+        }
+    }
+
+    /** fixed tick당 정확히 하나의 group move/Aim command를 stage합니다. */
+    stageTowerGroupCommand(source = {}) {
+        if (!this.#ensureTowerGroupRuntime()) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-runtime-unavailable'
+            });
+        }
+        try {
+            const command = this.towerGroupRuntime.stageCommand({
+                ...source,
+                protocol: this.getEventProtocolState()
+            });
+            const commandId = source.commandId ?? [
+                'gpu-tower-group-control',
+                command.protocol.sessionGeneration,
+                command.groupRevision,
+                command.sourceTick,
+                command.commandFingerprint
+            ].join(':');
+            return Object.freeze({
+                accepted: true,
+                commandId,
+                sourceTick: command.sourceTick,
+                command
+            });
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-group-command-rejected',
+                failure: Object.freeze({
+                    name: String(error?.name ?? 'Error'),
+                    message: String(error?.message ?? error)
+                })
+            });
+        }
+    }
+
+    /** camera/presentation 전용 bounded lossy TowerGroup summary입니다. */
+    getLatestTowerGroupSummary() {
+        return this.towerGroupRuntime.getLatestSummary();
+    }
+
+    getTowerGroupRuntimeStatus() {
+        return this.towerGroupRuntime.getStatus();
+    }
+
     /**
      * @param {number} delta - 초 단위 fixed delta입니다.
      * @param {number} [sourceTick] - 이 submit을 소유하는 권위 fixed tick입니다.
@@ -1630,6 +1776,18 @@ export class EnemySimulationBackend {
             ? this.submitAbilitySubjectSnapshots(sourceTick)
             : Object.freeze({ submittedCount: 0, deferredCount: 0 });
         const submitted = this.simulation.fixedUpdate(delta, sourceTick);
+        const towerGroupCommand = this.towerGroupRuntime.getStagedCommand();
+        if (submitted
+            && Number.isSafeInteger(Number(sourceTick))
+            && Number(sourceTick) > 0
+            && towerGroupCommand?.sourceTick === Number(sourceTick)
+            && this.towerGroupRuntime.getStatus().lastEncodedTick
+                === Number(sourceTick)) {
+            this.towerGroupRuntime.submitSummary({
+                sourceTick: Number(sourceTick),
+                submittedTick: Number(sourceTick)
+            });
+        }
         this.#syncState();
         return submitted || (!hadActiveBodies
             && (abilitySubmission.submittedCount > 0
@@ -1699,7 +1857,8 @@ export class EnemySimulationBackend {
                 abilitySubjectSnapshots:
                     this.abilitySubjectSnapshotRuntime.getStatus(),
                 actorPayloadMaterializations:
-                    this.getActorPayloadMaterializationStatus()
+                    this.getActorPayloadMaterializationStatus(),
+                towerGroup: this.towerGroupRuntime.getStatus()
             } : {}),
             gpu
         });
@@ -1761,6 +1920,7 @@ export class EnemySimulationBackend {
             || this.state === 'gpu-failed'
             || this.abilitySubjectSnapshotRuntime.requiresRecovery()
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
+            || this.towerGroupRuntime.requiresRecovery()
             || this.actorPayloadPreleaseFailure !== null;
     }
 
@@ -1773,6 +1933,8 @@ export class EnemySimulationBackend {
         this.cancelAllActorPayloadMaterializations('destroyed');
         this.actorPayloadMaterializationRuntime.destroy();
         this.abilitySubjectSnapshotRuntime.destroy();
+        this.simulation?.attachTowerGroupControlRuntime?.(null);
+        this.towerGroupRuntime.destroy();
         this.simulation?.destroy();
         this.simulation = null;
         this.signedDistanceField = null;
@@ -1785,6 +1947,10 @@ export class EnemySimulationBackend {
     }
 
     #syncState() {
+        if (this.towerGroupRuntime.requiresRecovery()) {
+            this.state = 'gpu-requires-rebuild';
+            return;
+        }
         const gpuState = this.simulation?.getRuntimeState();
         switch (gpuState) {
             case 'ready':
@@ -1814,6 +1980,40 @@ export class EnemySimulationBackend {
                 this.state = classifyUnavailablePlatformState(this.webGpuPlatformPort);
                 break;
         }
+    }
+
+    #ensureTowerGroupRuntime() {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.simulation.device || !this.simulation.buffers) {
+            this.simulation.init();
+        }
+        const simulation = this.simulation;
+        if (!simulation.device || !simulation.buffers) return false;
+        const protocol = simulation.getEventProtocolState();
+        const status = this.towerGroupRuntime.getStatus();
+        const alreadyCurrent = status.state === 'ready'
+            && this.towerGroupRuntime.device === simulation.device
+            && status.sessionGeneration === protocol.sessionGeneration
+            && status.deviceGeneration === protocol.deviceGeneration
+            && status.authoritativeEpoch === protocol.authoritativeEpoch;
+        if (!alreadyCurrent) {
+            try {
+                this.towerGroupRuntime.initialize(
+                    simulation.device,
+                    {
+                        counts: simulation.buffers.counts,
+                        physics: simulation.buffers.physics,
+                        simulation: simulation.buffers.simulation,
+                        bodyControlStates: simulation.buffers.bodyControlStates
+                    },
+                    protocol
+                );
+            } catch {
+                return false;
+            }
+        }
+        simulation.attachTowerGroupControlRuntime(this.towerGroupRuntime);
+        return true;
     }
 
     #ensureAbilitySubjectSnapshotRuntime() {

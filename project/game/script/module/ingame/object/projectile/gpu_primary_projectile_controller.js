@@ -161,10 +161,14 @@ export class GpuPrimaryProjectileController {
      * @returns {object|null} inbox receipt 또는 발사 불가일 때 null입니다.
      */
     stageShotForFixedTick(targetFixedTick) {
-        if (!this.enabled || !this.primaryPressed || !this.projectileSpawnAdapter) {
+        if (!this.enabled || !this.projectileSpawnAdapter) {
             return null;
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
+        const sharedAim = this.tower.getSharedAimState?.(tick) ?? null;
+        if ((sharedAim ? sharedAim.pressed : this.primaryPressed) !== true) {
+            return null;
+        }
         if (this.pendingShot) {
             return this.pendingShot.targetFixedTick === tick
                 ? this.pendingShot.receipt
@@ -186,11 +190,13 @@ export class GpuPrimaryProjectileController {
             this.sessionGeneration = sessionGeneration;
         }
 
-        const projected = this.camera.viewportToWorld(
-            this.viewportPointer.x,
-            this.viewportPointer.y,
-            this.aimWorldPoint
-        );
+        const projected = sharedAim
+            ? sharedAim.aimWorldPoint
+            : this.camera.viewportToWorld(
+                this.viewportPointer.x,
+                this.viewportPointer.y,
+                this.aimWorldPoint
+            );
         const aimSource = projected && projected !== this.aimWorldPoint
             ? projected
             : this.aimWorldPoint;

@@ -1494,6 +1494,7 @@ export class GpuCircleBodySimulation {
                 capacity: options.transientVfxCapacity
             })
             : null;
+        this.towerGroupControlRuntime = null;
         this.hostStorage = createGpuCircleBodyAbiStorage(this.capacity);
         this.hostRouteRuntimeStates = createGpuRouteRuntimeStateBuffer(
             this.capacity
@@ -2743,6 +2744,34 @@ export class GpuCircleBodySimulation {
     hasBody(handle) {
         const normalized = normalizeEntityHandle(handle, 'handle');
         return this.handleToSlot.has(entityHandleKey(normalized));
+    }
+
+    /** TowerGroup roster mirror가 사용할 exact active body slot을 반환합니다. */
+    resolveExactBodySlot(handle) {
+        const normalized = normalizeEntityHandle(handle, 'exactBodyHandle');
+        const slot = this.handleToSlot.get(entityHandleKey(normalized));
+        if (slot === undefined
+            || this.slotActive[slot] !== 1
+            || this.slotHandles[slot]?.entityId !== normalized.entityId
+            || this.slotHandles[slot]?.incarnation !== normalized.incarnation) {
+            return null;
+        }
+        return Object.freeze({
+            slot,
+            handle: Object.freeze({ ...normalized })
+        });
+    }
+
+    /** 독립 TowerGroup runtime을 fixed control pass에 결합하거나 해제합니다. */
+    attachTowerGroupControlRuntime(runtime = null) {
+        if (runtime !== null
+            && (typeof runtime.encodeControl !== 'function'
+                || typeof runtime.getStagedCommand !== 'function'
+                || typeof runtime.getStatus !== 'function')) {
+            throw new TypeError('TowerGroup control runtime 계약이 올바르지 않습니다.');
+        }
+        this.towerGroupControlRuntime = runtime;
+        return true;
     }
 
     /** Exact active non-flow body가 move-only control command를 받을 수 있는지 확인합니다. */
@@ -6974,6 +7003,8 @@ export class GpuCircleBodySimulation {
         const armedProjectileCaptureRelease
             = this.armedProjectileCaptureRelease;
         const stagedRouteCleanup = this.stagedRouteCleanupBatch;
+        const stagedTowerGroupCommand
+            = this.towerGroupControlRuntime?.getStagedCommand?.() ?? null;
         if (stagedPrograms
             && requestedSourceTick !== stagedPrograms.targetFixedTick) {
             this.failure = captureFailure(
@@ -7081,6 +7112,7 @@ export class GpuCircleBodySimulation {
             && !armedAtomicTransform?.commitRequested
             && !armedProjectileCaptureRelease?.commitRequested
             && !stagedRouteCleanup
+            && stagedTowerGroupCommand?.sourceTick !== requestedSourceTick
             && terminalRouteAvailabilityCancel?.state !== 'armed') {
             return false;
         }
@@ -7747,6 +7779,13 @@ export class GpuCircleBodySimulation {
                     GPU_EFFECT_RUNTIME_ENTRY_POINT.MATERIALIZE_CONTACT_DAMAGE
                 );
                 pass.dispatchWorkgroupsIndirect(this.buffers.dispatchIndirect, 0);
+            }
+            if (!terminalFinalSubmit
+                && stagedTowerGroupCommand?.sourceTick === requestedSourceTick) {
+                this.towerGroupControlRuntime.encodeControl(
+                    pass,
+                    requestedSourceTick
+                );
             }
             this.#setComputeProfile(pass, COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL);
             this.#dispatchBodies(pass, 'apply_controlled_motion');
@@ -9655,6 +9694,8 @@ export class GpuCircleBodySimulation {
             transientVfx: this.transientVfxRuntime?.getStatus() ?? Object.freeze({
                 state: 'disabled'
             }),
+            towerGroup: this.towerGroupControlRuntime?.getStatus?.()
+                ?? Object.freeze({ state: 'disabled' }),
             presentation: Object.freeze({ ...this.presentationClock.getClockState({}) })
         });
     }
@@ -9701,6 +9742,7 @@ export class GpuCircleBodySimulation {
             // device loss 중 clear 실패는 platform generation 복구가 담당합니다.
         }
         this.#releaseGpuResources();
+        this.towerGroupControlRuntime = null;
         this.activeBodyCount = 0;
         this.projectileBodyCount = 0;
         this.hasGpuAuthoritativeState = false;
@@ -16925,6 +16967,7 @@ export class GpuCircleBodySimulation {
         this.pendingFlowClosureKey = null;
         this.crowdDensityRuntime?.retire('simulation-resource-retired');
         this.transientVfxRuntime?.retire();
+        this.towerGroupControlRuntime?.retire?.('simulation-resource-retired');
         this.overflowReadbackLease++;
         this.#cancelEventReadbacks();
         this.spawnProgramReadbackLease++;

@@ -55,7 +55,7 @@ import {
     GpuPrimaryProjectileController
 } from './projectile/gpu_primary_projectile_controller.js';
 import { TowerPlayerController } from './tower_player_controller.js';
-import { GpuTowerActorFacade } from './tower/gpu_tower_actor_facade.js';
+import { GpuTowerGroupFacade } from './tower/gpu_tower_group_facade.js';
 import {
     GPU_TOWER_WORLD_KIND_ID,
     createGpuTowerSpawnIntent
@@ -481,7 +481,11 @@ export class GameObjectSystem {
         const towerSpawn = this.tileMap.getTowerSpawnPosition();
         const coreSpawn = this.tileMap.getCorePosition();
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD) {
-            this.tower = new GpuTowerActorFacade();
+            this.tower = new GpuTowerGroupFacade({
+                camera: this.camera,
+                towerGroupState: this.towerCombatRoster
+                    ?.getTowerGroupState?.() ?? null
+            });
             this.core = new CorePresentationFacade({
                 x: coreSpawn.x,
                 y: coreSpawn.y,
@@ -495,7 +499,6 @@ export class GameObjectSystem {
                         camera: this.camera,
                         endpoint: this.enemySimulationEndpoint
                     });
-                this.playerControllables.push(this.primaryProjectileController);
             }
             this.cameraFollowTarget = assertCameraFollowTarget2D(
                 this.towerCombatRoster
@@ -1210,7 +1213,6 @@ export class GameObjectSystem {
                 return this.#pauseForGpuRecovery();
             }
 
-            let expectedControlCommandId = null;
             let primaryProjectileShotReceipt = null;
             if (this.runOutcome.isRunning()) {
                 this.waveDirector?.queueSpawnsForFixedTick(
@@ -1229,14 +1231,18 @@ export class GameObjectSystem {
                     if (targetFixedTick !== proposedFixedTick) {
                         throw new RangeError('Tower control과 lifecycle fixed 경계가 다릅니다.');
                     }
+                    const towerControlTarget
+                        = typeof this.enemySimulationBackend
+                            ?.stageTowerGroupCommand === 'function'
+                        ? this.enemySimulationBackend
+                        : this.enemySimulationEndpoint;
                     const receipt = this.tower.stageControlForFixedTick(
-                        this.enemySimulationEndpoint,
+                        towerControlTarget,
                         targetFixedTick
                     );
                     if (!receipt?.accepted) {
                         return this.#pauseForGpuRecovery();
                     }
-                    expectedControlCommandId = receipt.commandId;
                     primaryProjectileShotReceipt = this.primaryProjectileController
                         ?.stageShotForFixedTick(targetFixedTick) ?? null;
                 }
@@ -1486,14 +1492,6 @@ export class GameObjectSystem {
                 }
                 return this.#pauseForGpuRecovery();
             }
-            if (expectedControlCommandId) {
-                const controls = lifecycleResult.fixedCommands?.controls ?? [];
-                if (controls.filter(({ commandId }) => (
-                    commandId === expectedControlCommandId
-                )).length !== 1) {
-                    return this.#pauseForGpuRecovery();
-                }
-            }
             if (primaryProjectileShotReceipt?.accepted === true) {
                 this.primaryProjectileController.finalizeFixedCommit(
                     lifecycleResult.fixedCommands,
@@ -1703,13 +1701,15 @@ export class GameObjectSystem {
             && this.towerHandle) {
             const endpointStatus = this.enemySimulationEndpoint.getStatus();
             const gpuStatus = endpointStatus.backend?.gpu ?? endpointStatus.backend ?? {};
-            const observedPose = this.enemySimulationPaused
+            const groupSummaryAvailable = typeof this.enemySimulationBackend
+                ?.getLatestTowerGroupSummary === 'function';
+            const observedSummary = this.enemySimulationPaused
                 || this.enemySimulationRecoveryRequired
                 ? GPU_WORLD_PAUSED_OBSERVATION
-                : this.enemySimulationEndpoint.getObservedTrackedPose();
-            this.tower.updateObservedPose(
-                observedPose,
-                {
+                : groupSummaryAvailable
+                    ? this.enemySimulationBackend.getLatestTowerGroupSummary()
+                    : this.enemySimulationEndpoint.getObservedTrackedPose();
+            const observationFrame = {
                     currentFixedTick: this.lastCompletedEnemyFixedTick,
                     fixedAlpha: alpha,
                     fixedDelta,
@@ -1718,8 +1718,18 @@ export class GameObjectSystem {
                     sessionGeneration: endpointStatus.sessionGeneration,
                     deviceGeneration: gpuStatus.deviceGeneration,
                     authoritativeEpoch: gpuStatus.authoritativeEpoch
-                }
-            );
+                };
+            if (groupSummaryAvailable) {
+                this.tower.updateObservedSummary(
+                    observedSummary,
+                    observationFrame
+                );
+            } else {
+                this.tower.updateObservedPose(
+                    observedSummary,
+                    observationFrame
+                );
+            }
         }
     }
 
@@ -3289,10 +3299,20 @@ export class GameObjectSystem {
             this.towerHandle = boundTowerHandle;
             this.coreProxyHandle = freezeHandle(coreProxyHandle);
             this.towerGameplayTargetConfigured = true;
-            const tracking = this.enemySimulationEndpoint
-                .configureTrackedBody(boundTowerHandle);
-            this.trackedTowerConfigured = tracking?.accepted === true;
-            return true;
+            if (typeof this.enemySimulationBackend
+                    ?.synchronizeTowerGroupRoster === 'function') {
+                const groupRoster = this.tower.synchronizeGpuRoster(
+                    this.enemySimulationBackend,
+                    true
+                );
+                this.trackedTowerConfigured = groupRoster?.accepted === true;
+                return this.trackedTowerConfigured;
+            } else {
+                const tracking = this.enemySimulationEndpoint
+                    .configureTrackedBody(boundTowerHandle);
+                this.trackedTowerConfigured = tracking?.accepted === true;
+                return true;
+            }
         } catch {
             this.tower.resetGpuBinding();
             this.towerCombatRoster?.releaseGpuBinding();
