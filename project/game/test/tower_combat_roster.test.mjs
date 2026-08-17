@@ -544,9 +544,8 @@ test('status는 immutable이며 completed event key history는 configured capaci
         status.currentHp = 999;
     }, (error) => error?.name === 'TypeError');
     assert.equal(roster.getStatus().currentHpFixedPoint, 2997);
-    assert.equal(roster.knownEventKeys.size, 2);
     assert.equal(
-        roster.eventKeyHistory.length - roster.eventKeyHead,
+        roster.getTowerGroupState().getStatus().rememberedEventCount,
         2
     );
 });

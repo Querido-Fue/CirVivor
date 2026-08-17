@@ -85,6 +85,16 @@ export function requireTransactionId(value, label = 'transactionId') {
     return value;
 }
 
+export function requireTowerGroupRecordState(
+    value,
+    label = 'towerRecord.state'
+) {
+    if (!Object.values(TOWER_GROUP_RECORD_STATE).includes(value)) {
+        throw new TypeError(`${label}가 유효한 Tower record state가 아닙니다.`);
+    }
+    return value;
+}
+
 export function createTowerLogicalId(logicalTowerOrdinal) {
     const ordinal = requirePositiveSafeInteger(
         logicalTowerOrdinal,
@@ -155,16 +165,39 @@ function cloneReadonlyPlainValue(source, label, ancestors) {
     ancestors.add(source);
     try {
         if (Array.isArray(source)) {
+            const descriptors = Object.getOwnPropertyDescriptors(source);
             const symbols = Object.getOwnPropertySymbols(source);
-            const extraKeys = Object.keys(source).filter((key) => (
-                key !== String(Number(key))
+            const indexKeys = Object.keys(descriptors).filter((key) => (
+                key !== 'length'
             ));
-            if (symbols.length > 0 || extraKeys.length > 0) {
-                throw new TypeError(`${label} 배열에 추가 속성을 둘 수 없습니다.`);
+            const invalidKey = indexKeys.find((key) => {
+                const index = Number(key);
+                return !Number.isSafeInteger(index)
+                    || index < 0
+                    || index >= source.length
+                    || String(index) !== key;
+            });
+            if (symbols.length > 0 || invalidKey !== undefined
+                || indexKeys.length !== source.length) {
+                throw new TypeError(
+                    `${label} 배열은 hole/추가 속성을 포함할 수 없습니다.`
+                );
             }
-            return Object.freeze(source.map((entry, index) => (
-                cloneReadonlyPlainValue(entry, `${label}[${index}]`, ancestors)
-            )));
+            const result = new Array(source.length);
+            for (let index = 0; index < source.length; index++) {
+                const descriptor = descriptors[index];
+                if (!descriptor?.enumerable || !('value' in descriptor)) {
+                    throw new TypeError(
+                        `${label}[${index}]는 enumerable data여야 합니다.`
+                    );
+                }
+                result[index] = cloneReadonlyPlainValue(
+                    descriptor.value,
+                    `${label}[${index}]`,
+                    ancestors
+                );
+            }
+            return Object.freeze(result);
         }
         const prototype = Object.getPrototypeOf(source);
         if (prototype !== Object.prototype && prototype !== null) {

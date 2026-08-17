@@ -4,6 +4,7 @@ import { CameraZoomController } from './input/camera_zoom_controller.js';
 import { PlayerControlRouter } from './input/player_control_router.js';
 import { GameObjectSystem } from './object/game_object_system.js';
 import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
+import { TowerGroupState } from './object/tower/tower_group_state.js';
 import { CoreIntegrity } from './state/core_integrity.js';
 import { RunOutcome } from './state/run_outcome.js';
 import { GoldLedger } from './state/gold_ledger.js';
@@ -235,6 +236,7 @@ export class GameSystem {
             goldLedger: this.goldLedger
         });
         this.objectSystem = null;
+        this.towerGroupState = null;
         this.towerCombatRoster = null;
         this.sessionMode = null;
         this.cameraZoomController = null;
@@ -268,12 +270,17 @@ export class GameSystem {
             configurable: false,
             enumerable: true
         });
-        this.towerCombatRoster = sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
-            ? new TowerCombatRoster(
+        this.towerGroupState = sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+            ? new TowerGroupState(
                 this.towerMaxHp === undefined
                     ? undefined
                     : { maxHp: this.towerMaxHp }
             )
+            : null;
+        this.towerCombatRoster = this.towerGroupState
+            ? new TowerCombatRoster({
+                towerGroupState: this.towerGroupState
+            })
             : null;
         this.objectSystem = new GameObjectSystem(this.dependencies, {
             ...this.objectSystemOptions,
@@ -490,6 +497,11 @@ export class GameSystem {
         return this.towerCombatRoster?.getStatus() ?? null;
     }
 
+    /** CPU run-domain이 소유하는 canonical TowerGroupState입니다. */
+    getTowerGroupState() {
+        return this.towerGroupState;
+    }
+
     /** GPU_WORLD의 lifecycle 기반 hostile attack producer 상태입니다. */
     getHostileAttackStatus() {
         return this.objectSystem?.getHostileAttackStatus() ?? null;
@@ -647,6 +659,8 @@ export class GameSystem {
         this.objectSystem = null;
         this.towerCombatRoster?.destroy();
         this.towerCombatRoster = null;
+        this.towerGroupState?.destroy();
+        this.towerGroupState = null;
         this.runOutcome.destroy();
         this.goldLedger?.destroy();
         this.goldLedger = null;

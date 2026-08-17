@@ -264,7 +264,7 @@ test('Stage 1 performance 생존값은 GameScene→GameSystem→GPU Tower intent
     );
     assert.match(
         gameSystemSource,
-        /maxIntegrity: options\.coreMaxIntegrity[\s\S]*?\?\? THE_CORE_DATA\.MAX_INTEGRITY[\s\S]*?new TowerCombatRoster\([\s\S]*?maxHp: this\.towerMaxHp/u
+        /maxIntegrity: options\.coreMaxIntegrity[\s\S]*?\?\? THE_CORE_DATA\.MAX_INTEGRITY[\s\S]*?new TowerGroupState\([\s\S]*?maxHp: this\.towerMaxHp[\s\S]*?new TowerCombatRoster\(\{[\s\S]*?towerGroupState: this\.towerGroupState/u
     );
     assert.match(
         towerAdapterSource,

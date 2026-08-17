@@ -4,6 +4,9 @@ import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { GameSystem } = await loadGameModule('ingame/game_system.js');
+const { PRIMARY_TOWER_LOGICAL_ID } = await loadGameModule(
+    'ingame/object/tower/tower_group_contract.js'
+);
 const { RUN_OUTCOME_STATE } = await loadGameModule('ingame/state/run_outcome.js');
 const { PentagonEffectDirector } = await loadGameModule(
     'ingame/object/enemy/pentagon_effect_director.js'
@@ -1363,8 +1366,34 @@ test('Core가 이미 depleted인 protocol-failure 경로도 RunFailed를 한 번
 test('Tower status가 없어도 Core가 남아 있으면 outcome은 RUNNING으로 유지된다', () => {
     const { gameSystem } = createGameSystem({ depleteOnFirstObserve: false });
     const roster = gameSystem.towerCombatRoster;
-    roster.alive = false;
-    roster.currentHpFixedPoint = 0;
+    const towerGroupState = roster.getTowerGroupState();
+    assert.strictEqual(gameSystem.getTowerGroupState(), towerGroupState);
+    const towerHandle = Object.freeze({ entityId: 701, incarnation: 1 });
+    const protocol = Object.freeze({
+        sessionGeneration: 701,
+        deviceGeneration: 0,
+        authoritativeEpoch: 0
+    });
+    towerGroupState.bindGpuBody(
+        PRIMARY_TOWER_LOGICAL_ID,
+        towerHandle,
+        protocol
+    );
+    towerGroupState.commitCompletedEvents({
+        events: [Object.freeze({
+            type: 'death',
+            eventType: 'death',
+            disposition: 'despawn-requested',
+            entityId: towerHandle.entityId,
+            incarnation: towerHandle.incarnation,
+            ...protocol,
+            sourceTick: 1,
+            sequence: 0,
+            key: 'core-remains:zero-tower',
+            reason: 'health-depleted'
+        })]
+    });
+    assert.equal(roster.isPrimaryTowerAlive(), false);
 
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(gameSystem.getCoreIntegrity().getCurrentIntegrity() > 0, true);
