@@ -58,6 +58,7 @@ function snapshotEnemyDefinition(source, label) {
     const definition = normalizeEnemyDefinition({
         id: source.id,
         spawnPolicy: source.spawnPolicy,
+        siegeWeight: source.siegeWeight,
         shapeDefinitionId: source.shapeDefinitionId,
         physicsProfileId: source.physicsProfileId,
         combatProfileId: source.combatProfileId,

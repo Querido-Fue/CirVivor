@@ -73,6 +73,7 @@ const ENEMY_DEFINITION_KEYS = new Set([
     'atomicTransformProfileId',
     'projectileCaptureProfileId',
     'routeClosureProfileId',
+    'siegeWeight',
     'capabilityIds',
     'render'
 ]);
@@ -683,6 +684,10 @@ export function normalizeEnemyDefinition(
         definition.capabilityIds,
         `${label}.capabilityIds`
     );
+    const siegeWeight = requireNonNegativeFinite(
+        definition.siegeWeight,
+        `${label}.siegeWeight`
+    );
     const renderSource = requirePlainObject(definition.render, `${label}.render`);
     assertKnownKeys(renderSource, RENDER_KEYS, `${label}.render`);
     const render = Object.freeze({
@@ -704,6 +709,7 @@ export function normalizeEnemyDefinition(
         atomicTransformProfileId,
         projectileCaptureProfileId,
         routeClosureProfileId,
+        siegeWeight,
         capabilityIds,
         render
     };

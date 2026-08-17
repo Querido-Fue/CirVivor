@@ -29,6 +29,7 @@ function metadata(root, overrides = {}) {
         lineageRootIncarnation: root.incarnation,
         branchIndex: 0,
         bountyBudget: 12,
+        siegeWeight: 1,
         transformAtTick: 0,
         atomicTransformProfileId: J_PROFILE_ID,
         teamId: 2,
@@ -202,6 +203,7 @@ function addSplitDestinations(registry, transformRequest, firstEntityId) {
             registry.put(destinationHandles[branchIndex], C_PRIME_ID, metadata(root, {
                 branchIndex,
                 bountyBudget: destinationIntent.bountyBudget,
+                siegeWeight: destinationIntent.siegeWeight,
                 transformAtTick: destinationIntent.transformAtTick,
                 atomicTransformProfileId: C_PRIME_PROFILE_ID
             }));
@@ -325,7 +327,13 @@ test('five same-tick first hits are all admitted while host starts drain 4 then 
     assert.equal(firstPrepared.transformCount, 4);
     const firstTransform = commandPort.transformRequests.at(-1);
     for (const record of firstTransform.records) {
-        assert.equal(record.effectTransferDestinationIndex, 0);
+            assert.equal(record.effectTransferDestinationIndex, 0);
+            assert.equal(
+                record.destinationIntents.reduce((sum, intent) => (
+                    sum + intent.siegeWeight
+                ), 0),
+                1
+            );
         assert.deepEqual(record.destinationIntents.map((intent) => ({
             definitionId: intent.definitionId,
             branchIndex: intent.branchIndex,
@@ -665,11 +673,15 @@ test('delayed C prime is absent before T-1 prepare and starts exactly at T', () 
         maxHealthFixedPoint: 100,
         transformAtTick: 0
     }]);
+    assert.equal(transformRequest.records[0].destinationIntents[0].siegeWeight,
+        0.5);
     const returnedJ = handle(131, 1);
     registry.remove(child);
     registry.put(returnedJ, J_ID, metadata(root, {
         branchIndex: 1,
         bountyBudget: 6,
+        siegeWeight:
+            transformRequest.records[0].destinationIntents[0].siegeWeight,
         transformAtTick: 0
     }));
     const status = director.observeLifecycle({
@@ -734,6 +746,7 @@ test('zero-bounty branch returns J and recursively splits to two zero-bounty chi
     registry.put(returnedJ, J_ID, metadata(root, {
         branchIndex: 1,
         bountyBudget: 0,
+        siegeWeight: returnRequest.records[0].destinationIntents[0].siegeWeight,
         transformAtTick: 0
     }));
     director.observeLifecycle({

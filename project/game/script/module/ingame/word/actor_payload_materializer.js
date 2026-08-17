@@ -86,12 +86,17 @@ export class ActorPayloadMaterializer {
             'currentFixedTick'
         );
         if (this.destroyed) {
-            return Object.freeze({ observedCount: 0, committedCount: 0 });
+            return Object.freeze({
+                observedCount: 0,
+                committedCount: 0,
+                committedHandles: Object.freeze([])
+            });
         }
         const completions = [];
         this.endpoint.drainCompletedActorPayloadMaterializations(completions);
         let observedCount = 0;
         let committedCount = 0;
+        const committedHandles = [];
         for (const completion of completions) {
             const record = this.inFlight.get(completion?.transactionId);
             if (!record) continue;
@@ -139,6 +144,12 @@ export class ActorPayloadMaterializer {
                     continue;
                 }
                 committedCount++;
+                for (const handle of completion.handles ?? []) {
+                    committedHandles.push(Object.freeze({
+                        entityId: handle.entityId,
+                        incarnation: handle.incarnation
+                    }));
+                }
                 this.totalCommitted++;
                 this.totalGenerated += completion.generatedCount;
                 this.#remember(record, 'COMMITTED', completion, tick);
@@ -177,6 +188,7 @@ export class ActorPayloadMaterializer {
         return Object.freeze({
             observedCount,
             committedCount,
+            committedHandles: Object.freeze(committedHandles),
             inFlightCount: this.inFlight.size,
             recoveryRequired: this.requiresRecovery()
         });

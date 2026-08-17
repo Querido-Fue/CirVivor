@@ -165,32 +165,42 @@ test('Enemy actor payload definition은 persistent ordinary Hostile C다', () =>
 
 test('snapshot/lease/materialization ABI는 rank i 대응과 aggregate-only readback을 고정한다', () => {
     assert.equal(GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE, 112);
-    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE, 160);
+    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE, 176);
     assert.equal(
         GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.DESTINATION_LEASE.STRIDE,
         32
     );
     assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.AGGREGATE.STRIDE, 64);
+    assert.equal(
+        GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.VALIDATION_RECORD.STRIDE,
+        32
+    );
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
         /snapshot_word\(rank,[\s\S]*lease_word\([\s\S]*rank/);
     assert.match(BACKEND_SOURCE, /snapshotRank: index/);
     assert.match(BACKEND_SOURCE, /destinationFingerprint/);
 });
 
-test('materialization pass는 preflight 전체 후에만 N개 body를 쓰므로 partial publication을 막는다', () => {
+test('병렬 validate와 aggregate gate 뒤에만 병렬 materialize하여 partial publication을 막는다', () => {
     const preflight = GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL.indexOf(
-        'for (var rank = 0u; rank < subject_count; rank++)'
+        'fn validate_actor_payload'
+    );
+    const aggregate = GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL.indexOf(
+        'fn aggregate_actor_payload_validation'
     );
     const materialize = GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL.indexOf(
-        'for (var rank = 0u; rank < subject_count; rank++)',
-        preflight + 1
+        'fn materialize_actor_payload'
     );
     const firstWrite = GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL.indexOf(
         'physics.values[destination_slot].position',
         materialize
     );
-    assert.ok(preflight >= 0 && materialize > preflight);
+    assert.ok(preflight >= 0 && aggregate > preflight && materialize > aggregate);
     assert.ok(firstWrite > materialize);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /@compute @workgroup_size\(64\)\s*fn validate_actor_payload/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /@compute @workgroup_size\(64\)\s*fn materialize_actor_payload/);
     assert.match(ENDPOINT_SOURCE, /activateReservedBatch/);
     assert.match(ENDPOINT_SOURCE, /commitActorPayloadBodyPrelease/);
 });
@@ -199,7 +209,15 @@ test('Tower aim/Enemy Tower→Core→facing, route inheritance, SDF를 GPU에서
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
         /header\(\d+u\) == TOWER_SELECTOR/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /nearest_slot[\s\S]*core_slot[\s\S]*return facing/);
+        /tower_slot[\s\S]*core_slot[\s\S]*return facing/);
+    const targetResolver = GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL.match(
+        /fn resolve_launch_direction[\s\S]*?\n}/
+    )?.[0] ?? '';
+    assert.doesNotMatch(targetResolver, /body_capacity|for \(/);
+    assert.match(ENDPOINT_SOURCE,
+        /copyActiveHandlesInto\(handles,\s*\{\s*kindId:\s*GPU_CORE_PROXY_WORLD_KIND_ID\s*\}\)/);
+    assert.doesNotMatch(ENDPOINT_SOURCE,
+        /copyActiveHandlesInto\(handles,\s*\{\s*kindId:\s*['"]core['"]\s*\}\)/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
         /selector == ENEMY_SELECTOR[\s\S]*flow_field_index[\s\S]*current_path_index/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,

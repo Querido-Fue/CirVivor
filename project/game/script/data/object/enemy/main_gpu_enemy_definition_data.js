@@ -45,6 +45,7 @@ export function createMainGpuEnemyDefinition(
         'atomicTransformProfileId',
         'projectileCaptureProfileId',
         'routeClosureProfileId',
+        'siegeWeight',
         'capabilityIds',
         'render'
     ]);
@@ -76,6 +77,7 @@ export function createMainGpuEnemyDefinition(
         projectileCaptureProfileId:
             options.projectileCaptureProfileId ?? null,
         routeClosureProfileId: options.routeClosureProfileId ?? null,
+        siegeWeight: options.siegeWeight,
         capabilityIds: options.capabilityIds
             ?? MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render

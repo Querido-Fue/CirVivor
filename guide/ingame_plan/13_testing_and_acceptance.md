@@ -55,7 +55,34 @@ Static tests must fail if production guides/contracts silently reintroduce:
 - a dangerous valid sentence remains executable.
 - atomic world-capacity failure creates zero result bodies.
 
-### R3 Enemy Entity Word completion evidence (2026-08-16)
+### Post-R3 stabilization evidence (2026-08-17)
+
+- Changed JS/MJS syntax: `34/34` PASS; full Node: `1543/1543` PASS, fail 0.
+- Actor payload is initialize → parallel validate → aggregate → parallel materialize. CPU readback is the fixed
+  aggregate only, storage maximum is 9, and any invalid record keeps publication at exact 0/N.
+- Three actual-WebGPU runs measured fanout-256 materialization `6.3/5.4/8.5 ms` (median `6.3 ms`) and
+  fanout-1000 `5.1/5.2/6.3 ms` (median `5.2 ms`). The pre-change three-run medians were `165.8 ms` and
+  `1371.0 ms`, so the respective speedups are about `26.3×` and `263.7×`.
+- Exact capacity commits N; one-short returns generated/cooldown/reserved/prelease 0. Preview preserves
+  raw/eligible counts: 999 and 1000 execute exactly, while 1001 previews/creates 0 and reports
+  `SUBJECT_BUDGET_EXCEEDED` rather than clamping.
+- All ordinary Enemy definitions own explicit `siegeWeight`. J split/C′ return and H transforms conserve it;
+  no tracker or adapter derives it from physics `weight`.
+- A deterministic 256-step property test covers lifecycle/publication replay and exact-handle ABA reuse. The
+  incremental tracker matches a fresh full-registry audit at every step and performs only its initial full scan.
+- Actual generation-limit GPU coverage proves `limit - 1` is eligible, its child at `limit` is excluded from the
+  next execution, a source at `limit` is excluded, and an all-excluded set returns ZERO with cooldown 0 and no
+  recovery.
+- Actual generated-Enemy Player kill produces exact `PLAYER_KILL`, bounty/Gold 1 once, replay 0, and complete
+  registry/body cleanup. Actual generated-Enemy Core impact produces exact `CORE_IMPACT`, Gold 0, Core Integrity
+  `100→99`, and complete cleanup.
+- `npm test`, both WASM reproducibility checks, default WebGPU capability, three R3 actual-WebGPU runs, and the
+  unchanged render golden (10 surfaces/3 cases, SHA
+  `3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf`) pass. Every R3 run reports
+  protocol/recovery 0, `uncapturedErrorCount=0`, and `deviceLostReason=destroyed`.
+- Manual interactive GameScene smoke: NOT EXECUTED. Automated GPU PASS is not a manual visual PASS.
+
+### R3 Enemy Entity Word completion evidence (historical, 2026-08-16)
 
 R3's current executable subset is `The Tower shoots Enemies` and `Enemies shoot Enemies`. Tower Payload,
 `Enemies shoot The Tower`, Tower Share/group control, and Merge remain later gates even though their design

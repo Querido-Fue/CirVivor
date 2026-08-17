@@ -34,6 +34,7 @@ import {
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT = 9;
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_DEFAULT_COMMAND_CAPACITY = 4;
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_DEFAULT_READBACK_SLOTS = 4;
+export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE = 64;
 
 const INVALID_COMPONENT = 0xffffffff;
 const FNV_OFFSET = 0x811c9dc5;
@@ -47,6 +48,10 @@ const LEASE_WORD_COUNT
     = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.DESTINATION_LEASE.STRIDE / 4;
 const SNAPSHOT_WORD_COUNT
     = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE / 4;
+const AGGREGATE_WORD_COUNT
+    = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.AGGREGATE.STRIDE / 4;
+const VALIDATION_WORD_COUNT
+    = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.VALIDATION_RECORD.STRIDE / 4;
 
 const H = Object.freeze(Object.fromEntries(
     Object.entries(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER)
@@ -60,6 +65,11 @@ const R = Object.freeze(Object.fromEntries(
 ));
 const S = Object.freeze(Object.fromEntries(
     Object.entries(GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD)
+        .filter(([key]) => key !== 'STRIDE')
+        .map(([key, value]) => [key, value / 4])
+));
+const V = Object.freeze(Object.fromEntries(
+    Object.entries(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.VALIDATION_RECORD)
         .filter(([key]) => key !== 'STRIDE')
         .map(([key, value]) => [key, value / 4])
 ));
@@ -168,6 +178,8 @@ const METADATA_ABI: u32 = ${ABILITY_ENTITY_METADATA_ABI_VERSION}u;
 const HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
 const LEASE_WORDS: u32 = ${LEASE_WORD_COUNT}u;
 const SNAPSHOT_WORDS: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
+const VALIDATION_WORDS: u32 = ${VALIDATION_WORD_COUNT}u;
 const INVALID: u32 = 0xffffffffu;
 const FNV_OFFSET: u32 = ${FNV_OFFSET}u;
 const FNV_PRIME: u32 = ${FNV_PRIME}u;
@@ -182,10 +194,13 @@ const TOWER_SELECTOR: u32 = ${SUBJECT_SELECTOR_CODE.TOWER}u;
 const ENEMY_SELECTOR: u32 = ${SUBJECT_SELECTOR_CODE.ENEMY}u;
 const TOWER_NOUN: u32 = ${GAMEPLAY_NOUN_MASK.TOWER}u;
 const ENEMY_NOUN: u32 = ${GAMEPLAY_NOUN_MASK.ENEMY}u;
+const NEUTRAL_TEAM: u32 = ${GAMEPLAY_TEAM_ID.NEUTRAL}u;
 const PLAYER_TEAM: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
 const HOSTILE_TEAM: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
 const STATUS_COMPLETE: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE}u;
+const STATUS_PENDING: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PENDING}u;
 const STATUS_SDF_REJECTED: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED}u;
 const STATUS_PROTOCOL_REJECTED: u32 =
@@ -223,6 +238,19 @@ fn snapshot_word(rank: u32, field: u32) -> u32 {
 
 fn store_aggregate(field: u32, value: u32) {
     atomicStore(&aggregate.values[field], value);
+}
+
+fn store_validation(rank: u32, field: u32, value: u32) {
+    atomicStore(
+        &aggregate.values[AGGREGATE_WORDS + rank * VALIDATION_WORDS + field],
+        value
+    );
+}
+
+fn validation_word(rank: u32, field: u32) -> u32 {
+    return atomicLoad(
+        &aggregate.values[AGGREGATE_WORDS + rank * VALIDATION_WORDS + field]
+    );
 }
 
 fn hash_word(current: u32, value: u32) -> u32 {
@@ -264,6 +292,24 @@ fn source_facing(rank: u32) -> vec2f {
     ), vec2f(1.0, 0.0));
 }
 
+fn exact_player_target(
+    slot: u32,
+    entity_id: u32,
+    incarnation: u32,
+    expected_team: u32,
+    noun_mask: u32
+) -> bool {
+    return slot < arrayLength(&simulations.values)
+        && is_alive(slot)
+        && body_team(slot) == expected_team
+        && simulations.values[slot].entity_id == entity_id
+        && simulations.values[slot].incarnation == incarnation
+        && (noun_mask == 0u
+            || (ability_metadata.values[slot].abi_version == METADATA_ABI
+                && (ability_metadata.values[slot].noun_mask & noun_mask)
+                    == noun_mask));
+}
+
 fn resolve_launch_direction(rank: u32) -> vec2f {
     let position = source_position(rank);
     let facing = source_facing(rank);
@@ -275,39 +321,28 @@ fn resolve_launch_direction(rank: u32) -> vec2f {
         return normalized_or_fallback(aim - position, facing);
     }
 
-    var nearest_slot = INVALID;
-    var nearest_distance_squared = 3.402823466e+38;
-    let body_capacity = arrayLength(&simulations.values);
-    for (var slot = 0u; slot < body_capacity; slot++) {
-        if (!is_alive(slot) || body_team(slot) != PLAYER_TEAM) {
-            continue;
-        }
-        let metadata = ability_metadata.values[slot];
-        if (metadata.abi_version != METADATA_ABI
-            || (metadata.noun_mask & TOWER_NOUN) != TOWER_NOUN) {
-            continue;
-        }
-        let delta = physics.values[slot].position - position;
-        let distance_squared = dot(delta, delta);
-        if (distance_squared < nearest_distance_squared) {
-            nearest_distance_squared = distance_squared;
-            nearest_slot = slot;
-        }
-    }
-    if (nearest_slot != INVALID) {
+    let tower_slot = header(${H.TOWER_SLOT}u);
+    if (exact_player_target(
+        tower_slot,
+        header(${H.TOWER_ENTITY_ID}u),
+        header(${H.TOWER_INCARNATION}u),
+        PLAYER_TEAM,
+        TOWER_NOUN
+    )) {
         return normalized_or_fallback(
-            physics.values[nearest_slot].position - position,
+            physics.values[tower_slot].position - position,
             facing
         );
     }
 
     let core_slot = header(${H.CORE_SLOT}u);
-    if (core_slot < body_capacity
-        && is_alive(core_slot)
-        && simulations.values[core_slot].entity_id
-            == header(${H.CORE_ENTITY_ID}u)
-        && simulations.values[core_slot].incarnation
-            == header(${H.CORE_INCARNATION}u)) {
+    if (exact_player_target(
+        core_slot,
+        header(${H.CORE_ENTITY_ID}u),
+        header(${H.CORE_INCARNATION}u),
+        NEUTRAL_TEAM,
+        0u
+    )) {
         return normalized_or_fallback(
             physics.values[core_slot].position - position,
             facing
@@ -366,14 +401,18 @@ fn valid_spawn_point(position: vec2f, radius: f32) -> bool {
     return sample_sdf(position) >= radius;
 }
 
-fn candidate_position(rank: u32, destination_slot: u32) -> vec2f {
+fn candidate_position(
+    rank: u32,
+    destination_slot: u32,
+    direction: vec2f
+) -> vec2f {
     let source_radius = bitcast<f32>(
         snapshot_word(rank, ${S.RADIUS}u)
     );
     let destination_radius = physics.values[destination_slot].radius;
     let surface_gap = bitcast<f32>(header(${H.SURFACE_GAP}u));
     return source_position(rank)
-        + resolve_launch_direction(rank)
+        + direction
             * (source_radius + destination_radius + surface_gap);
 }
 
@@ -383,7 +422,7 @@ fn reject(status: u32, errors: u32) {
 }
 
 @compute @workgroup_size(1)
-fn materialize_actor_payload() {
+fn initialize_actor_payload() {
     for (var word = 0u; word < 16u; word++) {
         store_aggregate(word, 0u);
     }
@@ -418,59 +457,65 @@ fn materialize_actor_payload() {
     if (subject_count == 0u || !exact_selector
         || header(${H.PAYLOAD_NOUN_MASK}u) != ENEMY_NOUN
         || header(${H.PAYLOAD_TEAM_ID}u) != HOSTILE_TEAM
-        || header(${H.EXECUTION_ORDINAL}u) == 0u) {
+        || header(${H.EXECUTION_ORDINAL}u) == 0u
+        || header(${H.EXECUTION_ORDINAL}u) == INVALID
+        || header(${H.GENERATION_LIMIT}u) == 0u
+        || header(${H.GENERATION_LIMIT}u) == INVALID) {
         reject(STATUS_PROTOCOL_REJECTED, ERROR_STALE_PROTOCOL);
         return;
     }
+}
 
-    var destination_fingerprint = hash_word(
-        FNV_OFFSET,
-        header(${H.COMMAND_FINGERPRINT}u)
+@compute @workgroup_size(64)
+fn validate_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
+    let rank = invocation.x;
+    let subject_count = header(${H.SUBJECT_COUNT}u);
+    if (rank >= subject_count) {
+        return;
+    }
+    for (var word = 0u; word < VALIDATION_WORDS; word++) {
+        store_validation(rank, word, 0u);
+    }
+    if (atomicLoad(&aggregate.values[8u]) != STATUS_PENDING) {
+        return;
+    }
+
+    var errors = 0u;
+    let selector = header(${H.SOURCE_SELECTOR_CODE}u);
+    let source_entity_id = snapshot_word(rank, ${S.ENTITY_ID}u);
+    let source_incarnation = snapshot_word(rank, ${S.INCARNATION}u);
+    let source_team = snapshot_word(rank, ${S.TEAM_ID}u);
+    let source_generation = snapshot_word(rank, ${S.GENERATION}u);
+    let source_radius = bitcast<f32>(snapshot_word(rank, ${S.RADIUS}u));
+    var source_team_valid = source_team == HOSTILE_TEAM;
+    if (selector == TOWER_SELECTOR) {
+        source_team_valid = source_team == PLAYER_TEAM;
+    }
+    if (source_entity_id == 0u || source_entity_id == INVALID
+        || source_incarnation == 0u || source_incarnation == INVALID
+        || !source_team_valid || !(source_radius > 0.0)) {
+        errors = errors | ERROR_SOURCE_RECORD;
+    }
+    if (source_generation >= header(${H.GENERATION_LIMIT}u)) {
+        errors = errors | ERROR_GENERATION;
+    }
+
+    let destination_slot = lease_word(rank, ${R.DESTINATION_SLOT}u);
+    let destination_entity_id = lease_word(rank, ${R.DESTINATION_ENTITY_ID}u);
+    let destination_incarnation = lease_word(
+        rank,
+        ${R.DESTINATION_INCARNATION}u
     );
     let body_capacity = arrayLength(&simulations.values);
-    for (var rank = 0u; rank < subject_count; rank++) {
-        let source_entity_id = snapshot_word(rank, ${S.ENTITY_ID}u);
-        let source_incarnation = snapshot_word(rank, ${S.INCARNATION}u);
-        let source_team = snapshot_word(rank, ${S.TEAM_ID}u);
-        let source_generation = snapshot_word(rank, ${S.GENERATION}u);
-        let source_radius = bitcast<f32>(
-            snapshot_word(rank, ${S.RADIUS}u)
-        );
-        var source_team_valid = source_team == HOSTILE_TEAM;
-        if (selector == TOWER_SELECTOR) {
-            source_team_valid = source_team == PLAYER_TEAM;
-        }
-        if (source_entity_id == 0u || source_entity_id == INVALID
-            || source_incarnation == 0u || source_incarnation == INVALID
-            || !source_team_valid || !(source_radius > 0.0)) {
-            reject(STATUS_PROTOCOL_REJECTED, ERROR_SOURCE_RECORD);
-            return;
-        }
-        if (source_generation >= header(${H.GENERATION_LIMIT}u)
-            || header(${H.EXECUTION_ORDINAL}u) == INVALID) {
-            reject(STATUS_PROTOCOL_REJECTED, ERROR_GENERATION);
-            return;
-        }
-
-        let destination_slot = lease_word(
-            rank,
-            ${R.DESTINATION_SLOT}u
-        );
-        let destination_entity_id = lease_word(
-            rank,
-            ${R.DESTINATION_ENTITY_ID}u
-        );
-        let destination_incarnation = lease_word(
-            rank,
-            ${R.DESTINATION_INCARNATION}u
-        );
-        if (lease_word(rank, ${R.SNAPSHOT_RANK}u) != rank
-            || destination_slot >= body_capacity
-            || destination_entity_id == 0u
-            || destination_incarnation == 0u) {
-            reject(STATUS_PROTOCOL_REJECTED, ERROR_DESTINATION_IDENTITY);
-            return;
-        }
+    if (lease_word(rank, ${R.SNAPSHOT_RANK}u) != rank
+        || destination_slot >= body_capacity
+        || destination_entity_id == 0u
+        || destination_entity_id == INVALID
+        || destination_incarnation == 0u
+        || destination_incarnation == INVALID) {
+        errors = errors | ERROR_DESTINATION_IDENTITY;
+    }
+    if (destination_slot < body_capacity) {
         let destination_flags = atomicLoad(
             &simulations.values[destination_slot].flags
         );
@@ -480,16 +525,49 @@ fn materialize_actor_payload() {
                 != destination_incarnation
             || (destination_flags & ALIVE_FLAG) != 0u
             || body_team(destination_slot) != HOSTILE_TEAM) {
-            reject(STATUS_PROTOCOL_REJECTED, ERROR_DESTINATION_IDENTITY);
-            return;
+            errors = errors | ERROR_DESTINATION_IDENTITY;
         }
+    }
+
+    if (errors == 0u) {
         let destination_radius = physics.values[destination_slot].radius;
-        let position = candidate_position(rank, destination_slot);
+        let direction = resolve_launch_direction(rank);
+        let position = candidate_position(rank, destination_slot, direction);
         if (!(destination_radius > 0.0)
             || !valid_spawn_point(position, destination_radius)) {
-            reject(STATUS_SDF_REJECTED, ERROR_SDF_PLACEMENT);
-            return;
+            errors = errors | ERROR_SDF_PLACEMENT;
+        } else {
+            store_validation(rank, ${V.POSITION_X}u, bitcast<u32>(position.x));
+            store_validation(rank, ${V.POSITION_Y}u, bitcast<u32>(position.y));
+            store_validation(rank, ${V.DIRECTION_X}u, bitcast<u32>(direction.x));
+            store_validation(rank, ${V.DIRECTION_Y}u, bitcast<u32>(direction.y));
         }
+    }
+    store_validation(rank, ${V.ERROR_FLAGS}u, errors);
+}
+
+@compute @workgroup_size(1)
+fn aggregate_actor_payload_validation() {
+    if (atomicLoad(&aggregate.values[8u]) != STATUS_PENDING) {
+        return;
+    }
+    let subject_count = header(${H.SUBJECT_COUNT}u);
+    var errors = 0u;
+    var destination_fingerprint = hash_word(
+        FNV_OFFSET,
+        header(${H.COMMAND_FINGERPRINT}u)
+    );
+    for (var rank = 0u; rank < subject_count; rank++) {
+        errors = errors | validation_word(rank, ${V.ERROR_FLAGS}u);
+        let destination_slot = lease_word(rank, ${R.DESTINATION_SLOT}u);
+        let destination_entity_id = lease_word(
+            rank,
+            ${R.DESTINATION_ENTITY_ID}u
+        );
+        let destination_incarnation = lease_word(
+            rank,
+            ${R.DESTINATION_INCARNATION}u
+        );
         destination_fingerprint = hash_word(
             destination_fingerprint,
             destination_slot
@@ -503,96 +581,105 @@ fn materialize_actor_payload() {
             destination_incarnation
         );
     }
+    store_aggregate(13u, destination_fingerprint);
+    store_aggregate(14u, errors);
+    if (errors == 0u) {
+        store_aggregate(8u, STATUS_COMPLETE);
+    } else if ((errors & ~ERROR_SDF_PLACEMENT) == 0u) {
+        store_aggregate(8u, STATUS_SDF_REJECTED);
+    } else {
+        store_aggregate(8u, STATUS_PROTOCOL_REJECTED);
+    }
+}
 
-    for (var rank = 0u; rank < subject_count; rank++) {
-        let destination_slot = lease_word(
-            rank,
-            ${R.DESTINATION_SLOT}u
-        );
-        let destination_entity_id = lease_word(
-            rank,
-            ${R.DESTINATION_ENTITY_ID}u
-        );
-        let destination_incarnation = lease_word(
-            rank,
-            ${R.DESTINATION_INCARNATION}u
-        );
-        let direction = resolve_launch_direction(rank);
-        physics.values[destination_slot].position
-            = candidate_position(rank, destination_slot);
+@compute @workgroup_size(64)
+fn materialize_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
+    let rank = invocation.x;
+    let subject_count = header(${H.SUBJECT_COUNT}u);
+    if (rank >= subject_count
+        || atomicLoad(&aggregate.values[8u]) != STATUS_COMPLETE
+        || atomicLoad(&aggregate.values[14u]) != 0u) {
+        return;
+    }
+    let destination_slot = lease_word(rank, ${R.DESTINATION_SLOT}u);
+    let destination_entity_id = lease_word(rank, ${R.DESTINATION_ENTITY_ID}u);
+    let destination_incarnation = lease_word(
+        rank,
+        ${R.DESTINATION_INCARNATION}u
+    );
+    let direction = vec2f(
+        bitcast<f32>(validation_word(rank, ${V.DIRECTION_X}u)),
+        bitcast<f32>(validation_word(rank, ${V.DIRECTION_Y}u))
+    );
+    physics.values[destination_slot].position = vec2f(
+        bitcast<f32>(validation_word(rank, ${V.POSITION_X}u)),
+        bitcast<f32>(validation_word(rank, ${V.POSITION_Y}u))
+    );
         physics.values[destination_slot].velocity = direction
             * bitcast<f32>(header(${H.LAUNCH_SPEED}u));
 
-        let selector = header(${H.SOURCE_SELECTOR_CODE}u);
-        if (selector == ENEMY_SELECTOR) {
-            simulations.values[destination_slot].flow_field_index
-                = snapshot_word(rank, ${S.FLOW_FIELD_INDEX}u);
-            simulations.values[destination_slot].flow_speed = bitcast<f32>(
-                snapshot_word(rank, ${S.FLOW_SPEED}u)
-            );
-            route_states.values[destination_slot].route_meta
-                = snapshot_word(rank, ${S.ROUTE_META}u);
-            route_states.values[destination_slot].current_path_index
-                = snapshot_word(rank, ${S.ROUTE_PATH_INDEX}u);
-            route_states.values[destination_slot].route_set_index
-                = snapshot_word(rank, ${S.ROUTE_SET_INDEX}u);
-            route_states.values[destination_slot].profile_code
-                = snapshot_word(rank, ${S.ROUTE_PROFILE_CODE}u);
-        } else {
-            simulations.values[destination_slot].flow_field_index
-                = header(${H.DEFAULT_FLOW_FIELD_INDEX}u);
-            route_states.values[destination_slot].route_meta
-                = lease_word(rank, ${R.DEFAULT_ROUTE_META}u);
-            route_states.values[destination_slot].current_path_index
-                = header(${H.DEFAULT_CURRENT_PATH_INDEX}u);
-            route_states.values[destination_slot].route_set_index
-                = header(${H.DEFAULT_ROUTE_SET_INDEX}u);
-            route_states.values[destination_slot].profile_code
-                = lease_word(rank, ${R.DEFAULT_ROUTE_PROFILE_CODE}u);
-        }
-        route_states.values[destination_slot].self_entity_id
-            = destination_entity_id;
-        route_states.values[destination_slot].self_incarnation
-            = destination_incarnation;
-        enemy_behaviors.values[destination_slot].facing_x = direction.x;
-        enemy_behaviors.values[destination_slot].facing_y = direction.y;
-
-        ability_metadata.values[destination_slot].abi_version = METADATA_ABI;
-        ability_metadata.values[destination_slot].noun_mask
-            = header(${H.PAYLOAD_NOUN_MASK}u);
-        ability_metadata.values[destination_slot].definition_code
-            = header(${H.PAYLOAD_DEFINITION_CODE}u);
-        ability_metadata.values[destination_slot].owner_entity_id
-            = snapshot_word(rank, ${S.ENTITY_ID}u);
-        ability_metadata.values[destination_slot].owner_incarnation
-            = snapshot_word(rank, ${S.INCARNATION}u);
-        ability_metadata.values[destination_slot].source_ability_code
-            = header(${H.SOURCE_ABILITY_CODE}u);
-        ability_metadata.values[destination_slot]
-            .source_execution_fingerprint
-            = header(${H.SOURCE_EXECUTION_FINGERPRINT}u);
-        ability_metadata.values[destination_slot].source_execution_ordinal
-            = header(${H.EXECUTION_ORDINAL}u);
-        ability_metadata.values[destination_slot].generation
-            = snapshot_word(rank, ${S.GENERATION}u) + 1u;
-        ability_metadata.values[destination_slot]
-            .visible_from_execution_ordinal
-            = header(${H.EXECUTION_ORDINAL}u) + 1u;
-        ability_metadata.values[destination_slot].creation_origin_code
-            = header(${H.CREATION_ORIGIN_CODE}u);
-        ability_metadata.values[destination_slot].power_fixed_point
-            = snapshot_word(rank, ${S.POWER_FIXED_POINT}u);
-
-        let baseline_flags = lease_word(rank, ${R.BASELINE_FLAGS}u)
-            & ~ALIVE_FLAG;
-        atomicStore(
-            &simulations.values[destination_slot].flags,
-            baseline_flags | CONTROLLED_FLAG | EXTERNAL_MOTION_FLAG
+    let selector = header(${H.SOURCE_SELECTOR_CODE}u);
+    if (selector == ENEMY_SELECTOR) {
+        simulations.values[destination_slot].flow_field_index
+            = snapshot_word(rank, ${S.FLOW_FIELD_INDEX}u);
+        simulations.values[destination_slot].flow_speed = bitcast<f32>(
+            snapshot_word(rank, ${S.FLOW_SPEED}u)
         );
+        route_states.values[destination_slot].route_meta
+            = snapshot_word(rank, ${S.ROUTE_META}u);
+        route_states.values[destination_slot].current_path_index
+            = snapshot_word(rank, ${S.ROUTE_PATH_INDEX}u);
+        route_states.values[destination_slot].route_set_index
+            = snapshot_word(rank, ${S.ROUTE_SET_INDEX}u);
+        route_states.values[destination_slot].profile_code
+            = snapshot_word(rank, ${S.ROUTE_PROFILE_CODE}u);
+    } else {
+        simulations.values[destination_slot].flow_field_index
+            = header(${H.DEFAULT_FLOW_FIELD_INDEX}u);
+        route_states.values[destination_slot].route_meta
+            = lease_word(rank, ${R.DEFAULT_ROUTE_META}u);
+        route_states.values[destination_slot].current_path_index
+            = header(${H.DEFAULT_CURRENT_PATH_INDEX}u);
+        route_states.values[destination_slot].route_set_index
+            = header(${H.DEFAULT_ROUTE_SET_INDEX}u);
+        route_states.values[destination_slot].profile_code
+            = lease_word(rank, ${R.DEFAULT_ROUTE_PROFILE_CODE}u);
     }
-    store_aggregate(10u, subject_count);
-    store_aggregate(13u, destination_fingerprint);
-    store_aggregate(8u, STATUS_COMPLETE);
+    route_states.values[destination_slot].self_entity_id = destination_entity_id;
+    route_states.values[destination_slot].self_incarnation = destination_incarnation;
+    enemy_behaviors.values[destination_slot].facing_x = direction.x;
+    enemy_behaviors.values[destination_slot].facing_y = direction.y;
+
+    ability_metadata.values[destination_slot].abi_version = METADATA_ABI;
+    ability_metadata.values[destination_slot].noun_mask
+        = header(${H.PAYLOAD_NOUN_MASK}u);
+    ability_metadata.values[destination_slot].definition_code
+        = header(${H.PAYLOAD_DEFINITION_CODE}u);
+    ability_metadata.values[destination_slot].owner_entity_id
+        = snapshot_word(rank, ${S.ENTITY_ID}u);
+    ability_metadata.values[destination_slot].owner_incarnation
+        = snapshot_word(rank, ${S.INCARNATION}u);
+    ability_metadata.values[destination_slot].source_ability_code
+        = header(${H.SOURCE_ABILITY_CODE}u);
+    ability_metadata.values[destination_slot].source_execution_fingerprint
+        = header(${H.SOURCE_EXECUTION_FINGERPRINT}u);
+    ability_metadata.values[destination_slot].source_execution_ordinal
+        = header(${H.EXECUTION_ORDINAL}u);
+    ability_metadata.values[destination_slot].generation
+        = snapshot_word(rank, ${S.GENERATION}u) + 1u;
+    ability_metadata.values[destination_slot].visible_from_execution_ordinal
+        = header(${H.EXECUTION_ORDINAL}u) + 1u;
+    ability_metadata.values[destination_slot].creation_origin_code
+        = header(${H.CREATION_ORIGIN_CODE}u);
+    ability_metadata.values[destination_slot].power_fixed_point
+        = snapshot_word(rank, ${S.POWER_FIXED_POINT}u);
+
+    let baseline_flags = lease_word(rank, ${R.BASELINE_FLAGS}u) & ~ALIVE_FLAG;
+    atomicStore(
+        &simulations.values[destination_slot].flags,
+        baseline_flags | CONTROLLED_FLAG | EXTERNAL_MOTION_FLAG
+    );
+    atomicAdd(&aggregate.values[10u], 1u);
 }
 `;
 
@@ -647,7 +734,7 @@ function createBuffer(device, label, size, usage) {
     return device.createBuffer({ label, size: Math.max(4, size), usage });
 }
 
-function getPipeline(device, stage) {
+function getPipelines(device, stage) {
     let cached = PIPELINES_BY_DEVICE.get(device);
     if (cached) return cached;
     const layout = device.createBindGroupLayout({
@@ -669,19 +756,33 @@ function getPipeline(device, stage) {
         label: 'cirvivor-gpu-actor-payload-materialization-shader',
         code: GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL
     });
+    const pipelineLayout = device.createPipelineLayout({
+        label: 'cirvivor-gpu-actor-payload-materialization-pipeline-layout',
+        bindGroupLayouts: [layout]
+    });
+    const createPipeline = (entryPoint, label) => device.createComputePipeline({
+        label,
+        layout: pipelineLayout,
+        compute: { module, entryPoint }
+    });
     cached = Object.freeze({
         layout,
-        pipeline: device.createComputePipeline({
-            label: 'cirvivor-gpu-actor-payload-materialization-pipeline',
-            layout: device.createPipelineLayout({
-                label: 'cirvivor-gpu-actor-payload-materialization-pipeline-layout',
-                bindGroupLayouts: [layout]
-            }),
-            compute: {
-                module,
-                entryPoint: 'materialize_actor_payload'
-            }
-        })
+        initialize: createPipeline(
+            'initialize_actor_payload',
+            'cirvivor-gpu-actor-payload-initialize-pipeline'
+        ),
+        validate: createPipeline(
+            'validate_actor_payload',
+            'cirvivor-gpu-actor-payload-validate-pipeline'
+        ),
+        aggregate: createPipeline(
+            'aggregate_actor_payload_validation',
+            'cirvivor-gpu-actor-payload-aggregate-pipeline'
+        ),
+        materialize: createPipeline(
+            'materialize_actor_payload',
+            'cirvivor-gpu-actor-payload-materialize-pipeline'
+        )
     });
     PIPELINES_BY_DEVICE.set(device, cached);
     return cached;
@@ -800,7 +901,7 @@ export class GpuActorPayloadMaterializationRuntime {
         this.deviceGeneration = deviceGeneration;
         this.authoritativeEpoch = authoritativeEpoch;
         this.resources = Object.freeze({ ...resources });
-        this.pipeline = getPipeline(device, stage);
+        this.pipeline = getPipelines(device, stage);
         this.mapReadMode = mapMode.READ;
         const lease = ++this.resourceLease;
         this.readbackSlots = Array.from(
@@ -901,6 +1002,9 @@ export class GpuActorPayloadMaterializationRuntime {
             actionCode: command.actionCode,
             payloadCode: command.payloadCode,
             targetPolicyCode: command.targetPolicyCode,
+            towerSlot: request.towerTarget?.slot,
+            towerEntityId: request.towerTarget?.entityId,
+            towerIncarnation: request.towerTarget?.incarnation,
             coreSlot: request.coreTarget?.slot,
             coreEntityId: request.coreTarget?.entityId,
             coreIncarnation: request.coreTarget?.incarnation,
@@ -933,10 +1037,14 @@ export class GpuActorPayloadMaterializationRuntime {
             leaseBytes.byteLength,
             usage.STORAGE | usage.COPY_DST
         );
+        const aggregateStorageByteSize = this.aggregateReadbackByteSize
+            + destinationLeases.length
+                * GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI
+                    .VALIDATION_RECORD.STRIDE;
         const aggregateBuffer = createBuffer(
             this.device,
             `cirvivor-gpu-actor-payload-aggregate-${transactionId}`,
-            this.aggregateReadbackByteSize,
+            aggregateStorageByteSize,
             usage.STORAGE | usage.COPY_SRC
         );
         this.device.queue.writeBuffer(leaseBuffer, 0, leaseBytes);
@@ -952,6 +1060,7 @@ export class GpuActorPayloadMaterializationRuntime {
             destinationFingerprint: request.destinationFingerprint >>> 0,
             leaseBuffer,
             aggregateBuffer,
+            aggregateStorageByteSize,
             resourceLease: this.resourceLease,
             state: 'pending'
         };
@@ -1013,13 +1122,31 @@ export class GpuActorPayloadMaterializationRuntime {
                         { binding: 8, resource: { buffer: entry.aggregateBuffer } }
                     ]
                 });
-                const pass = encoder.beginComputePass({
-                    label: 'cirvivor-gpu-actor-payload-materialization-pass'
-                });
-                pass.setPipeline(this.pipeline.pipeline);
-                pass.setBindGroup(0, bindGroup);
-                pass.dispatchWorkgroups(1);
-                pass.end();
+                const dispatch = (pipeline, workgroupCount, phase) => {
+                    const pass = encoder.beginComputePass({
+                        label: `cirvivor-gpu-actor-payload-${phase}-pass`
+                    });
+                    pass.setPipeline(pipeline);
+                    pass.setBindGroup(0, bindGroup);
+                    pass.dispatchWorkgroups(workgroupCount);
+                    pass.end();
+                };
+                const parallelWorkgroupCount = Math.ceil(
+                    entry.destinationCount
+                        / GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE
+                );
+                dispatch(this.pipeline.initialize, 1, 'initialize');
+                dispatch(
+                    this.pipeline.validate,
+                    parallelWorkgroupCount,
+                    'validate'
+                );
+                dispatch(this.pipeline.aggregate, 1, 'aggregate');
+                dispatch(
+                    this.pipeline.materialize,
+                    parallelWorkgroupCount,
+                    'materialize'
+                );
                 encoder.copyBufferToBuffer(
                     entry.aggregateBuffer,
                     0,
@@ -1126,6 +1253,11 @@ export class GpuActorPayloadMaterializationRuntime {
             commandCapacity: this.commandCapacity,
             readbackSlotCount: this.readbackSlotCount,
             aggregateReadbackByteSize: this.aggregateReadbackByteSize,
+            validationScratchStride:
+                GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI
+                    .VALIDATION_RECORD.STRIDE,
+            workgroupSize: GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE,
+            dispatchModel: 'parallel-multi-pass',
             storageBindingCount:
                 GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT,
             pendingCount: this.pending.length,

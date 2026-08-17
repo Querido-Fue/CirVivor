@@ -125,6 +125,7 @@ function definitionSource(definition, overrides = {}) {
         formationDefinitionId: definition.formationDefinitionId,
         atomicTransformProfileId: definition.atomicTransformProfileId,
         routeClosureProfileId: definition.routeClosureProfileId,
+        siegeWeight: definition.siegeWeight,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides
@@ -553,6 +554,7 @@ test('public raw/private transform ingress와 natural H registry facts는 분리
         formationMemberCount: '1'
     }), /uint32|안전한 정수/);
     const normalizedRaw = normalizeGpuSpawnIntent(rawIntent);
+    assert.equal(normalizedRaw.siegeWeight, 1);
     const handle = Object.freeze({ entityId: 41, incarnation: 3 });
     const activated = materializeNaturalHexaFormationActivation(normalizedRaw, handle);
     assert.equal(activated.formationId, createFormationIdFromExactHandle(handle));
@@ -728,11 +730,13 @@ test('public raw/private transform ingress와 natural H registry facts는 분리
     assert.equal(destination.healthFixedPoint, 220);
     assert.equal(destination.maxHealthFixedPoint, 220);
     assert.equal(destination.formationMemberCount, 2);
+    assert.equal(destination.siegeWeight, 2);
     assert.equal('position' in destination, false);
     assert.equal('velocity' in destination, false);
     assert.equal('enemyBehaviorState' in destination, false);
     const destinationMetadata = createGpuRegistryMetadata(destination);
     assert.equal(destinationMetadata.formationMemberCount, 2);
+    assert.equal(destinationMetadata.siegeWeight, 2);
     assert.equal('healthFixedPoint' in destinationMetadata, false);
     assert.equal('maxHealthFixedPoint' in destinationMetadata, false);
     assert.throws(() => normalizeGpuPrivateHexaTransformDestinationIntent({
@@ -769,11 +773,13 @@ test('public raw/private transform ingress와 natural H registry facts는 분리
     });
     assert.equal(hiveDestination.definitionId, BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID);
     assert.equal(hiveDestination.bountyBudget, 10);
+    assert.equal(hiveDestination.siegeWeight, 6);
     assert.equal(hiveDestination.formationOccupiedSlotMask, 0x3f);
     assert.equal(hiveDestination.formationState.occupiedSlotMask, 0x3f);
     assert.equal('activeEffectExpectedCount' in hiveDestination, false);
     const hiveMetadata = createGpuRegistryMetadata(hiveDestination);
     assert.equal(hiveMetadata.bountyBudget, 10);
+    assert.equal(hiveMetadata.siegeWeight, 6);
     assert.equal(hiveMetadata.formationOccupiedSlotMask, 0x3f);
     assert.equal('healthFixedPoint' in hiveMetadata, false);
     assert.equal(GPU_FORMATION_RUNTIME_ABI.TRANSFORM_HEADER.EFFECT_REKEY_COUNT, 36);

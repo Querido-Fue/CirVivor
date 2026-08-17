@@ -10,11 +10,11 @@ import {
 
 const LITTLE_ENDIAN = true;
 
-export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 1;
+export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 2;
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
     LEASE_HEADER: Object.freeze({
-        STRIDE: 160,
+        STRIDE: 176,
         ABI_VERSION: 0,
         SNAPSHOT_ABI_VERSION: 4,
         BODY_ABI_VERSION: 8,
@@ -37,24 +37,28 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         ACTION_CODE: 76,
         PAYLOAD_CODE: 80,
         TARGET_POLICY_CODE: 84,
-        CORE_SLOT: 88,
-        CORE_ENTITY_ID: 92,
-        CORE_INCARNATION: 96,
-        SDF_COLS: 100,
-        SDF_ROWS: 104,
-        SDF_ENABLED: 108,
-        WORLD_WIDTH: 112,
-        WORLD_HEIGHT: 116,
-        AIM_POINT_X: 120,
-        AIM_POINT_Y: 124,
-        LAUNCH_SPEED: 128,
-        SURFACE_GAP: 132,
-        DEFAULT_FLOW_FIELD_INDEX: 136,
-        GENERATION_LIMIT: 140,
-        SNAPSHOT_WORD_OFFSET: 144,
-        DEFAULT_CURRENT_PATH_INDEX: 148,
-        DEFAULT_ROUTE_SET_INDEX: 152,
-        RESERVED: 156
+        TOWER_SLOT: 88,
+        TOWER_ENTITY_ID: 92,
+        TOWER_INCARNATION: 96,
+        CORE_SLOT: 100,
+        CORE_ENTITY_ID: 104,
+        CORE_INCARNATION: 108,
+        SDF_COLS: 112,
+        SDF_ROWS: 116,
+        SDF_ENABLED: 120,
+        WORLD_WIDTH: 124,
+        WORLD_HEIGHT: 128,
+        AIM_POINT_X: 132,
+        AIM_POINT_Y: 136,
+        LAUNCH_SPEED: 140,
+        SURFACE_GAP: 144,
+        DEFAULT_FLOW_FIELD_INDEX: 148,
+        GENERATION_LIMIT: 152,
+        SNAPSHOT_WORD_OFFSET: 156,
+        DEFAULT_CURRENT_PATH_INDEX: 160,
+        DEFAULT_ROUTE_SET_INDEX: 164,
+        RESERVED: 168,
+        RESERVED_1: 172
     }),
     DESTINATION_LEASE: Object.freeze({
         STRIDE: 32,
@@ -85,6 +89,17 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         DESTINATION_FINGERPRINT: 52,
         ERROR_FLAGS: 56,
         RESERVED: 60
+    }),
+    VALIDATION_RECORD: Object.freeze({
+        STRIDE: 32,
+        ERROR_FLAGS: 0,
+        POSITION_X: 4,
+        POSITION_Y: 8,
+        DIRECTION_X: 12,
+        DIRECTION_Y: 16,
+        RESERVED_0: 20,
+        RESERVED_1: 24,
+        RESERVED_2: 28
     })
 });
 
@@ -155,6 +170,9 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         [h.ACTION_CODE, source.actionCode],
         [h.PAYLOAD_CODE, source.payloadCode],
         [h.TARGET_POLICY_CODE, source.targetPolicyCode],
+        [h.TOWER_SLOT, source.towerSlot ?? 0xffffffff],
+        [h.TOWER_ENTITY_ID, source.towerEntityId ?? 0xffffffff],
+        [h.TOWER_INCARNATION, source.towerIncarnation ?? 0xffffffff],
         [h.CORE_SLOT, source.coreSlot ?? 0xffffffff],
         [h.CORE_ENTITY_ID, source.coreEntityId ?? 0xffffffff],
         [h.CORE_INCARNATION, source.coreIncarnation ?? 0xffffffff],
@@ -166,7 +184,8 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         [h.SNAPSHOT_WORD_OFFSET, source.snapshotWordOffset],
         [h.DEFAULT_CURRENT_PATH_INDEX, source.defaultCurrentPathIndex],
         [h.DEFAULT_ROUTE_SET_INDEX, source.defaultRouteSetIndex],
-        [h.RESERVED, 0]
+        [h.RESERVED, 0],
+        [h.RESERVED_1, 0]
     ];
     for (const [offset, value] of uintValues) {
         view.setUint32(

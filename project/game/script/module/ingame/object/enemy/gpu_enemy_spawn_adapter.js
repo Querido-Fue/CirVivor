@@ -158,6 +158,7 @@ const LEGACY_GPU_ENEMY_CAPABILITY_MASK = createEnemyCapabilityMask([
     ENEMY_CAPABILITY_ID.CORE_IMPACT
 ]);
 const ZERO_INITIAL_WORLD_OFFSET_TILES = Object.freeze({ x: 0, y: 0 });
+const LEGACY_ENEMY_SIEGE_WEIGHT = 1;
 
 function assertNavigationCapabilityDefinition(definition) {
     requireNonEmptyString(
@@ -535,6 +536,32 @@ function requireNonNegativeFinite(value, label) {
         throw new RangeError(`${label}은 0 이상의 유한 숫자여야 합니다.`);
     }
     return number;
+}
+
+function resolveEnemySiegeWeight(definition, canonicalDefinition) {
+    return requireNonNegativeFinite(
+        canonicalDefinition
+            ? definition.siegeWeight
+            : definition.siegeWeight ?? LEGACY_ENEMY_SIEGE_WEIGHT,
+        'enemyDefinition.siegeWeight'
+    );
+}
+
+function splitConservedSiegeWeight(total, count) {
+    const normalizedTotal = requireNonNegativeFinite(total, 'sourceMetadata.siegeWeight');
+    const normalizedCount = requireNonNegativeSafeInteger(count, 'siege split count');
+    if (normalizedCount <= 0) {
+        throw new RangeError('siege split count는 양의 안전한 정수여야 합니다.');
+    }
+    const share = normalizedTotal / normalizedCount;
+    let distributed = 0;
+    return Object.freeze(Array.from({ length: normalizedCount }, (_, index) => {
+        const value = index + 1 === normalizedCount
+            ? normalizedTotal - distributed
+            : share;
+        distributed += value;
+        return value;
+    }));
 }
 
 function requireNonNegativeSafeInteger(value, label) {
@@ -1009,6 +1036,7 @@ export function createGpuEnemySpawnIntent(options) {
         formationFacts
     );
     const resolvedStats = resolveSpawnStats(options, definition, enemyDefinitionId);
+    const siegeWeight = resolveEnemySiegeWeight(definition, canonicalDefinition);
     const resolvedBountyBudget = requireUint32(
         resolvedStats.bountyBudget,
         'resolvedStats.bountyBudget'
@@ -1330,6 +1358,7 @@ export function createGpuEnemySpawnIntent(options) {
         coreImpactDamage: resolvedStats.coreImpactDamage,
         towerContactDamage: resolvedStats.towerContactDamage,
         bountyBudget: resolvedBountyBudget,
+        siegeWeight,
         weight: resolvedStats.weight,
         renderStyle: Object.freeze({
             color,
@@ -1517,7 +1546,8 @@ function createPrivateJorangDestinationBase({
     healthFixedPoint,
     maxHealthFixedPoint,
     atomicTransformState,
-    shapeCode
+    shapeCode,
+    siegeWeight
 }) {
     const stats = resolveSpawnStats({}, definition, definition.id);
     const physicsProfile = ENEMY_PROFILE_CATALOG.physicsById[
@@ -1560,6 +1590,10 @@ function createPrivateJorangDestinationBase({
         lineageRootIncarnation: branchState.lineageRootIncarnation,
         branchIndex: branchState.branchIndex,
         bountyBudget: branchState.bountyBudget,
+        siegeWeight: requireNonNegativeFinite(
+            siegeWeight,
+            'private J destination siegeWeight'
+        ),
         transformAtTick: branchState.transformAtTick,
         atomicTransformTriggerSourceEntityId: 0xffffffff,
         atomicTransformTriggerSourceIncarnation: 0xffffffff,
@@ -1625,6 +1659,10 @@ export function createGpuPrivateJorangSplitDestinationIntents(options) {
         throw new RangeError('C prime dueFixedTick은 invalid sentinel일 수 없습니다.');
     }
     const budgets = splitJorangBountyBudget(prepared.lineage.bountyBudget);
+    const siegeWeights = splitConservedSiegeWeight(
+        prepared.metadata.siegeWeight,
+        budgets.length
+    );
     const definition = resolveBasicCirclePrimeTransformPrivateDefinition();
     const circlePrimeStats = resolveSpawnStats({}, definition, definition.id);
     const freshHealthFixedPoint = encodeGpuCircleBodyFixedPoint(
@@ -1664,7 +1702,8 @@ export function createGpuPrivateJorangSplitDestinationIntents(options) {
                     'C prime commandGeneration'
                 )
             }),
-            shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE
+            shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.CIRCLE,
+            siegeWeight: siegeWeights[branchIndex]
         });
     }));
 }
@@ -1722,7 +1761,8 @@ export function createGpuPrivateCirclePrimeReturnDestinationIntent(options) {
                 'J return commandGeneration'
             )
         }),
-        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG
+        shapeCode: GPU_CIRCLE_BODY_RENDER_SHAPE.JORANG,
+        siegeWeight: prepared.metadata.siegeWeight
     });
 }
 
@@ -1981,6 +2021,7 @@ export function createGpuPrivateHexaTransformDestinationIntent(options = {}) {
         coreImpactDamage: sourceStats.coreImpactDamage,
         towerContactDamage: sourceStats.towerContactDamage,
         bountyBudget: sourceStats.bountyBudget,
+        siegeWeight: sourceMemberCount,
         weight: sourceStats.weight
     });
     for (const [field, expected] of Object.entries(exactSourceMetadata)) {
@@ -2116,6 +2157,9 @@ export function createGpuPrivateHexaTransformDestinationIntent(options = {}) {
         coreImpactDamage: stats.coreImpactDamage,
         towerContactDamage: stats.towerContactDamage,
         bountyBudget: stats.bountyBudget,
+        // H(n) is the explicit Formation policy override: n natural H shares merge
+        // into one physical body while preserving total siege contribution.
+        siegeWeight: memberCount,
         weight: stats.weight,
         renderStyle: Object.freeze({
             color: render.colorRgba,

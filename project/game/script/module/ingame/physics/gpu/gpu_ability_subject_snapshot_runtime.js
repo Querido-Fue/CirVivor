@@ -322,7 +322,7 @@ fn snapshot_subjects(@builtin(global_invocation_id) gid: vec3u) {
         let body_team = (simulation.gameplay_meta >> TEAM_SHIFT) & TEAM_MASK;
         let selected = body_team == team_id
             && (metadata.noun_mask & noun_mask) == noun_mask
-            && metadata.generation <= generation_limit
+            && metadata.generation < generation_limit
             && metadata.visible_from_execution_ordinal <= execution_ordinal;
         if (!selected) {
             continue;

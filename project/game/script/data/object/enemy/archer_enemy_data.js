@@ -27,6 +27,7 @@ export const ARCHER_ENEMY_DATA = createMainGpuEnemyDefinition(
     ARCHER_ENEMY_DEFINITION_ID,
     'arrow',
     {
+        siegeWeight: 1,
         behaviorProfileId: ARCHER_CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
         capabilityIds: ARCHER_CAPABILITY_IDS
     }

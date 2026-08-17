@@ -14,13 +14,14 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
-**R3 Enemy Entity Word is complete as of 2026-08-16. R4 TowerGroup + Share Ledger is next.** The CPU run domain
+**R3 Enemy Entity Word is Post-R3 stabilized as of 2026-08-17. R4 TowerGroup + Share Ledger is next.** The CPU run domain
 now owns `WordSystem`, five Sentence slots/cooldowns, `SentenceSlotController`, and `GoldLedger`; the active GPU
 world owns `AbilityRuntime`, `ActorPayloadMaterializer`, `SentenceRuntimeEstimator`, `BountyRewardDirector`, and
 `HostileParticipationTracker`. Q executes `The Tower shoots Enemies` and E executes `Enemies shoot Enemies`.
-Subject selection is aggregate-only GPU work, child creation is exact 0/N, and child generation is GPU-authored
-from source generation plus one. Focused Node passed `42/42`, full Node passed `1540/1540`, actual R3 WebGPU
-passed 0/1/10/256/1000 plus doubling-to-capacity with storage maximum 9, protocol/recovery 0,
+Subject selection is aggregate-only GPU work; child creation uses parallel validate/aggregate/materialize with
+exact 0/N publication; and child generation is GPU-authored from source generation plus one. Full Node passed
+`1543/1543`; three actual R3 WebGPU runs passed 0/1/10/256/1000, generation-limit and generated Gold/Core
+scenarios, plus doubling-to-capacity with storage maximum 9, protocol/recovery 0,
 `uncapturedErrorCount=0`, and destroyed teardown. Both WASM checks, default WebGPU capability, all exact nine
 R2 routed hardware stages, the supplemental Rhom source-death projectile stage, audited render golden, and diff
 hygiene passed. Manual interactive smoke was not executed and is not claimed as PASS.
@@ -514,6 +515,28 @@ hygiene passed. Manual interactive smoke was not executed and is not claimed as 
   J split/return and one-cycle mixed O/J/R/Z/H/P/projectile churn both passed with recovery false,
   `uncapturedErrorCount=0`, storage maximum 9, and orderly destroyed teardown.
 
+## Post-R3 Enemy Word stabilization complete (2026-08-17)
+
+- Actor payload changed from one serial invocation that scanned every Subject/body slot to four bounded GPU
+  passes: initialize, 64-wide validate, aggregate, and 64-wide materialize. CPU maps only the aggregate and
+  WorldRegistry still preleases exact destination identities.
+- Three-run materialization medians improved from `165.8→6.3 ms` at 256 Subjects and `1371.0→5.2 ms` at 1000
+  Subjects (`26.3×` and `263.7×`). Storage maximum remains 9.
+- Preview reports raw/eligible/preview/budget separately. 999 and 1000 are executable; raw 1001 creates zero and
+  disables with `SUBJECT_BUDGET_EXCEEDED`. Exact one-short capacity also creates zero and consumes no cooldown.
+- `siegeWeight` is mandatory explicit Enemy data, independent of physics `weight`, and is conserved through
+  spawn, J/C′ split/return, H merge/transform, registry metadata, and pending participation.
+- `HostileParticipationTracker` performs one initialization/audit scan, then O(changes) exact-handle lifecycle
+  and publication updates. A 256-step randomized replay/ABA property test matches a fresh full audit at every
+  boundary without a steady-state full scan.
+- Generation eligibility is `generation < limit`. A limit-1 source creates a limit child, that child is excluded
+  next time, and an all-limit set completes ZERO with cooldown 0 and recovery false.
+- Actual generated-Enemy Player kill pays Gold 1 exactly once; replay pays 0. Actual Core impact pays Gold 0,
+  changes Core Integrity `100→99`, and both paths leave registry/body/prelease counts at zero.
+- Changed syntax `34/34`, Node `1543/1543`, both WASM checks, default capability, three R3 hardware runs, and the
+  unchanged render golden all pass. Every hardware receipt has protocol/recovery 0, uncaptured errors 0, and
+  destroyed teardown. Manual Q/E/Gold/Core/pause-resume smoke remains NOT EXECUTED.
+
 ## Post-R3 locked target not yet implemented
 
 - multiple Towers share a conserved living stat budget; death creates permanent Lost Share.
@@ -547,7 +570,8 @@ Shop/editor UI and save/checkpoint integration
 
 The Turn 4 checkpoint and Turn 9 final acceptance from `plan/0809_enemy/R2_GOAL.md` are complete. Turns 5–8
 production plus Turn 9 hardening, showcase, fixtures, and final runner were accepted on 2026-08-12. This status
-also closes `plan/0816_enemy_word` R3 Enemy Entity Word on 2026-08-16. It does not start R4 TowerGroup/Share,
+closes `plan/0816_enemy_word` Post-R3 automated stabilization on 2026-08-17, with manual smoke still pending. It
+does not start R4 TowerGroup/Share,
 Tower Payload, Merge, Overtime, full Shop/editor, or save work. Manual sandbox visual QA remains future evidence
 and was not substituted by automated hardware acceptance.
 

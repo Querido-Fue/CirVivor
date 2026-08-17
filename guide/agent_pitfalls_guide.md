@@ -30,3 +30,11 @@ Read this file before every code change.
 - Reuse pools through their acquire/release contract and fully reset reused state, IDs, generations, caches, listeners, and interpolation data.
 - Retarget one active animation for continuous input. Do not replace it on every wheel, drag, hover, or press update.
 - Scene destruction releases registrations, listeners, UI leases, animations, pooled objects, pending commands, and session-owned resources.
+
+## Keep aggregate GPU contracts exact
+
+- Do not silently clamp a raw Subject count to a runtime budget. Preserve raw/eligible evidence and return an explicit disabled reason when the budget is exceeded.
+- Keep `siegeWeight` explicit and data-owned through spawn, split, merge, transform, registry, and pending views. Never derive it from collision/physics `weight`.
+- Apply ordinary hostile participation through exact `(entityId, incarnation)` lifecycle/publication deltas. Full-registry traversal is initialization, audit, or recovery work, not a steady fixed-tick path.
+- Resolve Core fallback through the canonical GPU Core proxy kind/definition constants; the registry kind is not the display noun `core`.
+- Treat generation limits as half-open eligibility (`generation < limit`). A child at the limit is valid state but is ineligible for later selection.

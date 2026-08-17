@@ -925,6 +925,7 @@ function assertNaturalHexaRawIntent(
     }
     for (const [field, expected] of [
         ['flowSpeed', expectedStats.moveSpeedTilesPerSecond],
+        ['siegeWeight', BASIC_HEXA_ENEMY_DATA.siegeWeight],
         ['weight', expectedStats.weight],
         ['inverseMass', expectedStats.inverseMass],
         ['towerContactDamage', expectedStats.towerContactDamage],
@@ -1237,6 +1238,7 @@ function copyOptionalResolvedEnemyStatMetadata(intent) {
         'coreImpactDamage',
         'towerContactDamage',
         'bountyBudget',
+        'siegeWeight',
         'weight'
     ];
     const hasAny = fields.some((field) => intent[field] !== undefined);

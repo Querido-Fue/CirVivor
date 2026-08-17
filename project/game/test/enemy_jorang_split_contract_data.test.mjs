@@ -88,6 +88,7 @@ function createDefinitionSource(definition, overrides = {}) {
         formationDefinitionId: definition.formationDefinitionId,
         atomicTransformProfileId: definition.atomicTransformProfileId,
         routeClosureProfileId: definition.routeClosureProfileId,
+        siegeWeight: definition.siegeWeight,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

@@ -29,6 +29,7 @@ export const BASIC_PENTA_ENEMY_DATA = normalizeEnemyDefinition(Object.freeze({
     behaviorProfileId: CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
     effectEmitterProfileId: PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE_ID,
     formationDefinitionId: null,
+    siegeWeight: 1,
     capabilityIds: Object.freeze([
         ...MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         ENEMY_CAPABILITY_ID.EFFECT_EMITTER

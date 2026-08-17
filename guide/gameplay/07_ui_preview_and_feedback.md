@@ -1,11 +1,15 @@
 # 07. UI Preview and Sandbox Feedback
 
-## R3 implementation status (2026-08-16)
+## Post-R3 implementation status (2026-08-17)
 
 R3 exposes bounded, deep-frozen runtime preview/status data for the five Sentence slots, exact subject/generated
 counts, required/available body capacity, hostile result count, bounty potential, Siege Weight, danger warning,
 cooldown, Gold, and live/pending hostile participation. Preview and execution share the same selector and actor
 payload budget formulas; a danger warning does not disable an otherwise valid execution.
+
+Preview preserves `rawSubjectCount`, `eligibleSubjectCount`, `previewSubjectCount`, `subjectBudget`,
+`countExact`, capacity validity, and execution state as separate facts. It never truncates an over-budget raw
+count into an executable preview.
 
 This is a presentation seam, not the full Shop/editor/HUD product. The current visible GameScene status renderer
 still renders the existing Tower/Core lines. Five-offer Shop cards, Sentence editing, rich preview panels, and
@@ -39,6 +43,17 @@ Preview and runtime must share:
 - target/allegiance result.
 
 No duplicated UI-only arithmetic.
+
+Current Subject-budget boundary (`budget = 1000`):
+
+| Raw/eligible | Preview/new | Enabled | Reason |
+| ---: | ---: | --- | --- |
+| 999 | 999 | yes | — |
+| 1000 | 1000 | yes | — |
+| 1001 | 0 | no | `SUBJECT_BUDGET_EXCEEDED` |
+
+An exact one-short destination capacity disables execution with `DESTINATION_CAPACITY_EXCEEDED`; active
+cooldown uses `COOLDOWN_ACTIVE`. A dangerous but otherwise valid result stays enabled.
 
 ## 3. Examples
 

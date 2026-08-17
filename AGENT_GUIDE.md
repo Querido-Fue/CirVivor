@@ -31,26 +31,35 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R3 status (2026-08-16): Enemy Entity Word COMPLETE; R4 TowerGroup + Share Ledger is next. `GameSystem`
+Current Post-R3 status (2026-08-17): Enemy Entity Word stabilization COMPLETE; R4 TowerGroup + Share Ledger is
+still next. `GameSystem`
 owns the CPU run-domain `WordSystem`, five Sentence slots, `SentenceSlotController`, and `GoldLedger`.
 `GameObjectSystem` owns the GPU-world-scoped `AbilityRuntime`, `ActorPayloadMaterializer`,
 `SentenceRuntimeEstimator`, `BountyRewardDirector`, and `HostileParticipationTracker`. The production showcase
 binds Q to `The Tower shoots Enemies` and E to `Enemies shoot Enemies`; the only current actor-payload path is
-`Shoot + Enemy`. The GPU freezes the execution-start subject set, reports aggregate snapshot evidence only,
-preleases/materializes every child as one 0/N transaction, and derives child generation from GPU source metadata,
-so generated bodies cannot rejoin the same execution. No per-subject result readback or per-child JS object is
+`Shoot + Enemy`. The GPU freezes the execution-start subject set and reports aggregate snapshot evidence only.
+Actor payload materialization now uses parallel initialize → validate → aggregate → materialize passes: CPU
+preleases exact destinations, reads only the 64-byte aggregate, and publishes all N actors or zero. Validation
+does no per-subject body-capacity scan, and the runtime stays within 9 storage bindings. Generation eligibility is
+strictly `generation < limit`; children are authored as `source generation + 1`, so a limit-1 source creates a
+limit child that cannot enter the next execution. No per-subject result readback or per-child JS object is
 allowed. Exact authenticated lethal PLAYER damage plus the matching same-boundary `PLAYER_KILL` lifecycle commit
 is the only bounty ingress. Player-created Enemies participate in live/pending hostile count, bounty potential,
-and Siege Weight; the Wave timer and Overtime Core DOT remain future work. GPU-world replacement preserves words,
+and explicit data-owned Siege Weight; physics weight is never its fallback. `HostileParticipationTracker` applies
+exact-handle lifecycle/publication deltas in O(changes), deduplicates replay/ABA by entity/incarnation, and reserves
+full-registry traversal for initialization or explicit audit/recovery. The Wave timer and Overtime Core DOT remain
+future work. GPU-world replacement preserves words,
 slot cooldown state, and Gold while canceling transient executions and rebuilding GPU-world-scoped owners. Tower
 Payload, `Enemies shoot The Tower`, Tower Share/multi-Tower, Merge, full modifier grammar, Wave timer/Overtime DOT,
 Shop/editor UI, and save/checkpoint integration are not implemented by R3.
 
-Final R3 automated evidence: changed production syntax `28/28`, focused R3 Node `42/42`, full Node
-`1540/1540`, both WASM reproducibility checks, default WebGPU capability, and render golden 10 surfaces/3 cases
-all passed. The dedicated actual-WebGPU R3 runner passed 0/1/10/256/1000 subjects and repeated doubling to the
-capacity boundary with storage maximum 9, protocol/recovery 0, `uncapturedErrorCount=0`, and destroyed teardown.
-Manual interactive GameScene smoke was NOT EXECUTED and must not be reported as PASS.
+Final Post-R3 automated evidence: changed JS/MJS syntax `34/34`, full Node `1543/1543`, both WASM
+reproducibility checks, default WebGPU capability, and render golden 10 surfaces/3 cases all passed. Three
+dedicated actual-WebGPU R3 runs passed 0/1/10/256/1000 subjects, generation-limit boundaries, generated-Enemy
+Gold/Core-impact outcomes, and repeated doubling to the capacity boundary. The 256/1000 materialization medians
+fell from `165.8/1371.0 ms` to `6.3/5.2 ms` (`26.3×`/`263.7×`); every run reported storage maximum 9, protocol/recovery 0,
+`uncapturedErrorCount=0`, and destroyed teardown. Manual interactive GameScene smoke was NOT EXECUTED and must
+not be reported as PASS.
 
 | Task | Read |
 | --- | --- |

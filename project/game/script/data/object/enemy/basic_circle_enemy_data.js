@@ -75,7 +75,8 @@ export {
 /** main GPU enemy catalog에서 사용하는 시각 archetype 10종의 불변 선언입니다. */
 export const BASIC_SQUARE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_square_01',
-    'square'
+    'square',
+    { siegeWeight: 1 }
 );
 export const BASIC_TRIANGLE_ENEMY_DATA = normalizeEnemyDefinition(
     Object.freeze({
@@ -86,6 +87,7 @@ export const BASIC_TRIANGLE_ENEMY_DATA = normalizeEnemyDefinition(
         combatProfileId: TRIANGLE_FAST_LIGHT_ENEMY_COMBAT_PROFILE_ID,
         behaviorProfileId: TRIANGLE_FAST_LIGHT_ENEMY_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: null,
+        siegeWeight: 1,
         capabilityIds: MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render: Object.freeze({
             colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,
@@ -98,6 +100,7 @@ export const BASIC_ARROW_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_arrow_01',
     'arrow',
     {
+        siegeWeight: 1,
         behaviorProfileId: ARROW_TOWER_CHARGE_ENEMY_BEHAVIOR_PROFILE_ID,
         capabilityIds: Object.freeze([
             ENEMY_CAPABILITY_ID.NAVIGATION,
@@ -120,7 +123,8 @@ export const BASIC_RHOM_ENEMY_DATA = normalizeEnemyDefinition(
  */
 export const BASIC_CIRCLE_ENEMY_DATA = createMainGpuEnemyDefinition(
     'basic_circle_01',
-    'circle'
+    'circle',
+    { siegeWeight: 1 }
 );
 
 export const PERFORMANCE_OCTA_ENEMY_DEFINITION_ID
@@ -139,6 +143,7 @@ export const PERFORMANCE_OCTA_ENEMY_DATA = normalizeEnemyDefinition(
         combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
         behaviorProfileId: CORE_ROUTE_ENEMY_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: null,
+        siegeWeight: 1,
         capabilityIds: MAIN_GPU_ENEMY_DEFAULT_CAPABILITY_IDS,
         render: Object.freeze({
             colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,

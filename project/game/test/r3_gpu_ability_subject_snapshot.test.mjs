@@ -149,7 +149,7 @@ test('execution ordinal barrier는 같은 execution의 생성 actor 재귀 참�
     assert.match(GPU_ABILITY_SUBJECT_SNAPSHOT_WGSL,
         /metadata\.visible_from_execution_ordinal <= execution_ordinal/);
     assert.match(GPU_ABILITY_SUBJECT_SNAPSHOT_WGSL,
-        /metadata\.generation <= generation_limit/);
+        /metadata\.generation < generation_limit/);
     assert.match(RUNTIME_SOURCE, /snapshotToken/);
     assert.match(RUNTIME_SOURCE, /retainedSnapshotTokens/);
 });

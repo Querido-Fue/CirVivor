@@ -117,6 +117,7 @@ function canonicalSource(definition, overrides = {}) {
     return {
         id: definition.id,
         spawnPolicy: definition.spawnPolicy,
+        siegeWeight: definition.siegeWeight,
         shapeDefinitionId: definition.shapeDefinitionId,
         physicsProfileId: definition.physicsProfileId,
         combatProfileId: definition.combatProfileId,
@@ -315,6 +316,7 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
     const squareArcherBehavior = normalizeEnemyDefinition({
         id: 'shape-independent-square-archer',
         spawnPolicy: ARCHER_DEFINITION.spawnPolicy,
+        siegeWeight: ARCHER_DEFINITION.siegeWeight,
         shapeDefinitionId: 'square',
         physicsProfileId: ARCHER_DEFINITION.physicsProfileId,
         combatProfileId: ARCHER_DEFINITION.combatProfileId,

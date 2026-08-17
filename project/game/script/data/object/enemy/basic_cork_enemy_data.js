@@ -31,6 +31,7 @@ export const BASIC_CORK_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_CORK_ENEMY_DEFINITION_ID,
     'cork',
     {
+        siegeWeight: 1,
         behaviorProfileId: CORK_ROUTE_CLOSURE_BEHAVIOR_PROFILE_ID,
         routeClosureProfileId: CORK_ROUTE_CLOSURE_PROFILE_ID,
         capabilityIds: BASIC_CORK_ENEMY_CAPABILITY_IDS

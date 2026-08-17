@@ -42,6 +42,7 @@ export const BASIC_JORANG_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_JORANG_ENEMY_DEFINITION_ID,
     'jorang',
     {
+        siegeWeight: 1,
         spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
         combatProfileId: JORANG_NATURAL_ENEMY_COMBAT_PROFILE_ID,
         atomicTransformProfileId: JORANG_SPLIT_ATOMIC_TRANSFORM_PROFILE_ID,
@@ -53,6 +54,7 @@ const BASIC_CIRCLE_PRIME_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_CIRCLE_PRIME_ENEMY_DEFINITION_ID,
     'circle',
     {
+        siegeWeight: 1,
         spawnPolicy: ENEMY_SPAWN_POLICY.TRANSFORM_PRIVATE,
         atomicTransformProfileId:
             CIRCLE_PRIME_RETURN_ATOMIC_TRANSFORM_PROFILE_ID,

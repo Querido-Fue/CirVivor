@@ -43,6 +43,7 @@ export const BASIC_RHOM_ENEMY_DEFINITION_SOURCE = Object.freeze({
     combatProfileId: BASIC_RHOM_COMBAT_PROFILE_ID,
     behaviorProfileId: BASIC_RHOM_BEHAVIOR_PROFILE_ID,
     formationDefinitionId: null,
+    siegeWeight: 1,
     capabilityIds: BASIC_RHOM_CAPABILITY_IDS,
     render: Object.freeze({
         colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,

@@ -1,6 +1,6 @@
 # 06. GPU Runtime and Transaction Requirements
 
-## R3 implementation status (2026-08-16)
+## Post-R3 implementation status (2026-08-17)
 
 R3 Enemy Entity Word is now a concrete GPU runtime, not a future seam. CPU code submits one semantic execution;
 the GPU snapshots exact eligible subjects into deterministic order and returns only aggregate evidence. The
@@ -8,6 +8,17 @@ Enemy actor payload then preleases exactly N identities/body slots, uploads cont
 materializes all N persistent actors or zero. GPU source metadata is the generation authority and writes every
 child as `source generation + 1`; generated children become visible to a later execution only. No per-subject
 result readback, per-child JS object, or full-body readback was introduced.
+
+The actor-payload ABI now executes initialize (`1` invocation), parallel validate (`64`-wide), aggregate
+(`1` invocation), and parallel materialize (`64`-wide) as separate passes. Validate checks source, destination,
+generation, exact Tower/Core target, and SDF placement into a bounded scratch record; it does not scan body
+capacity per Subject. Aggregate gates the final materialization, so no body mutation occurs unless every record
+is valid. CPU maps only the fixed 64-byte aggregate. The lease header is 176 bytes, validation records are
+32 bytes, and the complete profile remains at most 9 storage buffers per shader stage.
+
+Generation selection is strictly `sourceGeneration < generationLimit`. `limit - 1` is eligible and writes a
+child at `limit`; a source already at `limit` is excluded without recovery. Exact Tower target is preferred,
+then the canonical GPU Core proxy handle, then facing fallback.
 
 This implementation is deliberately Enemy-only. Tower Payload, Tower group broadcast/share, other actor nouns
 and verbs, full modifier grammar, and general-purpose child allocation remain future extensions.

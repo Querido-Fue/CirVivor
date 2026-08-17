@@ -82,6 +82,7 @@ function definitionSource(definition, overrides = {}) {
         effectEmitterProfileId: definition.effectEmitterProfileId,
         formationDefinitionId: definition.formationDefinitionId,
         routeClosureProfileId: definition.routeClosureProfileId,
+        siegeWeight: definition.siegeWeight,
         capabilityIds: definition.capabilityIds,
         render: definition.render,
         ...overrides

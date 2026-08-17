@@ -34,15 +34,24 @@ export class SentenceRuntimeEstimator {
             : selectorCode === SUBJECT_SELECTOR_CODE.ENEMY
                 ? nonNegativeInteger(runtime.liveHostileActorCount)
                 : 0;
-        const subjectCount = Math.min(
-            rawSubjectCount,
-            nonNegativeInteger(compiledAbility.budgets?.subjectCount)
+        const subjectBudget = nonNegativeInteger(
+            compiledAbility.budgets?.subjectCount
         );
+        const subjectBudgetExceeded = rawSubjectCount > subjectBudget;
+        const countExact = selectorCode === SUBJECT_SELECTOR_CODE.ENEMY
+            ? runtime.hostileSubjectCountExact === true
+            : selectorCode === SUBJECT_SELECTOR_CODE.TOWER;
+        // Enemy generation eligibility is GPU-owned. Until that aggregate is
+        // available, preview uses the raw count as a conservative upper bound.
+        const eligibleSubjectCount = rawSubjectCount;
+        const previewSubjectCount = subjectBudgetExceeded
+            ? 0
+            : eligibleSubjectCount;
         const generatedBodyBudget = nonNegativeInteger(
             compiledAbility.budgets?.generatedBodyCount
         );
         const capacity = evaluateActorPayloadCapacity({
-            requiredBodies: subjectCount,
+            requiredBodies: rawSubjectCount,
             registryAvailable: nonNegativeInteger(runtime.registryAvailable),
             bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
             generatedBodyBudget
@@ -67,17 +76,30 @@ export class SentenceRuntimeEstimator {
             runtime.dangerThreshold,
             32
         );
-        const resultingHostileCount = hostileBefore + subjectCount;
+        const resultingHostileCount = hostileBefore + previewSubjectCount;
         const dangerous = resultingHostileCount > dangerThreshold;
+        const executionDisabledReason = subjectBudgetExceeded
+            ? 'SUBJECT_BUDGET_EXCEEDED'
+            : cooldownRemainingTicks > 0
+                ? 'COOLDOWN_ACTIVE'
+                : !capacity.valid
+                    ? 'DESTINATION_CAPACITY_EXCEEDED'
+                    : null;
         return Object.freeze({
             formulaId: compiledAbility.previewFormulaId,
-            subjectCount,
-            newEnemyCount: subjectCount,
+            rawSubjectCount,
+            eligibleSubjectCount,
+            previewSubjectCount,
+            subjectBudget,
+            countExact,
+            subjectCount: previewSubjectCount,
+            newEnemyCount: previewSubjectCount,
             resultingHostileCount,
-            potentialBounty: subjectCount * bountyPerEnemy,
+            potentialBounty: previewSubjectCount * bountyPerEnemy,
             siegeWeightBefore,
             siegeWeightAfter:
-                siegeWeightBefore + subjectCount * siegeWeightPerEnemy,
+                siegeWeightBefore
+                    + previewSubjectCount * siegeWeightPerEnemy,
             requiredBodies: capacity.requiredBodies,
             availableBodies: capacity.availableBodies,
             registryAvailable: capacity.registryAvailable,
@@ -91,7 +113,8 @@ export class SentenceRuntimeEstimator {
             capacityValidity: capacity,
             dangerous,
             warningCode: dangerous ? 'HOSTILE_SIEGE_GROWTH' : null,
-            executionEnabled: cooldownRemainingTicks === 0 && capacity.valid
+            executionEnabled: executionDisabledReason === null,
+            executionDisabledReason
         });
     }
 

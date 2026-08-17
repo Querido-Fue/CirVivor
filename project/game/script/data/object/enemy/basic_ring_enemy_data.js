@@ -26,6 +26,7 @@ export const BASIC_RING_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_RING_ENEMY_DEFINITION_ID,
     'ring',
     {
+        siegeWeight: 1,
         projectileCaptureProfileId: RING_PROJECTILE_CAPTURE_PROFILE_ID,
         capabilityIds: BASIC_RING_ENEMY_CAPABILITY_IDS
     }

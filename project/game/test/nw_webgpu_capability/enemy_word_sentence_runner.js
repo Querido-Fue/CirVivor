@@ -2,12 +2,28 @@ import {
     BASIC_CIRCLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
 import {
-    R3_SHOWCASE_SENTENCE_LOADOUT
+    R3_SHOWCASE_SENTENCE_LOADOUT,
+    R3_WORD_PROTOCOL_DATA
 } from './production/script/data/word/r3_word_catalog_data.js';
+import {
+    BASIC_BULLET_PROJECTILE_DATA
+} from './production/script/data/object/projectile/basic_bullet_data.js';
 import {
     ABILITY_SLOT_ID
 } from './production/script/module/ingame/contract/word_sentence_contract.js';
 import {
+    ABILITY_CREATION_ORIGIN_CODE,
+    createAbilityEntityMetadata
+} from './production/script/module/ingame/contract/ability_execution_contract.js';
+import {
+    ENEMY_LIFECYCLE_DISPOSITION_ID
+} from './production/script/module/ingame/contract/enemy_lifecycle_disposition_contract.js';
+import {
+    GAMEPLAY_TEAM_ID
+} from './production/script/module/ingame/contract/gameplay_team_contract.js';
+import {
+    createGpuCoreProxySpawnIntent,
+    createGpuProjectileSpawnIntent,
     createGpuSimulationEndpoint
 } from './production/script/module/ingame/gpu_simulation_endpoint.js';
 import {
@@ -19,6 +35,19 @@ import {
 import {
     HostileParticipationTracker
 } from './production/script/module/ingame/state/hostile_participation_tracker.js';
+import {
+    CoreIntegrity
+} from './production/script/module/ingame/state/core_integrity.js';
+import {
+    GoldLedger
+} from './production/script/module/ingame/state/gold_ledger.js';
+import {
+    BountyRewardDirector
+} from './production/script/module/ingame/object/enemy/bounty_reward_director.js';
+import {
+    CORE_IMPACT_FACT_TYPE,
+    EnemyCoreImpactDirector
+} from './production/script/module/ingame/object/enemy/enemy_core_impact_director.js';
 import {
     ActorPayloadMaterializer
 } from './production/script/module/ingame/word/actor_payload_materializer.js';
@@ -144,8 +173,12 @@ async function openGenericBoundary(device, endpoint, fixedTick) {
 
 function createHarness(device, capacity, navigationOptions = {}) {
     const navigationSource = createNavigationSource(navigationOptions);
+    let coreCleanupBinding = null;
     const endpoint = createGpuSimulationEndpoint({
-        webGpuPlatformPort: createPlatformPort(device)
+        webGpuPlatformPort: createPlatformPort(device),
+        coreImpactCleanupPortReceiver(binding) {
+            coreCleanupBinding = binding;
+        }
     }, {
         capacity,
         abilitySubjectCommandCapacity: 4,
@@ -156,7 +189,17 @@ function createHarness(device, capacity, navigationOptions = {}) {
     });
     endpoint.init(navigationSource);
     const wordSystem = new WordSystem({
-        loadout: R3_SHOWCASE_SENTENCE_LOADOUT
+        loadout: R3_SHOWCASE_SENTENCE_LOADOUT,
+        ...(navigationOptions.generationLimit === undefined
+            ? null
+            : {
+                compilerOptions: {
+                    protocol: {
+                        ...R3_WORD_PROTOCOL_DATA,
+                        generationLimit: navigationOptions.generationLimit
+                    }
+                }
+            })
     });
     const abilityRuntime = new AbilityRuntime({ wordSystem, endpoint });
     const materializer = new ActorPayloadMaterializer({
@@ -171,6 +214,7 @@ function createHarness(device, capacity, navigationOptions = {}) {
         wordSystem,
         abilityRuntime,
         materializer,
+        getCoreCleanupBinding: () => coreCleanupBinding,
         commandSequence: 0
     };
 }
@@ -215,6 +259,54 @@ function createEnemyIntent(harness, index) {
         waveId: 'r3-enemy-word-fixture',
         policyId: 'r3-enemy-word-natural'
     });
+}
+
+function sameHandle(left, right) {
+    return left?.entityId === right?.entityId
+        && left?.incarnation === right?.incarnation;
+}
+
+function spawnedHandlesOfKind(harness, commit, kindId) {
+    const registry = harness.endpoint.getRegistry();
+    return commit.spawned.map(({ handle }) => handle).filter((handle) => (
+        registry.copyEntityView(handle, {})?.kindId === kindId
+    ));
+}
+
+function synchronizeEnemyGenerations(harness, commit, generations) {
+    const handles = spawnedHandlesOfKind(harness, commit, 'enemy');
+    assert(handles.length === generations.length,
+        `generation fixture cardinality 불일치: ${handles.length}/${generations.length}`);
+    const registry = harness.endpoint.getRegistry();
+    const backend = harness.endpoint.getBackend();
+    const entries = handles.map((handle, index) => {
+        const view = registry.copyEntityView(handle, {});
+        const binding = backend.resolveExactAbilityBodySlot(handle);
+        assert(view && binding && sameHandle(binding, handle),
+            `generation fixture exact binding 누락: ${JSON.stringify(handle)}`);
+        return Object.freeze({
+            slot: binding.slot,
+            metadata: createAbilityEntityMetadata(view, {
+                generation: generations[index]
+            })
+        });
+    });
+    const synchronized = backend.synchronizeAbilityEntityMetadata(entries);
+    assert(synchronized.accepted === true
+        && synchronized.updatedCount === generations.length,
+    `generation metadata sync 실패: ${JSON.stringify(synchronized)}`);
+    return Object.freeze(handles);
+}
+
+async function readBodies(harness) {
+    const backend = harness.endpoint.getBackend();
+    const pending = backend.simulation.readbackBodies();
+    await harness.device.queue.onSubmittedWorkDone();
+    return pending;
+}
+
+function findBody(bodies, handle) {
+    return bodies.find((body) => sameHandle(body.handle, handle)) ?? null;
 }
 
 function snapshotStatus(harness) {
@@ -296,6 +388,7 @@ async function executeCast(harness, slotId, fixedTick, options = {}) {
     assert(commit.recoveryRequired !== true
         && commit.rejected.length === 0,
     `cast lifecycle commit 실패: ${JSON.stringify(commit)}`);
+    options.afterLifecycleCommit?.({ harness, commit });
     const snapshotStartedAt = performance.now();
     assert(endpoint.fixedUpdate(FIXED_DELTA, fixedTick),
         `ability fixed submit ${fixedTick} 실패`);
@@ -576,6 +669,7 @@ function collectStressReceipt(harness, cast) {
             status.endpoint.actorPayloadMaterializations.preleaseFailure
                 ?? null,
         materializerFailure: status.payload.failure ?? null,
+        storageMaximum: getStorageMaximum(status),
         protocolFailureCount:
             status.endpoint.events.protocolFailure ? 1 : 0,
         recoveryRequired: status.endpoint.recoveryRequired
@@ -813,6 +907,430 @@ async function runZeroSubjectScenario(device) {
     }
 }
 
+async function runGenerationBoundaryScenario(device) {
+    let mixedHarness = createHarness(device, 6, { generationLimit: 3 });
+    let allExcludedHarness = null;
+    try {
+        requestSpawn(
+            mixedHarness,
+            createGpuCoreProxySpawnIntent({
+                position: mixedHarness.navigationSource.corePosition
+            }),
+            1,
+            'generation-core'
+        );
+        requestEnemyBatch(mixedHarness, 2, 1, 'generation-mixed');
+        const mixed = await executeCast(
+            mixedHarness,
+            ABILITY_SLOT_ID.E,
+            1,
+            {
+                afterLifecycleCommit({ harness, commit }) {
+                    synchronizeEnemyGenerations(harness, commit, [2, 3]);
+                }
+            }
+        );
+        const childHandle = mixed.payloadObservation?.committedHandles?.[0];
+        const childView = childHandle
+            ? mixedHarness.endpoint.getRegistry().copyEntityView(childHandle, {})
+            : null;
+        const nextExecution = await executeCast(
+            mixedHarness,
+            ABILITY_SLOT_ID.E,
+            mixed.nextFixedTick
+        );
+        assert(mixed.outcome.code === ABILITY_EXECUTION_OUTCOME_CODE.COMPLETED
+            && mixed.outcome.subjectCount === 1
+            && mixed.outcome.generatedCount === 1
+            && childView?.metadata?.generation === null
+            && childView.metadata.generationAuthority === 'GPU_ABILITY_METADATA'
+            && nextExecution.outcome.code
+                === ABILITY_EXECUTION_OUTCOME_CODE.COMPLETED
+            && nextExecution.outcome.subjectCount === 1
+            && nextExecution.outcome.generatedCount === 1
+            && mixedHarness.endpoint.getRegistry().getActiveCount('enemy') === 4,
+        `generation mixed boundary 불일치: ${JSON.stringify({
+            outcome: mixed.outcome,
+            nextOutcome: nextExecution.outcome,
+            childView,
+            status: snapshotStatus(mixedHarness)
+        })}`);
+        const mixedResult = Object.freeze({
+            generationLimit: 3,
+            sourceGenerations: Object.freeze([2, 3]),
+            subjectCount: mixed.outcome.subjectCount,
+            generatedCount: mixed.outcome.generatedCount,
+            nextExecutionSubjectCount: nextExecution.outcome.subjectCount,
+            childGeneration: 3,
+            childGenerationProof: 'excluded-from-next-generation-limit-3-cast',
+            limitSourceExcluded: true,
+            coreFallbackMaterialized: true,
+            cooldownConsumed: mixed.outcome.cooldownConsumed,
+            storageMaximum: getStorageMaximum(mixed.status),
+            recoveryRequired: mixed.status.endpoint.recoveryRequired
+                || mixed.status.ability.recoveryRequired
+                || mixed.status.payload.recoveryRequired
+        });
+        await destroyHarness(mixedHarness);
+        mixedHarness = null;
+
+        allExcludedHarness = createHarness(device, 2, { generationLimit: 3 });
+        requestEnemyBatch(allExcludedHarness, 2, 1, 'generation-all-excluded');
+        const allExcluded = await executeCast(
+            allExcludedHarness,
+            ABILITY_SLOT_ID.E,
+            1,
+            {
+                afterLifecycleCommit({ harness, commit }) {
+                    synchronizeEnemyGenerations(harness, commit, [3, 3]);
+                }
+            }
+        );
+        const allExcludedStatus = snapshotStatus(allExcludedHarness);
+        assert(allExcluded.outcome.code === ABILITY_EXECUTION_OUTCOME_CODE.ZERO_SUBJECT
+            && allExcluded.outcome.subjectCount === 0
+            && allExcluded.outcome.generatedCount === 0
+            && allExcluded.outcome.cooldownConsumed === false
+            && allExcludedStatus.endpoint.recoveryRequired === false
+            && allExcludedStatus.ability.recoveryRequired === false
+            && allExcludedStatus.payload.recoveryRequired === false,
+        `generation all-excluded boundary 불일치: ${JSON.stringify({
+            outcome: allExcluded.outcome,
+            status: allExcludedStatus
+        })}`);
+        return Object.freeze({
+            mixed: mixedResult,
+            allExcluded: Object.freeze({
+                sourceGenerations: Object.freeze([3, 3]),
+                subjectCount: allExcluded.outcome.subjectCount,
+                generatedCount: allExcluded.outcome.generatedCount,
+                cooldownConsumed: allExcluded.outcome.cooldownConsumed,
+                terminalState:
+                    allExcludedStatus.ability.lastExecutionState.state,
+                recoveryRequired: false
+            })
+        });
+    } finally {
+        if (mixedHarness) await destroyHarness(mixedHarness);
+        if (allExcludedHarness) await destroyHarness(allExcludedHarness);
+    }
+}
+
+async function runGeneratedEnemyGoldScenario(device) {
+    const harness = createHarness(device, 4);
+    const goldLedger = new GoldLedger();
+    const bountyDirector = new BountyRewardDirector({
+        goldLedger,
+        sessionGeneration: harness.endpoint.getStatus().sessionGeneration
+    });
+    const tracker = new HostileParticipationTracker();
+    let towerHandle = null;
+    try {
+        const towerCommandId = requestSpawn(
+            harness,
+            createGpuTowerSpawnIntent({ position: { x: 20, y: 12 } }),
+            1,
+            'gold-tower'
+        );
+        const cast = await executeCast(harness, ABILITY_SLOT_ID.Q, 1, {
+            aimPoint: { x: 24, y: 12 },
+            afterLifecycleCommit({ harness: activeHarness, commit }) {
+                towerHandle = commit.spawned.find(
+                    ({ commandId }) => commandId === towerCommandId
+                )?.handle ?? null;
+                assert(towerHandle, 'Gold fixture Tower handle 누락');
+                const configured = activeHarness.endpoint
+                    .configureTowerGameplayTarget(towerHandle);
+                assert(configured.accepted === true,
+                    `Gold fixture Tower target 실패: ${JSON.stringify(configured)}`);
+            }
+        });
+        const generatedHandle = cast.payloadObservation?.committedHandles?.[0];
+        const registry = harness.endpoint.getRegistry();
+        const generatedView = generatedHandle
+            ? registry.copyEntityView(generatedHandle, {})
+            : null;
+        assert(generatedView?.metadata?.abilityCreationOriginCode
+                === ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD
+            && generatedView.metadata.rewardEligible === true
+            && generatedView.metadata.bountyBudget === 1
+            && generatedView.metadata.siegeWeight === 1,
+        `generated Enemy provenance 불일치: ${JSON.stringify(generatedView)}`);
+        const beforeKill = tracker.refresh(
+            registry,
+            harness.endpoint.getPendingHostileParticipationView()
+        );
+        assert(beforeKill.hostileActorCount === 1
+            && beforeKill.siegeWeight === 1,
+        `generated Enemy aggregate 불일치: ${JSON.stringify(beforeKill)}`);
+
+        const bodies = await readBodies(harness);
+        const generatedBody = findBody(bodies, generatedHandle);
+        assert(generatedBody, 'generated Enemy GPU body 누락');
+        requestSpawn(
+            harness,
+            createGpuProjectileSpawnIntent({
+                definition: BASIC_BULLET_PROJECTILE_DATA,
+                position: {
+                    x: generatedBody.position.x - 0.65,
+                    y: generatedBody.position.y
+                },
+                velocity: { x: 24, y: 0 },
+                teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                sourceHandle: towerHandle,
+                ownerHandle: towerHandle,
+                targetHandle: generatedHandle,
+                producerId: 'r3-gold-actual-player-projectile',
+                sourceAbilityId: 'r3-gold-actual-lethal'
+            }),
+            3,
+            'gold-player-projectile'
+        );
+        await openGenericBoundary(device, harness.endpoint, 3);
+        const projectileCommit = harness.endpoint.commitAtFixedBoundary(3);
+        assert(projectileCommit.recoveryRequired !== true
+            && projectileCommit.rejected.length === 0,
+        `Gold projectile commit 실패: ${JSON.stringify(projectileCommit)}`);
+        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 3),
+            'Gold projectile fixed submit 실패');
+        await device.queue.onSubmittedWorkDone();
+
+        const lethalEvents = await openGenericBoundary(
+            device,
+            harness.endpoint,
+            4
+        );
+        const stagedClaims = bountyDirector.observeCompletedEvents(
+            lethalEvents,
+            registry
+        );
+        assert(stagedClaims.stagedClaimCount === 1,
+            `Gold lethal proof 누락: ${JSON.stringify({ stagedClaims, lethalEvents })}`);
+        const lifecycle = harness.endpoint.commitAtFixedBoundary(4);
+        const playerKill = lifecycle.despawned.find((entry) => (
+            sameHandle(entry.handle, generatedHandle)
+        ));
+        assert(playerKill?.disposition
+                === ENEMY_LIFECYCLE_DISPOSITION_ID.PLAYER_KILL
+            && playerKill.bountyEligible === true,
+        `PLAYER_KILL lifecycle 누락: ${JSON.stringify(lifecycle)}`);
+        const payout = bountyDirector.observeLifecycle(lifecycle, 4);
+        const afterKill = tracker.refresh(
+            registry,
+            harness.endpoint.getPendingHostileParticipationView(),
+            { lifecycle }
+        );
+        const replayClaims = bountyDirector.observeCompletedEvents(
+            lethalEvents,
+            registry
+        );
+        const replayPayout = bountyDirector.observeLifecycle(lifecycle, 4);
+        assert(payout.payoutCount === 1
+            && payout.payoutAmount === 1
+            && goldLedger.getBalance() === 1
+            && replayClaims.stagedClaimCount === 0
+            && replayPayout.payoutCount === 0
+            && afterKill.hostileActorCount === 0
+            && afterKill.siegeWeight === 0,
+        `Gold payout/replay 불일치: ${JSON.stringify({
+            payout,
+            replayClaims,
+            replayPayout,
+            afterKill,
+            bounty: bountyDirector.getStatus()
+        })}`);
+        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 4),
+            'Gold cleanup fixed submit 실패');
+        await device.queue.onSubmittedWorkDone();
+        const postCleanupBodies = await readBodies(harness);
+        assert(!findBody(postCleanupBodies, generatedHandle)
+            && registry.getActiveCount('enemy') === 0
+            && registry.getActiveCount('projectile') === 0,
+        `Gold registry/body cleanup 실패: ${JSON.stringify({
+            bodies: postCleanupBodies,
+            endpoint: harness.endpoint.getStatus()
+        })}`);
+        return Object.freeze({
+            generatedCount: cast.outcome.generatedCount,
+            sentenceProvenance: true,
+            rewardEligible: generatedView.metadata.rewardEligible,
+            bountyBudget: generatedView.metadata.bountyBudget,
+            playerKillDisposition: playerKill.disposition,
+            payoutCount: payout.payoutCount,
+            payoutAmount: payout.payoutAmount,
+            gold: goldLedger.getBalance(),
+            replayPayoutAmount: replayPayout.payoutAmount,
+            hostileBefore: beforeKill.hostileActorCount,
+            hostileAfter: afterKill.hostileActorCount,
+            siegeBefore: beforeKill.siegeWeight,
+            siegeAfter: afterKill.siegeWeight,
+            registryEnemyCount: registry.getActiveCount('enemy'),
+            registryProjectileCount: registry.getActiveCount('projectile'),
+            bodyCleanup: !findBody(postCleanupBodies, generatedHandle),
+            storageMaximum: getStorageMaximum(snapshotStatus(harness)),
+            recoveryRequired: harness.endpoint.requiresRecovery()
+                || bountyDirector.requiresRecovery()
+        });
+    } finally {
+        tracker.destroy();
+        bountyDirector.destroy();
+        goldLedger.destroy();
+        await destroyHarness(harness);
+    }
+}
+
+async function runGeneratedEnemyCoreImpactScenario(device) {
+    const harness = createHarness(device, 4);
+    const goldLedger = new GoldLedger();
+    const bountyDirector = new BountyRewardDirector({
+        goldLedger,
+        sessionGeneration: harness.endpoint.getStatus().sessionGeneration
+    });
+    const coreIntegrity = new CoreIntegrity({ maxIntegrity: 100 });
+    let coreDirector = null;
+    let towerHandle = null;
+    let coreHandle = null;
+    try {
+        const cleanupBinding = harness.getCoreCleanupBinding();
+        assert(cleanupBinding?.port, 'Core impact cleanup port 누락');
+        coreDirector = new EnemyCoreImpactDirector({
+            coreIntegrity,
+            endpoint: harness.endpoint,
+            coreImpactCleanupPort: cleanupBinding.port
+        });
+        const towerCommandId = requestSpawn(
+            harness,
+            createGpuTowerSpawnIntent({ position: { x: 26.5, y: 12 } }),
+            1,
+            'core-impact-tower'
+        );
+        const coreCommandId = requestSpawn(
+            harness,
+            createGpuCoreProxySpawnIntent({ position: { x: 28, y: 12 } }),
+            1,
+            'core-impact-core'
+        );
+        const cast = await executeCast(harness, ABILITY_SLOT_ID.Q, 1, {
+            aimPoint: { x: 28, y: 12 },
+            afterLifecycleCommit({ harness: activeHarness, commit }) {
+                towerHandle = commit.spawned.find(
+                    ({ commandId }) => commandId === towerCommandId
+                )?.handle ?? null;
+                coreHandle = commit.spawned.find(
+                    ({ commandId }) => commandId === coreCommandId
+                )?.handle ?? null;
+                assert(towerHandle && coreHandle,
+                    'Core impact Tower/Core handle 누락');
+                const configured = activeHarness.endpoint
+                    .configureTowerGameplayTarget(towerHandle);
+                assert(configured.accepted === true,
+                    `Core impact Tower target 실패: ${JSON.stringify(configured)}`);
+            }
+        });
+        const generatedHandle = cast.payloadObservation?.committedHandles?.[0];
+        const registry = harness.endpoint.getRegistry();
+        const generatedView = generatedHandle
+            ? registry.copyEntityView(generatedHandle, {})
+            : null;
+        assert(generatedView?.metadata?.abilityCreationOriginCode
+            === ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD,
+        `Core impact generated provenance 누락: ${JSON.stringify(generatedView)}`);
+
+        const boundary3 = await openGenericBoundary(device, harness.endpoint, 3);
+        coreDirector.observeCompletedEvents(boundary3, registry);
+        const coreStage3 = coreDirector.stageForFixedTick({
+            endpoint: harness.endpoint,
+            targetFixedTick: 3
+        });
+        assert(coreStage3.recoveryRequired !== true,
+            `Core impact T3 stage 실패: ${JSON.stringify(coreStage3)}`);
+        const lifecycle3 = harness.endpoint.commitAtFixedBoundary(3);
+        coreDirector.observeFixedCommit(lifecycle3, 3);
+        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 3),
+            'Core impact T3 fixed submit 실패');
+        await device.queue.onSubmittedWorkDone();
+
+        const impactEvents = await openGenericBoundary(
+            device,
+            harness.endpoint,
+            4
+        );
+        const coreObservation = coreDirector.observeCompletedEvents(
+            impactEvents,
+            registry
+        );
+        const stagedClaims = bountyDirector.observeCompletedEvents(
+            impactEvents,
+            registry
+        );
+        const coreStage4 = coreDirector.stageForFixedTick({
+            endpoint: harness.endpoint,
+            targetFixedTick: 4
+        });
+        assert(coreStage4.recoveryRequired !== true,
+            `Core impact T4 stage 실패: ${JSON.stringify(coreStage4)}`);
+        const lifecycle4 = harness.endpoint.commitAtFixedBoundary(4);
+        const coreCommit = coreDirector.observeFixedCommit(lifecycle4, 4);
+        const payout = bountyDirector.observeLifecycle(lifecycle4, 4);
+        const impactFact = coreObservation.facts?.find((fact) => (
+            fact.type === CORE_IMPACT_FACT_TYPE.IMPACT
+                && sameHandle(fact.enemyHandle, generatedHandle)
+        ));
+        const coreImpact = lifecycle4.despawned.find((entry) => (
+            sameHandle(entry.handle, generatedHandle)
+        ));
+        assert(impactFact
+            && impactFact.bountyEligible === false
+            && coreImpact?.disposition
+                === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
+            && coreImpact.bountyEligible === false
+            && stagedClaims.stagedClaimCount === 0
+            && payout.payoutAmount === 0
+            && goldLedger.getBalance() === 0
+            && coreIntegrity.getCurrentIntegrity() === 99,
+        `generated Enemy Core impact 불일치: ${JSON.stringify({
+            coreObservation,
+            coreStage4,
+            coreCommit,
+            lifecycle4,
+            stagedClaims,
+            payout,
+            integrity: coreIntegrity.getCurrentIntegrity()
+        })}`);
+        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 4),
+            'Core impact cleanup fixed submit 실패');
+        await device.queue.onSubmittedWorkDone();
+        const postCleanupBodies = await readBodies(harness);
+        assert(!findBody(postCleanupBodies, generatedHandle)
+            && registry.getActiveCount('enemy') === 0,
+        `Core impact cleanup 실패: ${JSON.stringify({
+            bodies: postCleanupBodies,
+            endpoint: harness.endpoint.getStatus()
+        })}`);
+        return Object.freeze({
+            generatedCount: cast.outcome.generatedCount,
+            sentenceProvenance: true,
+            disposition: coreImpact.disposition,
+            bountyEligible: coreImpact.bountyEligible,
+            payoutAmount: payout.payoutAmount,
+            gold: goldLedger.getBalance(),
+            integrityBefore: 100,
+            integrityAfter: coreIntegrity.getCurrentIntegrity(),
+            registryEnemyCount: registry.getActiveCount('enemy'),
+            bodyCleanup: !findBody(postCleanupBodies, generatedHandle),
+            storageMaximum: getStorageMaximum(snapshotStatus(harness)),
+            recoveryRequired: harness.endpoint.requiresRecovery()
+                || coreDirector.requiresRecovery()
+                || bountyDirector.requiresRecovery()
+        });
+    } finally {
+        coreDirector?.destroy();
+        bountyDirector.destroy();
+        goldLedger.destroy();
+        await destroyHarness(harness);
+    }
+}
+
 async function run() {
     const result = {
         status: 'fail',
@@ -849,12 +1367,21 @@ async function run() {
         const recursion = await runRecursionScenario(device);
         const oneShort = await runOneShortCapacityScenario(device);
         const zeroSubject = await runZeroSubjectScenario(device);
+        const generationBoundary = await runGenerationBoundaryScenario(device);
+        const generatedEnemyGold = await runGeneratedEnemyGoldScenario(device);
+        const generatedEnemyCoreImpact
+            = await runGeneratedEnemyCoreImpactScenario(device);
         const fanout256 = await runFanoutScenario(device, 256);
         const fanout1000 = await runFanoutScenario(device, 1000);
         const doublingBoundary = await runDoublingBoundaryScenario(device);
         const storageMaximum = Math.max(
             towerSentence.storageMaximum,
-            recursion.storageMaximum
+            recursion.storageMaximum,
+            generationBoundary.mixed.storageMaximum,
+            generatedEnemyGold.storageMaximum,
+            generatedEnemyCoreImpact.storageMaximum,
+            fanout256.storageMaximum,
+            fanout1000.storageMaximum
         );
         result.r3EnemyWord = Object.freeze({
             towerSentence,
@@ -867,6 +1394,11 @@ async function run() {
                 oneShortTerminalState: oneShort.terminalState
             }),
             zeroSubject,
+            generationBoundary,
+            gold: Object.freeze({
+                generatedEnemyKill: generatedEnemyGold,
+                generatedEnemyCoreImpact
+            }),
             stress: Object.freeze({
                 fanout256,
                 fanout1000,
@@ -877,6 +1409,10 @@ async function run() {
                 || recursion.recoveryRequired
                 || oneShort.recoveryRequired
                 || zeroSubject.recoveryRequired
+                || generationBoundary.mixed.recoveryRequired
+                || generationBoundary.allExcluded.recoveryRequired
+                || generatedEnemyGold.recoveryRequired
+                || generatedEnemyCoreImpact.recoveryRequired
                 || fanout256.recoveryRequired
                 || fanout1000.recoveryRequired
                 || doublingBoundary.recoveryRequired

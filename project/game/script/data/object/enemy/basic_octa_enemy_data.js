@@ -89,6 +89,7 @@ export const BASIC_OCTA_ENEMY_DATA = normalizeEnemyDefinition(Object.freeze({
     combatProfileId: MAIN_GPU_ENEMY_COMBAT_PROFILE_ID,
     behaviorProfileId: OCTAGON_TOWER_ORBIT_ENEMY_BEHAVIOR_PROFILE_ID,
     formationDefinitionId: null,
+    siegeWeight: 1,
     capabilityIds: BASIC_OCTA_ENEMY_CAPABILITY_IDS,
     render: Object.freeze({
         colorRgba: MAIN_GPU_ENEMY_COLOR_RGBA,

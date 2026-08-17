@@ -243,8 +243,8 @@ function createActorPayloadRegistryMetadata(template, command, snapshotRank) {
     metadata.generationRule = 'SOURCE_GENERATION_PLUS_ONE';
     metadata.rewardEligible = true;
     metadata.countsTowardHostile = true;
+    metadata.siegeWeight = Number(template.siegeWeight);
     metadata.countsTowardSiege = true;
-    metadata.siegeWeight = Number(template.weight ?? 0);
     return metadata;
 }
 
@@ -1609,6 +1609,11 @@ export class GpuEnemySimulationEndpoint {
         this.completedEventRecoveryRequired = false;
         this.completedEventProtocolFailure = null;
         this.towerGameplayTargetDiagnostic = null;
+        this.actorPayloadTowerTargetHandle = null;
+        this.actorPayloadCoreTargetHandle = null;
+        this.actorPayloadTargetProvider = Object.freeze({
+            resolveTargets: () => this.#resolveActorPayloadTargets()
+        });
         this.trackedPoseDiagnostic = null;
         this.deferredCompletedEventBatches = [];
         this.lastCompletedSimulationEvents = createEmptyCompletedEventSnapshot();
@@ -2043,6 +2048,7 @@ export class GpuEnemySimulationEndpoint {
             targetFixedTick: request.targetFixedTick,
             state: 'preleased'
         };
+        const payloadTargets = this.actorPayloadTargetProvider.resolveTargets();
         const stage = this.backend.stageActorPayloadMaterialization({
             transactionId,
             preleaseToken: bodyPrelease.token,
@@ -2051,7 +2057,8 @@ export class GpuEnemySimulationEndpoint {
             snapshotBinding,
             payloadDefinition,
             targetFixedTick: request.targetFixedTick,
-            coreTarget: this.#resolveActorPayloadCoreTarget()
+            towerTarget: payloadTargets.towerTarget,
+            coreTarget: payloadTargets.coreTarget
         });
         if (stage?.accepted !== true) {
             this.backend.cancelActorPayloadBodyPrelease(
@@ -2317,10 +2324,12 @@ export class GpuEnemySimulationEndpoint {
     getPendingHostileParticipationView() {
         let pendingHostileActorCount = 0;
         let pendingSiegeWeight = 0;
+        let pendingBountyPotential = 0;
         let pendingSentenceCreatedCount = 0;
         for (const entry of this.pendingHostileSpawnEntries) {
             pendingHostileActorCount += 1;
             pendingSiegeWeight += entry.siegeWeight;
+            pendingBountyPotential += entry.bountyPotential;
             pendingSentenceCreatedCount += entry.sentenceCreated ? 1 : 0;
         }
         for (const transaction of this.actorPayloadTransactions.values()) {
@@ -2336,11 +2345,14 @@ export class GpuEnemySimulationEndpoint {
                 ? count
                 : 0;
             pendingSiegeWeight += count
-                * Number(transaction.spawnTemplate?.weight ?? 0);
+                * Number(transaction.spawnTemplate?.siegeWeight ?? 0);
+            pendingBountyPotential += count
+                * Number(transaction.spawnTemplate?.bountyBudget ?? 0);
         }
         return Object.freeze({
             pendingHostileActorCount,
             pendingSiegeWeight,
+            pendingBountyPotential,
             pendingSentenceCreatedCount
         });
     }
@@ -2360,7 +2372,7 @@ export class GpuEnemySimulationEndpoint {
                 .createAbilityEnemyPayloadSpawnTemplate(1);
             return Object.freeze({
                 bountyPerEnemy: Number(template.bountyBudget ?? 0),
-                siegeWeightPerEnemy: Number(template.weight ?? 0),
+                siegeWeightPerEnemy: Number(template.siegeWeight ?? 0),
                 teamId: template.teamId,
                 available: true
             });
@@ -2420,6 +2432,7 @@ export class GpuEnemySimulationEndpoint {
                     cleared?.reason ?? 'tower-gameplay-target-clear-rejected'
                 );
             }
+            this.actorPayloadTowerTargetHandle = null;
             this.towerGameplayTargetDiagnostic = null;
             return Object.freeze({ accepted: true, configured: null });
         }
@@ -2519,6 +2532,7 @@ export class GpuEnemySimulationEndpoint {
                 configured?.reason ?? 'tower-gameplay-target-config-rejected'
             );
         }
+        this.actorPayloadTowerTargetHandle = Object.freeze({ ...exactHandle });
         this.towerGameplayTargetDiagnostic = null;
         return Object.freeze({
             accepted: true,
@@ -5026,6 +5040,8 @@ export class GpuEnemySimulationEndpoint {
         this.lastCompletedRouteAvailabilityPrograms = null;
         this.actorPayloadTransactions.clear();
         this.actorPayloadCompleted.length = 0;
+        this.actorPayloadTowerTargetHandle = null;
+        this.actorPayloadCoreTargetHandle = null;
         this.pendingHostileSpawnEntries.length = 0;
         this.#effectLifecycleCommitProofTick = 0;
         this.#effectLifecycleCommitProofs.length = 0;
@@ -6422,9 +6438,40 @@ export class GpuEnemySimulationEndpoint {
         return rejected;
     }
 
+    #resolveActorPayloadTargets() {
+        let towerTarget = null;
+        const towerHandle = this.actorPayloadTowerTargetHandle;
+        if (towerHandle && this.registry.has(towerHandle)) {
+            const binding = this.backend.resolveExactAbilityBodySlot?.(
+                towerHandle
+            );
+            if (binding
+                && binding.entityId === towerHandle.entityId
+                && binding.incarnation === towerHandle.incarnation) {
+                towerTarget = binding;
+            }
+        }
+        return Object.freeze({
+            towerTarget,
+            coreTarget: this.#resolveActorPayloadCoreTarget()
+        });
+    }
+
     #resolveActorPayloadCoreTarget() {
+        const cached = this.actorPayloadCoreTargetHandle;
+        if (cached && this.registry.has(cached)) {
+            const binding = this.backend.resolveExactAbilityBodySlot?.(cached);
+            if (binding
+                && binding.entityId === cached.entityId
+                && binding.incarnation === cached.incarnation) {
+                return binding;
+            }
+        }
+        this.actorPayloadCoreTargetHandle = null;
         const handles = [];
-        this.registry.copyActiveHandlesInto(handles, { kindId: 'core' });
+        this.registry.copyActiveHandlesInto(handles, {
+            kindId: GPU_CORE_PROXY_WORLD_KIND_ID
+        });
         handles.sort((left, right) => (
             left.entityId - right.entityId
             || left.incarnation - right.incarnation
@@ -6434,6 +6481,10 @@ export class GpuEnemySimulationEndpoint {
             if (binding
                 && binding.entityId === handle.entityId
                 && binding.incarnation === handle.incarnation) {
+                this.actorPayloadCoreTargetHandle = Object.freeze({
+                    entityId: handle.entityId,
+                    incarnation: handle.incarnation
+                });
                 return binding;
             }
         }
@@ -6526,10 +6577,17 @@ export class GpuEnemySimulationEndpoint {
         if (!Number.isSafeInteger(tick) || tick <= 0) {
             return;
         }
-        const weight = Number(intent.weight ?? 0);
+        const siegeWeight = Number(intent.siegeWeight ?? 0);
+        const bountyPotential = Number(intent.bountyBudget ?? 0);
         this.pendingHostileSpawnEntries.push(Object.freeze({
             targetFixedTick: tick,
-            siegeWeight: Number.isFinite(weight) && weight > 0 ? weight : 0,
+            siegeWeight: Number.isFinite(siegeWeight) && siegeWeight >= 0
+                ? siegeWeight
+                : 0,
+            bountyPotential: Number.isFinite(bountyPotential)
+                    && bountyPotential >= 0
+                ? bountyPotential
+                : 0,
             sentenceCreated: intent.creationOrigin === 'PLAYER_SENTENCE'
         }));
     }

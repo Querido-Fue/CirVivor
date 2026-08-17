@@ -1,13 +1,19 @@
 # 01. Sentence Grammar and Entity Words
 
-## R3 implementation status (2026-08-16)
+## Post-R3 implementation status (2026-08-17)
 
 R3 Enemy Entity Word is complete. The typed catalog/compiler, five-slot `WordSystem`, Q/E semantic input,
 aggregate GPU subject snapshot, and atomic persistent Enemy payload path are connected. The production showcase
 binds Q to `The Tower shoots Enemies` and E to `Enemies shoot Enemies`. Each execution freezes its start-set;
 new children receive GPU-authored `source generation + 1`, become eligible only for later executions, and never
 rejoin the current execution. A zero-subject result and a true 0/N capacity rejection create nothing and consume
-no cooldown.
+no cooldown. Subject generation eligibility is half-open (`generation < generationLimit`): a source at
+`limit - 1` may create a child at `limit`, but that child is excluded from every later Subject snapshot.
+
+Enemy actor payload execution uses four bounded GPU passes: initialize, parallel validate, aggregate, then
+parallel materialize. CPU code preleases exact WorldRegistry/body destinations and reads only the aggregate
+completion; it never reads back the Subject array. A failed validation or one-short capacity check publishes
+zero of N destinations.
 
 R3 implements only `Shoot + Enemy`. The Tower payload, `Enemies shoot The Tower`, other actor nouns/verbs,
 Merge, full modifier grammar, the Shop/editor transaction UI, and save integration remain later milestones.

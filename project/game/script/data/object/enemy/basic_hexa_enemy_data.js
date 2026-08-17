@@ -208,6 +208,7 @@ export const BASIC_HEXA_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_HEXA_ENEMY_DEFINITION_ID,
     'hexa',
     {
+        siegeWeight: 1,
         spawnPolicy: ENEMY_SPAWN_POLICY.NATURAL,
         behaviorProfileId: HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID,
@@ -221,6 +222,7 @@ const BASIC_HEXA_GROUP_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID,
     'hexa',
     {
+        siegeWeight: 1,
         spawnPolicy: ENEMY_SPAWN_POLICY.TRANSFORM_PRIVATE,
         behaviorProfileId: HEXA_SEEK_FORMATION_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID,
@@ -234,6 +236,7 @@ const BASIC_HEXA_HIVE_ENEMY_DATA = createMainGpuEnemyDefinition(
     BASIC_HEXA_HIVE_ENEMY_DEFINITION_ID,
     'hexa',
     {
+        siegeWeight: 1,
         spawnPolicy: ENEMY_SPAWN_POLICY.TRANSFORM_PRIVATE,
         behaviorProfileId: HEXA_KEEP_FORMATION_BEHAVIOR_PROFILE_ID,
         formationDefinitionId: HEXA_HIVE_SIX_RING_FORMATION_DEFINITION_ID,

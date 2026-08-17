@@ -806,7 +806,9 @@ export class GameObjectSystem {
             if (payloadStage?.recoveryRequired === true) {
                 return this.#pauseForGpuRecovery();
             }
-            this.#refreshHostileParticipation();
+            this.#refreshHostileParticipation({
+                publishedHandles: payloadObservation?.committedHandles ?? []
+            });
             if (!this.runOutcome.isDefeated()
                 && !this.coreIntegrity.isDepleted()
                 && !this.#refreshCorkRouteClosureDirectorBindingAtIdleBoundary(
@@ -1351,7 +1353,7 @@ export class GameObjectSystem {
             if (bountyLifecycleObservation?.recoveryRequired === true) {
                 return this.#pauseForGpuRecovery();
             }
-            this.#refreshHostileParticipation();
+            this.#refreshHostileParticipation({ lifecycle: lifecycleResult });
             this.corkRouteClosureDirector?.observeFixedCommit(
                 lifecycleResult,
                 proposedFixedTick
@@ -3316,7 +3318,7 @@ export class GameObjectSystem {
         });
     }
 
-    #refreshHostileParticipation() {
+    #refreshHostileParticipation(changes = {}) {
         if (!this.hostileParticipationTracker || !this.worldRegistry) {
             return null;
         }
@@ -3324,11 +3326,13 @@ export class GameObjectSystem {
             ?.getPendingHostileParticipationView?.() ?? Object.freeze({
                 pendingHostileActorCount: 0,
                 pendingSiegeWeight: 0,
+                pendingBountyPotential: 0,
                 pendingSentenceCreatedCount: 0
             });
         return this.hostileParticipationTracker.refresh(
             this.worldRegistry,
-            pending
+            pending,
+            changes
         );
     }
 

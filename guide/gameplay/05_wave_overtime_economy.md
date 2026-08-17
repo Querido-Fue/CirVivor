@@ -1,12 +1,17 @@
 # 05. Wave Timer, Overtime, Gold, Victory, and Defeat
 
-## R3 implementation status (2026-08-16)
+## Post-R3 implementation status (2026-08-17)
 
 R3 connects the CPU run-domain `GoldLedger`, exact `BountyRewardDirector`, and bounded
 `HostileParticipationTracker`. Natural and player-created hostile Enemies contribute to live/pending hostile
 count, bounty potential, and Siege Weight. An authenticated lethal PLAYER hit must match the same-boundary exact
 `PLAYER_KILL` lifecycle commit before one deduplicated bounty credit is allowed. Core impact, ordinary despawn,
 transform consumption, non-Player kills, replay, and stale/ABA identities award zero Gold.
+
+Every ordinary Enemy definition now owns an explicit `siegeWeight`, independent of collision/physics `weight`.
+Spawn, J split/C′ return, H merge/transform, registry metadata, pending reservations, and previews preserve that
+field without a physics fallback. The tracker performs a one-time registry reconciliation and thereafter applies
+exact-handle lifecycle/publication deltas in O(changes); duplicate delivery and entity-ID reuse cannot double-count.
 
 The combat timer, Overtime phase transition, Siege Pressure Core DOT/escalation, Wave Clear/settlement, Shop,
 and save boundary below remain design targets. R3 provides their participation inputs but does not implement
@@ -100,7 +105,7 @@ During Overtime:
 
 ## 5. Siege Pressure
 
-Each hostile actor definition has `siegeWeight`.
+Each hostile actor definition has explicit, data-owned `siegeWeight`. It is not inferred from physics weight.
 
 ```text
 SiegeWeight = sum(live hostile actor siegeWeight)
