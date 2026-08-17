@@ -142,7 +142,9 @@ test('snapshot 순서는 private slot 오름차순이며 exact incarnation과 �
     assert.match(GPU_ABILITY_SUBJECT_SNAPSHOT_WGSL,
         /bitcast<u32>\(body_physics\.radius\)[\s\S]*route\.profile_code/);
     assert.match(BACKEND_SOURCE,
-        /slotHandles\?\.\[slot\]\?\.incarnation[\s\S]*!== incarnation/);
+        /slotActive\?\.\[activeSlot\] === 1[\s\S]*slotHandles\?\.\[activeSlot\]\?\.incarnation[\s\S]*=== incarnation/);
+    assert.match(BACKEND_SOURCE,
+        /slotActive\?\.\[pendingSlot\] === 2[\s\S]*pendingSlotHandles\?\.\[pendingSlot\]\?\.incarnation[\s\S]*=== incarnation/);
 });
 
 test('execution ordinal barrier는 같은 execution의 생성 actor 재귀 참여를 막는다', () => {

@@ -65,8 +65,23 @@ export function findGpuWorldRecoveryCause(snapshot) {
         ['endpoint.projectileCapture',
             endpoint.projectileCapture?.requiresRecovery === true
                 ? endpoint.projectileCapture : null],
+        ['endpoint.abilitySubjectSnapshots',
+            endpoint.abilitySubjectSnapshots?.requiresRecovery === true
+                ? endpoint.abilitySubjectSnapshots : null],
+        ['endpoint.actorPayloadMaterializations',
+            endpoint.actorPayloadMaterializations?.requiresRecovery === true
+                ? endpoint.actorPayloadMaterializations : null],
         ['endpoint.backend', endpoint.backend?.gpu?.failure
             ?? endpoint.backend?.failure ?? null],
+        ['abilityRuntime', object.abilityRuntime?.failure
+            ?? (object.abilityRuntime?.recoveryRequired === true
+                ? object.abilityRuntime : null)],
+        ['actorPayloadMaterializer', object.actorPayloadMaterializer?.failure
+            ?? (object.actorPayloadMaterializer?.recoveryRequired === true
+                ? object.actorPayloadMaterializer : null)],
+        ['bountyReward', object.bountyReward?.failure
+            ?? (object.bountyReward?.recoveryRequired === true
+                ? object.bountyReward : null)],
         ['hostileAttack', object.hostileAttack?.failure],
         ['coreImpact', object.coreImpact?.cleanupFailure
             ?? object.coreImpact?.failure ?? null],
@@ -94,8 +109,15 @@ export function findGpuWorldRecoveryCause(snapshot) {
                 projectileCapture:
                     object.projectileCapture?.recoveryRequired === true,
                 corkRouteClosure:
-                    object.corkRouteClosure?.recoveryRequired === true
-            }
+                    object.corkRouteClosure?.recoveryRequired === true,
+                abilityRuntime:
+                    object.abilityRuntime?.recoveryRequired === true,
+                actorPayloadMaterializer:
+                    object.actorPayloadMaterializer?.recoveryRequired === true,
+                bountyReward:
+                    object.bountyReward?.recoveryRequired === true
+            },
+            gpuRecovery: object.gpuRecovery ?? null
         }
     };
 }
@@ -131,6 +153,14 @@ export function captureGpuWorldRecoveryDiagnostic(input) {
                 safeRead(() => objectSystem.getProjectileCaptureStatus()),
             corkRouteClosure:
                 safeRead(() => objectSystem.getCorkRouteClosureStatus()),
+            abilityRuntime:
+                safeRead(() => objectSystem.getAbilityRuntimeStatus()),
+            actorPayloadMaterializer:
+                safeRead(() => objectSystem.getActorPayloadMaterializerStatus()),
+            bountyReward:
+                safeRead(() => objectSystem.getBountyRewardStatus()),
+            gpuRecovery:
+                safeRead(() => objectSystem.getGpuRecoveryStatus()),
             terminal: safeRead(() => objectSystem.getTerminalStatus()),
             gpuWorldActors: safeRead(() => objectSystem.getGpuWorldActorStatus())
         }

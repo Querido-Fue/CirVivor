@@ -1001,6 +1001,7 @@ export class GpuEnemySimulationEndpoint {
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
         this.deferredAbilityEntityMetadataPublications = new Map();
+        this.pendingFixedSpawnAbilityEntityMetadataByCommandId = new Map();
         this.actorPayloadBackendSupported
             = ACTOR_PAYLOAD_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
@@ -1758,11 +1759,36 @@ export class GpuEnemySimulationEndpoint {
         if (rejected) {
             return rejected;
         }
-        return this.fixedCommandOwner.requestSourceRelativeSpawn(
-            intent,
+        let snapshot;
+        let abilityMetadata = null;
+        try {
+            snapshot = materializeGpuPlainDataSnapshot(
+                intent,
+                'sourceRelativeSpawn'
+            );
+            if (this.abilitySubjectBackendSupported) {
+                abilityMetadata = createAbilityEntityMetadata({
+                    kindId: snapshot.destinationSpawn?.kindId,
+                    definitionId: snapshot.destinationSpawn?.definitionId,
+                    metadata: snapshot.destinationSpawn
+                });
+            }
+        } catch {
+            return Object.freeze({
+                accepted: false,
+                reason: 'source-relative-spawn-contract'
+            });
+        }
+        const receipt = this.fixedCommandOwner.requestSourceRelativeSpawn(
+            snapshot,
             targetFixedTick,
             commandId
         );
+        this.#rememberFixedSpawnAbilityEntityMetadata(
+            receipt,
+            abilityMetadata
+        );
+        return receipt;
     }
 
     /** Same-tick priority control의 exact selected target projectile을 예약합니다. */
@@ -1788,11 +1814,31 @@ export class GpuEnemySimulationEndpoint {
         if (contractFailure) {
             return contractFailure;
         }
-        return this.fixedCommandOwner.requestSelectedTargetSpawn(
+        let abilityMetadata = null;
+        try {
+            if (this.abilitySubjectBackendSupported) {
+                abilityMetadata = createAbilityEntityMetadata({
+                    kindId: snapshot.destinationSpawn?.kindId,
+                    definitionId: snapshot.destinationSpawn?.definitionId,
+                    metadata: snapshot.destinationSpawn
+                });
+            }
+        } catch {
+            return Object.freeze({
+                accepted: false,
+                reason: 'selected-target-spawn-contract'
+            });
+        }
+        const receipt = this.fixedCommandOwner.requestSelectedTargetSpawn(
             snapshot,
             targetFixedTick,
             commandId
         );
+        this.#rememberFixedSpawnAbilityEntityMetadata(
+            receipt,
+            abilityMetadata
+        );
+        return receipt;
     }
 
     /** Typed semantic execution을 GPU subject snapshot queue에 예약합니다. */
@@ -3388,6 +3434,7 @@ export class GpuEnemySimulationEndpoint {
                 this.gameplayIngressCloseReason,
                 finalFixedTick
             );
+            this.pendingFixedSpawnAbilityEntityMetadataByCommandId.clear();
             const effectCommands = this.effectCommandOwner.closeIngress(
                 this.gameplayIngressCloseReason,
                 finalFixedTick
@@ -3783,7 +3830,7 @@ export class GpuEnemySimulationEndpoint {
                 state: 'failed'
             });
         }
-        const abilityEntityMetadata = this
+        let abilityEntityMetadata = this
             .#synchronizeAbilityEntityMetadataForLifecycle(lifecycle, tick);
         if (abilityEntityMetadata.recoveryRequired === true) {
             this.#latchAbilityEntityMetadataPublicationFailure(
@@ -3803,6 +3850,35 @@ export class GpuEnemySimulationEndpoint {
         }
         this.#rememberEffectLifecycleCommit(lifecycle, tick);
         const fixedCommands = this.fixedCommandOwner.commitAtFixedBoundary(tick);
+        const fixedAbilityEntityMetadata = this
+            .#deferAbilityEntityMetadataForFixedCommands(fixedCommands, tick);
+        abilityEntityMetadata = Object.freeze({
+            ...abilityEntityMetadata,
+            deferredCount: (abilityEntityMetadata.deferredCount ?? 0)
+                + (fixedAbilityEntityMetadata.deferredCount ?? 0),
+            fixedDeferredCount:
+                fixedAbilityEntityMetadata.deferredCount ?? 0,
+            pendingCount:
+                this.deferredAbilityEntityMetadataPublications.size,
+            recoveryRequired:
+                fixedAbilityEntityMetadata.recoveryRequired === true
+        });
+        if (fixedAbilityEntityMetadata.recoveryRequired === true) {
+            this.#latchAbilityEntityMetadataPublicationFailure(
+                fixedAbilityEntityMetadata
+            );
+            this.#finalizeClosedLifecycleIngress();
+            return Object.freeze({
+                ...lifecycle,
+                fixedCommands,
+                effectPrograms: null,
+                formationPrograms: null,
+                atomicTransformCommands,
+                abilityEntityMetadata,
+                recoveryRequired: true,
+                state: 'failed'
+            });
+        }
         const effectPrograms = fixedCommands.recoveryRequired === true
             ? null
             : this.effectCommandOwner.commitAtFixedBoundary(
@@ -4963,6 +5039,8 @@ export class GpuEnemySimulationEndpoint {
                 effectCommands.pendingPulseProgramCount,
             pendingAbilityEntityMetadataPublicationCount:
                 this.deferredAbilityEntityMetadataPublications.size,
+            pendingFixedSpawnAbilityEntityMetadataCount:
+                this.pendingFixedSpawnAbilityEntityMetadataByCommandId.size,
             effectRuntimeSupported: this.effectBackendPort.isSupported(),
             formationRuntimeSupported: this.#formationBackendPort.isSupported(),
             atomicTransformRuntimeSupported:
@@ -5030,6 +5108,7 @@ export class GpuEnemySimulationEndpoint {
         this.completedEventBatchScratch.length = 0;
         this.deferredCompletedEventBatches.length = 0;
         this.deferredAbilityEntityMetadataPublications.clear();
+        this.pendingFixedSpawnAbilityEntityMetadataByCommandId.clear();
         this.knownCompletedBatchKeys.clear();
         this.completedBatchKeys.length = 0;
         this.completedBatchKeyHead = 0;
@@ -6659,6 +6738,119 @@ export class GpuEnemySimulationEndpoint {
         }
     }
 
+    #rememberFixedSpawnAbilityEntityMetadata(receipt, metadata) {
+        if (!this.abilitySubjectBackendSupported
+            || receipt?.accepted !== true
+            || receipt?.replay === true) {
+            return;
+        }
+        this.pendingFixedSpawnAbilityEntityMetadataByCommandId.set(
+            receipt.commandId,
+            Object.freeze({
+                commandId: receipt.commandId,
+                fixedTick: receipt.targetFixedTick,
+                metadata
+            })
+        );
+    }
+
+    #deferAbilityEntityMetadataForFixedCommands(fixedCommands, fixedTick) {
+        if (!this.abilitySubjectBackendSupported) {
+            return Object.freeze({
+                accepted: true,
+                deferredCount: 0,
+                pendingCount: 0,
+                unsupported: true,
+                recoveryRequired: false
+            });
+        }
+        for (const rejection of fixedCommands?.rejected ?? []) {
+            this.pendingFixedSpawnAbilityEntityMetadataByCommandId.delete(
+                rejection?.commandId
+            );
+        }
+        const accepted = [
+            ...(fixedCommands?.sourceRelativeSpawns ?? []),
+            ...(fixedCommands?.selectedTargetSpawns ?? [])
+        ];
+        if (accepted.length === 0) {
+            return Object.freeze({
+                accepted: true,
+                deferredCount: 0,
+                pendingCount:
+                    this.deferredAbilityEntityMetadataPublications.size,
+                recoveryRequired: false
+            });
+        }
+        const publications = [];
+        const keys = new Set();
+        for (const entry of accepted) {
+            const tracked = this
+                .pendingFixedSpawnAbilityEntityMetadataByCommandId
+                .get(entry?.commandId);
+            const handle = entry?.handle;
+            const key = `${Number(handle?.entityId)}:${Number(handle?.incarnation)}`;
+            if (!tracked
+                || tracked.fixedTick !== fixedTick
+                || !Number.isSafeInteger(handle?.entityId)
+                || handle.entityId <= 0
+                || !Number.isSafeInteger(handle?.incarnation)
+                || handle.incarnation <= 0
+                || keys.has(key)
+                || this.deferredAbilityEntityMetadataPublications.has(key)) {
+                return this.#createAbilityEntityMetadataFailure(
+                    'ability-fixed-spawn-metadata-identity-conflict',
+                    null,
+                    {
+                        deferredCount: 0,
+                        pendingCount:
+                            this.deferredAbilityEntityMetadataPublications.size
+                    }
+                );
+            }
+            keys.add(key);
+            publications.push(Object.freeze({
+                key,
+                fixedTick,
+                handle: Object.freeze({
+                    entityId: handle.entityId,
+                    incarnation: handle.incarnation
+                }),
+                metadata: tracked.metadata
+            }));
+        }
+        if (this.deferredAbilityEntityMetadataPublications.size
+                + publications.length > this.capacity) {
+            return this.#createAbilityEntityMetadataFailure(
+                'ability-entity-metadata-deferred-capacity',
+                null,
+                {
+                    deferredCount: 0,
+                    pendingCount:
+                        this.deferredAbilityEntityMetadataPublications.size
+                }
+            );
+        }
+        for (const publication of publications) {
+            this.deferredAbilityEntityMetadataPublications.set(
+                publication.key,
+                publication
+            );
+        }
+        for (const entry of accepted) {
+            this.pendingFixedSpawnAbilityEntityMetadataByCommandId.delete(
+                entry.commandId
+            );
+        }
+        return Object.freeze({
+            accepted: true,
+            deferredCount: publications.length,
+            pendingCount:
+                this.deferredAbilityEntityMetadataPublications.size,
+            recoveryRequired: false
+        });
+    }
+
     #flushDeferredAbilityEntityMetadataThrough(sourceTick) {
         if (!this.abilitySubjectBackendSupported
             || this.deferredAbilityEntityMetadataPublications.size === 0) {
@@ -6716,20 +6908,26 @@ export class GpuEnemySimulationEndpoint {
             const entries = [];
             for (const publication of publications) {
                 const handle = publication?.handle;
-                const view = this.registry.copyEntityView(handle, {});
                 const binding = this.backend.resolveExactAbilityBodySlot(
                     handle
                 );
-                if (!view || !binding
-                    || binding.entityId !== view.entityId
-                    || binding.incarnation !== view.incarnation) {
+                const view = publication?.metadata
+                    ? null
+                    : this.registry.copyEntityView(handle, {});
+                if (!binding
+                    || binding.entityId !== handle?.entityId
+                    || binding.incarnation !== handle?.incarnation
+                    || (!publication?.metadata && !view)
+                    || (view && (view.entityId !== handle?.entityId
+                        || view.incarnation !== handle?.incarnation))) {
                     return this.#createAbilityEntityMetadataFailure(
                         'ability-entity-slot-identity-mismatch'
                     );
                 }
                 entries.push(Object.freeze({
                     slot: binding.slot,
-                    metadata: createAbilityEntityMetadata(view)
+                    metadata: publication?.metadata
+                        ?? createAbilityEntityMetadata(view)
                 }));
             }
             const result = this.backend.synchronizeAbilityEntityMetadata(

@@ -420,6 +420,7 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
+        this.enemySimulationRecoveryDiagnostic = null;
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(this.initialFixedTick);
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
@@ -657,6 +658,19 @@ export class GameObjectSystem {
         return this.bountyRewardDirector?.getStatus() ?? null;
     }
 
+    getGpuRecoveryStatus() {
+        return Object.freeze({
+            recoveryRequired: this.enemySimulationRecoveryRequired,
+            paused: this.enemySimulationPaused,
+            stage: this.enemySimulationRecoveryDiagnostic?.stage ?? null,
+            proposedFixedTick:
+                this.enemySimulationRecoveryDiagnostic?.proposedFixedTick
+                ?? null,
+            pendingFixedTick: this.pendingEnemyFixedTick,
+            lastCompletedFixedTick: this.lastCompletedEnemyFixedTick
+        });
+    }
+
     getHostileParticipationStatus() {
         return this.hostileParticipationTracker?.getStatus() ?? null;
     }
@@ -770,7 +784,7 @@ export class GameObjectSystem {
             && gpuRequired
             && this.enemySimulationEndpoint.requiresRecovery()
             && gpuState !== 'gpu-backpressure') {
-            return this.#pauseForGpuRecovery();
+            return this.#pauseForGpuRecovery('endpoint-preflight');
         }
         if (!this.runOutcome.isDefeated()
             && !this.coreIntegrity.isDepleted()
@@ -785,26 +799,35 @@ export class GameObjectSystem {
                 || this.actorPayloadMaterializer?.requiresRecovery()
                     === true
                 || this.bountyRewardDirector?.requiresRecovery() === true)) {
-            return this.#pauseForGpuRecovery();
+            return this.#pauseForGpuRecovery('director-preflight');
         }
 
         if (this.pendingEnemyFixedTick === 0) {
             const payloadObservation = this.actorPayloadMaterializer
                 ?.observeCompleted(proposedFixedTick) ?? null;
             if (payloadObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
+                return this.#pauseForGpuRecovery(
+                    'actor-payload-completion',
+                    proposedFixedTick
+                );
             }
             const abilityObservation = this.abilityRuntime
                 ?.observeCompletedSubjectSnapshots(proposedFixedTick) ?? null;
             if (abilityObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
+                return this.#pauseForGpuRecovery(
+                    'ability-subject-completion',
+                    proposedFixedTick
+                );
             }
             const payloadStage = this.actorPayloadMaterializer
                 ?.stageReadyForFixedTick({
                     targetFixedTick: proposedFixedTick
                 }) ?? null;
             if (payloadStage?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
+                return this.#pauseForGpuRecovery(
+                    'actor-payload-stage',
+                    proposedFixedTick
+                );
             }
             this.#refreshHostileParticipation({
                 publishedHandles: payloadObservation?.committedHandles ?? []
@@ -1071,7 +1094,10 @@ export class GameObjectSystem {
                     this.worldRegistry
                 ) ?? null;
             if (bountyCompletedObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
+                return this.#pauseForGpuRecovery(
+                    'bounty-completion',
+                    proposedFixedTick
+                );
             }
             this.projectileCaptureDirector?.observeCompletedEvents(
                 completedEvents
@@ -1278,7 +1304,10 @@ export class GameObjectSystem {
                     || this.abilityRuntime?.requiresRecovery() === true
                     || this.actorPayloadMaterializer?.requiresRecovery()
                         === true) {
-                    return this.#pauseForGpuRecovery();
+                    return this.#pauseForGpuRecovery(
+                        'ability-or-payload-stage',
+                        proposedFixedTick
+                    );
                 }
             }
 
@@ -1351,7 +1380,10 @@ export class GameObjectSystem {
             const bountyLifecycleObservation = this.bountyRewardDirector
                 ?.observeLifecycle(lifecycleResult, proposedFixedTick) ?? null;
             if (bountyLifecycleObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery();
+                return this.#pauseForGpuRecovery(
+                    'bounty-lifecycle',
+                    proposedFixedTick
+                );
             }
             this.#refreshHostileParticipation({ lifecycle: lifecycleResult });
             this.corkRouteClosureDirector?.observeFixedCommit(
@@ -1551,6 +1583,7 @@ export class GameObjectSystem {
                 // 않고 async transform readback이 만든 terminal evidence만 재평가합니다.
                 this.enemySimulationPaused = false;
                 this.enemySimulationRecoveryRequired = false;
+                this.enemySimulationRecoveryDiagnostic = null;
                 this.lastCompletedEnemyFixedTick = proposedFixedTick;
                 this.pendingEnemyFixedTick = 0;
                 return this.#sealTerminalSuccess(proposedFixedTick);
@@ -1638,6 +1671,7 @@ export class GameObjectSystem {
 
         this.enemySimulationPaused = false;
         this.enemySimulationRecoveryRequired = false;
+        this.enemySimulationRecoveryDiagnostic = null;
         this.lastCompletedEnemyFixedTick = proposedFixedTick;
         this.pendingEnemyFixedTick = 0;
         if (terminalFinalization) {
@@ -1905,6 +1939,7 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = true;
+        this.enemySimulationRecoveryDiagnostic = null;
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(
             this.lastCompletedEnemyFixedTick
         );
@@ -1976,6 +2011,7 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
+        this.enemySimulationRecoveryDiagnostic = null;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
         this.terminalDiagnostic = null;
         this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED;
@@ -2080,6 +2116,7 @@ export class GameObjectSystem {
             this.pendingEnemyFixedTick = 0;
             this.enemySimulationRecoveryRequired = false;
             this.enemySimulationPaused = true;
+            this.enemySimulationRecoveryDiagnostic = null;
             return false;
         }
         // runFailedFact는 RunOutcome의 immutable single fact이며 상태 snapshot에서 보존됩니다.
@@ -2584,6 +2621,7 @@ export class GameObjectSystem {
         this.terminalDiagnostic = null;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = true;
+        this.enemySimulationRecoveryDiagnostic = null;
         return true;
     }
 
@@ -2621,6 +2659,7 @@ export class GameObjectSystem {
         this.pendingEnemyFixedTick = 0;
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = true;
+        this.enemySimulationRecoveryDiagnostic = null;
         return false;
     }
 
@@ -3358,8 +3397,14 @@ export class GameObjectSystem {
         });
     }
 
-    #pauseForGpuRecovery() {
+    #pauseForGpuRecovery(stage = 'unclassified', proposedFixedTick = null) {
         this.enemySimulationRecoveryRequired = true;
+        this.enemySimulationRecoveryDiagnostic ??= Object.freeze({
+            stage,
+            proposedFixedTick: Number.isSafeInteger(proposedFixedTick)
+                ? proposedFixedTick
+                : null
+        });
         if (!this.enemySimulationPaused) {
             this.enemySimulationEndpoint.synchronizePresentation();
         }

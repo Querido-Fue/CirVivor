@@ -29,6 +29,14 @@ function createDiagnosticGameSystem() {
         getJorangSplitLineageStatus: () => ({ recoveryRequired: false }),
         getProjectileCaptureStatus: () => ({ recoveryRequired: false }),
         getCorkRouteClosureStatus: () => ({ recoveryRequired: false }),
+        getAbilityRuntimeStatus: () => ({ recoveryRequired: false }),
+        getActorPayloadMaterializerStatus: () => ({ recoveryRequired: false }),
+        getBountyRewardStatus: () => ({ recoveryRequired: false }),
+        getGpuRecoveryStatus: () => ({
+            recoveryRequired: true,
+            paused: true,
+            stage: 'formation-completion-observe'
+        }),
         getTerminalStatus: () => ({ state: 'open' }),
         getGpuWorldActorStatus: () => ({ towerHandle: { entityId: 2, incarnation: 1 } })
     });
@@ -61,12 +69,35 @@ test('GPU world reset 진단은 교체 전 endpoint/director 원인을 plain sna
     assert.equal(diagnostic.deviceGeneration, 7);
     assert.equal(diagnostic.cause.domain, 'endpoint.formationCommands');
     assert.equal(diagnostic.object.formation.failure.reason, 'fixture');
+    assert.equal(
+        diagnostic.object.gpuRecovery.stage,
+        'formation-completion-observe'
+    );
     assert.deepEqual(findGpuWorldRecoveryCause({
         endpoint: {},
         object: { hostileAttack: { failure: { reason: 'late-source' } } }
     }), {
         domain: 'hostileAttack',
         detail: { reason: 'late-source' }
+    });
+});
+
+test('R3 Ability/Actor/Bounty 복구 원인은 generic game-object fallback 전에 분류된다', () => {
+    assert.deepEqual(findGpuWorldRecoveryCause({
+        endpoint: {},
+        object: {
+            abilityRuntime: {
+                recoveryRequired: true,
+                failure: {
+                    code: 'ability-subject-protocol-rejected'
+                }
+            }
+        }
+    }), {
+        domain: 'abilityRuntime',
+        detail: {
+            code: 'ability-subject-protocol-rejected'
+        }
     });
 });
 

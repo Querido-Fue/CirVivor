@@ -202,6 +202,53 @@ test('backend tracked pose canonical getter와 legacy getter는 같은 immutable
     backend.destroy();
 });
 
+test('Ability metadata exact slot resolver는 active와 fixed-submit pending identity를 모두 허용한다', () => {
+    const backend = new EnemySimulationBackend(
+        {},
+        { capacity: 4, sessionGeneration: 5 }
+    );
+    const slotActive = new Uint8Array(4);
+    slotActive[0] = 1;
+    slotActive[3] = 2;
+    backend.simulation = {
+        handleToSlot: new Map([['11:4', 0]]),
+        pendingHandleToSlot: new Map([['12:1', 3]]),
+        slotActive,
+        slotHandles: [Object.freeze({ entityId: 11, incarnation: 4 })],
+        pendingSlotHandles: [
+            null,
+            null,
+            null,
+            Object.freeze({ entityId: 12, incarnation: 1 })
+        ],
+        hasBody: (handle) => handle.entityId === 11
+            && handle.incarnation === 4,
+        destroy() {}
+    };
+
+    assert.deepEqual({ ...backend.resolveExactAbilityBodySlot({
+        entityId: 11,
+        incarnation: 4
+    }) }, {
+        slot: 0,
+        entityId: 11,
+        incarnation: 4
+    });
+    assert.deepEqual({ ...backend.resolveExactAbilityBodySlot({
+        entityId: 12,
+        incarnation: 1
+    }) }, {
+        slot: 3,
+        entityId: 12,
+        incarnation: 1
+    });
+    assert.equal(backend.resolveExactAbilityBodySlot({
+        entityId: 12,
+        incarnation: 2
+    }), null);
+    backend.destroy();
+});
+
 test('새 simulation optional API가 없는 backend fallback은 기존 fake를 깨뜨리지 않는다', () => {
     const backend = new EnemySimulationBackend({}, { sessionGeneration: 5 });
     backend.simulation = {

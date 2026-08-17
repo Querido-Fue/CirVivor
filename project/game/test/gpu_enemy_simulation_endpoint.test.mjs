@@ -786,6 +786,92 @@ test('transform Ability metadata는 fixed submit 뒤 exact slot에 게시하고 
     ordinaryEndpoint.destroy();
 });
 
+test('fixed-command destination Ability metadata는 같은 tick submit 뒤 pending exact slot에 게시한다', () => {
+    const backend = createFakeBackend({ capacity: 4 });
+    const ability = installAbilitySubjectBackend(backend);
+    let stagedSpawns = [];
+    backend.stageFixedPrograms = (plan) => {
+        backend.calls.push({ type: 'stageFixedPrograms', plan });
+        stagedSpawns = [...plan.sourceRelativeSpawns];
+        return Object.freeze({
+            accepted: plan.controls.length + plan.sourceRelativeSpawns.length,
+            rejected: 0
+        });
+    };
+    const submitFixed = backend.fixedUpdate.bind(backend);
+    backend.fixedUpdate = (delta, sourceTick) => {
+        for (const spawn of stagedSpawns) {
+            backend.bodies.set(handleKey(spawn.destinationHandle), {
+                ...spawn.destinationSpawn,
+                entityId: spawn.destinationHandle.entityId,
+                incarnation: spawn.destinationHandle.incarnation
+            });
+        }
+        stagedSpawns = [];
+        return submitFixed(delta, sourceTick);
+    };
+    const endpoint = createGpuEnemySimulationEndpoint({
+        enemySimulationBackend: backend
+    });
+    endpoint.init({ id: 'ability-fixed-spawn-publication' });
+    endpoint.requestSpawn(
+        createSpawnIntent(0),
+        1,
+        'ability-fixed-spawn:source'
+    );
+    const initial = endpoint.commitAtFixedBoundary(1);
+    const sourceHandle = initial.spawned[0].handle;
+    ability.clearPublications();
+    setCurrentEventProtocol(endpoint, backend);
+
+    const intent = {
+        sourceHandle,
+        destinationSpawn: createSpawnIntent(1),
+        positionOffset: { x: 0, y: 0 },
+        launchVelocity: { x: 1, y: 0 },
+        sourceVelocityScale: 0
+    };
+    const receipt = endpoint.requestSourceRelativeSpawn(
+        intent,
+        2,
+        'ability-fixed-spawn:destination'
+    );
+    assert.equal(receipt.accepted, true);
+    assert.equal(endpoint.requestSourceRelativeSpawn(
+        intent,
+        2,
+        'ability-fixed-spawn:destination'
+    ).replay, true);
+
+    const committed = endpoint.commitAtFixedBoundary(2);
+    assert.equal(committed.state, 'committed');
+    assert.equal(committed.fixedCommands.sourceRelativeSpawns.length, 1);
+    assert.equal(committed.abilityEntityMetadata.fixedDeferredCount, 1);
+    assert.equal(committed.abilityEntityMetadata.deferredCount, 1);
+    assert.equal(committed.abilityEntityMetadata.pendingCount, 1);
+    assert.equal(ability.publications.length, 0);
+    assert.equal(
+        endpoint.getStatus().pendingAbilityEntityMetadataPublicationCount,
+        1
+    );
+    assert.equal(
+        endpoint.getStatus().pendingFixedSpawnAbilityEntityMetadataCount,
+        0
+    );
+
+    assert.equal(endpoint.fixedUpdate(1 / 60, 2), true);
+    assert.equal(ability.publications.length, 1);
+    assert.equal(ability.publications[0].length, 1);
+    assert.equal(ability.publications[0][0].metadata.abiVersion, 1);
+    assert.ok(ability.publications[0][0].metadata.definitionCode > 0);
+    assert.equal(
+        endpoint.getStatus().pendingAbilityEntityMetadataPublicationCount,
+        0
+    );
+    assert.equal(endpoint.requiresRecovery(), false);
+    endpoint.destroy();
+});
+
 test('generic GPU endpoint는 atomic spawn batch ingress를 lifecycle owner에 위임한다', () => {
     const backend = createFakeBackend({ capacity: 4 });
     const endpoint = createGpuSimulationEndpoint({

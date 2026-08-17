@@ -395,21 +395,30 @@ export class EnemySimulationBackend {
         const incarnation = Number(handle?.incarnation);
         if (!Number.isSafeInteger(entityId) || entityId <= 0
             || !Number.isSafeInteger(incarnation) || incarnation <= 0
-            || !this.simulation?.hasBody?.({ entityId, incarnation })) {
+            || !this.simulation) {
             return null;
         }
-        const slot = this.simulation.handleToSlot?.get(
-            `${entityId}:${incarnation}`
-        );
-        if (!Number.isSafeInteger(slot)
-            || slot < 0 || slot >= this.capacity
-            || this.simulation.slotActive?.[slot] !== 1
-            || this.simulation.slotHandles?.[slot]?.entityId !== entityId
-            || this.simulation.slotHandles?.[slot]?.incarnation
-                !== incarnation) {
-            return null;
+        const key = `${entityId}:${incarnation}`;
+        const activeSlot = this.simulation.handleToSlot?.get(key);
+        if (Number.isSafeInteger(activeSlot)
+            && activeSlot >= 0 && activeSlot < this.capacity
+            && this.simulation.slotActive?.[activeSlot] === 1
+            && this.simulation.slotHandles?.[activeSlot]?.entityId === entityId
+            && this.simulation.slotHandles?.[activeSlot]?.incarnation
+                === incarnation) {
+            return Object.freeze({ slot: activeSlot, entityId, incarnation });
         }
-        return Object.freeze({ slot, entityId, incarnation });
+        const pendingSlot = this.simulation.pendingHandleToSlot?.get(key);
+        if (Number.isSafeInteger(pendingSlot)
+            && pendingSlot >= 0 && pendingSlot < this.capacity
+            && this.simulation.slotActive?.[pendingSlot] === 2
+            && this.simulation.pendingSlotHandles?.[pendingSlot]?.entityId
+                === entityId
+            && this.simulation.pendingSlotHandles?.[pendingSlot]?.incarnation
+                === incarnation) {
+            return Object.freeze({ slot: pendingSlot, entityId, incarnation });
+        }
+        return null;
     }
 
     synchronizeAbilityEntityMetadata(entries) {
