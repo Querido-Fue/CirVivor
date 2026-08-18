@@ -92,6 +92,15 @@ function normalizeRequest(source = {}) {
     });
 }
 
+function fingerprintNormalizedRequest(request) {
+    return JSON.stringify({
+        version: 'tower-creation-request-v1',
+        childCount: request.childCount,
+        requestedFixedTick: request.requestedFixedTick,
+        childSpawnDescriptors: request.childSpawnDescriptors
+    });
+}
+
 function freezeFailure(stage, error, extra = {}) {
     return Object.freeze({
         stage,
@@ -154,9 +163,10 @@ export class TowerCreationCoordinator {
         );
         this.queued = null;
         this.pending = null;
-        this.knownTransactionIds = new Set();
-        this.transactionOrder = [];
+        this.transactionEntries = new Map();
+        this.completedTransactionOrder = [];
         this.lastResult = null;
+        this.lastCapacityStatus = null;
         this.failure = null;
         this.destroyed = false;
         this.requestedCount = 0;
@@ -164,7 +174,10 @@ export class TowerCreationCoordinator {
         this.committedCount = 0;
         this.rejectedCount = 0;
         this.protocolFailureCount = 0;
+        this.replayedCount = 0;
+        this.replayMismatchCount = 0;
         this.reservationHighWater = 0;
+        this.lastCapacityStatus = this.#getCapacityStatus(0);
     }
 
     requestTowerCreation(source = {}) {
@@ -189,41 +202,65 @@ export class TowerCreationCoordinator {
             return result;
         }
         this.requestedCount++;
-        if (this.knownTransactionIds.has(request.transactionId)
-            || this.queued?.transactionId === request.transactionId
-            || this.pending?.request.transactionId === request.transactionId) {
+        const requestFingerprint = fingerprintNormalizedRequest(request);
+        const existing = this.transactionEntries.get(request.transactionId);
+        if (existing) {
+            if (existing.requestFingerprint === requestFingerprint) {
+                this.replayedCount++;
+                this.lastResult = existing.receipt;
+                return existing.receipt;
+            }
             const result = terminalResult(
                 TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
-                TOWER_CREATION_REASON.DUPLICATE_TRANSACTION,
-                { transactionId: request.transactionId }
+                TOWER_CREATION_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                {
+                    transactionId: request.transactionId,
+                    requestFingerprint,
+                    expectedRequestFingerprint: existing.requestFingerprint
+                }
             );
             this.lastResult = result;
             this.protocolFailureCount++;
+            this.replayMismatchCount++;
             return result;
         }
+        const entry = {
+            transactionId: request.transactionId,
+            requestFingerprint,
+            stage: 'received',
+            receipt: null
+        };
+        this.transactionEntries.set(request.transactionId, entry);
         if (this.queued || this.pending) {
             const result = terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_CAPACITY,
                 TOWER_CREATION_REASON.CREATION_TRANSACTION_PENDING,
-                { transactionId: request.transactionId }
+                { transactionId: request.transactionId, requestFingerprint }
             );
-            this.#remember(request.transactionId);
-            this.lastResult = result;
+            const receipt = this.#completeTransaction(
+                request.transactionId,
+                result
+            );
+            this.lastResult = receipt;
             this.rejectedCount++;
-            return result;
+            return receipt;
         }
         this.queued = request;
         const capacity = this.#getCapacityStatus(request.childCount);
-        return Object.freeze({
+        const receipt = Object.freeze({
             accepted: true,
             result: null,
             reason: null,
             transactionId: request.transactionId,
+            requestFingerprint,
             childCount: request.childCount,
             requestedFixedTick: request.requestedFixedTick,
             capacity,
             recoveryRequired: false
         });
+        entry.stage = 'queued';
+        entry.receipt = receipt;
+        return receipt;
     }
 
     /** R5 Word preview가 mutation 없이 runtime planner/capacity reason을 조회하는 seam입니다. */
@@ -583,11 +620,21 @@ export class TowerCreationCoordinator {
         });
         this.queued = null;
         this.stagedCount++;
-        return Object.freeze({
+        const receipt = Object.freeze({
             ...staged,
             staged: true,
+            requestFingerprint: this.transactionEntries.get(
+                request.transactionId
+            )?.requestFingerprint ?? null,
+            capacity: this.#getCapacityStatus(0),
             recoveryRequired: false
         });
+        this.#setTransactionReceipt(
+            request.transactionId,
+            'pending',
+            receipt
+        );
+        return receipt;
     }
 
     observeCompletedAtFixedBoundary(proposedFixedTick) {
@@ -683,9 +730,14 @@ export class TowerCreationCoordinator {
             committedCount: this.committedCount,
             rejectedCount: this.rejectedCount,
             protocolFailureCount: this.protocolFailureCount,
+            replayedCount: this.replayedCount,
+            replayMismatchCount: this.replayMismatchCount,
             reservationHighWater: this.reservationHighWater,
-            historyCount: this.knownTransactionIds.size,
+            historyCount: this.completedTransactionOrder.length,
             historyCapacity: this.historyCapacity,
+            transactionEntryCount: this.transactionEntries.size,
+            activeTransactionCount: this.transactionEntries.size
+                - this.completedTransactionOrder.length,
             lastResult: this.lastResult,
             failure: this.failure,
             requiresRecovery: this.failure !== null
@@ -705,8 +757,14 @@ export class TowerCreationCoordinator {
             });
         }
         if (this.queued) {
-            this.#remember(this.queued.transactionId);
+            const queued = this.queued;
             this.queued = null;
+            const receipt = this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                String(reason || 'cancelled'),
+                { transactionId: queued.transactionId }
+            ));
+            this.lastResult = receipt;
         }
         if (!this.pending) {
             return Object.freeze({
@@ -723,7 +781,6 @@ export class TowerCreationCoordinator {
             String(reason || 'cancelled'),
             TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
         );
-        this.#remember(pending.request.transactionId);
         this.pending = null;
         const recoveryRequired = backend?.requiresRecovery === true
             || !registryClean;
@@ -733,6 +790,16 @@ export class TowerCreationCoordinator {
                 new Error('Submitted Tower creation cancellation requires rebuild.')
             );
         }
+        this.#publishTerminal(terminalResult(
+            recoveryRequired
+                ? TOWER_CREATION_RESULT.PROTOCOL_FAILURE
+                : TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+            String(reason || 'cancelled'),
+            {
+                transactionId: pending.request.transactionId,
+                recoveryRequired
+            }
+        ));
         return Object.freeze({
             cancelled: true,
             reason,
@@ -778,6 +845,9 @@ export class TowerCreationCoordinator {
     }
 
     #getCapacityStatus(requestedChildCount = 0) {
+        if (!this.towerGroupState || !this.registry || !this.backend) {
+            return this.lastCapacityStatus;
+        }
         const childCount = Number(requestedChildCount);
         const currentTowerCount = this.towerGroupState.getTowerRecords()
             .filter((record) => record.alive).length;
@@ -815,7 +885,7 @@ export class TowerCreationCoordinator {
             0,
             Number(this.backend.getAvailableTowerCreationBodyCapacity())
         );
-        return Object.freeze({
+        const status = Object.freeze({
             productionTowerCapacity,
             configuredTowerCapacity,
             productionCapacityOverridden:
@@ -832,6 +902,8 @@ export class TowerCreationCoordinator {
                 availableBodySlots
             )
         });
+        this.lastCapacityStatus = status;
+        return status;
     }
 
     #isAuthenticCompletion(completion, proposedTick) {
@@ -913,15 +985,20 @@ export class TowerCreationCoordinator {
                 recoveryRequired: false
             }
         );
-        this.committedCount++;
-        this.#remember(pending.request.transactionId);
-        this.pending = null;
-        this.lastResult = result;
-        return Object.freeze({
+        const receipt = Object.freeze({
             pending: false,
             committed: true,
-            ...result
+            ...result,
+            requestFingerprint: this.transactionEntries.get(
+                pending.request.transactionId
+            )?.requestFingerprint ?? null,
+            capacity: this.#getCapacityStatus(0)
         });
+        this.committedCount++;
+        this.#completeTransaction(pending.request.transactionId, receipt);
+        this.pending = null;
+        this.lastResult = receipt;
+        return receipt;
     }
 
     #rejectPending(completion) {
@@ -957,15 +1034,20 @@ export class TowerCreationCoordinator {
                 evidence: completion.evidence
             }
         );
-        this.rejectedCount++;
-        this.#remember(pending.request.transactionId);
-        this.pending = null;
-        this.lastResult = result;
-        return Object.freeze({
+        const receipt = Object.freeze({
             pending: false,
             committed: false,
-            ...result
+            ...result,
+            requestFingerprint: this.transactionEntries.get(
+                pending.request.transactionId
+            )?.requestFingerprint ?? null,
+            capacity: this.#getCapacityStatus(0)
         });
+        this.rejectedCount++;
+        this.#completeTransaction(pending.request.transactionId, receipt);
+        this.pending = null;
+        this.lastResult = receipt;
+        return receipt;
     }
 
     #failPendingProtocol(stage, evidence) {
@@ -1012,7 +1094,6 @@ export class TowerCreationCoordinator {
             ?? null;
         this.failure = freezeFailure(stage, error, extra);
         this.protocolFailureCount++;
-        if (transactionId) this.#remember(transactionId);
         this.pending = null;
         this.queued = null;
         const result = terminalResult(
@@ -1024,24 +1105,41 @@ export class TowerCreationCoordinator {
                 recoveryRequired: true
             }
         );
-        this.lastResult = result;
-        return Object.freeze({
+        const receipt = Object.freeze({
             pending: false,
             committed: false,
-            ...result
+            ...result,
+            requestFingerprint: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.requestFingerprint ?? null
+                : null,
+            capacity: this.#getCapacityStatus(0)
         });
+        if (transactionId) this.#completeTransaction(transactionId, receipt);
+        this.lastResult = receipt;
+        return receipt;
     }
 
     #publishTerminal(result) {
         const transactionId = result?.transactionId;
-        if (transactionId) this.#remember(transactionId);
-        this.lastResult = result;
-        if (result?.result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE) {
+        const entry = transactionId
+            ? this.transactionEntries.get(transactionId)
+            : null;
+        const receipt = entry
+            ? Object.freeze({
+                ...result,
+                requestFingerprint: entry.requestFingerprint,
+                capacity: result.capacity ?? this.#getCapacityStatus(0)
+            })
+            : result;
+        if (transactionId) this.#completeTransaction(transactionId, receipt);
+        this.lastResult = receipt;
+        if (receipt?.result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE) {
             this.protocolFailureCount++;
-        } else if (result?.result !== TOWER_CREATION_RESULT.COMMITTED) {
+        } else if (receipt?.result !== TOWER_CREATION_RESULT.COMMITTED) {
             this.rejectedCount++;
         }
-        return result;
+        return receipt;
     }
 
     #cancelReservations(handles) {
@@ -1056,12 +1154,30 @@ export class TowerCreationCoordinator {
         return clean;
     }
 
-    #remember(transactionId) {
-        if (this.knownTransactionIds.has(transactionId)) return;
-        this.knownTransactionIds.add(transactionId);
-        this.transactionOrder.push(transactionId);
-        while (this.transactionOrder.length > this.historyCapacity) {
-            this.knownTransactionIds.delete(this.transactionOrder.shift());
+    #setTransactionReceipt(transactionId, stage, receipt) {
+        const entry = this.transactionEntries.get(transactionId);
+        if (!entry || entry.stage === 'completed') {
+            throw new Error('Tower creation transaction receipt owner가 없습니다.');
         }
+        entry.stage = stage;
+        entry.receipt = receipt;
+    }
+
+    #completeTransaction(transactionId, receipt) {
+        const entry = this.transactionEntries.get(transactionId);
+        if (!entry) return receipt;
+        if (entry.stage !== 'completed') {
+            this.completedTransactionOrder.push(transactionId);
+        }
+        entry.stage = 'completed';
+        entry.receipt = receipt;
+        while (this.completedTransactionOrder.length > this.historyCapacity) {
+            const retired = this.completedTransactionOrder.shift();
+            const retiredEntry = this.transactionEntries.get(retired);
+            if (retiredEntry?.stage === 'completed') {
+                this.transactionEntries.delete(retired);
+            }
+        }
+        return receipt;
     }
 }

@@ -263,7 +263,8 @@ function createFixture(options = {}) {
     const coordinator = new TowerCreationCoordinator({
         towerGroupState: state,
         registry,
-        backend
+        backend,
+        historyCapacity: options.historyCapacity
     });
     return { registry, state, backend, coordinator, primaryHandle };
 }
@@ -613,6 +614,127 @@ test('future tick은 defer되고 놓친 tick과 duplicate transaction은 재실�
         22
     );
     assert.equal(duplicate.result, TOWER_CREATION_RESULT.PROTOCOL_FAILURE);
+});
+
+test('same fingerprint replay는 queued/pending/COMMITTED receipt를 그대로 반환한다', () => {
+    const fixture = createFixture();
+    const queued = requestChildren(
+        fixture.coordinator,
+        'idempotent-commit',
+        1,
+        23
+    );
+    assert.strictEqual(
+        requestChildren(fixture.coordinator, 'idempotent-commit', 1, 23),
+        queued
+    );
+    assert.equal(fixture.registry.getStatus().reservedCount, 0);
+
+    const pending = fixture.coordinator.stageForFixedTick(23);
+    assert.strictEqual(
+        requestChildren(fixture.coordinator, 'idempotent-commit', 1, 23),
+        pending
+    );
+    assert.equal(fixture.registry.getStatus().reservedCount, 1);
+    assert.equal(fixture.coordinator.getStatus().stagedCount, 1);
+
+    fixture.backend.completeCommitted({ replay: 'committed' });
+    const completed = fixture.coordinator.observeCompletedAtFixedBoundary(24);
+    assert.strictEqual(
+        requestChildren(fixture.coordinator, 'idempotent-commit', 1, 23),
+        completed
+    );
+    assert.equal(fixture.registry.getStatus().activeCount, 2);
+    assert.equal(fixture.state.getStatus().livingTowerCount, 2);
+    assert.equal(fixture.coordinator.getStatus().committedCount, 1);
+    assert.equal(fixture.coordinator.getStatus().replayedCount, 3);
+});
+
+test('ordinary rejection replay도 기존 receipt를 반환하고 새 reservation을 만들지 않는다', () => {
+    const fixture = createFixture();
+    requestChildren(fixture.coordinator, 'idempotent-rejection', 2, 25);
+    fixture.coordinator.stageForFixedTick(25);
+    fixture.backend.completeRejected({ replay: 'ordinary-rejection' });
+    const rejected = fixture.coordinator.observeCompletedAtFixedBoundary(26);
+    const replay = requestChildren(
+        fixture.coordinator,
+        'idempotent-rejection',
+        2,
+        25
+    );
+    assert.strictEqual(replay, rejected);
+    assert.equal(replay.result, TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED);
+    assert.equal(fixture.registry.getStatus().reservedCount, 0);
+    assert.equal(fixture.registry.getStatus().activeCount, 1);
+    assert.equal(fixture.backend.preleases.size, 0);
+    assert.equal(fixture.coordinator.getStatus().rejectedCount, 1);
+});
+
+test('same ID의 childCount/descriptor/requested tick 변경은 fingerprint protocol failure다', () => {
+    const alterations = [
+        (coordinator, id) => requestChildren(coordinator, id, 2, 27),
+        (coordinator, id) => coordinator.requestTowerCreation({
+            transactionId: id,
+            childCount: 1,
+            childSpawnDescriptors: [{ position: { x: 99, y: -2 } }],
+            requestedFixedTick: 27
+        }),
+        (coordinator, id) => requestChildren(coordinator, id, 1, 28)
+    ];
+    for (let index = 0; index < alterations.length; index++) {
+        const fixture = createFixture();
+        const id = `fingerprint-mismatch-${index}`;
+        const original = requestChildren(fixture.coordinator, id, 1, 27);
+        const mismatch = alterations[index](fixture.coordinator, id);
+        assert.equal(mismatch.result, TOWER_CREATION_RESULT.PROTOCOL_FAILURE);
+        assert.equal(
+            mismatch.reason,
+            'TRANSACTION_FINGERPRINT_MISMATCH'
+        );
+        assert.notEqual(
+            mismatch.requestFingerprint,
+            mismatch.expectedRequestFingerprint
+        );
+        assert.strictEqual(
+            requestChildren(fixture.coordinator, id, 1, 27),
+            original
+        );
+        assert.equal(fixture.registry.getStatus().reservedCount, 0);
+        assert.equal(fixture.coordinator.requiresRecovery(), false);
+        assert.equal(fixture.coordinator.getStatus().replayMismatchCount, 1);
+    }
+});
+
+test('completed receipt history는 bounded eviction 경계에서 가장 오래된 receipt만 제거한다', () => {
+    const fixture = createFixture({ historyCapacity: 2 });
+    const rejectMissedTick = (id, requestedTick) => {
+        requestChildren(fixture.coordinator, id, 1, requestedTick);
+        return fixture.coordinator.stageForFixedTick(requestedTick + 1);
+    };
+    const first = rejectMissedTick('history-first', 30);
+    const second = rejectMissedTick('history-second', 32);
+    assert.strictEqual(
+        requestChildren(fixture.coordinator, 'history-first', 1, 30),
+        first
+    );
+    const third = rejectMissedTick('history-third', 34);
+    assert.equal(third.result, TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED);
+    assert.equal(fixture.coordinator.getStatus().historyCount, 2);
+    assert.strictEqual(
+        requestChildren(fixture.coordinator, 'history-second', 1, 32),
+        second
+    );
+
+    const afterEviction = requestChildren(
+        fixture.coordinator,
+        'history-first',
+        1,
+        30
+    );
+    assert.notStrictEqual(afterEviction, first);
+    assert.equal(afterEviction.accepted, true);
+    assert.equal(fixture.coordinator.getStatus().historyCount, 2);
+    assert.equal(fixture.coordinator.getStatus().activeTransactionCount, 1);
 });
 
 function installFakeWebGpuGlobals() {
