@@ -5,7 +5,6 @@ prototype values.
 
 | ID | Question | Current baseline / constraint |
 | --- | --- | --- |
-| O-G03 | Zero-share Tower presentation | cannot restore positive share; immediate death vs non-viable actor undecided |
 | O-G04 | Merge execution | staged movement preferred; speed/channel/interruption undecided |
 | O-G05 | Actor spawn grace | narrow source-pair grace; exact ticks/pairs data-owned |
 | O-G06 | Enemy default spawned by generic `Enemy` word | basic Corebound baseline; exact definition/tier undecided |
@@ -16,7 +15,6 @@ prototype values.
 | O-G11 | Hostile transient projectile cleanup at Wave Clear | clear by default unless it can spawn actors; exact grace undecided |
 | O-G12 | Enemy/Tower Merge generalization | Tower Merge required; other entity-kind conservation rules future work |
 | O-G13 | Friendly fire modifiers | baseline disabled; conversion/reflect vocabulary future work |
-| O-G14 | Tower-less camera fallback | player-owned summary then Core baseline; exact priority undecided |
 | O-G15 | Mid-wave authoritative checkpoint | not implemented; safe-boundary restart remains current policy |
 | O-G16 | CPU fallback after Tower HP/multi-Tower | no gameplay parity promised yet; unsupported-mode policy needs decision |
 | O-G17 | Body pool reserves | persistent/hostile/projectile allocation percentages need stress data |

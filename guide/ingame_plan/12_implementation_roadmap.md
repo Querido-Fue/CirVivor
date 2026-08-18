@@ -97,18 +97,25 @@ as a manual PASS. R2 progress is `r2 완료.`.
 Gate: PASS. No same-execution recursion; player-created Enemy grants ordinary exact Player-kill Gold and creates
 risk. Manual interactive smoke was not executed and is not claimed as PASS.
 
-## R4 — TowerGroup + share ledger — NEXT
+## R4 — TowerGroup + share ledger — COMPLETE (2026-08-17; stabilized 2026-08-18)
 
 - multiple Tower bodies;
 - one GPU group movement/Aim command;
 - deterministic share representation;
 - HP/Power dilution;
 - death → Lost Share;
-- bounded group camera summary.
+- bounded group camera summary;
+- atomic technical creation with shared preview/planner, exact replay, and production member capacity 256;
+- source-local GPU target query and complete-group GPU-world recovery/rebind.
 
-Gate: arbitrary split/death sequence conserves share and allows zero Towers.
+Gate: PASS. Arbitrary split/death sequences conserve the exact `1_000_000_000` Share budget and allow zero
+Towers. Actual GPU covers 30/30 and 18/30 1→2, 0.01 HP planner reject/0.02 HP allow, 1→100 plus R3 Q Subject
+count 100, capacity 256 exact/257 atomic reject, exact transaction replay, 256/1,000 runtime group control,
+Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 targeting, primary death/rebind, and Core camera fallback.
+The runtime-only 1,000-Tower control fixture is not a production creation-cap increase. Manual interactive smoke
+was not executed and is not claimed as PASS.
 
-## R5 — Tower Payload + actor verbs
+## R5 — Tower Payload + actor verbs — NEXT
 
 - The Tower shoots The Tower;
 - Enemies shoot The Tower;

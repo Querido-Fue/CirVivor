@@ -31,22 +31,38 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`; `R5 Tower Payload + actor verbs NEXT`.
+Current Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`; `R5 Tower Payload + actor verbs NEXT`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower
-creation, source-local targeting, complete-group GPU-world recovery/R3 integration, and final acceptance.
+creation, source-local targeting, complete-group GPU-world recovery/R3 integration, and final acceptance. Post-R4
+stabilization moves non-viable derived current HP rejection into the shared CPU planner/preview, exposes the
+production Tower member capacity as one data authority, makes creation transaction replay exactly idempotent, and
+adds measured high-cardinality source-local targeting acceptance.
 `GameSystem` owns the CPU run-domain `TowerGroupState`, `TowerShareLedger`,
 `WordSystem`, five Sentence slots, `SentenceSlotController`, and `GoldLedger`. `TowerCombatRoster` is now only
 the legacy primary-Tower compatibility view and owns no independent HP/Share state.
 Share authority is the exact integer scale `1_000_000_000`. Cap-aware largest-remainder planning clamps each
 raw quotient to its claim cap, distributes positive residual by descending remainder and stable logical/exact
 identity, and removes a target deficit in the exact reverse priority; input permutation cannot change output.
-Turn 6 passed the 480-step CPU create/reject/death/ABA/rebind stress and all automated final gates. Actual
-NW/WebGPU evidence includes 256/1,000-Tower one-command control, 30/30 and 18/30 splits, 1→100, one-short atomic
-rejection, eight create/death churn cycles, R3 subject count 100 after split, two-Tower recovery/rebind, old
-callback isolation, maximum 9 storage buffers, and zero partial creation/per-Tower CPU command/full-body
-readback/protocol failure/recovery failure/uncaptured error with orderly `deviceLostReason='destroyed'`. The full
-Node gate is 1,581/1,581; both WASM checks, capability/R3/R4 hardware gates, render golden, title GPU smoke, and
-diff hygiene pass. Manual interactive GameScene smoke is `NOT EXECUTED` and is not claimed as PASS.
+`THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY = 256` is the production member-count authority consumed by
+creation preview, coordinator/runtime status, and receipts. It is separate from the GPU body's stable-slot address
+capacity and from the injected runtime-only 1,000-Tower group-control fixture; neither raises the production
+creation limit. A 0.01 HP 1→2 request now returns `REJECTED_NON_VIABLE_CURRENT_HP` /
+`NON_VIABLE_DERIVED_CURRENT_HP` with zero reservation/submission/mutation, while 0.02 HP produces exact 0.01 + 0.01.
+The canonical request fingerprint binds sorted descriptors, child count, and requested fixed tick. Same-ID/same-
+fingerprint queued, pending, completed, or rejected replay returns the exact existing receipt without new work;
+same ID with any altered payload is a protocol failure. Completed receipt history is bounded and never evicts an
+active transaction.
+
+Turn 6 passed the 480-step CPU create/reject/death/ABA/rebind stress and all automated final gates. Post-R4 actual
+NW/WebGPU evidence includes production capacity 256 exact/257 atomic reject, 256/1,000-Tower one-command runtime
+control, 30/30 and 18/30 splits, 1→100, transaction replay, R3 subject count 100 after split, two-Tower recovery/
+rebind, old callback isolation, and source-local target-query correctness at Hostile 256 × Tower 256 and Hostile
+1,000 × Tower 256. Latest 30-sample target-query GPU p50/p95 is `0.196608/0.262144 ms` for both cases; serialized
+fixed-boundary p95 is `5.0/3.6 ms`, with 323.6/311.5 ticks/s and no fixed-step drop or lost simulation time. Every
+R4 hardware path stays at maximum 9 storage buffers with zero partial creation, per-Tower CPU command, full-body
+readback, leak, protocol/recovery failure, or uncaptured error and orderly `deviceLostReason='destroyed'`. The full
+Node gate is 1,589/1,589; both WASM checks, capability/R3/R4 hardware gates, unchanged render golden, title GPU
+smoke, and diff hygiene pass. Manual interactive GameScene smoke is `NOT EXECUTED` and is not claimed as PASS.
 `GameObjectSystem` owns the GPU-world-scoped `AbilityRuntime`, `ActorPayloadMaterializer`,
 `SentenceRuntimeEstimator`, `BountyRewardDirector`, and `HostileParticipationTracker`. The production showcase
 binds Q to `The Tower shoots Enemies` and E to `Enemies shoot Enemies`; the only current actor-payload path is

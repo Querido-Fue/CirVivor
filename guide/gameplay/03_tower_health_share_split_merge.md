@@ -75,6 +75,13 @@ new Tower currentHP = H / (N + K)
 
 This preserves living share and total current HP.
 
+The shared CPU planner/preview must reject before reservation when any resulting Tower would have
+`currentHpFixedPoint <= 0`. The explicit result/reason is
+`REJECTED_NON_VIABLE_CURRENT_HP / NON_VIABLE_DERIVED_CURRENT_HP`; execution is disabled, child/reservation/GPU
+submission/existing mutation are all zero, and recovery remains false. The spawn adapter keeps its positive-HP
+check as a fail-closed defense. At the fixed-point HP scale, 0.01 HP split 1→2 rejects, while 0.02 HP split 1→2
+is viable as exact 0.01 + 0.01.
+
 ### Example: one full Tower to two
 
 ```text
@@ -123,6 +130,12 @@ child capacity failure
 → no partial living-share mutation
 ```
 
+`transactionId` replay is exact and payload-bound. The canonical fingerprint includes sorted child descriptors,
+child count, and requested fixed tick. Same ID plus the same fingerprint returns the exact existing queued,
+pending, completed, or ordinary-rejection receipt and performs no new prelease, GPU submission, or ledger commit.
+Same ID plus a different fingerprint is `TRANSACTION_FINGERPRINT_MISMATCH`, never an idempotent success. Completed
+receipt retention is bounded; active transactions are not eviction candidates.
+
 ## 5. Tower death
 
 On exact Tower death:
@@ -164,8 +177,8 @@ MaxHP = 0
 Power = 0
 ```
 
-It may be materialized briefly or rejected as non-viable by an explicit policy, but it must never create
-positive share. This exact presentation behavior is `OPEN`; the conservation rule is locked.
+The R4 technical creation policy rejects this as non-viable in the shared planner because derived current HP is
+not positive. It must never materialize briefly or restore positive Share.
 
 ## 7. Shared control
 
@@ -200,7 +213,8 @@ sum(position_i × share_i) / sum(share_i)
 ```
 
 The GPU computes the bounded summary. CPU consumes presentation-only data. No full-body frame readback.
-If no Tower lives, camera fallback is player-owned subjects/structures, then Core.
+If no Tower lives, current production camera falls back directly to the CPU Core position. A future non-Tower
+player-owned camera summary may be inserted only through an explicit policy change.
 
 ## 9. Merge
 
@@ -248,7 +262,22 @@ Instant merge, travel speed, interruption, and defense during merge remain tunab
 There is no default design cap of four Towers. Hundreds are a valid sandbox result if technical
 capacity permits.
 
-Technical capacity remains mandatory:
+Technical capacity remains mandatory. The current production member-count authority is
+`THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY = 256`; creation preview, technical runtime status, gameplay
+diagnostics, and acceptance receipts consume the same value. GPU body stable-slot capacity is a separate address
+range, and an injected runtime-only 1,000-Tower group-control test does not raise the production creation limit.
+
+```text
+required Tower count <= 256
+→ normal planning
+
+required Tower count > 256
+→ atomic REJECTED_CAPACITY
+→ generated 0
+→ existing mutation 0
+```
+
+Body and other technical capacity also remain mandatory:
 
 ```text
 required bodies > available bodies

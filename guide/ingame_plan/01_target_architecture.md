@@ -1,8 +1,9 @@
-> **2026-08-08 gameplay authority update**
+> **2026-08-18 Post-R4 authority update**
 >
-> Tower HP/death, multi-Tower share, Enemy Subject/Payload, and Overtime are now required target
-> systems. Read `../gameplay/README.md`. Existing sections remain useful for ownership and GPU
-> boundaries; any no-HP/no-Enemy statement is superseded.
+> Tower HP/death, Enemy Entity Word, and multi-Tower Share/group control are implemented. Canonical logical
+> Tower state belongs to CPU `TowerGroupState`/`TowerShareLedger`; GPU bodies own combat/transform and compact
+> roster/control/summary/query/creation runtimes. Tower Payload/actor verbs, Merge, Overtime, Shop, and checkpoint
+> remain target systems. Read `../gameplay/README.md`; any no-HP/no-Enemy/single-Tower authority is superseded.
 
 # 01. Target Architecture
 
@@ -29,6 +30,7 @@ Engine Shell
          ├─ GameStateStore
          ├─ GameCommandRouter
          ├─ GameEventStream
+         ├─ TowerGroupState / TowerShareLedger
          ├─ RunRngService
          ├─ WaveDirector
          ├─ ShopCoordinator
@@ -61,19 +63,22 @@ Engine Shell
 `WaveDirector`, `ShopCoordinator`, `CheckpointCoordinator`는 여섯 번째 상위
 시스템이 아니라 GameSystem이 직접 소유하는 application service다.
 
-현재 Phase 5 완료 slice는 이 계층을 축소해 유지한다. `GameScene`은 하나의
-`GameSystem`을 계속 소유하고, `GameSystem`은 CPU `CoreIntegrity`/input/camera와
-`GameObjectSystem`을 소유한다. ready session의 `GameObjectSystem` 안에는 교체 가능한
-단일 mixed GPU World가 있으며 Tower/Core proxy/enemy/projectile을 함께 처리한다.
-unsupported session은 별도 `CPU_NO_WAVE_FALLBACK`으로 시작한다. device recovery는
-`GameSystem`이나 CPU domain을 재생성하지 않고 GPU world만 교체한다.
+현재 Post-R4 slice는 이 계층을 축소해 유지한다. `GameScene`은 하나의 `GameSystem`을 계속 소유하고,
+`GameSystem`은 CPU `CoreIntegrity`, canonical `TowerGroupState`/`TowerShareLedger`, input/router/camera,
+`WordSystem`, 다섯 Sentence slot/cooldown, `GoldLedger`, 그리고 `GameObjectSystem`을 소유한다. ready
+session의 `GameObjectSystem` 안에는 교체 가능한 단일 mixed GPU World가 있으며 모든 living Tower,
+Core proxy, Enemy, projectile, collision, transient HP window, compact Tower roster/control/summary, atomic
+technical creation, source-local target query, and R3 actor materialization을 함께 처리한다. unsupported
+session은 별도 `CPU_NO_WAVE_FALLBACK`으로 시작한다. Device recovery는 CPU run domain을 재생성하지 않고
+GPU world만 교체하며 모든 committed living Tower를 새 exact handle에 재바인딩한다.
 
-production primary-pointer/LMB는 CPU 물리 projectile을 만들지 않는다. semantic input은
-`GpuPrimaryProjectileController`에 전달되고, controller는 exact Tower GPU handle과 copied
-world aim point로 같은 endpoint의 source-relative SpawnProgram을 요청한다. source pose,
-projectile physics/contact/lifetime/death/render는 GPU World가 소유하고 tracked pose는 camera
-presentation에만 남는다. Core damage/arrival, Gold/reward, wave completion, shop,
-Word/Sentence/Skill runtime과 GPU subject selector/child allocator는 이 완료 slice에 포함되지 않는다.
+production primary-pointer/LMB는 CPU 물리 projectile을 만들지 않는다. 하나의
+`GpuTowerGroupFacade`가 semantic movement/Aim을 group command로 보내고, primary compatibility action은
+canonical lowest-living-ordinal Tower exact handle과 같은-tick GPU aim을 사용해 source-relative
+SpawnProgram을 요청한다. 각 Tower pose/collision/projectile origin은 GPU-authoritative이며 CPU는 bounded
+group summary만 presentation/camera에 소비한다. Primary death는 다음 living ordinal로 rebind하고, zero
+living Towers는 Core camera fallback을 사용한다. Tower Payload/actor verbs, Merge, wave completion/Overtime,
+Shop, checkpoint는 이 완료 slice에 포함되지 않는다.
 
 ## 3. 의존 방향
 
@@ -164,6 +169,8 @@ GameSystem은 세션의 조정자이며 모든 세부 로직을 직접 구현하
 | --- | --- |
 | Entity 생성·제거·ID | GameObjectSystem |
 | 위치·속도·충돌 결과 | GameObjectSystem/Physics 단계 |
+| Tower logical ID/ordinal, Share/Lost Share, derived HP/Power, primary 선택 | TowerGroupState/TowerShareLedger |
+| Tower GPU exact binding, combat HP/transform/death | GameObjectSystem의 active GPU world |
 | Core Integrity | CombatResolver를 통한 GameStateStore |
 | 웨이브 진행 | WaveDirector |
 | Gold·Lexicon·SentenceBoard | GameSystem의 command handler |
@@ -200,6 +207,11 @@ project/game/script/module/
 │  │  └─ fixed_command_buffer.js
 │  ├─ event/
 │  │  └─ game_event_stream.js
+│  ├─ object/tower/
+│  │  ├─ tower_group_state.js
+│  │  ├─ tower_share_ledger.js
+│  │  ├─ tower_creation_coordinator.js
+│  │  └─ gpu_tower_group_facade.js
 │  ├─ flow/
 │  │  ├─ wave_director.js
 │  │  ├─ shop_coordinator.js
@@ -233,10 +245,15 @@ project/game/script/data/
 └─ scene/game/corridor_eight_map_data.js
 ```
 
-Tower 크기·이동·물리 수치, Core Integrity, Basic Bullet의 speed/radius/damage/
+Tower 크기·이동·물리 수치와 production Tower member capacity 256, Core Integrity, Basic Bullet의 speed/radius/damage/
 penetration/lifetime/render 수치, 맵 path width와 방향 route는
 위 data 모듈이 유일한 권한이다. 구현 모듈은 직접 named import하고 같은
 fallback 값을 다시 선언하지 않는다.
+
+Production Tower capacity는 `THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY` 하나에서 preview,
+technical creation status, gameplay diagnostics, and acceptance receipt로 흐른다. 이 member-count cap은
+GPU body stable-slot 주소 범위와 별개이며, runtime-only 1,000-Tower group-control fixture가 상용 값을
+1,000으로 올리지 않는다.
 
 ## 8. 초기화와 파괴 순서
 

@@ -14,24 +14,31 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
-**R3 Enemy Entity Word is Post-R3 stabilized as of 2026-08-17. R4 TowerGroup + Share Ledger is next.** The CPU run domain
-now owns `WordSystem`, five Sentence slots/cooldowns, `SentenceSlotController`, and `GoldLedger`; the active GPU
-world owns `AbilityRuntime`, `ActorPayloadMaterializer`, `SentenceRuntimeEstimator`, `BountyRewardDirector`, and
-`HostileParticipationTracker`. Q executes `The Tower shoots Enemies` and E executes `Enemies shoot Enemies`.
-Subject selection is aggregate-only GPU work; child creation uses parallel validate/aggregate/materialize with
-exact 0/N publication; and child generation is GPU-authored from source generation plus one. Full Node passed
-`1543/1543`; three actual R3 WebGPU runs passed 0/1/10/256/1000, generation-limit and generated Gold/Core
-scenarios, plus doubling-to-capacity with storage maximum 9, protocol/recovery 0,
-`uncapturedErrorCount=0`, and destroyed teardown. Both WASM checks, default WebGPU capability, all exact nine
-R2 routed hardware stages, the supplemental Rhom source-death projectile stage, audited render golden, and diff
-hygiene passed. Manual interactive smoke was not executed and is not claimed as PASS.
+**R4 TowerGroup + Share Ledger is complete as of 2026-08-17 and Post-R4 stabilization is complete as of
+2026-08-18. R5 Tower Payload + actor verbs is next.** `GameSystem` owns canonical CPU-run-domain
+`TowerGroupState`/`TowerShareLedger`, exact logical Tower records, Share/Lost Share, `WordSystem`, five Sentence
+slots/cooldowns, `SentenceSlotController`, and `GoldLedger`. `TowerCombatRoster` is only the primary-Tower
+compatibility view. The active GPU world owns compact Tower group roster/control/summary, atomic technical
+creation, source-local targeting, R3 ability/materialization owners, and transient combat state. Share uses exact
+integer scale `1_000_000_000`; production Tower creation uses one data-owned member capacity of 256, separate
+from body stable-slot capacity and the runtime-only 1,000-Tower group-control fixture.
+
+Post-R4 full Node passed `1589/1589`; both WASM reproducibility checks, default capability, R3 and R4 actual-GPU
+routes, unchanged render golden, title GPU smoke, and diff hygiene pass. Actual R4 covers 0.01 HP planner reject,
+0.02 HP allow, capacity 256 exact/257 atomic reject, queued/pending/completed transaction replay, 30/30 and 18/30
+splits, 1→100 with R3 Q Subject count 100, high-cardinality target query at Hostile 256/1,000 × Tower 256,
+primary death/rebind, and zero-Tower Core camera fallback. Storage maximum is 9; partial creation, per-Tower CPU
+commands, full-body readback, leaks, protocol/recovery failure, fixed-step drops/lost time, and uncaptured errors
+are zero; teardown reports `deviceLostReason=destroyed`. Manual interactive smoke was not executed and is not
+claimed as PASS.
 
 ## Implemented runtime foundation
 
 - Tower/Core/Basic Bullet mixed GPU World migration is complete.
-- GPU World owns one authoritative Tower body, Core proxy, enemies, projectiles, collision, HP storage,
+- GPU World owns authoritative Tower bodies, Core proxy, enemies, projectiles, collision, HP storage,
   lifetime, render, exact identity, and typed contact/death events.
-- Production LMB Basic Bullet uses exact GPU Tower source and GPU aim-point resolution.
+- Production LMB Basic Bullet uses the canonical group's exact primary-Tower compatibility handle and GPU
+  aim-point resolution; primary death promotes the lowest living logical ordinal.
 - **R1 team metadata foundation complete** (Turn 1/5): canonical numeric
   `NEUTRAL=0`, `PLAYER=1`, `HOSTILE=2` IDs now propagate through spawn, active registry metadata,
   source-relative provenance, and GPU damage handling. Tower/Enemy/Core are
@@ -85,10 +92,12 @@ hygiene passed. Manual interactive smoke was not executed and is not claimed as 
   UI path. It performs no raw GPU body readback. CPU fallback reports `TOWER N/A`; benchmark/tool
   children do not receive this HUD port.
 - finite lifetime clamps to zero; 2-second bullet expires at f32 source tick 121; immortal `-1` remains.
-- CPU domain preserves Core Integrity and session state across GPU-world restart. Replacement restores
-  only committed Tower HP and resets the transient Maximum Damage Window.
-- Current R1 production behavior still assumes one Tower; Tower Share, multiple Towers, and broader
-  hostile attack selection remain future work.
+- CPU domain preserves Core Integrity and session state across GPU-world restart. Replacement restores every
+  committed living Tower logical record, Share/Lost Share, current/max HP, Power, primary selection, and recovery
+  descriptor, then exact-rebinds the group while resetting the transient Maximum Damage Window.
+- Current R4 production creation accepts at most 256 living Towers atomically. Multiple-Tower Share/control,
+  bounded camera summary, source-local target query, death promotion, and complete-group recovery are live;
+  Tower actor payload, Merge, and broader hostile attack selection remain future work.
 - Current `WaveDirector` remains spawn-schedule-only. It compiles the four-command authored 60Hz timeline,
   resolves immutable Enemy spawn stats once at queue time, and sends every same-tick set through one atomic
   batch whose rejection preserves schedule cursor/identity. Core impact/depletion is connected through the
@@ -537,10 +546,35 @@ hygiene passed. Manual interactive smoke was not executed and is not claimed as 
   unchanged render golden all pass. Every hardware receipt has protocol/recovery 0, uncaptured errors 0, and
   destroyed teardown. Manual Q/E/Gold/Core/pause-resume smoke remains NOT EXECUTED.
 
-## Post-R3 locked target not yet implemented
+## Post-R4 TowerGroup stabilization complete (2026-08-18)
 
-- multiple Towers share a conserved living stat budget; death creates permanent Lost Share.
-- one GPU Tower-group movement/Aim command and bounded group camera summary.
+- `TowerShareLedger.planCreation` and `TowerGroupState.previewCreation` share the same pure plan. If any resulting
+  current HP is non-positive, 0.01 HP 1→2 returns `REJECTED_NON_VIABLE_CURRENT_HP` /
+  `NON_VIABLE_DERIVED_CURRENT_HP` before reservation, submission, or mutation; 0.02 HP 1→2 commits exact 0.01 +
+  0.01. The runtime reason matches preview and the spawn adapter keeps its fail-closed positive-HP check.
+- `THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY=256` is consumed by creation preview/preflight, runtime and
+  gameplay status, and acceptance receipts. Required 256 commits all 256 records; required 257 rejects atomically
+  with mutation/pending/readback zero. GPU body-slot capacity remains the stable-address range, not a Tower-count
+  authority. The injected 1,000-Tower group-control fixture is runtime-only.
+- Creation transaction identity includes a canonical sorted-descriptor/count/fixed-tick fingerprint. Same-ID/
+  same-fingerprint queued, pending, completed, and ordinary-rejection replay returns the exact receipt with one
+  prelease, one backend submission, and one ledger commit. Same ID with altered payload is
+  `TRANSACTION_FINGERPRINT_MISMATCH`; bounded completed-history eviction never removes active work.
+- Actual source-local query correctness is exact for distance → higher Share → lower entity ID → lower
+  incarnation and O's same-identity behavior. Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 both have
+  mismatch 0, query GPU p50/p95 `0.196608/0.262144 ms`, serialized fixed-boundary p95 `5.0/3.6 ms`, and
+  `323.6/311.5` ticks/s. Both have zero dropped fixed steps/lost simulation time and no CPU roster/pose readback.
+- Death moves Share to Lost Share exactly once; zero living Towers produces
+  `livingShareUnits=0`, `lostShareUnits=1_000_000_000`, `NoLivingTowers`, no default run failure, and Core camera
+  fallback. Primary death promotes the lowest living logical ordinal and complete-group recovery rebinds all
+  living Towers while isolating old callbacks.
+- Node `1589/1589`, both WASM checks, capability/R3/R4 actual GPU, unchanged golden 10 surfaces/3 cases, Title GPU
+  smoke, syntax checks, and diff hygiene pass. Storage maximum 9, partial creation/per-Tower CPU command/full-body
+  readback/leaks/protocol/recovery/uncaptured errors all zero; destroyed teardown is orderly. Manual GameScene
+  smoke remains `NOT EXECUTED`.
+
+## Post-R4 locked target not yet implemented
+
 - Tower actor payload, including `The Tower shoots The Tower` and `Enemies shoot The Tower`.
 - `The Towers merge` and generic actor Merge transaction.
 - hostile attack/actor-verb policies beyond the current Enemy-only Shoot path.
@@ -550,17 +584,15 @@ hygiene passed. Manual interactive smoke was not executed and is not claimed as 
 - full five-offer Shop/purchase/reroll/editor UI and preview panels.
 - save/checkpoint schema and continue/migration for later TowerGroup state.
 
-## Post-R3 implementation gap
+## Post-R4 implementation gap
 
 The current GPU world still lacks the remaining gameplay policy and transaction layers required for:
 
 ```text
 definition-level target-policy expansion beyond the locked default team matrix
-Tower Share and multiple-Tower authored state
-multiple Tower group control/camera summary
 hostile attack policies beyond the production Archer/M producers
-Tower-share split/merge transaction
 Tower/other-noun actor child allocation
+Tower Merge transaction
 full modifier grammar
 Wave timer/Overtime Core DOT/settlement
 Shop/editor UI and save/checkpoint integration
@@ -568,12 +600,11 @@ Shop/editor UI and save/checkpoint integration
 
 ## Closed checkpoint boundary
 
-The Turn 4 checkpoint and Turn 9 final acceptance from `plan/0809_enemy/R2_GOAL.md` are complete. Turns 5–8
-production plus Turn 9 hardening, showcase, fixtures, and final runner were accepted on 2026-08-12. This status
-closes `plan/0816_enemy_word` Post-R3 automated stabilization on 2026-08-17, with manual smoke still pending. It
-does not start R4 TowerGroup/Share,
-Tower Payload, Merge, Overtime, full Shop/editor, or save work. Manual sandbox visual QA remains future evidence
-and was not substituted by automated hardware acceptance.
+R2 final acceptance and Post-R3 stabilization remain historical complete checkpoints. R4 Turns 1–6 and the
+Post-R4 automated stabilization close on 2026-08-18 with manual smoke still pending. This boundary completes
+TowerGroup/Share, technical creation, group control/summary, source-local targeting, and complete-group recovery;
+it does not start R5 Tower Payload/actor verbs, Merge, Overtime, full Shop/editor, or save work. Manual sandbox
+visual QA remains future evidence and was not substituted by automated hardware acceptance.
 
 ## R1 final acceptance evidence
 

@@ -42,6 +42,41 @@ Static tests must fail if production guides/contracts silently reintroduce:
 - arbitrary split/merge/death property test conserves total share budget.
 - capacity rejection leaves parent/share/HP/cooldown unchanged.
 - exact identity reuse cannot transfer share loss to replacement Tower.
+- any derived `currentHpFixedPoint <= 0` rejects in the shared preview/planner before reservation or GPU work.
+- same transaction ID replays only when its canonical descriptor/count/fixed-tick fingerprint is identical.
+
+### Post-R4 stabilization evidence (2026-08-18)
+
+- Focused TowerGroup/creation/recovery Node: `37/37` PASS; full Node: `1589/1589` PASS, fail 0.
+- Low-current-HP 0.01 1→2 returns `REJECTED_NON_VIABLE_CURRENT_HP` /
+  `NON_VIABLE_DERIVED_CURRENT_HP`; preview/runtime reason match and child/reservation/submission/existing mutation
+  are zero with recovery false. Actual GPU 0.02 1→2 commits exact current HP 0.01 + 0.01.
+- Production member-count authority is `THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY=256`, consumed by
+  preview/preflight, runtime/gameplay status, and receipts. Actual required 256 commits all 256 Tower records;
+  required 257 is an atomic capacity rejection with mutation/pending/readback zero. Body stable-slot capacity is
+  separate, and the runtime-only 1,000-Tower control fixture is not production creation evidence.
+- Same-ID/same-fingerprint queued, pending, and completed replay returns the exact existing receipt. The actual
+  GPU replay has one prelease, one backend submission, one ledger commit, two living Towers, replay count 3, and
+  protocol/recovery 0. Same ID with any altered descriptor/count/tick reports
+  `TRANSACTION_FINGERPRINT_MISMATCH`; bounded completed-history eviction excludes active transactions.
+- Actual creation covers 30/30 1→2 at 15/15, 18/30 1→2 at 9/15, 1→100 at current HP 0.30 each, and R3 Q Subject
+  count 100. Across the fixture: requested/applied/rejected `15/13/2`, partial creation 0, reservation/readback
+  leaks 0, full-body readback 0, protocol failure 0, storage maximum 9.
+- Actual target query covers exact ordering distance → higher Share → lower entity ID → lower incarnation and O
+  same-identity behavior. Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 have valid targets `256/1000`,
+  correctness mismatch 0, GPU p50/p95 `0.196608/0.262144 ms` over 30 samples, serialized fixed-boundary p95
+  `5.0/3.6 ms`, and `323.6/311.5` ticks/s. Fixed-step budget is met with dropped steps/lost time 0, storage 9,
+  and no CPU roster/pose readback.
+- The 256- and injected 1,000-Tower group-control cases use one command, zero per-Tower CPU commands, zero
+  full-body readback, storage 7, and exact living Share `1_000_000_000`. Death moves Share to Lost Share exactly
+  once. Primary death promotes/rebinds the lowest living ordinal; zero Tower reports Lost Share
+  `1_000_000_000`, `NoLivingTowers`, no run failure, and Core camera fallback `(51,-27)`.
+- `npm test`, both WASM reproducibility checks, default capability, R3 and R4 actual WebGPU, unchanged render
+  golden (10 surfaces/3 cases, SHA
+  `3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf`), Title GPU smoke, syntax, and diff
+  hygiene pass. R4 reports `uncapturedErrorCount=0`, `deviceLostReason=destroyed`, storage maximum 9, and
+  protocol/recovery failure 0.
+- Manual interactive GameScene smoke: `NOT EXECUTED`. Automated GPU PASS is not a manual visual PASS.
 
 ## 4. Sentence sandbox
 
@@ -477,8 +512,8 @@ below. Timer expiry, Overtime transition/DOT, Wave Clear, and final victory cons
 
 ## 9. GPU acceptance
 
-R3 completes the Enemy-only actor child allocation rows. Tower group movement/share and Tower actor-payload
-allocation rows remain R4/R5 gates.
+R3 completes the Enemy-only actor child allocation rows. R4 completes Tower group movement/share, technical
+creation, source-local targeting, and recovery rows. Tower actor-payload allocation remains an R5 gate.
 
 - team/target/share metadata host/WGSL compatibility.
 - GPU Tower HP/death and hostile projectile contact on actual NW.js/WebGPU.
@@ -534,10 +569,13 @@ From project root:
 
 ```text
 npm test
-npm run test:webgpu:capability
-npm run test:render:golden
 npm run check:wasm:flow-field
 npm run check:wasm:collision-contact
+npm run test:webgpu:capability
+npm run test:webgpu:r3-enemy-word
+npm run test:webgpu:r4-tower-group
+npm run test:render:golden
+npm run test:title-gpu:smoke
 git diff --check
 ```
 

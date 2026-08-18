@@ -63,6 +63,18 @@
 > slots/cooldowns, and Gold while canceling transient R3 GPU execution. Tower Payload, Tower Share, Merge,
 > Overtime, full Shop/editor UI, and save remain future work.
 
+> **2026-08-18 R4 TowerGroup + Share Ledger complete and stabilized**
+>
+> `GameSystem` owns canonical CPU-run-domain `TowerGroupState`/`TowerShareLedger`; `TowerCombatRoster` is only
+> the legacy primary-Tower compatibility view. Share is exact integer scale `1_000_000_000`. The active endpoint
+> owns compact GPU roster/control/summary, atomic technical creation, and source-local target query. Production
+> creation member capacity is one data-owned value, 256, separate from body stable-slot capacity and runtime-only
+> 1,000-Tower fixtures. Shared preview rejects any non-positive derived current HP before reservation. Creation
+> transaction replay is fingerprint-bound and exact; same-ID altered payload is protocol failure. Complete-group
+> recovery rebinds every living logical Tower, primary death promotes the lowest living ordinal, and zero Towers
+> uses Core camera fallback without default run failure. Tower Payload/actor verbs, Merge, Overtime, Shop, and save
+> remain future work.
+
 # 03. GameSystem and Subsystem Contracts
 
 ## 1. 상속이 아닌 조합
@@ -159,9 +171,10 @@ Benchmark는 실제 play GameSystem에 버튼 분기를 섞지 않고 dependency
 
 현재 Phase 5 runtime은 `enter()`에서 `GPU_WORLD` 또는
 `CPU_NO_WAVE_FALLBACK`을 한 번 선택해 session 동안 고정한다. GPU recovery는
-`GameSystem`을 재생성하지 않는다. `CoreIntegrity`, input/router, camera, logical
-facade와 global fixed tick을 보존하고 `GameObjectSystem` 내부의 endpoint/registry/
-backend/wave GPU world만 교체한다. Committed Tower HP만 보존하고 Maximum Damage Window, Effect/P,
+`GameSystem`을 재생성하지 않는다. `CoreIntegrity`, canonical `TowerGroupState`/`TowerShareLedger`,
+input/router, camera/group facade와 global fixed tick을 보존하고 `GameObjectSystem` 내부의 endpoint/registry/
+backend/wave GPU world만 교체한다. Committed living Tower logical IDs/ordinals, Share/Lost Share,
+current/max HP, Power, primary selection, and recovery descriptors를 보존하고 Maximum Damage Window, Effect/P,
 Formation/H/HX, Atomic J/C′, and Projectile Capture R rosters, pools, timers, metadata-mutation authority,
 prepared/armed work, readbacks, and presentation summaries are reset. RouteRuntime body/availability state,
 Z lease roster, route readbacks, and Wave availability binding reset to all-open too; stale ports are revoked. 같은 device generation에서 replacement tick이
@@ -171,11 +184,12 @@ R3의 `WordSystem`, 다섯 slot/cooldown, `SentenceSlotController`, `GoldLedger`
 반면 old endpoint에 묶인 subject snapshot, actor-payload prelease/materialization, bounty pending proof,
 hostile aggregate mirror는 취소/폐기하고 새 `GameObjectSystem` owner에 다시 바인딩한다.
 
-`GPU_WORLD`의 primary-pointer/LMB action은 `GpuPrimaryProjectileController`가 소비한다.
-controller는 exact Tower GPU handle과 world aim만 next-fixed source-relative request로
-보내고, command commit 뒤에만 cooldown을 확정한다. tracked pose와 CPU Tower position은
-projectile command payload가 아니다. 정상 spawn pressure는 shot만 reject/defer하며 같은
-tick의 mandatory Tower control이나 fixed submit을 거절하지 않는다.
+`GPU_WORLD`의 semantic movement/Aim은 하나의 `GpuTowerGroupFacade`가 group command로 보낸다.
+primary-pointer/LMB compatibility action은 `GpuPrimaryProjectileController`가 canonical lowest-living-
+ordinal Tower exact handle과 같은-tick world aim만 next-fixed source-relative request로 보내고, command
+commit 뒤에만 cooldown을 확정한다. CPU Tower position이나 full roster readback은 projectile command
+payload가 아니다. 정상 spawn pressure는 shot만 reject/defer하며 같은 tick의 mandatory Tower group
+control이나 fixed submit을 거절하지 않는다.
 
 ## 5. 5개 하위 시스템
 
@@ -348,8 +362,8 @@ start budget. Archer keeps its Tower-only source-relative shot. M provides expli
 to BodyControlProgram v2, consumes completed GPU Core-first inclusive-range selection, and binds the result to
 SpawnProgram v4 without CPU pose. No target resumes route movement; selected range keeps movement stopped.
 Typed selected-Core damage is authenticated by `EnemyCoreImpactDirector` rather than GPU Core HP. A launched
-selected-Tower projectile remains valid after M dies and applies its snapshotted one-hit damage directly to the
-exact Tower, bypassing the continuous Maximum Damage Window with `maximumDamageWindow=false`.
+selected-Tower projectile remains valid after M dies, but its snapshotted one-hit damage enters the same exact
+Tower Maximum Damage Window as other hostile Tower damage; direct-HP bypass is forbidden.
 
 ### PentagonEffectDirector
 
@@ -438,6 +452,29 @@ credit한다. Core impact, ordinary despawn, transform consume, non-Player kill,
 지급하지 않는다. `HostileParticipationTracker`는 live/pending hostile count, sentence-created count, bounty
 potential, Siege Weight를 bounded scalar로 게시한다. 이 tracker는 Wave timer/Overtime DOT owner가 아니다.
 
+### R4 TowerGroup, creation, and target-query owners
+
+`TowerGroupState` is the canonical CPU logical authority for living/dead records, stable ordinal, exact GPU
+binding, current/max HP, Power, primary selection, group revision, and recovery descriptors.
+`TowerShareLedger` owns the exact `1_000_000_000` Share/Lost Share conservation invariant and pure cap-aware
+largest-remainder creation plan. `TowerCombatRoster` mirrors only the current primary for legacy Archer/M/LMB
+ports and must not own independent HP or Share.
+
+`TowerCreationCoordinator` uses the same preview plan as `TowerGroupState`, preflights the data-owned production
+member capacity 256 plus Registry/body/program capacity, and publishes exact 0/N. Any derived
+`currentHpFixedPoint <= 0` is `REJECTED_NON_VIABLE_CURRENT_HP / NON_VIABLE_DERIVED_CURRENT_HP` before prelease.
+Its canonical transaction fingerprint includes sorted descriptors, child count, and requested fixed tick.
+Same-ID/same-fingerprint replay returns the exact existing receipt at queued, pending, completed, or ordinary
+rejection stages without new work; same-ID/different-fingerprint is protocol failure. Completed receipt history
+is bounded and active work cannot be evicted.
+
+`GpuTowerGroupRuntime` owns a compact exact member roster, one group control command, and a fixed 80-byte lossy
+summary; it never reads back full bodies. Its `capacity` is the backend's stable body-slot address range, not the
+production member-count policy. `GpuTowerTargetQueryRuntime` writes one 40-byte source-local result per hostile
+source entirely from GPU body state plus compact Tower roster/Share. Selection is distance, higher Share, lower
+entity ID, then lower incarnation. Arrow, O, and selected-target projectile consumers share that result. Zero
+living Towers is a valid no-target state and roster death alone does not invent a revision.
+
 ### ShopCoordinator
 
 offer 생성, 가격, transaction, WordSystem 재컴파일 무효화를 조정한다.
@@ -454,8 +491,9 @@ Enemy, Tower, 구조물의 대상 규칙을 분리한다. Ordinary contact/proje
 피해는 target-side same-tick maximum aggregation과 `TowerMaximumDamageWindow`가 권위이며, Core damage는
 `EnemyCoreImpactDirector`가 exact event/provenance를 검증한 뒤 CPU `CoreIntegrity`에 적용한다.
 An active larger Tower maximum applies only the peak delta and updates provenance; it never extends the first
-accepted tick's fixed `N + 60` expiry. Diamond M의 exact selected-Tower projectile만 launch-time damage
-snapshot을 한 번 직접 적용하며, source death 이후에도 유효하고 continuous window를 우회한다.
+accepted tick's fixed `N + 60` expiry. Diamond M의 exact selected-Tower projectile도 launch-time damage
+snapshot과 exact target identity는 source death 이후 유지하지만, 피해 적용은 같은 Maximum Damage Window
+후보/승자 계약을 통과하며 direct HP path로 우회하지 않는다.
 
 ## 7. Command 계약
 
@@ -518,6 +556,7 @@ GameEvent/Combat 구조가 도입된 뒤에도 endpoint exactly-once 경계로 �
 
 ```text
 completed fixed/SpawnProgram outcomes
+→ completed Tower creation outcome authentication and exact CPU ledger commit/reject
 → completed Projectile Capture/release evidence drain and coherent source-tick watermark
 → completed Atomic Transform first-hit/prepare/transform evidence drain
 → completed Effect batch/event drain and whole-envelope authentication
@@ -525,10 +564,11 @@ completed fixed/SpawnProgram outcomes
 → completed Route Availability assignment/close/reopen/cleanup drain and exact Z lease mirror
 → completed generic gameplay event drain gated by accepted capture watermark
 → raw typed snapshot publication
-→ committed Tower roster + exact Core-impact event observation
+→ TowerGroupState exact damage/death commit, primary promotion, and compact roster binding
+→ exact Core-impact event observation
 → authenticated CORE_IMPACT cleanup stage
 → Core depletion / RunOutcome transition
-→ if RUNNING: WaveDirector, initial Tower/Core, Tower control, Arrow/M control, projectile/hostile requests
+→ if RUNNING: WaveDirector, initial Tower/Core, one Tower-group control, Arrow/M control, projectile/hostile requests
 → if RUNNING: WordSystem fixed activation drain → aggregate GPU Subject snapshot
 → if RUNNING: ActorPayloadMaterializer exact 0/N prelease and lifecycle request
 → if DEFEATED: close ingress; version-cancel exact reserved/submitted/readback-pending fixed programs
@@ -539,7 +579,7 @@ completed fixed/SpawnProgram outcomes
 → if DEFEATED: close Route Runtime ingress, reopen/cleanup exact Z leases, settle readback, observe all-open roster
 → lifecycle command commit
 → R3 actor-payload GPU materialization commit and aggregate completion
-→ fixed command commit / source-control program stage
+→ fixed command commit / source-control and authenticated Tower-creation program stage
 → if RUNNING: stage/commit one whole-tick Pentagon pulse batch
 → if RUNNING: stage one whole-tick Formation prepare batch; publish only on-time N→N+1 transforms
 → if RUNNING: stage bounded J/C′ prepare; publish authentic T-1→T transforms
@@ -550,19 +590,22 @@ completed fixed/SpawnProgram outcomes
 → Projectile Capture inclusive-funnel + strictly-closing preflight/prepared shield
 → raw → source modifiers → defense/status → final damage
 → ordinary contact/projectile and Arrow only: same-Tower/source-tick maximum aggregation
-→ contact handler: selected-target M Tower direct launch-snapshot one-hit, otherwise Maximum Damage Window → HP mutation
+→ Maximum Damage Window winner → Tower HP mutation, including selected-target M launch-snapshot candidates
 → canonical-zero death marking
 → Projectile Capture late whole-batch seal or normal zero-mutation capacity rejection
 → Route Runtime availability + physical blocker close/reopen finalize atomically
 → one GPU fixed submit (published Atomic Transform/Projectile Capture/Route Runtime work may start async completion readback)
 → if DEFEATED: verify fixed + Effect + Formation + Atomic Transform + Projectile Capture + Route Runtime evidence, all-open state, and sealed rosters, then seal or fail closed
 → successful submit 뒤 GameSystem fixed tick 확정
-→ variable presentation + bounded observed Tower pose
+→ variable presentation + bounded Tower-group summary; zero living Towers uses CPU Core fallback
 → TileMap → direct GPU World → CPU Core presentation draw
 ```
 
 `GameObjectSystem`만 endpoint의 event commit, lifecycle/fixed commit, submit,
 presentation, draw, synchronize, destroy를 호출한다. adapter/facade는 request만 한다.
+The endpoint orders Tower creation validation/application and compact roster publication atomically, broadcasts
+one control command before controlled motion, then computes source-local target-query results for dependent
+Arrow/O/selected-target consumers. Every routed compute stage remains at or below nine storage buffers.
 CPU fallback은 같은 tick에 GPU gameplay request 없이 기존 Tower fixed integration과
 tile resolve를 수행한다. 두 authority를 한 session에서 함께 tick하지 않는다.
 
