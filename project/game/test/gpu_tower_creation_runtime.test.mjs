@@ -534,7 +534,11 @@ test('backend 기본값은 production 256이고 1,000은 명시적 runtime fixtu
     );
     assert.equal(productionStatus.towerCapacity, 256);
     assert.equal(productionStatus.recordCapacity, 256);
-    assert.equal(production.getTowerGroupRuntimeStatus().capacity, 256);
+    assert.equal(
+        production.getTowerGroupRuntimeStatus().capacity,
+        1_000,
+        'group runtime capacity는 stable body-slot address 범위입니다.'
+    );
     production.destroy();
 
     const control = new EnemySimulationBackend({}, {

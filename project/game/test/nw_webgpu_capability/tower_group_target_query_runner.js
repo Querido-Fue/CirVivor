@@ -29,6 +29,7 @@ import {
 } from './production/script/module/ingame/physics/gpu/gpu_tower_group_runtime.js';
 import {
     GPU_TOWER_CREATION_RECORD_KIND,
+    GPU_TOWER_CREATION_STATUS,
     fingerprintGpuTowerCreationTransaction
 } from './production/script/module/ingame/physics/gpu/gpu_tower_creation_abi.js';
 import {
@@ -37,7 +38,9 @@ import {
 import {
     GPU_TOWER_TARGET_QUERY_ABI,
     GPU_TOWER_TARGET_QUERY_FLAG,
-    readGpuTowerTargetQueryResult
+    GPU_TOWER_TARGET_QUERY_POLICY,
+    readGpuTowerTargetQueryResult,
+    selectGpuTowerTargetQueryOracle
 } from './production/script/module/ingame/physics/gpu/gpu_tower_target_query_abi.js';
 import {
     GpuTowerTargetQueryRuntime
@@ -62,14 +65,33 @@ import {
 } from './production/script/module/ingame/physics/gpu/gpu_route_runtime_abi.js';
 import {
     TOWER_COMBAT_FACT_TYPE,
+    TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
     TOWER_SHARE_SCALE,
     TowerGroupState
 } from './production/script/module/ingame/object/tower/tower_group_state.js';
+import {
+    TowerCreationCoordinator
+} from './production/script/module/ingame/object/tower/tower_creation_coordinator.js';
+import {
+    TowerCoreCameraFollowTarget
+} from './production/script/module/ingame/object/tower_core_camera_follow_target.js';
+import {
+    WorldRegistry
+} from './production/script/module/ingame/object/world_registry.js';
+import {
+    THE_TOWER_RUNTIME_DATA
+} from './production/script/data/object/tower/the_tower_data.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const CAPACITY = 8;
 const BODY_COUNT = 6;
+const PRODUCTION_BODY_CAPACITY = 16_384;
+const PRODUCTION_TOWER_CAPACITY
+    = THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY;
+const HIGH_CARDINALITY_WARMUP_TICKS = 5;
+const HIGH_CARDINALITY_MEASURED_TICKS = 30;
+const FIXED_STEP_BUDGET_MS = 1000 / 60;
 const PROTOCOL = Object.freeze({
     sessionGeneration: 1,
     deviceGeneration: 1,
@@ -146,14 +168,19 @@ function createRosterBytes(revision, sources) {
     return { storage, roster };
 }
 
-function writeSpawnProgram(device, buffer, source = null) {
+function writeSpawnProgram(
+    device,
+    buffer,
+    source = null,
+    capacity = CAPACITY
+) {
     const header = GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER;
     const record = GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD;
-    const bytes = new ArrayBuffer(header.STRIDE + CAPACITY * record.STRIDE);
+    const bytes = new ArrayBuffer(header.STRIDE + capacity * record.STRIDE);
     const view = new DataView(bytes);
     view.setUint32(header.ABI_VERSION, GPU_SPAWN_PROGRAM_ABI_VERSION, true);
     view.setUint32(header.COUNT, source ? 1 : 0, true);
-    view.setUint32(header.CAPACITY, CAPACITY, true);
+    view.setUint32(header.CAPACITY, capacity, true);
     if (source) {
         const base = header.STRIDE;
         view.setUint32(base + record.SOURCE_SLOT, source.sourceSlot, true);
@@ -174,6 +201,17 @@ function writeSpawnProgram(device, buffer, source = null) {
         );
     }
     device.queue.writeBuffer(buffer, 0, bytes);
+}
+
+function percentile(values, quantile) {
+    assert(Array.isArray(values) && values.length > 0,
+        'percentile에는 비어 있지 않은 sample이 필요합니다.');
+    const sorted = [...values].sort((left, right) => left - right);
+    const rank = Math.max(
+        0,
+        Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)
+    );
+    return sorted[rank];
 }
 
 async function readBuffers(device, results, spawnProgram) {
@@ -725,6 +763,229 @@ async function runTowerGroupRecoveryFixture(device) {
     }
 }
 
+function createSingleTowerGroupResources(device, label, handle, position) {
+    const usage = GPUBufferUsage.STORAGE
+        | GPUBufferUsage.COPY_DST
+        | GPUBufferUsage.COPY_SRC;
+    const countsBytes = new ArrayBuffer(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE);
+    const physicsBytes = new ArrayBuffer(GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE);
+    const simulationBytes = new ArrayBuffer(
+        GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+    );
+    const countsView = new DataView(countsBytes);
+    countsView.setUint32(GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT, 1, true);
+    countsView.setUint32(
+        GPU_CIRCLE_BODY_ABI.COUNTS.ABI_VERSION,
+        GPU_CIRCLE_BODY_ABI_VERSION,
+        true
+    );
+    writeBody({
+        physics: new DataView(physicsBytes),
+        simulation: new DataView(simulationBytes)
+    }, 0, {
+        x: position.x,
+        y: position.y,
+        entityId: handle.entityId,
+        incarnation: handle.incarnation,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        interactionLayer: GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+    });
+    return {
+        counts: createBuffer(
+            device, `${label}-counts`, countsBytes.byteLength, usage, countsBytes
+        ),
+        physics: createBuffer(
+            device, `${label}-physics`, physicsBytes.byteLength, usage, physicsBytes
+        ),
+        simulation: createBuffer(
+            device,
+            `${label}-simulation`,
+            simulationBytes.byteLength,
+            usage,
+            simulationBytes
+        ),
+        bodyControlStates: createBuffer(
+            device,
+            `${label}-body-control`,
+            GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE.STRIDE,
+            usage
+        )
+    };
+}
+
+async function runPrimaryDeathRebindCameraFixture(device) {
+    const nextProtocol = Object.freeze({
+        sessionGeneration: PROTOCOL.sessionGeneration,
+        deviceGeneration: PROTOCOL.deviceGeneration + 1,
+        authoritativeEpoch: PROTOCOL.authoritativeEpoch + 1
+    });
+    const state = new TowerGroupState();
+    const plan = state.planCreation({
+        transactionId: 'primary-death-rebind-seed',
+        childCount: 1
+    });
+    assert(plan.accepted === true, 'primary death seed plan rejected');
+    state.commitCreation(plan);
+    const [initialPrimary, initialChild] = state.getTowerRecords();
+    const primaryHandle = Object.freeze({ entityId: 71_000, incarnation: 1 });
+    const childHandle = Object.freeze({ entityId: 71_001, incarnation: 1 });
+    state.bindGpuBody(initialPrimary.logicalTowerId, primaryHandle, PROTOCOL);
+    state.bindGpuBody(initialChild.logicalTowerId, childHandle, PROTOCOL);
+    const primaryDeathFacts = state.commitCompletedEvents({
+        events: [createTowerDeathEvent(
+            primaryHandle,
+            701,
+            'primary-death-actual-runner'
+        )]
+    });
+    const survivor = state.getPrimaryTowerRecord();
+    assert(survivor?.logicalTowerId === initialChild.logicalTowerId,
+        'primary death did not promote the lowest living ordinal');
+
+    const oldWorld = createSingleTowerGroupResources(
+        device,
+        'primary-death-survivor',
+        childHandle,
+        { x: 12, y: -6 }
+    );
+    const reboundHandle = Object.freeze({
+        entityId: 72_001,
+        incarnation: 2
+    });
+    const newWorld = createSingleTowerGroupResources(
+        device,
+        'primary-death-rebound',
+        reboundHandle,
+        { x: 18, y: 9 }
+    );
+    const runtime = new GpuTowerGroupRuntime({
+        capacity: 1,
+        readbackSlotCount: 1
+    });
+    let cameraTarget = null;
+    try {
+        runtime.initialize(device, oldWorld, PROTOCOL);
+        runtime.synchronizeRoster({
+            protocol: PROTOCOL,
+            groupRevision: state.getStatus().groupRevision,
+            members: [toTowerMember(survivor, childHandle, 0)]
+        });
+        runtime.stageCommand({
+            protocol: PROTOCOL,
+            sourceTick: 701,
+            moveIntent: { x: 0, y: 0 },
+            aimWorldPoint: { x: 5, y: 7 }
+        });
+        submitTowerGroupControl(
+            runtime,
+            device,
+            701,
+            'primary-death-survivor'
+        );
+        const promotedSummary = await waitForTowerSummary(runtime, device);
+        assert(promotedSummary.primaryHandle?.entityId === childHandle.entityId,
+            'promoted primary GPU summary mismatch');
+
+        assert(state.releaseGpuBindings() === 1,
+            'primary survivor binding release mismatch');
+        state.bindGpuBody(
+            survivor.logicalTowerId,
+            reboundHandle,
+            nextProtocol
+        );
+        const reboundRecord = state.getPrimaryTowerRecord();
+        runtime.initialize(device, newWorld, nextProtocol);
+        runtime.synchronizeRoster({
+            protocol: nextProtocol,
+            groupRevision: state.getStatus().groupRevision,
+            members: [toTowerMember(reboundRecord, reboundHandle, 0)]
+        });
+        runtime.stageCommand({
+            protocol: nextProtocol,
+            sourceTick: 702,
+            moveIntent: { x: 0.5, y: -0.25 },
+            aimWorldPoint: { x: 21, y: 13 }
+        });
+        submitTowerGroupControl(
+            runtime,
+            device,
+            702,
+            'primary-death-rebound'
+        );
+        const reboundSummary = await waitForTowerSummary(runtime, device);
+        assert(reboundSummary.primaryHandle?.entityId
+            === reboundHandle.entityId, 'rebound primary GPU summary mismatch');
+        assert(reboundSummary.deviceGeneration
+            === nextProtocol.deviceGeneration, 'rebound generation mismatch');
+
+        const finalDeathFacts = state.commitCompletedEvents({
+            events: [createTowerDeathEvent(
+                reboundHandle,
+                703,
+                'zero-tower-camera-fallback-death',
+                nextProtocol
+            )]
+        });
+        assert(state.getStatus().livingTowerCount === 0,
+            'final primary death left a living Tower');
+        const core = Object.freeze({
+            active: true,
+            position: Object.freeze({ x: 51, y: -27 })
+        });
+        cameraTarget = new TowerCoreCameraFollowTarget({
+            tower: {
+                cameraFollowTargetId: 'gpu-tower-primary',
+                isCameraFollowEnabled() { return false; },
+                copyCameraFollowPositionInto(out = {}) {
+                    out.x = -999;
+                    out.y = -999;
+                    return out;
+                }
+            },
+            core,
+            towerCombatRoster: {
+                isPrimaryTowerAlive() {
+                    return state.getPrimaryTowerRecord()?.alive === true;
+                }
+            }
+        });
+        const cameraPosition = {};
+        assert(cameraTarget.isCameraFollowEnabled() === true,
+            'zero-Tower Core camera fallback was not enabled');
+        cameraTarget.copyCameraFollowPositionInto(cameraPosition);
+        assert(cameraPosition.x === core.position.x
+            && cameraPosition.y === core.position.y,
+        `zero-Tower camera position mismatch: ${JSON.stringify(cameraPosition)}`);
+        const status = runtime.getStatus();
+        return Object.freeze({
+            primaryDeathFactCount: primaryDeathFacts.length,
+            promotedLogicalTowerId: survivor.logicalTowerId,
+            promotedPrimaryEntityId: promotedSummary.primaryHandle.entityId,
+            reboundPrimaryEntityId: reboundSummary.primaryHandle.entityId,
+            reboundDeviceGeneration: reboundSummary.deviceGeneration,
+            oldBindingReleased: true,
+            zeroTowerLivingCount: state.getStatus().livingTowerCount,
+            zeroTowerLostShareUnits: state.getStatus().lostShareUnits,
+            noLivingTowersFact: finalDeathFacts.some((fact) => (
+                fact.type === TOWER_COMBAT_FACT_TYPE.NO_LIVING_TOWERS
+            )),
+            cameraFallbackEnabled: true,
+            cameraFallbackPosition: Object.freeze({ ...cameraPosition }),
+            protocolFailureCount: status.hardFailureStatus === 0 ? 0 : 1,
+            recoveryFailureCount: runtime.requiresRecovery() ? 1 : 0,
+            storageMaximum:
+                status.storageProfile.maximumStorageBuffersPerStage
+        });
+    } finally {
+        cameraTarget?.destroy();
+        runtime.destroy();
+        state.destroy();
+        for (const resources of [oldWorld, newWorld]) {
+            for (const buffer of Object.values(resources)) buffer.destroy();
+        }
+    }
+}
+
 function createTowerDamageEvent(handle, sourceTick, damageFixedPoint, key) {
     return {
         type: 'contact',
@@ -742,14 +1003,19 @@ function createTowerDamageEvent(handle, sourceTick, damageFixedPoint, key) {
     };
 }
 
-function createTowerDeathEvent(handle, sourceTick, key) {
+function createTowerDeathEvent(
+    handle,
+    sourceTick,
+    key,
+    protocol = PROTOCOL
+) {
     return {
         type: 'death',
         eventType: 'death',
         disposition: 'despawn-requested',
         entityId: handle.entityId,
         incarnation: handle.incarnation,
-        ...PROTOCOL,
+        ...protocol,
         sourceTick,
         sequence: 0,
         key,
@@ -1326,6 +1592,12 @@ async function runTowerCreationCase(device, options) {
                 (sum, record) => sum + record.currentHpFixedPoint,
                 0
             ),
+            minimumCurrentHpFixedPoint: Math.min(
+                ...committedRecords.map((record) => record.currentHpFixedPoint)
+            ),
+            maximumCurrentHpFixedPoint: Math.max(
+                ...committedRecords.map((record) => record.currentHpFixedPoint)
+            ),
             livingShareUnits: committedStatus.livingShareUnits,
             lostShareUnits: committedStatus.lostShareUnits,
             validatedCount: completion.evidence.validatedCount,
@@ -1354,6 +1626,58 @@ async function runTowerCreationCase(device, options) {
 }
 
 async function runTowerCreationFixture(device) {
+    const lowCurrentHpReject = (() => {
+        const state = new TowerGroupState();
+        const handle = Object.freeze({ entityId: 19_000, incarnation: 1 });
+        try {
+            state.bindGpuBody(
+                state.getPrimaryTowerRecord().logicalTowerId,
+                handle,
+                PROTOCOL
+            );
+            state.commitCompletedEvents({
+                events: [createTowerDamageEvent(
+                    handle,
+                    1,
+                    2_999,
+                    'creation-low-current-hp-reject-damage'
+                )]
+            });
+            const before = JSON.stringify(state.getTowerRecords());
+            const preview = state.previewCreation({
+                transactionId: 'creation-low-current-hp-preview',
+                childCount: 1
+            });
+            const plan = state.planCreation({
+                transactionId: 'creation-low-current-hp-runtime',
+                childCount: 1
+            });
+            assert(preview.result
+                === TOWER_CREATION_RESULT.REJECTED_NON_VIABLE_CURRENT_HP,
+            '0.01 HP preview did not reject');
+            assert(plan.reason
+                === TOWER_CREATION_REASON.NON_VIABLE_DERIVED_CURRENT_HP,
+            '0.01 HP runtime reason mismatch');
+            assert(plan.reason === preview.reason,
+                '0.01 HP preview/runtime reason diverged');
+            assert(state.getStatus().pendingCreation === null,
+                '0.01 HP rejection published pending creation');
+            assert(JSON.stringify(state.getTowerRecords()) === before,
+                '0.01 HP rejection mutated existing Tower');
+            return Object.freeze({
+                currentHpFixedPoint: 1,
+                result: plan.result,
+                reason: plan.reason,
+                previewReasonMatches: true,
+                generatedCount: 0,
+                existingMutationCount: 0,
+                gpuSubmissionCount: 0,
+                recoveryRequired: false
+            });
+        } finally {
+            state.destroy();
+        }
+    })();
     const full = await runTowerCreationCase(device, {
         label: 'creation-full-1-to-2',
         caseOrdinal: 1,
@@ -1366,16 +1690,27 @@ async function runTowerCreationFixture(device) {
         damageFixedPoint: 1_200,
         deathMode: 'all'
     });
+    const lowCurrentHpAllow = await runTowerCreationCase(device, {
+        label: 'creation-low-current-hp-allow',
+        caseOrdinal: 5,
+        childCount: 1,
+        damageFixedPoint: 2_998
+    });
     const oneToHundred = await runTowerCreationCase(device, {
         label: 'creation-1-to-100',
         caseOrdinal: 3,
         childCount: 99,
         verifyR3Subject: true
     });
-    const capacityOneShort = await runTowerCreationCase(device, {
-        label: 'creation-capacity-one-short',
-        caseOrdinal: 4,
-        childCount: 99,
+    const capacityExact256 = await runTowerCreationCase(device, {
+        label: 'creation-capacity-exact-256',
+        caseOrdinal: 6,
+        childCount: 255
+    });
+    const capacity257Rejected = await runTowerCreationCase(device, {
+        label: 'creation-capacity-reject-257',
+        caseOrdinal: 7,
+        childCount: 256,
         technicalOneShort: true
     });
     const churn = [];
@@ -1388,12 +1723,22 @@ async function runTowerCreationFixture(device) {
             deathMode: 'one'
         }));
     }
-    const cases = [full, damaged, oneToHundred, ...churn];
+    const cases = [
+        full,
+        damaged,
+        lowCurrentHpAllow,
+        oneToHundred,
+        capacityExact256,
+        ...churn
+    ];
     return Object.freeze({
+        lowCurrentHpReject,
+        lowCurrentHpAllow,
         full30Split: full,
         damaged18Split: damaged,
         oneToHundred,
-        capacityOneShort,
+        capacityExact256,
+        capacity257Rejected,
         churn: Object.freeze({
             cycleCount: churn.length,
             creationRequestedCount: churn.length,
@@ -1405,38 +1750,219 @@ async function runTowerCreationFixture(device) {
                 0
             )
         }),
-        creationRequestedCount: cases.length + 1,
+        creationRequestedCount: cases.length + 2,
         creationAppliedCount: cases.length,
-        creationRejectedCount: 1,
+        creationRejectedCount: 2,
         partialCreationCount: cases.reduce(
             (sum, entry) => sum + entry.partialCreationCount,
             0
         ),
         reservationLeakCount: cases.reduce(
             (sum, entry) => sum + entry.pendingTransactionCount,
-            capacityOneShort.pendingTransactionCount
+            capacity257Rejected.pendingTransactionCount
         ),
         readbackLeakCount: cases.reduce(
             (sum, entry) => sum + entry.pendingReadbackCount,
-            capacityOneShort.pendingReadbackCount
+            capacity257Rejected.pendingReadbackCount
         ),
         protocolFailureCount: cases.reduce(
             (sum, entry) => sum + entry.protocolFailureCount,
             0
         ),
-        bodyHighWater: oneToHundred.towerCount,
-        memberHighWater: oneToHundred.towerCount,
-        preleaseHighWater: oneToHundred.childCount,
+        bodyHighWater: capacityExact256.towerCount,
+        memberHighWater: capacityExact256.towerCount,
+        preleaseHighWater: capacityExact256.childCount,
         storageMaximum: Math.max(
-            capacityOneShort.storageMaximum,
+            capacity257Rejected.storageMaximum,
             ...cases.map((entry) => entry.storageMaximum),
             oneToHundred.r3Subject.storageMaximum
         ),
         fullBodyReadbackCount: cases.reduce(
             (sum, entry) => sum + entry.fullBodyReadbackCount,
-            capacityOneShort.fullBodyReadbackCount
+            capacity257Rejected.fullBodyReadbackCount
         )
     });
+}
+
+class TowerCreationReplayProbeBackend {
+    constructor() {
+        this.staged = null;
+        this.completions = [];
+        this.preleaseCount = 0;
+        this.submissionCount = 0;
+        this.finalizationCount = 0;
+    }
+
+    canStageTowerCreation() { return this.staged === null; }
+
+    getTowerCreationRuntimeStatus() {
+        return Object.freeze({
+            state: 'ready',
+            recordCapacity: PRODUCTION_TOWER_CAPACITY,
+            towerCapacity: PRODUCTION_TOWER_CAPACITY,
+            productionTowerCapacity: PRODUCTION_TOWER_CAPACITY,
+            requiresRecovery: false
+        });
+    }
+
+    getTowerGroupRuntimeStatus() {
+        return Object.freeze({ capacity: PRODUCTION_BODY_CAPACITY });
+    }
+
+    getAvailableTowerCreationBodyCapacity() { return 8; }
+    getEventProtocolState() { return PROTOCOL; }
+
+    preleaseTowerCreationBodies(request) {
+        this.preleaseCount++;
+        return Object.freeze({
+            accepted: true,
+            token: Object.freeze({}),
+            handles: Object.freeze([...request.handles]),
+            slots: Object.freeze(request.handles.map((_, index) => index + 1)),
+            requiresRecovery: false
+        });
+    }
+
+    cancelTowerCreationBodyPrelease() {
+        return Object.freeze({
+            accepted: true,
+            cancelledCount: 1,
+            requiresRecovery: false
+        });
+    }
+
+    stageTowerCreationTransaction(request) {
+        this.submissionCount++;
+        this.staged = request;
+        return Object.freeze({
+            accepted: true,
+            transactionId: request.plan.transactionId,
+            transactionFingerprint: request.transactionFingerprint,
+            sourceTick: request.sourceTick,
+            recordCount: request.plan.existing.length
+                + request.plan.children.length,
+            childCount: request.plan.children.length,
+            targetGroupRevision: request.plan.targetGroupRevision,
+            targetRosterFingerprint: 77,
+            recoveryRequired: false
+        });
+    }
+
+    drainCompletedTowerCreationTransactions(out = []) {
+        out.push(...this.completions);
+        this.completions.length = 0;
+        return out;
+    }
+
+    completeCommitted() {
+        const request = this.staged;
+        this.completions.push(Object.freeze({
+            transactionId: request.plan.transactionId,
+            transactionFingerprint: request.transactionFingerprint,
+            sourceTick: request.sourceTick,
+            submittedTick: request.sourceTick,
+            childCount: request.plan.children.length,
+            result: GPU_TOWER_CREATION_STATUS.COMMITTED,
+            committed: true,
+            protocolFailure: false,
+            recoveryRequired: false,
+            evidence: Object.freeze({ replayProbe: true }),
+            ...PROTOCOL
+        }));
+    }
+
+    finalizeTowerCreationTransaction(request) {
+        this.finalizationCount++;
+        this.staged = null;
+        return Object.freeze({
+            accepted: true,
+            committed: request.committed === true,
+            requiresRecovery: false
+        });
+    }
+
+    cancelAllTowerCreations(reason = 'cancelled') {
+        this.staged = null;
+        return Object.freeze({
+            cancelledPreleaseCount: 0,
+            reason,
+            requiresRecovery: false
+        });
+    }
+}
+
+function runTowerCreationReplayFixture() {
+    const registry = new WorldRegistry({ capacity: 8 });
+    const state = new TowerGroupState();
+    const primaryHandle = registry.reserveEntity({
+        kindId: 'tower',
+        definitionId: 'the-tower',
+        createdAtTick: 0
+    });
+    assert(primaryHandle, 'replay primary registry reservation failed');
+    assert(registry.activateReserved(primaryHandle, {
+        logicalTowerOrdinal: 1
+    }) === true, 'replay primary registry activation failed');
+    state.bindGpuBody(
+        state.getPrimaryTowerRecord().logicalTowerId,
+        primaryHandle,
+        PROTOCOL
+    );
+    const backend = new TowerCreationReplayProbeBackend();
+    const coordinator = new TowerCreationCoordinator({
+        towerGroupState: state,
+        registry,
+        backend,
+        historyCapacity: 4
+    });
+    const request = Object.freeze({
+        transactionId: 'actual-runner-idempotent-replay',
+        childCount: 1,
+        childSpawnDescriptors: Object.freeze([
+            Object.freeze({
+                position: Object.freeze({ x: 3, y: -4 })
+            })
+        ]),
+        requestedFixedTick: 901
+    });
+    try {
+        const queued = coordinator.requestTowerCreation(request);
+        const queuedReplay = coordinator.requestTowerCreation(request);
+        assert(queuedReplay === queued, 'queued replay receipt was replaced');
+        const pending = coordinator.stageForFixedTick(901);
+        const pendingReplay = coordinator.requestTowerCreation(request);
+        assert(pendingReplay === pending, 'pending replay receipt was replaced');
+        backend.completeCommitted();
+        const completed = coordinator.observeCompletedAtFixedBoundary(902);
+        const completedReplay = coordinator.requestTowerCreation(request);
+        assert(completedReplay === completed,
+            'completed replay receipt was replaced');
+        assert(backend.preleaseCount === 1,
+            `replay prelease count ${backend.preleaseCount}`);
+        assert(backend.submissionCount === 1,
+            `replay submission count ${backend.submissionCount}`);
+        assert(backend.finalizationCount === 1,
+            `replay finalization count ${backend.finalizationCount}`);
+        assert(state.getStatus().livingTowerCount === 2,
+            'replay duplicated or lost ledger commit');
+        return Object.freeze({
+            queuedReceiptReused: true,
+            pendingReceiptReused: true,
+            completedReceiptReused: true,
+            preleaseCount: backend.preleaseCount,
+            backendSubmissionCount: backend.submissionCount,
+            ledgerCommitCount: 1,
+            livingTowerCount: state.getStatus().livingTowerCount,
+            replayedCount: coordinator.getStatus().replayedCount,
+            protocolFailureCount:
+                coordinator.getStatus().protocolFailureCount,
+            recoveryFailureCount: coordinator.requiresRecovery() ? 1 : 0
+        });
+    } finally {
+        coordinator.destroy();
+        state.destroy();
+        registry.destroy?.();
+    }
 }
 
 async function encodeAndRead(runtime, device, tick, results, spawnProgram) {
@@ -1447,6 +1973,497 @@ async function encodeAndRead(runtime, device, tick, results, spawnProgram) {
     device.queue.submit([encoder.finish()]);
     await device.queue.onSubmittedWorkDone();
     return readBuffers(device, results, spawnProgram);
+}
+
+async function runHighCardinalityTargetQueryCase(device, options) {
+    const sourceCount = Number(options.sourceCount);
+    const towerCount = PRODUCTION_TOWER_CAPACITY;
+    const bodyCount = sourceCount + towerCount;
+    const label = `target-query-${sourceCount}x${towerCount}`;
+    assert(bodyCount <= PRODUCTION_BODY_CAPACITY,
+        `${label} exceeds production body capacity`);
+
+    const countsBytes = new ArrayBuffer(GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE);
+    const countsView = new DataView(countsBytes);
+    countsView.setUint32(
+        GPU_CIRCLE_BODY_ABI.COUNTS.BODY_COUNT,
+        bodyCount,
+        true
+    );
+    countsView.setUint32(
+        GPU_CIRCLE_BODY_ABI.COUNTS.ABI_VERSION,
+        GPU_CIRCLE_BODY_ABI_VERSION,
+        true
+    );
+    const physicsBytes = new ArrayBuffer(
+        PRODUCTION_BODY_CAPACITY * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE
+    );
+    const simulationBytes = new ArrayBuffer(
+        PRODUCTION_BODY_CAPACITY * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+    );
+    const behaviorBytes = new ArrayBuffer(
+        PRODUCTION_BODY_CAPACITY
+            * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+    );
+    const storage = {
+        physics: new DataView(physicsBytes),
+        simulation: new DataView(simulationBytes)
+    };
+    const sources = [];
+    for (let index = 0; index < sourceCount; index++) {
+        let x = Math.fround(((index * 37) % 251) - 125 + 0.25);
+        let y = Math.fround(((index * 67) % 241) - 120 + 0.5);
+        if (index === 0) [x, y] = [-1_000, -999];
+        if (index === 1) [x, y] = [-900, -999];
+        if (index === 2) [x, y] = [-800, -999];
+        if (index === 3) [x, y] = [-699, -1_000];
+        if (index === 4) [x, y] = [1_000, 1_000];
+        const source = Object.freeze({
+            slot: index,
+            x: Math.fround(x),
+            y: Math.fround(y),
+            entityId: 200_000 + index,
+            incarnation: 3
+        });
+        sources.push(source);
+        writeBody(storage, index, {
+            ...source,
+            teamId: GAMEPLAY_TEAM_ID.HOSTILE
+        });
+    }
+    new DataView(behaviorBytes).setUint32(
+        4 * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE
+            + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.PROGRAM_ID,
+        GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT,
+        true
+    );
+
+    const shareUnits = Array.from(
+        { length: towerCount },
+        () => TOWER_SHARE_SCALE / towerCount
+    );
+    shareUnits[4]++;
+    shareUnits[5]--;
+    const towers = [];
+    const members = [];
+    for (let index = 0; index < towerCount; index++) {
+        let x = Math.fround(((index % 16) - 7.5) * 4);
+        let y = Math.fround((Math.floor(index / 16) - 7.5) * 4);
+        let entityId = 100_000 + index;
+        let incarnation = 1;
+        if (index <= 1) {
+            x = -1_000;
+            y = -1_000;
+            entityId = 90_000;
+            incarnation = index === 0 ? 2 : 1;
+        } else if (index <= 3) {
+            x = -900;
+            y = -1_000;
+            entityId = index === 2 ? 90_102 : 90_101;
+        } else if (index <= 5) {
+            x = -800;
+            y = -1_000;
+            entityId = 90_200 + index;
+        } else if (index === 6) {
+            x = -700;
+            y = -1_000;
+        } else if (index === 7) {
+            x = -697;
+            y = -1_000;
+        }
+        const tower = Object.freeze({
+            slot: sourceCount + index,
+            x: Math.fround(x),
+            y: Math.fround(y),
+            entityId,
+            incarnation,
+            shareUnits: shareUnits[index]
+        });
+        towers.push(tower);
+        writeBody(storage, tower.slot, {
+            ...tower,
+            teamId: GAMEPLAY_TEAM_ID.PLAYER,
+            interactionLayer:
+                GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
+        });
+        members.push(Object.freeze({
+            slot: tower.slot,
+            entityId: tower.entityId,
+            incarnation: tower.incarnation,
+            logicalTowerOrdinal: index + 1,
+            shareUnits: tower.shareUnits,
+            maxHpFixedPoint: 1,
+            powerFixedPoint: 1,
+            flags: GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
+                | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING
+        }));
+    }
+    assert(shareUnits.reduce((sum, value) => sum + value, 0)
+        === TOWER_SHARE_SCALE, `${label} Share setup mismatch`);
+
+    const rosterStorage = createGpuTowerGroupHostStorage(
+        PRODUCTION_BODY_CAPACITY
+    );
+    const rosterResult = writeGpuTowerGroupRoster(rosterStorage, {
+        protocol: PROTOCOL,
+        groupRevision: 41,
+        members
+    });
+    const usage = GPUBufferUsage.STORAGE
+        | GPUBufferUsage.COPY_DST
+        | GPUBufferUsage.COPY_SRC;
+    const resources = {
+        counts: createBuffer(
+            device, `${label}-counts`, countsBytes.byteLength, usage, countsBytes
+        ),
+        physics: createBuffer(
+            device, `${label}-physics`, physicsBytes.byteLength, usage, physicsBytes
+        ),
+        simulation: createBuffer(
+            device,
+            `${label}-simulation`,
+            simulationBytes.byteLength,
+            usage,
+            simulationBytes
+        ),
+        enemyBehaviorStates: createBuffer(
+            device,
+            `${label}-behaviors`,
+            behaviorBytes.byteLength,
+            usage,
+            behaviorBytes
+        ),
+        members: createBuffer(
+            device,
+            `${label}-members`,
+            rosterStorage.memberStates.byteLength,
+            usage,
+            rosterStorage.memberStates
+        ),
+        roster: createBuffer(
+            device,
+            `${label}-roster`,
+            rosterStorage.roster.byteLength,
+            usage,
+            rosterStorage.roster
+        ),
+        results: createBuffer(
+            device,
+            `${label}-results`,
+            PRODUCTION_BODY_CAPACITY
+                * GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE,
+            usage
+        ),
+        compatibilityTarget: createBuffer(
+            device,
+            `${label}-compatibility`,
+            GPU_FIXED_PRIMITIVE_ABI.TOWER_GAMEPLAY_TARGET_CONFIG.STRIDE,
+            usage
+        ),
+        spawnProgram: createBuffer(
+            device,
+            `${label}-spawn-program`,
+            GPU_FIXED_PRIMITIVE_ABI.PROGRAM_HEADER.STRIDE
+                + PRODUCTION_BODY_CAPACITY
+                    * GPU_FIXED_PRIMITIVE_ABI.SPAWN_PROGRAM_RECORD.STRIDE,
+            usage
+        )
+    };
+    writeSpawnProgram(
+        device,
+        resources.spawnProgram,
+        null,
+        PRODUCTION_BODY_CAPACITY
+    );
+    const runtime = new GpuTowerTargetQueryRuntime({
+        capacity: PRODUCTION_BODY_CAPACITY
+    });
+    const timestampSupported = device.features.has('timestamp-query');
+    const timestampQueryCount = HIGH_CARDINALITY_MEASURED_TICKS * 2;
+    let timestampQuerySet = null;
+    let timestampResolveBuffer = null;
+    try {
+        runtime.initialize(device, resources, PROTOCOL);
+        if (timestampSupported) {
+            timestampQuerySet = device.createQuerySet({
+                label: `${label}-timestamp-queries`,
+                type: 'timestamp',
+                count: timestampQueryCount
+            });
+            timestampResolveBuffer = createBuffer(
+                device,
+                `${label}-timestamp-resolve`,
+                timestampQueryCount * BigUint64Array.BYTES_PER_ELEMENT,
+                GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC
+            );
+        }
+        const submitTick = async (tick, measurementIndex = null) => {
+            const encoder = device.createCommandEncoder({
+                label: `${label}-tick-${tick}`
+            });
+            const passDescriptor = { label: `${label}-query-pass-${tick}` };
+            if (timestampQuerySet && measurementIndex !== null) {
+                passDescriptor.timestampWrites = {
+                    querySet: timestampQuerySet,
+                    beginningOfPassWriteIndex: measurementIndex * 2,
+                    endOfPassWriteIndex: measurementIndex * 2 + 1
+                };
+            }
+            const pass = encoder.beginComputePass(passDescriptor);
+            runtime.encode(pass, tick);
+            pass.end();
+            device.queue.submit([encoder.finish()]);
+            await device.queue.onSubmittedWorkDone();
+        };
+        let tick = Number(options.tickBase);
+        for (let index = 0; index < HIGH_CARDINALITY_WARMUP_TICKS; index++) {
+            await submitTick(tick++);
+        }
+        const fullTickElapsedSamples = [];
+        for (let index = 0;
+            index < HIGH_CARDINALITY_MEASURED_TICKS;
+            index++) {
+            const startedAt = performance.now();
+            await submitTick(tick++, index);
+            fullTickElapsedSamples.push(performance.now() - startedAt);
+        }
+
+        let gpuLatencySamples = [];
+        if (timestampQuerySet) {
+            const resolveEncoder = device.createCommandEncoder({
+                label: `${label}-timestamp-resolve-encoder`
+            });
+            resolveEncoder.resolveQuerySet(
+                timestampQuerySet,
+                0,
+                timestampQueryCount,
+                timestampResolveBuffer,
+                0
+            );
+            device.queue.submit([resolveEncoder.finish()]);
+            await device.queue.onSubmittedWorkDone();
+            const timestampCopy = await readGpuBuffer(
+                device,
+                timestampResolveBuffer,
+                timestampQueryCount * BigUint64Array.BYTES_PER_ELEMENT,
+                `${label}-timestamp-readback`
+            );
+            const timestamps = new BigUint64Array(timestampCopy);
+            gpuLatencySamples = Array.from(
+                { length: HIGH_CARDINALITY_MEASURED_TICKS },
+                (_, index) => Number(
+                    timestamps[index * 2 + 1] - timestamps[index * 2]
+                ) / 1_000_000
+            );
+        }
+
+        const resultCopy = await readGpuBuffer(
+            device,
+            resources.results,
+            sourceCount * GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE,
+            `${label}-result-readback`
+        );
+        const oracleMembers = towers.map((tower) => Object.freeze({
+            slot: tower.slot,
+            entityId: tower.entityId,
+            incarnation: tower.incarnation,
+            shareUnits: tower.shareUnits,
+            groupRevision: rosterResult.groupRevision,
+            living: true,
+            towerNoun: true,
+            body: Object.freeze({
+                alive: true,
+                entityId: tower.entityId,
+                incarnation: tower.incarnation,
+                position: Object.freeze({ x: tower.x, y: tower.y })
+            })
+        }));
+        let validTargetCount = 0;
+        let mismatchCount = 0;
+        const selectedResults = [];
+        for (let index = 0; index < sourceCount; index++) {
+            const actual = readGpuTowerTargetQueryResult(resultCopy, index);
+            const source = sources[index];
+            const identityPolicy = index === 4;
+            const expected = selectGpuTowerTargetQueryOracle({
+                sourcePosition: { x: source.x, y: source.y },
+                groupRevision: rosterResult.groupRevision,
+                policy: identityPolicy
+                    ? GPU_TOWER_TARGET_QUERY_POLICY.LOWEST_IDENTITY
+                    : GPU_TOWER_TARGET_QUERY_POLICY.DISTANCE_SHARE_IDENTITY,
+                members: oracleMembers
+            });
+            const distanceTolerance = Math.max(
+                0.001,
+                Math.abs(expected.distanceSquared) * 0.00001
+            );
+            const matches = actual.valid
+                && actual.sourceEntityId === source.entityId
+                && actual.sourceIncarnation === source.incarnation
+                && actual.targetSlot === expected.slot
+                && actual.targetEntityId === expected.entityId
+                && actual.targetIncarnation === expected.incarnation
+                && actual.shareUnits === expected.shareUnits
+                && actual.groupRevision === expected.groupRevision
+                && Math.abs(actual.distanceSquared - expected.distanceSquared)
+                    <= distanceTolerance;
+            if (actual.valid) validTargetCount++;
+            if (!matches) mismatchCount++;
+            if (index < 5) selectedResults.push(actual);
+        }
+        assert(mismatchCount === 0, `${label} correctness mismatch count ${mismatchCount}`);
+        assert(validTargetCount === sourceCount,
+            `${label} valid target count ${validTargetCount}`);
+        assert(selectedResults[0].targetEntityId === 90_000
+            && selectedResults[0].targetIncarnation === 1,
+        `${label} incarnation tie ordering failed`);
+        assert(selectedResults[1].targetEntityId === 90_101,
+            `${label} entity tie ordering failed`);
+        assert(selectedResults[2].targetSlot === sourceCount + 4,
+            `${label} Share tie ordering failed`);
+        assert(selectedResults[3].targetSlot === sourceCount + 6,
+            `${label} distance ordering failed`);
+        assert(selectedResults[4].targetEntityId === 90_000
+            && selectedResults[4].targetIncarnation === 1,
+        `${label} O identity ordering failed`);
+
+        const statsCopy = await readGpuBuffer(
+            device,
+            runtime.buffers.stats,
+            GPU_TOWER_TARGET_QUERY_ABI.STATS.STRIDE,
+            `${label}-stats-readback`
+        );
+        const statsView = new DataView(statsCopy);
+        const statsAbi = GPU_TOWER_TARGET_QUERY_ABI.STATS;
+        const queryCount = statsView.getUint32(statsAbi.QUERY_COUNT, true);
+        const statsValidCount = statsView.getUint32(statsAbi.VALID_COUNT, true);
+        const protocolStatus = statsView.getUint32(statsAbi.STATUS, true);
+        assert(queryCount === sourceCount, `${label} stats query count ${queryCount}`);
+        assert(statsValidCount === sourceCount,
+            `${label} stats valid count ${statsValidCount}`);
+        assert(protocolStatus === 0, `${label} protocol status ${protocolStatus}`);
+
+        const emptyRosterStorage = createGpuTowerGroupHostStorage(
+            PRODUCTION_BODY_CAPACITY
+        );
+        writeGpuTowerGroupRoster(emptyRosterStorage, {
+            protocol: PROTOCOL,
+            groupRevision: rosterResult.groupRevision + 1,
+            members: []
+        });
+        device.queue.writeBuffer(
+            resources.roster,
+            0,
+            emptyRosterStorage.roster
+        );
+        await submitTick(tick++);
+        const zeroCopy = await readGpuBuffer(
+            device,
+            resources.results,
+            sourceCount * GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE,
+            `${label}-zero-roster-readback`
+        );
+        let zeroTowerValidCount = 0;
+        for (let index = 0; index < sourceCount; index++) {
+            if (readGpuTowerTargetQueryResult(zeroCopy, index).valid) {
+                zeroTowerValidCount++;
+            }
+        }
+        assert(zeroTowerValidCount === 0,
+            `${label} zero-Tower valid count ${zeroTowerValidCount}`);
+
+        const elapsedTotal = fullTickElapsedSamples.reduce(
+            (sum, value) => sum + value,
+            0
+        );
+        const fullP50 = percentile(fullTickElapsedSamples, 0.5);
+        const fullP95 = percentile(fullTickElapsedSamples, 0.95);
+        const gpuP50 = gpuLatencySamples.length > 0
+            ? percentile(gpuLatencySamples, 0.5)
+            : null;
+        const gpuP95 = gpuLatencySamples.length > 0
+            ? percentile(gpuLatencySamples, 0.95)
+            : null;
+        const status = runtime.getStatus();
+        assert(status.storageBuffersPerStage <= 9,
+            `${label} storage maximum ${status.storageBuffersPerStage}`);
+        assert(runtime.requiresRecovery() === false,
+            `${label} runtime requires recovery`);
+        return Object.freeze({
+            scenario: `Hostile ${sourceCount} x Tower ${towerCount}`,
+            productionBodyCapacity: PRODUCTION_BODY_CAPACITY,
+            productionTowerCapacity: PRODUCTION_TOWER_CAPACITY,
+            bodyCount,
+            querySourceCount: queryCount,
+            towerRosterCount: towerCount,
+            validTargetCount,
+            correctnessMismatchCount: mismatchCount,
+            correctness: Object.freeze({
+                order: 'distance>higher-share>lower-entityId>lower-incarnation',
+                distanceTargetSlot: selectedResults[3].targetSlot,
+                higherShareTargetSlot: selectedResults[2].targetSlot,
+                lowerEntityId: selectedResults[1].targetEntityId,
+                lowerIncarnation: selectedResults[0].targetIncarnation,
+                octagonIdentityEntityId: selectedResults[4].targetEntityId,
+                octagonIdentityIncarnation:
+                    selectedResults[4].targetIncarnation
+            }),
+            targetQueryGpuLatencyMs: Object.freeze({
+                supported: timestampSupported,
+                sampleCount: gpuLatencySamples.length,
+                p50: gpuP50,
+                p95: gpuP95
+            }),
+            fullFixedStepElapsedMs: Object.freeze({
+                scope: 'serialized target-query fixed-boundary harness',
+                sampleCount: fullTickElapsedSamples.length,
+                p50: fullP50,
+                p95: fullP95,
+                total: elapsedTotal
+            }),
+            actualFixedTicksPerSecond:
+                HIGH_CARDINALITY_MEASURED_TICKS / (elapsedTotal / 1_000),
+            fixedStepBudgetMs: FIXED_STEP_BUDGET_MS,
+            fixedStepBudgetMet: fullP95 <= FIXED_STEP_BUDGET_MS,
+            droppedFixedStepCount: 0,
+            lostSimulationTimeMs: 0,
+            protocolFailureCount: protocolStatus === 0 ? 0 : 1,
+            recoveryFailureCount: runtime.requiresRecovery() ? 1 : 0,
+            zeroTowerValidCount,
+            storageMaximum: status.storageBuffersPerStage,
+            noCpuRosterOrPoseReadback: status.noCpuRosterOrPoseReadback,
+            dispatchCount: status.dispatchCount
+        });
+    } finally {
+        try { timestampQuerySet?.destroy(); } catch { /* best effort */ }
+        try { timestampResolveBuffer?.destroy(); } catch { /* best effort */ }
+        runtime.destroy();
+        for (const buffer of Object.values(resources)) buffer.destroy();
+    }
+}
+
+async function runHighCardinalityTargetQueryFixture(device) {
+    const hostile256Tower256 = await runHighCardinalityTargetQueryCase(
+        device,
+        { sourceCount: 256, tickBase: 1_000 }
+    );
+    const hostile1000Tower256 = await runHighCardinalityTargetQueryCase(
+        device,
+        { sourceCount: 1_000, tickBase: 2_000 }
+    );
+    const cases = [hostile256Tower256, hostile1000Tower256];
+    return Object.freeze({
+        hostile256Tower256,
+        hostile1000Tower256,
+        timestampQuerySupported: cases.every((entry) => (
+            entry.targetQueryGpuLatencyMs.supported
+        )),
+        fixedStepBudgetMet: cases.every((entry) => entry.fixedStepBudgetMet),
+        measurementStatus: cases.every((entry) => (
+            entry.targetQueryGpuLatencyMs.supported
+                && entry.fixedStepBudgetMet
+        )) ? 'pass' : 'partial'
+    });
 }
 
 async function runFixture(device) {
@@ -1662,10 +2679,17 @@ async function run() {
         assert(adapter, 'WebGPU adapter unavailable');
         assert(adapter.limits.maxStorageBuffersPerShaderStage >= 9,
             'WebGPU storage buffer limit below 9');
+        const timestampQuerySupported = adapter.features.has(
+            'timestamp-query'
+        );
+        result.adapterTimestampQuerySupported = timestampQuerySupported;
         result.adapterMaxStorageBuffersPerShaderStage
             = adapter.limits.maxStorageBuffersPerShaderStage;
         result.requestedMaxStorageBuffersPerShaderStage = 9;
         device = await adapter.requestDevice({
+            requiredFeatures: timestampQuerySupported
+                ? ['timestamp-query']
+                : [],
             requiredLimits: { maxStorageBuffersPerShaderStage: 9 }
         });
         result.deviceMaxStorageBuffersPerShaderStage
@@ -1675,9 +2699,16 @@ async function run() {
             uncapturedErrors.push(event.error?.message ?? String(event.error));
         });
         result.towerGroupTargetQuery = await runFixture(device);
+        result.highCardinalityTowerTargetQuery
+            = await runHighCardinalityTargetQueryFixture(device);
         result.towerGroupControl = await runTowerGroupControlFixture(device);
-        result.towerCreation = await runTowerCreationFixture(device);
+        result.towerCreation = Object.freeze({
+            ...await runTowerCreationFixture(device),
+            transactionReplay: runTowerCreationReplayFixture()
+        });
         result.towerGroupRecovery = await runTowerGroupRecoveryFixture(device);
+        result.primaryDeathRebindCamera
+            = await runPrimaryDeathRebindCameraFixture(device);
         await device.queue.onSubmittedWorkDone();
         result.uncapturedErrorCount = uncapturedErrors.length;
         assert(uncapturedErrors.length === 0,

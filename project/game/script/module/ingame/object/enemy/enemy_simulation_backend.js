@@ -256,7 +256,9 @@ export class EnemySimulationBackend {
                 readbackSlotCount: this.actorPayloadReadbackSlotCount
             });
         this.towerGroupRuntime = new GpuTowerGroupRuntime({
-            capacity: this.towerGroupMemberCapacity,
+            // Member records are addressed by stable body slot. The separate
+            // towerGroupMemberCapacity remains the production member-count cap.
+            capacity: this.capacity,
             readbackSlotCount: this.towerGroupReadbackSlotCount
         });
         this.towerCreationRuntime = new GpuTowerCreationRuntime({
