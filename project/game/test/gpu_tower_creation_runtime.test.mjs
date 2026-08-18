@@ -28,9 +28,15 @@ import {
     GpuTowerGroupRuntime
 } from '../script/module/ingame/physics/gpu/gpu_tower_group_runtime.js';
 import { WorldRegistry } from '../script/module/ingame/object/world_registry.js';
+import {
+    THE_TOWER_RUNTIME_DATA
+} from '../script/data/object/tower/the_tower_data.js';
 
 const { TowerCreationCoordinator } = await loadGameModule(
     'ingame/object/tower/tower_creation_coordinator.js'
+);
+const { EnemySimulationBackend } = await loadGameModule(
+    'ingame/object/enemy/enemy_simulation_backend.js'
 );
 const {
     PRIMARY_TOWER_LOGICAL_ID,
@@ -76,6 +82,9 @@ class FakeTowerCreationBackend {
         return Object.freeze({
             state: this.recoveryRequired ? 'failed' : 'ready',
             recordCapacity: this.recordCapacity,
+            towerCapacity: Math.min(this.recordCapacity, this.groupCapacity),
+            productionTowerCapacity:
+                THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY,
             requiresRecovery: this.recoveryRequired
         });
     }
@@ -431,6 +440,112 @@ test('Registry/body/group/program 중 하나라도 한 자리 부족하면 publi
         assert.equal(fixture.state.getTowerRecords().length, 1);
         assert.equal(fixture.state.getStatus().pendingCreation, null);
     }
+});
+
+test('low-current-HP preview reason은 technical runtime reason과 같고 reservation 전 거절된다', () => {
+    const rejected = createFixture();
+    damagePrimary(rejected.state, rejected.primaryHandle, 2999);
+    const preview = rejected.coordinator.previewTowerCreation({ childCount: 1 });
+    assert.equal(
+        preview.result,
+        TOWER_CREATION_RESULT.REJECTED_NON_VIABLE_CURRENT_HP
+    );
+    requestChildren(rejected.coordinator, 'technical-current-hp-0.01', 1, 15);
+    const runtime = rejected.coordinator.stageForFixedTick(15);
+    assert.equal(runtime.reason, preview.reason);
+    assert.equal(rejected.registry.getStatus().reservedCount, 0);
+    assert.equal(rejected.backend.preleases.size, 0);
+    assert.equal(runtime.recoveryRequired, false);
+
+    const allowed = createFixture();
+    damagePrimary(allowed.state, allowed.primaryHandle, 2998);
+    const allowedPreview = allowed.coordinator.previewTowerCreation({
+        childCount: 1
+    });
+    assert.equal(allowedPreview.executionEnabled, true);
+    requestChildren(allowed.coordinator, 'technical-current-hp-0.02', 1, 16);
+    assert.equal(allowed.coordinator.stageForFixedTick(16).staged, true);
+    assert.deepEqual(
+        [
+            ...allowed.backend.lastStage.plan.existing,
+            ...allowed.backend.lastStage.plan.children
+        ].map((record) => record.currentHpFixedPoint),
+        [1, 1]
+    );
+    allowed.backend.completeCommitted();
+    assert.equal(
+        allowed.coordinator.observeCompletedAtFixedBoundary(17).result,
+        TOWER_CREATION_RESULT.COMMITTED
+    );
+});
+
+test('production Tower capacity 256은 exact accept, 257은 reservation 없이 atomic reject한다', () => {
+    const exact = createFixture({
+        registryCapacity: 300,
+        recordCapacity: 256,
+        groupCapacity: 256,
+        bodyCapacity: 300
+    });
+    const receipt = requestChildren(
+        exact.coordinator,
+        'capacity-exact-256',
+        255,
+        17
+    );
+    assert.equal(
+        receipt.capacity.productionTowerCapacity,
+        THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY
+    );
+    assert.equal(receipt.capacity.requiredTowerCount, 256);
+    assert.equal(exact.coordinator.stageForFixedTick(17).recordCount, 256);
+    exact.backend.completeCommitted();
+    assert.equal(
+        exact.coordinator.observeCompletedAtFixedBoundary(18).createdCount,
+        255
+    );
+
+    const overflow = createFixture({
+        registryCapacity: 300,
+        recordCapacity: 256,
+        groupCapacity: 256,
+        bodyCapacity: 300
+    });
+    requestChildren(
+        overflow.coordinator,
+        'capacity-overflow-257',
+        256,
+        19
+    );
+    const rejected = overflow.coordinator.stageForFixedTick(19);
+    assert.equal(rejected.result, TOWER_CREATION_RESULT.REJECTED_CAPACITY);
+    assert.equal(rejected.reason, 'TOWER_CAPACITY');
+    assert.equal(overflow.registry.getStatus().reservedCount, 0);
+    assert.equal(overflow.backend.preleases.size, 0);
+    assert.equal(overflow.state.getTowerRecords().length, 1);
+});
+
+test('backend 기본값은 production 256이고 1,000은 명시적 runtime fixture override다', () => {
+    const production = new EnemySimulationBackend({}, { capacity: 1_000 });
+    const productionStatus = production.getTowerCreationRuntimeStatus();
+    assert.equal(
+        productionStatus.productionTowerCapacity,
+        THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY
+    );
+    assert.equal(productionStatus.towerCapacity, 256);
+    assert.equal(productionStatus.recordCapacity, 256);
+    assert.equal(production.getTowerGroupRuntimeStatus().capacity, 256);
+    production.destroy();
+
+    const control = new EnemySimulationBackend({}, {
+        capacity: 1_000,
+        towerGroupMemberCapacity: 1_000
+    });
+    const controlStatus = control.getTowerCreationRuntimeStatus();
+    assert.equal(controlStatus.productionTowerCapacity, 256);
+    assert.equal(controlStatus.towerCapacity, 1_000);
+    assert.equal(controlStatus.productionCapacityOverridden, true);
+    assert.equal(control.getTowerGroupRuntimeStatus().capacity, 1_000);
+    control.destroy();
 });
 
 test('HP drift/source death/destination ABA는 GPU source-changed 결과로 전량 rollback된다', () => {

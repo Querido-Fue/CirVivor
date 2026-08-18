@@ -249,20 +249,35 @@ export class TowerGroupState {
     }
 
     planCreation(source = {}) {
+        return this.#createCreationPlan(source, true);
+    }
+
+    /** Future preview가 runtime과 같은 shared arithmetic/reason을 소비하는 pure seam입니다. */
+    previewCreation(source = {}) {
+        return this.#createCreationPlan({
+            transactionId: source.transactionId ?? 'tower-creation-preview',
+            childCount: source.childCount,
+            childRecoverySpawnDescriptors:
+                source.childRecoverySpawnDescriptors
+        }, false);
+    }
+
+    #createCreationPlan(source, publishPending) {
         this.#assertUsable();
         const transactionId = requireTransactionId(source.transactionId);
         const childCount = requirePositiveSafeInteger(
             source.childCount,
             'childCount'
         );
-        if (this.#knownCreationTransactionIds.has(transactionId)) {
+        if (publishPending
+            && this.#knownCreationTransactionIds.has(transactionId)) {
             return freezeRejection(
                 TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
                 TOWER_CREATION_REASON.DUPLICATE_TRANSACTION,
                 { transactionId, duplicate: true }
             );
         }
-        if (this.#pendingCreation) {
+        if (publishPending && this.#pendingCreation) {
             if (this.#pendingCreation.plan.transactionId === transactionId) {
                 return this.#pendingCreation.plan;
             }
@@ -398,13 +413,15 @@ export class TowerGroupState {
             existing: Object.freeze(plannedExisting.map(freezeRecordView)),
             children: Object.freeze(plannedChildren.map(freezeRecordView))
         });
-        this.#pendingCreation = {
-            plan,
-            plannedExisting,
-            plannedChildren,
-            nextLogicalTowerOrdinal:
-                this.nextLogicalTowerOrdinal + childCount
-        };
+        if (publishPending) {
+            this.#pendingCreation = {
+                plan,
+                plannedExisting,
+                plannedChildren,
+                nextLogicalTowerOrdinal:
+                    this.nextLogicalTowerOrdinal + childCount
+            };
+        }
         return plan;
     }
 

@@ -8,6 +8,9 @@ import {
     fingerprintGpuTowerCreationTransaction
 } from '../../physics/gpu/gpu_tower_creation_abi.js';
 import {
+    THE_TOWER_RUNTIME_DATA
+} from 'data/object/tower/the_tower_data.js';
+import {
     TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
     freezeTowerRecoverySpawnDescriptor,
@@ -125,6 +128,7 @@ export class TowerCreationCoordinator {
         const towerGroupState = options.towerGroupState;
         if (!towerGroupState
             || typeof towerGroupState.planCreation !== 'function'
+            || typeof towerGroupState.previewCreation !== 'function'
             || typeof towerGroupState.commitCreation !== 'function'
             || typeof towerGroupState.rejectCreation !== 'function'
             || typeof towerGroupState.bindGpuBody !== 'function'
@@ -209,6 +213,7 @@ export class TowerCreationCoordinator {
             return result;
         }
         this.queued = request;
+        const capacity = this.#getCapacityStatus(request.childCount);
         return Object.freeze({
             accepted: true,
             result: null,
@@ -216,6 +221,65 @@ export class TowerCreationCoordinator {
             transactionId: request.transactionId,
             childCount: request.childCount,
             requestedFixedTick: request.requestedFixedTick,
+            capacity,
+            recoveryRequired: false
+        });
+    }
+
+    /** R5 Word preview가 mutation 없이 runtime planner/capacity reason을 조회하는 seam입니다. */
+    previewTowerCreation(source = {}) {
+        if (this.destroyed || this.failure) {
+            return terminalResult(
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
+                this.destroyed ? 'DESTROYED' : 'RECOVERY_REQUIRED',
+                { failure: this.failure, executionEnabled: false }
+            );
+        }
+        let childCount;
+        try {
+            childCount = requirePositiveSafeInteger(
+                source.childCount,
+                'childCount'
+            );
+        } catch (error) {
+            return terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_DESCRIPTOR,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                {
+                    executionEnabled: false,
+                    failure: freezeFailure('tower-creation-preview', error)
+                }
+            );
+        }
+        const capacity = this.#getCapacityStatus(childCount);
+        const plan = this.towerGroupState.previewCreation({
+            transactionId: source.transactionId ?? 'tower-creation-preview',
+            childCount,
+            childRecoverySpawnDescriptors:
+                source.childRecoverySpawnDescriptors
+        });
+        let reason = plan.reason;
+        let result = plan.result;
+        if (plan.accepted === true) {
+            reason = this.queued || this.pending
+                ? TOWER_CREATION_REASON.CREATION_TRANSACTION_PENDING
+                : this.#preflightCapacity(
+                    capacity.requiredTowerCount,
+                    childCount
+                );
+            result = reason === 'PROGRAM_RECOVERY_REQUIRED'
+                ? TOWER_CREATION_RESULT.PROTOCOL_FAILURE
+                : reason
+                    ? TOWER_CREATION_RESULT.REJECTED_CAPACITY
+                    : null;
+        }
+        return Object.freeze({
+            ...plan,
+            accepted: plan.accepted === true && reason === null,
+            executionEnabled: plan.accepted === true && reason === null,
+            result,
+            reason,
+            capacity,
             recoveryRequired: false
         });
     }
@@ -613,6 +677,7 @@ export class TowerCreationCoordinator {
                         this.pending.transactionFingerprint
                 })
                 : null,
+            capacity: this.#getCapacityStatus(0),
             requestedCount: this.requestedCount,
             stagedCount: this.stagedCount,
             committedCount: this.committedCount,
@@ -687,12 +752,14 @@ export class TowerCreationCoordinator {
     }
 
     #preflightCapacity(recordCount, childCount) {
-        const registry = this.registry.getStatus();
-        if ((registry.capacity - registry.activeCount - registry.reservedCount)
-            < childCount) {
+        const capacity = this.#getCapacityStatus(childCount);
+        if (recordCount > capacity.configuredTowerCapacity) {
+            return 'TOWER_CAPACITY';
+        }
+        if (capacity.availableRegistrySlots < childCount) {
             return 'REGISTRY_CAPACITY';
         }
-        if (this.backend.getAvailableTowerCreationBodyCapacity() < childCount) {
+        if (capacity.availableBodySlots < childCount) {
             return 'BODY_CAPACITY';
         }
         if (!this.backend.canStageTowerCreation()) {
@@ -708,6 +775,63 @@ export class TowerCreationCoordinator {
         }
         if (recordCount > group.capacity) return 'GROUP_CAPACITY';
         return null;
+    }
+
+    #getCapacityStatus(requestedChildCount = 0) {
+        const childCount = Number(requestedChildCount);
+        const currentTowerCount = this.towerGroupState.getTowerRecords()
+            .filter((record) => record.alive).length;
+        const registry = this.registry.getStatus();
+        const creation = this.backend.getTowerCreationRuntimeStatus();
+        const group = this.backend.getTowerGroupRuntimeStatus();
+        const productionTowerCapacity = Number.isSafeInteger(
+            creation?.productionTowerCapacity
+        )
+            ? creation.productionTowerCapacity
+            : THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY;
+        const creationCapacity = Number.isSafeInteger(creation?.towerCapacity)
+            ? creation.towerCapacity
+            : Number.isSafeInteger(creation?.recordCapacity)
+                ? creation.recordCapacity
+                : productionTowerCapacity;
+        const groupCapacity = Number.isSafeInteger(group?.capacity)
+            ? group.capacity
+            : creationCapacity;
+        const configuredTowerCapacity = Math.min(
+            creationCapacity,
+            groupCapacity
+        );
+        const availableTowerSlots = Math.max(
+            0,
+            configuredTowerCapacity - currentTowerCount
+        );
+        const availableRegistrySlots = Math.max(
+            0,
+            Number(registry.capacity)
+                - Number(registry.activeCount)
+                - Number(registry.reservedCount)
+        );
+        const availableBodySlots = Math.max(
+            0,
+            Number(this.backend.getAvailableTowerCreationBodyCapacity())
+        );
+        return Object.freeze({
+            productionTowerCapacity,
+            configuredTowerCapacity,
+            productionCapacityOverridden:
+                configuredTowerCapacity !== productionTowerCapacity,
+            currentTowerCount,
+            requestedChildCount: childCount,
+            requiredTowerCount: currentTowerCount + childCount,
+            availableTowerSlots,
+            availableRegistrySlots,
+            availableBodySlots,
+            availableCreationSlots: Math.min(
+                availableTowerSlots,
+                availableRegistrySlots,
+                availableBodySlots
+            )
+        });
     }
 
     #isAuthenticCompletion(completion, proposedTick) {

@@ -455,6 +455,75 @@ test('source drift/reject/non-viable creation은 public state를 전혀 바꾸�
     assert.equal(nonViable.getStatus().pendingCreation, null);
 });
 
+test('current HP 0.01은 shared preview/planner에서 거절하고 0.02는 0.01씩 허용한다', () => {
+    const rejectState = new TowerGroupState();
+    const rejectHandle = Object.freeze({ entityId: 351, incarnation: 1 });
+    rejectState.bindGpuBody(
+        PRIMARY_TOWER_LOGICAL_ID,
+        rejectHandle,
+        PROTOCOL
+    );
+    rejectState.commitCompletedEvents({
+        events: [damageEvent(rejectHandle, 1, 2999, 'damage-to-0.01')]
+    });
+    const rejectBefore = rejectState.getTowerRecords();
+    const rejectPreview = rejectState.previewCreation({
+        transactionId: 'preview-current-hp-0.01',
+        childCount: 1
+    });
+    assert.equal(
+        rejectPreview.result,
+        TOWER_CREATION_RESULT.REJECTED_NON_VIABLE_CURRENT_HP
+    );
+    assert.equal(
+        rejectPreview.reason,
+        TOWER_CREATION_REASON.NON_VIABLE_DERIVED_CURRENT_HP
+    );
+    assert.equal(rejectState.getStatus().pendingCreation, null);
+    const rejectPlan = rejectState.planCreation({
+        transactionId: 'runtime-current-hp-0.01',
+        childCount: 1
+    });
+    assert.equal(rejectPlan.reason, rejectPreview.reason);
+    assert.deepEqual(rejectState.getTowerRecords(), rejectBefore);
+    assert.equal(rejectState.getStatus().pendingCreation, null);
+
+    const allowState = new TowerGroupState();
+    const allowHandle = Object.freeze({ entityId: 352, incarnation: 1 });
+    allowState.bindGpuBody(
+        PRIMARY_TOWER_LOGICAL_ID,
+        allowHandle,
+        PROTOCOL
+    );
+    allowState.commitCompletedEvents({
+        events: [damageEvent(allowHandle, 1, 2998, 'damage-to-0.02')]
+    });
+    const allowPreview = allowState.previewCreation({
+        transactionId: 'preview-current-hp-0.02',
+        childCount: 1
+    });
+    assert.equal(allowPreview.accepted, true);
+    assert.deepEqual(
+        [...allowPreview.existing, ...allowPreview.children].map(
+            (record) => record.currentHpFixedPoint
+        ),
+        [1, 1]
+    );
+    assert.equal(allowState.getStatus().pendingCreation, null);
+    const allowPlan = allowState.planCreation({
+        transactionId: 'runtime-current-hp-0.02',
+        childCount: 1
+    });
+    assert.equal(allowPlan.accepted, true);
+    assert.deepEqual(
+        [...allowPlan.existing, ...allowPlan.children].map(
+            (record) => record.currentHpFixedPoint
+        ),
+        [1, 1]
+    );
+    allowState.rejectCreation(allowPlan, 'test-cleanup');
+});
+
 test('동일 exact GPU binding 재확인은 state revision과 pending creation을 바꾸지 않는다', () => {
     const state = new TowerGroupState();
     const handle = Object.freeze({ entityId: 401, incarnation: 2 });

@@ -389,6 +389,19 @@ export class TowerShareLedger {
                 }))
             ]
         }));
+        for (const record of combined) {
+            if (currentHpByKey.get(record.logicalTowerId) <= 0) {
+                return freezeRejectedPlan(
+                    TOWER_CREATION_RESULT.REJECTED_NON_VIABLE_CURRENT_HP,
+                    TOWER_CREATION_REASON.NON_VIABLE_DERIVED_CURRENT_HP,
+                    {
+                        nonViableLogicalTowerId: record.logicalTowerId,
+                        derivedCurrentHpTotal: totalLivingCurrentHp,
+                        requiredPositiveRecordCount: nextCount
+                    }
+                );
+            }
+        }
 
         const allocations = combined.map((record) => Object.freeze({
             logicalTowerId: record.logicalTowerId,

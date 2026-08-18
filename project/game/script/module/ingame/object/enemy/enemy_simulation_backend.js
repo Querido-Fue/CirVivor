@@ -72,13 +72,15 @@ import {
     BASIC_CIRCLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
 import {
+    THE_TOWER_RUNTIME_DATA
+} from 'data/object/tower/the_tower_data.js';
+import {
     createGpuEnemySpawnIntent
 } from './gpu_enemy_spawn_adapter.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
 const DEFAULT_BODY_CAPACITY = 16384;
-const DEFAULT_TOWER_GROUP_MEMBER_CAPACITY = 256;
 const LITTLE_ENDIAN = true;
 const ABILITY_PAYLOAD_FNV_OFFSET = 0x811c9dc5;
 const ABILITY_PAYLOAD_FNV_PRIME = 0x01000193;
@@ -222,7 +224,10 @@ export class EnemySimulationBackend {
             = options.actorPayloadReadbackSlotCount;
         const towerGroupMemberCapacity = requirePositiveSafeInteger(
             options.towerGroupMemberCapacity
-                ?? Math.min(this.capacity, DEFAULT_TOWER_GROUP_MEMBER_CAPACITY),
+                ?? Math.min(
+                    this.capacity,
+                    THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY
+                ),
             'towerGroupMemberCapacity'
         );
         if (towerGroupMemberCapacity > this.capacity) {
@@ -251,7 +256,7 @@ export class EnemySimulationBackend {
                 readbackSlotCount: this.actorPayloadReadbackSlotCount
             });
         this.towerGroupRuntime = new GpuTowerGroupRuntime({
-            capacity: this.capacity,
+            capacity: this.towerGroupMemberCapacity,
             readbackSlotCount: this.towerGroupReadbackSlotCount
         });
         this.towerCreationRuntime = new GpuTowerCreationRuntime({
@@ -2369,6 +2374,11 @@ export class EnemySimulationBackend {
     getTowerCreationRuntimeStatus() {
         return Object.freeze({
             ...this.towerCreationRuntime.getStatus(),
+            productionTowerCapacity:
+                THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY,
+            towerCapacity: this.towerGroupMemberCapacity,
+            productionCapacityOverridden: this.towerGroupMemberCapacity
+                !== THE_TOWER_RUNTIME_DATA.PRODUCTION_TOWER_CAPACITY,
             bodyPreleaseCount: this.towerCreationBodyPreleases.size,
             bodyPreleaseHighWater: this.towerCreationPreleaseHighWater,
             availableBodyCapacity:

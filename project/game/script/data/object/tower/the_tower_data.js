@@ -34,6 +34,11 @@ export const THE_TOWER_COMBAT_DATA = Object.freeze({
     MAXIMUM_DAMAGE_WINDOW_DURATION_FIXED_TICKS: 60
 });
 
+/** Production Tower creation/group roster의 단일 용량 권위입니다. */
+export const THE_TOWER_RUNTIME_DATA = Object.freeze({
+    PRODUCTION_TOWER_CAPACITY: 256
+});
+
 /** CPU fallback renderer와 GPU direct renderer가 공유하는 Tower presentation data입니다. */
 export const THE_TOWER_RENDER_DATA = Object.freeze({
     FILL: '#2785ff',
