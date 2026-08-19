@@ -603,3 +603,107 @@ test('Tower Payload preview는 R4 seam을 사용하되 count/placement가 없으
     assert.equal(exact.placementExact, false);
     assertDeepFrozen(exact);
 });
+
+test('네 action profile preview는 activation/placement와 payload 결과를 runtime reason에 맞춘다', () => {
+    const compiler = new SentenceCompiler();
+    const verbs = [
+        [R3_SHOOT_WORD_INSTANCE, R5_SHOOT_ACTOR_ACTION_PROFILE],
+        [R5_THROW_WORD_INSTANCE, R5_THROW_ACTOR_ACTION_PROFILE],
+        [R5_EMIT_WORD_INSTANCE, R5_EMIT_ACTOR_ACTION_PROFILE],
+        [R5_SUMMON_WORD_INSTANCE, R5_SUMMON_ACTOR_ACTION_PROFILE]
+    ];
+    const towerPlan = Object.freeze({
+        accepted: true,
+        executionEnabled: true,
+        reason: null,
+        capacity: Object.freeze({
+            currentTowerCount: 1,
+            childCount: 1,
+            requiredTowerCount: 2,
+            productionTowerCapacity: 256
+        })
+    });
+    for (const [verb, profile] of verbs) {
+        for (const payload of [
+            R3_ENEMY_WORD_INSTANCE,
+            R3_TOWER_WORD_INSTANCE
+        ]) {
+            const towerPayload = payload === R3_TOWER_WORD_INSTANCE;
+            const ability = compiler.compile(createSentence(
+                R3_TOWER_WORD_INSTANCE,
+                verb,
+                payload,
+                `preview-${profile.actionCode}-${towerPayload}`
+            ));
+            const preview = new SentenceRuntimeEstimator({
+                getRuntimeState: () => ({
+                    livingTowerCount: 1,
+                    towerSubjectCountExact: true,
+                    liveHostileActorCount: 2,
+                    hostileSubjectCountExact: true,
+                    pendingHostileActorCount: 1,
+                    registryAvailable: 16,
+                    bodyAvailable: 16,
+                    bountyPerEnemy: 3,
+                    siegeWeightPerEnemy: 2,
+                    siegeWeight: 4,
+                    dangerThreshold: 32
+                }),
+                previewTowerCreation: () => towerPlan
+            }).estimate(ability, { cooldown: { remainingTicks: 0 } });
+            assert.equal(preview.actorAction.profileId, profile.id);
+            assert.equal(preview.actorAction.profileFingerprint,
+                profile.actorActionProfileFingerprint);
+            assert.equal(preview.spawnAnchorPolicy,
+                profile.spawnAnchorPolicy);
+            assert.equal(preview.placementPolicy, profile.placementPolicy);
+            assert.equal(preview.activationPolicy,
+                profile.activationPolicy);
+            assert.equal(preview.transitPolicy, profile.transit.policy);
+            assert.equal(preview.travelDurationFixedTicks,
+                profile.travelDurationFixedTicks);
+            assert.equal(preview.activationDelayFixedTicks,
+                profile === R5_THROW_ACTOR_ACTION_PROFILE ? 30 : 1);
+            assert.equal(preview.requiredBodies, 1);
+            assert.equal(preview.requiredTowers, towerPayload ? 1 : 0);
+            assert.equal(preview.newTowerCount, towerPayload ? 1 : 0);
+            assert.equal(preview.newEnemyCount, towerPayload ? 0 : 1);
+            assert.equal(preview.potentialBounty, towerPayload ? 0 : 3);
+            assert.equal(preview.siegeWeightAfter, towerPayload ? 4 : 6);
+            assert.strictEqual(preview.towerDilution,
+                towerPayload ? towerPlan : null);
+            assert.equal(preview.placementExact, false);
+            assert.equal(preview.blockedReason, null);
+            assert.equal(preview.executionEnabled, true);
+            assertDeepFrozen(preview);
+        }
+    }
+
+    for (const [verb] of verbs) {
+        const ability = compiler.compile(createSentence(
+            R3_TOWER_WORD_INSTANCE,
+            verb,
+            R3_TOWER_WORD_INSTANCE,
+            `preview-rejected-${verb.id}`
+        ));
+        const preview = new SentenceRuntimeEstimator({
+            getRuntimeState: () => ({
+                livingTowerCount: 1,
+                towerSubjectCountExact: true,
+                liveHostileActorCount: 0,
+                hostileSubjectCountExact: true,
+                registryAvailable: 16,
+                bodyAvailable: 16
+            }),
+            previewTowerCreation: () => Object.freeze({
+                executionEnabled: false,
+                reason: 'NON_VIABLE_DERIVED_CURRENT_HP'
+            })
+        }).estimate(ability, { cooldown: { remainingTicks: 0 } });
+        assert.equal(preview.executionEnabled, false);
+        assert.equal(preview.executionDisabledReason,
+            'NON_VIABLE_DERIVED_CURRENT_HP');
+        assert.equal(preview.blockedReason,
+            'NON_VIABLE_DERIVED_CURRENT_HP');
+    }
+});

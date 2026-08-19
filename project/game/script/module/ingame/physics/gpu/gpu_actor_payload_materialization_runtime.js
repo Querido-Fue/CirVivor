@@ -62,6 +62,11 @@ const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 const LITTLE_ENDIAN = true;
 const PIPELINES_BY_DEVICE = new WeakMap();
+const ACTOR_ACTION_PLACEMENT_ACTION_CODES = new Set([
+    SENTENCE_ACTION_CODE.THROW,
+    SENTENCE_ACTION_CODE.EMIT,
+    SENTENCE_ACTION_CODE.SUMMON
+]);
 
 const HEADER_WORD_COUNT
     = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE / 4;
@@ -1147,12 +1152,15 @@ const ACTOR_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
 const ACTOR_HOSTILE_TEAM: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
 const ACTOR_ENEMY_NOUN: u32 = ${GAMEPLAY_NOUN_MASK.ENEMY}u;
 const ACTOR_THROW: u32 = ${SENTENCE_ACTION_CODE.THROW}u;
+const ACTOR_EMIT: u32 = ${SENTENCE_ACTION_CODE.EMIT}u;
+const ACTOR_SUMMON: u32 = ${SENTENCE_ACTION_CODE.SUMMON}u;
 const ACTOR_ENEMY_PAYLOAD: u32 = ${ACTOR_PAYLOAD_CODE.ENEMY}u;
 const ACTOR_STATUS_PENDING: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PENDING}u;
 const ACTOR_STATUS_COMPLETE: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE}u;
 const ACTOR_STATUS_PROTOCOL: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PROTOCOL_REJECTED}u;
 const PLACEMENT_COMPLETE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE}u;
 const PLACEMENT_RECORD_VALID: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS.VALID}u;
+const PLACEMENT_TRANSIT_PENDING: u32 = ${GPU_ACTOR_ACTION_TRANSIT_PHASE.ACTIVATION_PENDING}u;
 const PLACEMENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_ACTION_TRANSIT_PHASE.AIRBORNE}u;
 const PERSISTENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_TRANSIT_PHASE.AIRBORNE}u;
 const REQUIRED_TRANSIT_FLAGS: u32 = ${ACTOR_ACTION_ALL_TRANSIT_FLAGS}u;
@@ -1292,12 +1300,16 @@ fn initialize_actor_action_enemy_payload() {
             == actor_header(${H.PLACEMENT_FINGERPRINT}u)
         && actor_placement.values[${AA.PROFILE_FINGERPRINT}u]
             == actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u)
-        && actor_placement.values[${AA.ACTION_CODE}u] == ACTOR_THROW
+        && actor_placement.values[${AA.ACTION_CODE}u]
+            == actor_header(${H.ACTION_CODE}u)
         && actor_placement.values[${AA.PAYLOAD_CODE}u] == ACTOR_ENEMY_PAYLOAD;
+    let action = actor_header(${H.ACTION_CODE}u);
+    let placement_action = action == ACTOR_THROW
+        || action == ACTOR_EMIT || action == ACTOR_SUMMON;
     if (actor_header(${H.ABI_VERSION}u) != ACTOR_MATERIALIZER_ABI
         || actor_header(${H.BODY_ABI_VERSION}u) != ACTOR_BODY_ABI
         || count == 0u
-        || actor_header(${H.ACTION_CODE}u) != ACTOR_THROW
+        || !placement_action
         || actor_header(${H.PAYLOAD_CODE}u) != ACTOR_ENEMY_PAYLOAD
         || actor_header(${H.PAYLOAD_NOUN_MASK}u) != ACTOR_ENEMY_NOUN
         || actor_header(${H.PAYLOAD_TEAM_ID}u) != ACTOR_HOSTILE_TEAM
@@ -1358,7 +1370,72 @@ fn validate_actor_action_enemy_payload(
         bitcast<f32>(placement_transit_word(rank, ${AT.VELOCITY_X}u)),
         bitcast<f32>(placement_transit_word(rank, ${AT.VELOCITY_Y}u))
     );
-    let derived_velocity = (landing - start) * (60.0 / f32(duration));
+    let placement_velocity = vec2f(
+        bitcast<f32>(placement_word(rank, ${AP.INITIAL_VELOCITY_X}u)),
+        bitcast<f32>(placement_word(rank, ${AP.INITIAL_VELOCITY_Y}u))
+    );
+    let action = actor_header(${H.ACTION_CODE}u);
+    let throw_action = action == ACTOR_THROW;
+    let immediate_action = action == ACTOR_EMIT || action == ACTOR_SUMMON;
+    let target_tick = actor_header(${H.MATERIALIZATION_TARGET_TICK}u);
+    let activation_tick = placement_word(rank, ${AP.ACTIVATION_TICK}u);
+    let safe_duration = select(1u, duration, duration > 0u);
+    let derived_velocity = (landing - start)
+        * (60.0 / f32(safe_duration));
+    let common_transit_invalid = placement_transit_word(
+            rank,
+            ${AT.ABI_VERSION}u
+        ) != ACTOR_PLACEMENT_ABI
+        || placement_transit_word(rank, ${AT.SOURCE_RANK}u) != rank
+        || placement_transit_word(rank, ${AT.DESTINATION_SLOT}u) != slot
+        || placement_transit_word(rank, ${AT.DESTINATION_ENTITY_ID}u)
+            != entity_id
+        || placement_transit_word(rank, ${AT.DESTINATION_INCARNATION}u)
+            != incarnation
+        || placement_transit_word(rank, ${AT.ACTION_CODE}u) != action
+        || placement_transit_word(rank, ${AT.PROFILE_CODE}u)
+            != placement_word(rank, ${AP.PROFILE_CODE}u)
+        || placement_transit_word(rank, ${AT.ACTIVATION_TICK}u)
+            != activation_tick
+        || placement_transit_word(rank, ${AT.DURATION_FIXED_TICKS}u)
+            != duration
+        || placement_transit_word(rank, ${AT.PROGRESS_FIXED_TICKS}u) != 0u
+        || placement_transit_word(rank, ${AT.FINGERPRINT}u) == 0u
+        || placement_word(rank, ${AP.TARGET_X}u)
+            != placement_transit_word(rank, ${AT.LANDING_X}u)
+        || placement_word(rank, ${AP.TARGET_Y}u)
+            != placement_transit_word(rank, ${AT.LANDING_Y}u)
+        || placement_word(rank, ${AP.INITIAL_VELOCITY_X}u)
+            != placement_transit_word(rank, ${AT.VELOCITY_X}u)
+        || placement_word(rank, ${AP.INITIAL_VELOCITY_Y}u)
+            != placement_transit_word(rank, ${AT.VELOCITY_Y}u);
+    let throw_transit_invalid = throw_action && (
+        duration == 0u
+        || duration > ACTOR_INVALID - target_tick
+        || activation_tick != target_tick + duration
+        || placement_transit_word(rank, ${AT.PHASE}u)
+            != PLACEMENT_TRANSIT_AIRBORNE
+        || placement_transit_word(rank, ${AT.FLAGS}u)
+            != REQUIRED_TRANSIT_FLAGS
+        || any(derived_velocity != velocity)
+        || !(bitcast<f32>(placement_transit_word(
+            rank,
+            ${AT.PRESENTATION_ARC_HEIGHT}u
+        )) > 0.0)
+    );
+    let immediate_transit_invalid = immediate_action && (
+        duration != 0u
+        || target_tick == ACTOR_INVALID
+        || activation_tick != target_tick + 1u
+        || placement_transit_word(rank, ${AT.PHASE}u)
+            != PLACEMENT_TRANSIT_PENDING
+        || placement_transit_word(rank, ${AT.FLAGS}u) != 0u
+        || any(velocity != vec2f(0.0))
+        || bitcast<f32>(placement_transit_word(
+            rank,
+            ${AT.PRESENTATION_ARC_HEIGHT}u
+        )) != 0.0
+    );
     if (placement_word(rank, ${AP.ABI_VERSION}u) != ACTOR_PLACEMENT_ABI
         || placement_word(rank, ${AP.STATUS}u) != PLACEMENT_RECORD_VALID
         || placement_word(rank, ${AP.ERROR_FLAGS}u) != 0u
@@ -1367,24 +1444,20 @@ fn validate_actor_action_enemy_payload(
         || placement_word(rank, ${AP.DESTINATION_SLOT}u) != slot
         || placement_word(rank, ${AP.DESTINATION_ENTITY_ID}u) != entity_id
         || placement_word(rank, ${AP.DESTINATION_INCARNATION}u) != incarnation
-        || placement_word(rank, ${AP.ACTION_CODE}u) != ACTOR_THROW
+        || placement_word(rank, ${AP.ACTION_CODE}u) != action
         || placement_word(rank, ${AP.PAYLOAD_CODE}u) != ACTOR_ENEMY_PAYLOAD
         || placement_word(rank, ${AP.PLACEMENT_FINGERPRINT}u) == 0u
         || placement_word(rank, ${AP.CHILD_GENERATION}u)
             != source_generation + 1u
-        || placement_transit_word(rank, ${AT.ABI_VERSION}u)
-            != ACTOR_PLACEMENT_ABI
-        || placement_transit_word(rank, ${AT.PHASE}u)
-            != PLACEMENT_TRANSIT_AIRBORNE
-        || placement_transit_word(rank, ${AT.FLAGS}u)
-            != REQUIRED_TRANSIT_FLAGS
-        || placement_transit_word(rank, ${AT.DURATION_FIXED_TICKS}u)
-            != duration
-        || duration == 0u
+        || (!throw_action && !immediate_action)
+        || common_transit_invalid
+        || throw_transit_invalid
+        || immediate_transit_invalid
         || !actor_finite(start.x) || !actor_finite(start.y)
         || !actor_finite(landing.x) || !actor_finite(landing.y)
         || !actor_finite(velocity.x) || !actor_finite(velocity.y)
-        || any(derived_velocity != velocity)) {
+        || !actor_finite(placement_velocity.x)
+        || !actor_finite(placement_velocity.y)) {
         errors |= ACTOR_ERROR_SOURCE | ACTOR_ERROR_STALE;
     }
     actor_store_validation(rank, ${V.ERROR_FLAGS}u, errors);
@@ -1490,6 +1563,21 @@ fn materialize_actor_action_enemy_payload(
         = actor_header(${H.CREATION_ORIGIN_CODE}u);
     actor_metadata.values[slot].power_fixed_point
         = actor_snapshot(rank, ${S.POWER_FIXED_POINT}u);
+
+    if (actor_header(${H.ACTION_CODE}u) != ACTOR_THROW) {
+        for (var word = 0u; word < TRANSIT_RECORD_WORDS; word += 1u) {
+            set_transit_word(slot, word, 0u);
+        }
+        actor_physics.values[slot].velocity = vec2f(
+            bitcast<f32>(placement_word(rank, ${AP.INITIAL_VELOCITY_X}u)),
+            bitcast<f32>(placement_word(rank, ${AP.INITIAL_VELOCITY_Y}u))
+        );
+        let baseline_flags = actor_lease(rank, ${R.BASELINE_FLAGS}u)
+            & ~ACTOR_ALIVE;
+        atomicStore(&actor_simulations.values[slot].flags, baseline_flags);
+        atomicAdd(&actor_aggregate.values[10u], 1u);
+        return;
+    }
 
     set_transit_word(slot, ${TR.ABI_VERSION}u, ACTOR_TRANSIT_ABI);
     set_transit_word(slot, ${TR.PHASE}u, PERSISTENT_TRANSIT_AIRBORNE);
@@ -1792,7 +1880,7 @@ function freezeCompletion(entry, aggregate, extra = {}) {
 
 /**
  * GPU snapshot rank i를 CPU가 prelease한 destination rank i로 원자 물질화합니다.
- * CPU는 destination handle/slot과 64-byte aggregate만 소유하며 Subject transform을
+ * CPU는 destination handle/slot과 고정 aggregate만 소유하며 Subject transform을
  * readback하지 않습니다.
  */
 export class GpuActorPayloadMaterializationRuntime {
@@ -1979,7 +2067,7 @@ export class GpuActorPayloadMaterializationRuntime {
             });
         }
         const actorActionMode = actorActionPlacementBinding !== null;
-        if ((command.actionCode === SENTENCE_ACTION_CODE.THROW)
+        if (ACTOR_ACTION_PLACEMENT_ACTION_CODES.has(command.actionCode)
             !== actorActionMode
             || (actorActionMode
                 && command.payloadCode !== ACTOR_PAYLOAD_CODE.ENEMY)) {

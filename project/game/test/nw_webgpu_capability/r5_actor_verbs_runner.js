@@ -2,10 +2,15 @@ import {
     BASIC_CIRCLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
 import {
-    R5_SHOWCASE_SENTENCE_LOADOUT
+    R3_ENEMY_WORD_INSTANCE,
+    R3_TOWER_WORD_INSTANCE,
+    R5_EMIT_WORD_INSTANCE,
+    R5_SHOWCASE_SENTENCE_LOADOUT,
+    R5_SUMMON_WORD_INSTANCE
 } from './production/script/data/word/r3_word_catalog_data.js';
 import {
-    ABILITY_SLOT_ID
+    ABILITY_SLOT_ID,
+    normalizeSentenceDefinition
 } from './production/script/module/ingame/contract/word_sentence_contract.js';
 import {
     createGpuSimulationEndpoint
@@ -48,6 +53,67 @@ import {
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const FIXED_DELTA = 1 / 60;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
+
+function createInjectedActorSentence({ id, subject, verb, payload }) {
+    return normalizeSentenceDefinition({
+        id,
+        subjectWordInstanceId: subject.id,
+        verbWordInstanceId: verb.id,
+        payloadWordInstanceId: payload.id,
+        modifierWordInstanceIds: []
+    });
+}
+
+const INJECTED_IMMEDIATE_ACTOR_CASES = Object.freeze([
+    Object.freeze({
+        id: 'tower-emit-enemy',
+        action: 'Emit',
+        subjectKind: 'tower',
+        payloadKind: 'enemy',
+        sentence: createInjectedActorSentence({
+            id: 'sentence.r5.fixture.tower-emits-enemy',
+            subject: R3_TOWER_WORD_INSTANCE,
+            verb: R5_EMIT_WORD_INSTANCE,
+            payload: R3_ENEMY_WORD_INSTANCE
+        })
+    }),
+    Object.freeze({
+        id: 'enemy-emit-tower',
+        action: 'Emit',
+        subjectKind: 'enemy',
+        payloadKind: 'tower',
+        sentence: createInjectedActorSentence({
+            id: 'sentence.r5.fixture.enemies-emit-tower',
+            subject: R3_ENEMY_WORD_INSTANCE,
+            verb: R5_EMIT_WORD_INSTANCE,
+            payload: R3_TOWER_WORD_INSTANCE
+        })
+    }),
+    Object.freeze({
+        id: 'tower-summon-tower',
+        action: 'Summon',
+        subjectKind: 'tower',
+        payloadKind: 'tower',
+        sentence: createInjectedActorSentence({
+            id: 'sentence.r5.fixture.tower-summons-tower',
+            subject: R3_TOWER_WORD_INSTANCE,
+            verb: R5_SUMMON_WORD_INSTANCE,
+            payload: R3_TOWER_WORD_INSTANCE
+        })
+    }),
+    Object.freeze({
+        id: 'enemy-summon-enemy',
+        action: 'Summon',
+        subjectKind: 'enemy',
+        payloadKind: 'enemy',
+        sentence: createInjectedActorSentence({
+            id: 'sentence.r5.fixture.enemies-summon-enemy',
+            subject: R3_ENEMY_WORD_INSTANCE,
+            verb: R5_SUMMON_WORD_INSTANCE,
+            payload: R3_ENEMY_WORD_INSTANCE
+        })
+    })
+]);
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -190,7 +256,11 @@ async function openGenericBoundary(device, endpoint, fixedTick) {
     }
 }
 
-function createHarness(device, capacity) {
+function createHarness(
+    device,
+    capacity,
+    loadout = R5_SHOWCASE_SENTENCE_LOADOUT
+) {
     const navigationSource = createNavigationSource();
     let coreCleanupBinding = null;
     const endpoint = createGpuSimulationEndpoint({
@@ -256,7 +326,7 @@ function createHarness(device, capacity) {
         actorActionPlacementRuntime: placementPort
     });
     const wordSystem = new WordSystem({
-        loadout: R5_SHOWCASE_SENTENCE_LOADOUT
+        loadout
     });
     const estimator = new SentenceRuntimeEstimator({
         getRuntimeState: () => {
@@ -599,6 +669,119 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
         materializerObservation,
         outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
         nextFixedTick: fixedTick + 4,
+        storageMaximum: storageMaximum(harness)
+    });
+}
+
+async function executeImmediateEnemyPayload(
+    harness,
+    slotId,
+    fixedTick,
+    options = {}
+) {
+    const { device, endpoint, backend } = harness;
+    await openGenericBoundary(device, endpoint, fixedTick);
+    harness.wordSystem.beginFixedTick(fixedTick);
+    const activation = harness.wordSystem.requestSlotActivation(slotId, {
+        targetFixedTick: fixedTick,
+        aimViewport: options.aimPoint ?? Object.freeze({ x: 80, y: 64 })
+    });
+    assert(activation.code === ABILITY_ACTIVATION_RESULT_CODE.REQUESTED,
+        `Immediate actor activation failed: ${JSON.stringify(activation)}`);
+    const abilityStage = harness.abilityRuntime.stageForFixedTick({
+        targetFixedTick: fixedTick
+    });
+    assert(abilityStage.acceptedCount === 1,
+        `Immediate actor ability stage failed: ${JSON.stringify(abilityStage)}`);
+    const lifecycle = endpoint.commitAtFixedBoundary(fixedTick);
+    assert(lifecycle.recoveryRequired !== true
+        && lifecycle.rejected.length === 0,
+    `Immediate actor lifecycle failed: ${JSON.stringify(lifecycle)}`);
+    assert(endpoint.fixedUpdate(FIXED_DELTA, fixedTick),
+        `Immediate actor snapshot submit ${fixedTick} failed`);
+    await waitFor(
+        device,
+        () => endpoint.getAbilitySubjectSnapshotStatus(),
+        (status) => status.pendingReadbackCount === 0
+            && status.completedQueueCount > 0,
+        `immediate actor snapshot ${fixedTick}`
+    );
+    const abilityObservation = harness.abilityRuntime
+        .observeCompletedSubjectSnapshots(fixedTick + 1);
+    assert(abilityObservation.recoveryRequired !== true
+        && abilityObservation.readyCount === 1,
+    `Immediate actor snapshot observe failed: ${JSON.stringify(
+        abilityObservation
+    )}`);
+    const payloadStage = harness.materializer.stageReadyForFixedTick({
+        targetFixedTick: fixedTick + 1
+    });
+    assert(payloadStage.recoveryRequired !== true
+        && payloadStage.stagedCount === 1,
+    `Immediate Enemy payload stage failed: ${JSON.stringify(payloadStage)}`);
+
+    await openGenericBoundary(device, endpoint, fixedTick + 1);
+    const placementLifecycle = endpoint.commitAtFixedBoundary(fixedTick + 1);
+    assert(placementLifecycle.recoveryRequired !== true
+        && placementLifecycle.rejected.length === 0,
+    `Immediate placement lifecycle failed: ${JSON.stringify(
+        placementLifecycle
+    )}`);
+    const placementCompletedBefore = backend
+        .getActorActionPlacementRuntimeStatus().completedCount;
+    assert(endpoint.fixedUpdate(FIXED_DELTA, fixedTick + 1),
+        `Immediate placement submit ${fixedTick + 1} failed`);
+    await waitFor(
+        device,
+        () => backend.getActorActionPlacementRuntimeStatus(),
+        (status) => status.inFlightCount === 0
+            && status.completedCount > placementCompletedBefore,
+        `immediate actor placement ${fixedTick + 1}`
+    );
+    const placementObservation = harness.materializer
+        .observeCompleted(fixedTick + 2);
+    assert(placementObservation.recoveryRequired !== true
+        && placementObservation.observedCount === 0
+        && placementObservation.committedCount === 0,
+    `Immediate placement handoff failed: ${JSON.stringify({
+        placementObservation,
+        materializer: harness.materializer.getStatus()
+    })}`);
+
+    await openGenericBoundary(device, endpoint, fixedTick + 2);
+    const payloadLifecycle = endpoint.commitAtFixedBoundary(fixedTick + 2);
+    assert(payloadLifecycle.recoveryRequired !== true
+        && payloadLifecycle.rejected.length === 0,
+    `Immediate payload lifecycle failed: ${JSON.stringify(payloadLifecycle)}`);
+    const payloadCompletedBefore = endpoint
+        .getActorPayloadMaterializationStatus().completedQueueCount;
+    assert(endpoint.fixedUpdate(FIXED_DELTA, fixedTick + 2),
+        `Immediate payload submit ${fixedTick + 2} failed`);
+    await waitFor(
+        device,
+        () => endpoint.getActorPayloadMaterializationStatus(),
+        (status) => status.inFlightCount === 0
+            && status.completedQueueCount > payloadCompletedBefore,
+        `immediate actor materialization ${fixedTick + 2}`
+    );
+    const payloadObservation = harness.materializer
+        .observeCompleted(fixedTick + 3);
+    assert(payloadObservation.recoveryRequired !== true
+        && payloadObservation.committedCount === 1,
+    `Immediate payload settlement failed: ${JSON.stringify({
+        payloadObservation,
+        outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
+        materializer: harness.materializer.getStatus()
+    })}`);
+    return Object.freeze({
+        activation,
+        lifecycle,
+        abilityObservation,
+        payloadStage,
+        placementObservation,
+        payloadObservation,
+        outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
+        nextFixedTick: fixedTick + 3,
         storageMaximum: storageMaximum(harness)
     });
 }
@@ -984,6 +1167,92 @@ async function runEnemySourceDeath(device) {
     return Object.freeze({ ...result, destroyedTeardown });
 }
 
+async function runInjectedImmediateMatrix(device) {
+    const cases = [];
+    for (const descriptor of INJECTED_IMMEDIATE_ACTOR_CASES) {
+        const harness = createHarness(device, 32, Object.freeze({
+            [ABILITY_SLOT_ID.Q]: descriptor.sentence
+        }));
+        let caseResult = null;
+        let destroyedTeardown = false;
+        try {
+            checkpoint(`injected-${descriptor.id}:initialize`);
+            await initializePrimaryTower(harness);
+            const payloadCountBefore = harness.registry.getActiveCount(
+                descriptor.payloadKind
+            );
+            if (descriptor.subjectKind === 'enemy') {
+                requestEnemyBatch(
+                    harness,
+                    1,
+                    2,
+                    `injected-${descriptor.id}-source`
+                );
+            }
+            const cast = descriptor.payloadKind === 'tower'
+                ? await executeShoot(harness, ABILITY_SLOT_ID.Q, 2)
+                : await executeImmediateEnemyPayload(
+                    harness,
+                    ABILITY_SLOT_ID.Q,
+                    2
+                );
+            const payloadCountAfter = harness.registry.getActiveCount(
+                descriptor.payloadKind
+            );
+            const expectedPayloadCount = payloadCountBefore + 1
+                + (descriptor.subjectKind === 'enemy'
+                        && descriptor.payloadKind === 'enemy'
+                    ? 1
+                    : 0);
+            const transitStatus = harness.endpoint
+                .getActorPayloadMaterializationStatus().transit;
+            const noTransit = (transitStatus?.activeActorCount ?? 0) === 0
+                && (transitStatus?.activeBatchCount ?? 0) === 0;
+            assert(cast.outcome.subjectCount === 1
+                && cast.outcome.generatedCount === 1
+                && cast.outcome.cooldownConsumed === true
+                && payloadCountAfter === expectedPayloadCount
+                && noTransit,
+            `Injected ${descriptor.id} mismatch: ${JSON.stringify({
+                outcome: cast.outcome,
+                payloadCountBefore,
+                payloadCountAfter,
+                expectedPayloadCount,
+                transitStatus
+            })}`);
+            caseResult = Object.freeze({
+                id: descriptor.id,
+                action: descriptor.action,
+                subjectKind: descriptor.subjectKind,
+                payloadKind: descriptor.payloadKind,
+                subjectCount: cast.outcome.subjectCount,
+                generatedCount: cast.outcome.generatedCount,
+                cooldownConsumed: cast.outcome.cooldownConsumed,
+                payloadCountBefore,
+                payloadCountAfter,
+                noTransit,
+                storageMaximum: cast.storageMaximum,
+                recoveryRequired: recoveryRequired(harness)
+            });
+        } finally {
+            destroyedTeardown = await destroyHarness(harness);
+        }
+        cases.push(Object.freeze({ ...caseResult, destroyedTeardown }));
+    }
+    return Object.freeze({
+        cases: Object.freeze(cases),
+        storageMaximum: Math.max(...cases.map((entry) => (
+            entry.storageMaximum
+        ))),
+        recoveryRequired: cases.some((entry) => (
+            entry.recoveryRequired === true
+        )),
+        destroyedTeardown: cases.every((entry) => (
+            entry.destroyedTeardown === true
+        ))
+    });
+}
+
 async function run() {
     const result = {
         status: 'fail',
@@ -1031,6 +1300,10 @@ async function run() {
         const towerSourceDeath = await runTowerSourceDeathWithSurvivor(device);
         checkpoint('zero-share:start');
         const zeroShare = await runOnlyTowerSourceDeath(device);
+        checkpoint('injected-immediate-matrix:start');
+        const injectedImmediateMatrix = await runInjectedImmediateMatrix(
+            device
+        );
         const storageMaximum = Math.max(
             towerRecursion.storageMaximum,
             enemyTen.storageMaximum,
@@ -1038,7 +1311,8 @@ async function run() {
             over.storageMaximum,
             sourceDeath.storageMaximum,
             towerSourceDeath.storageMaximum,
-            zeroShare.storageMaximum
+            zeroShare.storageMaximum,
+            injectedImmediateMatrix.storageMaximum
         );
         const destroyedTeardown = [
             towerRecursion,
@@ -1047,7 +1321,8 @@ async function run() {
             over,
             sourceDeath,
             towerSourceDeath,
-            zeroShare
+            zeroShare,
+            injectedImmediateMatrix
         ]
             .every((fixture) => fixture.destroyedTeardown === true);
         result.r5ActorVerbs = Object.freeze({
@@ -1068,6 +1343,7 @@ async function run() {
             sourceDeath,
             towerSourceDeath,
             zeroShare,
+            injectedImmediateMatrix,
             enemyTenTotalsConserved: enemyTen.totalsConserved,
             profileFingerprintBound: towerRecursion.profileFingerprintBound
                 && enemyTen.profileFingerprintBound
@@ -1080,7 +1356,8 @@ async function run() {
                 || over.recoveryRequired
                 || sourceDeath.recoveryRequired
                 || towerSourceDeath.recoveryRequired
-                || zeroShare.recoveryRequired,
+                || zeroShare.recoveryRequired
+                || injectedImmediateMatrix.recoveryRequired,
             destroyedTeardown
         });
         await device.queue.onSubmittedWorkDone();

@@ -26,6 +26,9 @@ const {
     R3_SHOWCASE_SENTENCE_LOADOUT
 } = await loadGameModule('data/word/r3_word_catalog_data.js');
 const {
+    R5_SHOOT_ACTOR_ACTION_PROFILE
+} = await loadGameModule('data/word/r5_actor_action_profile_data.js');
+const {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } = await loadGameModule(
     'ingame/contract/enemy_lifecycle_disposition_contract.js'
@@ -465,7 +468,11 @@ test('preview는 runtime subject/count와 동일하고 shared capacity 판정을
         previewFormulaId: 'preview.actor-payload.enemy.v1',
         subjectSelector: Object.freeze({ code: 2 }),
         budgets: Object.freeze({ subjectCount: 1000, generatedBodyCount: 1000 }),
-        cooldownTicks: 1
+        cooldownTicks: 1,
+        actorActionProfileId: R5_SHOOT_ACTOR_ACTION_PROFILE.id,
+        actorActionProfileFingerprint:
+            R5_SHOOT_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint,
+        actorActionProfile: R5_SHOOT_ACTOR_ACTION_PROFILE
     });
     const preview = estimator.estimate(compiledAbility, {
         cooldown: { remainingTicks: 0 }

@@ -6,6 +6,10 @@ import {
     ACTOR_PAYLOAD_CODE,
     SUBJECT_SELECTOR_CODE
 } from '../contract/word_sentence_contract.js';
+import {
+    ACTOR_ACTION_ACTIVATION_POLICY,
+    ACTOR_ACTION_TRANSIT_POLICY
+} from '../contract/actor_action_contract.js';
 import { evaluateActorPayloadCapacity } from './actor_payload_budget.js';
 
 function nonNegativeInteger(value, fallback = 0) {
@@ -24,6 +28,41 @@ function readNonNegativeInteger(value) {
     return Object.freeze({
         known,
         value: known ? number : 0
+    });
+}
+
+function createActorActionPreview(compiledAbility) {
+    const profile = compiledAbility?.actorActionProfile;
+    if (!profile || typeof profile !== 'object') return null;
+    const travelDurationFixedTicks = nonNegativeInteger(
+        profile.travelDurationFixedTicks
+    );
+    const activationDelayFixedTicks = profile.activationPolicy
+            === ACTOR_ACTION_ACTIVATION_POLICY.ON_LANDING
+        ? travelDurationFixedTicks
+        : 1;
+    return Object.freeze({
+        profileId: compiledAbility.actorActionProfileId ?? profile.id ?? null,
+        profileFingerprint:
+            compiledAbility.actorActionProfileFingerprint ?? null,
+        spawnAnchorPolicy: profile.spawnAnchorPolicy ?? null,
+        landingPolicy: profile.transit?.policy
+                === ACTOR_ACTION_TRANSIT_POLICY.AIRBORNE_GROUND_PATH
+            ? profile.placementPolicy ?? null
+            : null,
+        placementPolicy: profile.placementPolicy ?? null,
+        activationPolicy: profile.activationPolicy ?? null,
+        transitPolicy: profile.transit?.policy ?? null,
+        travelDurationFixedTicks,
+        activationDelayFixedTicks,
+        launchSpeed: nonNegativeFinite(profile.launchSpeed),
+        surfaceGap: nonNegativeFinite(profile.surfaceGap),
+        summonLatticeSpacing: nonNegativeFinite(
+            profile.summonLatticeSpacing
+        ),
+        presentationArcHeight: nonNegativeFinite(
+            profile.presentationArcHeight
+        )
     });
 }
 
@@ -46,6 +85,7 @@ export class SentenceRuntimeEstimator {
     estimate(compiledAbility, slotView = {}) {
         if (this.destroyed || !compiledAbility) return null;
         const runtime = this.getRuntimeState() ?? {};
+        const actorAction = createActorActionPreview(compiledAbility);
         const selectorCode = compiledAbility.subjectSelector?.code;
         const towerCount = readNonNegativeInteger(runtime.livingTowerCount);
         const hostileCount = readNonNegativeInteger(
@@ -110,7 +150,9 @@ export class SentenceRuntimeEstimator {
         const dangerous = towerPayload
             ? previewSubjectCount > 0
             : resultingHostileCount > dangerThreshold;
-        let executionDisabledReason = !countExact
+        let executionDisabledReason = !actorAction
+            ? 'RUNTIME_UNAVAILABLE'
+            : !countExact
             ? 'SUBJECT_COUNT_NOT_EXACT'
             : rawSubjectCount === 0
                 ? 'ZERO_SUBJECT'
@@ -161,6 +203,16 @@ export class SentenceRuntimeEstimator {
                 compiledAbility.actorActionProfileFingerprint ?? null,
             targetSnapshotPolicy:
                 compiledAbility.targetSnapshotPolicy ?? null,
+            actorAction,
+            spawnAnchorPolicy: actorAction?.spawnAnchorPolicy ?? null,
+            landingPolicy: actorAction?.landingPolicy ?? null,
+            placementPolicy: actorAction?.placementPolicy ?? null,
+            activationPolicy: actorAction?.activationPolicy ?? null,
+            transitPolicy: actorAction?.transitPolicy ?? null,
+            travelDurationFixedTicks:
+                actorAction?.travelDurationFixedTicks ?? 0,
+            activationDelayFixedTicks:
+                actorAction?.activationDelayFixedTicks ?? 0,
             payloadCode,
             rawSubjectCount,
             eligibleSubjectCount,
@@ -182,6 +234,7 @@ export class SentenceRuntimeEstimator {
                     ? 0
                     : previewSubjectCount * siegeWeightPerEnemy),
             requiredBodies: capacity.requiredBodies,
+            requiredTowers: towerPayload ? capacity.requiredBodies : 0,
             availableBodies: capacity.availableBodies,
             registryAvailable: capacity.registryAvailable,
             bodyAvailable: capacity.bodyAvailable,
@@ -193,6 +246,7 @@ export class SentenceRuntimeEstimator {
             }),
             capacityValidity: capacity,
             towerCreationPreview,
+            towerDilution: towerPayload ? towerCreationPreview : null,
             placementExact: false,
             previewExact: false,
             dangerous,
@@ -202,7 +256,8 @@ export class SentenceRuntimeEstimator {
                     : 'HOSTILE_SIEGE_GROWTH'
                 : null,
             executionEnabled: executionDisabledReason === null,
-            executionDisabledReason
+            executionDisabledReason,
+            blockedReason: executionDisabledReason
         });
     }
 

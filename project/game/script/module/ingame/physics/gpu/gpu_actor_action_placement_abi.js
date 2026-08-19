@@ -909,6 +909,51 @@ function finiteVector(value, label) {
     });
 }
 
+/** WGSL integer-rank lattice와 같은 float32 world placement oracle입니다. */
+export function computeActorActionSummonLatticePosition(
+    anchor,
+    rank,
+    spacing
+) {
+    const point = finiteVector(anchor, 'summon anchor');
+    const distance = requireFiniteFloat32(spacing, 'summon spacing');
+    if (!(distance > 0)) {
+        throw new RangeError('summon spacing은 양의 finite float32여야 합니다.');
+    }
+    const offset = computeActorActionSummonLatticeOffset(rank);
+    return Object.freeze({
+        x: Math.fround(point.x + Math.fround(offset.x * distance)),
+        y: Math.fround(point.y + Math.fround(offset.y * distance))
+    });
+}
+
+/** Summon anchor가 source surface 밖인지 판정하는 host/reference oracle입니다. */
+export function isActorActionSummonAnchorDistanceValid(source = {}) {
+    const position = finiteVector(source.sourcePosition, 'sourcePosition');
+    const anchor = finiteVector(source.anchorPosition, 'anchorPosition');
+    const sourceRadius = requireFiniteFloat32(
+        source.sourceRadius,
+        'sourceRadius'
+    );
+    const destinationRadius = requireFiniteFloat32(
+        source.destinationRadius,
+        'destinationRadius'
+    );
+    if (!(sourceRadius > 0) || !(destinationRadius > 0)) {
+        throw new RangeError('Summon source/destination radius는 양수여야 합니다.');
+    }
+    const dx = Math.fround(anchor.x - position.x);
+    const dy = Math.fround(anchor.y - position.y);
+    const distanceSquared = Math.fround(
+        Math.fround(dx * dx) + Math.fround(dy * dy)
+    );
+    const minimumDistance = Math.fround(sourceRadius + destinationRadius);
+    const minimumDistanceSquared = Math.fround(
+        minimumDistance * minimumDistance
+    );
+    return distanceSquared >= minimumDistanceSquared;
+}
+
 export function resolveActorActionDegenerateDirection(source = {}) {
     const position = finiteVector(source.sourcePosition, 'sourcePosition');
     const target = finiteVector(source.targetPosition, 'targetPosition');

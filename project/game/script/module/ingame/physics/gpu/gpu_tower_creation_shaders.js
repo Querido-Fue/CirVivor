@@ -786,11 +786,14 @@ const STATUS_READY_TO_APPLY: u32 = ${GPU_TOWER_CREATION_STATUS.READY_TO_APPLY}u;
 const STATUS_PROTOCOL_FAILURE: u32 = ${GPU_TOWER_CREATION_STATUS.PROTOCOL_FAILURE}u;
 const PLACEMENT_COMPLETE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE}u;
 const PLACEMENT_RECORD_VALID: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS.VALID}u;
+const PLACEMENT_TRANSIT_PENDING: u32 = ${GPU_ACTOR_ACTION_TRANSIT_PHASE.ACTIVATION_PENDING}u;
 const PLACEMENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_ACTION_TRANSIT_PHASE.AIRBORNE}u;
 const PERSISTENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_TRANSIT_PHASE.AIRBORNE}u;
 const REQUIRED_TRANSIT_FLAGS: u32 = ${ACTOR_ACTION_ALL_TRANSIT_FLAGS}u;
 const ACTOR_SHOOT: u32 = ${SENTENCE_ACTION_CODE.SHOOT}u;
 const ACTOR_THROW: u32 = ${SENTENCE_ACTION_CODE.THROW}u;
+const ACTOR_EMIT: u32 = ${SENTENCE_ACTION_CODE.EMIT}u;
+const ACTOR_SUMMON: u32 = ${SENTENCE_ACTION_CODE.SUMMON}u;
 const ACTOR_TOWER_PAYLOAD: u32 = ${ACTOR_PAYLOAD_CODE.TOWER}u;
 const ACTOR_CONTROLLED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.CONTROLLED_THIS_TICK}u;
 const ACTOR_EXTERNAL_MOTION: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
@@ -1035,7 +1038,8 @@ fn validate_actor_action_placement(
                 != actor_program.values[PROGRAM_PAYLOAD_CODE]
             || actor_program.values[PROGRAM_PAYLOAD_CODE]
                 != ACTOR_TOWER_PAYLOAD
-            || (action_code != ACTOR_SHOOT && action_code != ACTOR_THROW)
+            || (action_code != ACTOR_SHOOT && action_code != ACTOR_THROW
+                && action_code != ACTOR_EMIT && action_code != ACTOR_SUMMON)
             || actor_placement.values[AGGREGATE_PLACEMENT_TARGET_TICK] == 0u
             || actor_placement.values[AGGREGATE_PLACEMENT_TARGET_TICK]
                 > actor_program.values[PROGRAM_SOURCE_TICK];
@@ -1056,6 +1060,8 @@ fn validate_actor_action_placement(
     let velocity_y = bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_Y));
     let action_code = actor_program.values[PROGRAM_ACTION_CODE];
     let throw_action = action_code == ACTOR_THROW;
+    let zero_velocity_action = action_code == ACTOR_EMIT
+        || action_code == ACTOR_SUMMON;
     let duration = placement_word(rank, PLACEMENT_DURATION_FIXED_TICKS);
     let target_tick = actor_placement.values[AGGREGATE_PLACEMENT_TARGET_TICK];
     let activation_tick = placement_word(rank, PLACEMENT_ACTIVATION_TICK);
@@ -1073,21 +1079,13 @@ fn validate_actor_action_placement(
     ));
     let derived_velocity = (landing - vec2f(spawn_x, spawn_y))
         * (60.0 / select(1.0, f32(duration), duration > 0u));
-    let transit_invalid = throw_action && (
-        duration == 0u
-        || duration > 0xffffffffu - target_tick
-        || activation_tick != target_tick + duration
-        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ABI_VERSION / 4}u)
+    let transit_common_invalid = placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ABI_VERSION / 4}u)
             != PLACEMENT_ABI
-        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.PHASE / 4}u)
-            != PLACEMENT_TRANSIT_AIRBORNE
-        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.FLAGS / 4}u)
-            != REQUIRED_TRANSIT_FLAGS
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.SOURCE_RANK / 4}u) != rank
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_SLOT / 4}u) != slot
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_ENTITY_ID / 4}u) != entity_id
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_INCARNATION / 4}u) != incarnation
-        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ACTION_CODE / 4}u) != ACTOR_THROW
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ACTION_CODE / 4}u) != action_code
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.PROFILE_CODE / 4}u)
             != placement_word(rank, PLACEMENT_PROFILE_CODE)
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ACTIVATION_TICK / 4}u) != activation_tick
@@ -1105,10 +1103,29 @@ fn validate_actor_action_placement(
         || !finite_scalar(landing.x) || !finite_scalar(landing.y)
         || !finite_scalar(transit_velocity.x)
         || !finite_scalar(transit_velocity.y)
-        || !finite_scalar(arc_height) || !(arc_height > 0.0)
-        || any(derived_velocity != transit_velocity)
+        || !finite_scalar(arc_height)
         || (slot + 1u) * TRANSIT_RECORD_WORDS
-            > arrayLength(&actor_transits.values)
+            > arrayLength(&actor_transits.values);
+    let throw_transit_invalid = throw_action && (
+        duration == 0u
+        || duration > 0xffffffffu - target_tick
+        || activation_tick != target_tick + duration
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.PHASE / 4}u)
+            != PLACEMENT_TRANSIT_AIRBORNE
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.FLAGS / 4}u)
+            != REQUIRED_TRANSIT_FLAGS
+        || !(arc_height > 0.0)
+        || any(derived_velocity != transit_velocity)
+    );
+    let immediate_transit_invalid = !throw_action && (
+        duration != 0u
+        || target_tick == 0xffffffffu
+        || activation_tick != target_tick + 1u
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.PHASE / 4}u)
+            != PLACEMENT_TRANSIT_PENDING
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.FLAGS / 4}u) != 0u
+        || arc_height != 0.0
+        || (zero_velocity_action && any(transit_velocity != vec2f(0.0)))
     );
     let invalid = placement_word(rank, PLACEMENT_RECORD_ABI) != PLACEMENT_ABI
         || placement_word(rank, PLACEMENT_RECORD_STATUS)
@@ -1130,7 +1147,9 @@ fn validate_actor_action_placement(
         || placement_word(rank, PLACEMENT_RECORD_FINGERPRINT) == 0u
         || !finite_scalar(spawn_x) || !finite_scalar(spawn_y)
         || !finite_scalar(velocity_x) || !finite_scalar(velocity_y)
-        || transit_invalid;
+        || transit_common_invalid
+        || throw_transit_invalid
+        || immediate_transit_invalid;
     if (invalid) {
         atomicOr(
             &actor_result.values[RESULT_ERROR_FLAGS],
@@ -1347,6 +1366,9 @@ fn apply_actor_action_placement(
             ACTOR_CONTROLLED | ACTOR_EXTERNAL_MOTION
         );
     } else {
+        for (var word = 0u; word < TRANSIT_RECORD_WORDS; word += 1u) {
+            set_transit_word(slot, word, 0u);
+        }
         actor_physics.values[slot].velocity = vec2f(
             bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_X)),
             bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_Y))

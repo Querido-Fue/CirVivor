@@ -1031,6 +1031,23 @@ fn validate_actor_action_placement(
     if (!valid_spawn_point(spawn, destination_radius)) {
         errors |= ERROR_SDF;
     }
+    if (header(${H.ACTION_CODE}u) == SUMMON_ACTION) {
+        let source_position = vec2f(
+            bitcast<f32>(snapshot_word(rank, ${S.POSITION_X}u)),
+            bitcast<f32>(snapshot_word(rank, ${S.POSITION_Y}u))
+        );
+        let source_radius = bitcast<f32>(
+            placement_word(rank, ${P.SOURCE_RADIUS}u)
+        );
+        let anchor_delta = target_position - source_position;
+        let minimum_distance = source_radius + destination_radius;
+        if (!finite_vector(source_position)
+            || !finite_scalar(source_radius) || !(source_radius > 0.0)
+            || dot(anchor_delta, anchor_delta)
+                < minimum_distance * minimum_distance) {
+            errors |= ERROR_SDF;
+        }
+    }
     if ((header(${H.PLACEMENT_POLICY_CODE}u) == PLACE_TARGET_LATTICE
             || header(${H.PLACEMENT_POLICY_CODE}u)
                 == PLACE_SOURCE_AND_LANDING)

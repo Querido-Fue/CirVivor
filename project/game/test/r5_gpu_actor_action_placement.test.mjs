@@ -33,6 +33,7 @@ const {
     GPU_ACTOR_ACTION_PLACEMENT_STATUS,
     GPU_ACTOR_ACTION_TRANSIT_FLAG,
     computeActorActionSummonLatticeOffset,
+    computeActorActionSummonLatticePosition,
     computeGpuActorActionDestinationFingerprint,
     createGpuActorActionPlacementOutputLayout,
     createGpuActorActionProgramStorage,
@@ -40,6 +41,7 @@ const {
     readGpuActorActionPlacementAggregate,
     readGpuActorActionPlacementRecord,
     readGpuActorActionTransitRecord,
+    isActorActionSummonAnchorDistanceValid,
     resolveActorActionDegenerateDirection,
     writeGpuActorActionDestinationLease,
     writeGpuActorActionProgramHeader
@@ -358,6 +360,33 @@ test('Summon square spiral과 degenerate direction chain은 host oracle에서 �
             { x: 1, y: -1 }
         ]
     );
+    assert.deepEqual(
+        Array.from({ length: 4 }, (_, rank) => (
+            computeActorActionSummonLatticePosition(
+                { x: 10, y: 20 },
+                rank,
+                1.0625
+            )
+        )),
+        [
+            { x: 10, y: 20 },
+            { x: 11.0625, y: 20 },
+            { x: 11.0625, y: 21.0625 },
+            { x: 10, y: 21.0625 }
+        ]
+    );
+    assert.equal(isActorActionSummonAnchorDistanceValid({
+        sourcePosition: { x: 2, y: 2 },
+        anchorPosition: { x: 3, y: 2 },
+        sourceRadius: 0.5,
+        destinationRadius: 0.5
+    }), true);
+    assert.equal(isActorActionSummonAnchorDistanceValid({
+        sourcePosition: { x: 2, y: 2 },
+        anchorPosition: { x: 2.999, y: 2 },
+        sourceRadius: 0.5,
+        destinationRadius: 0.5
+    }), false);
     const base = {
         sourcePosition: { x: 2, y: 2 },
         targetPosition: { x: 5, y: 6 },
@@ -452,6 +481,8 @@ test('WGSL은 GPU count indirect, frozen snapshot, compact roster, atomic SDF �
         /resolved_target\.position - spawn_position/);
     assert.match(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
         /PLACE_SOURCE_AND_LANDING/);
+    assert.match(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
+        /minimum_distance \* minimum_distance/);
     assert.doesNotMatch(GPU_ACTOR_ACTION_PLACEMENT_WGSL, /atomicAdd/);
     assert.doesNotMatch(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
         /(?:physics|simulations|ability_metadata|tower_members)\.values\[[^\]]+\]\s*=(?!=)/);

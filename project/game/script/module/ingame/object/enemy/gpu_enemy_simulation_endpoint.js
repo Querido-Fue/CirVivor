@@ -184,11 +184,15 @@ const ACTOR_PAYLOAD_BACKEND_METHODS = Object.freeze([
     'cancelAllActorPayloadMaterializations',
     'getActorPayloadMaterializationStatus'
 ]);
-const ACTOR_PAYLOAD_THROW_BACKEND_METHODS = Object.freeze([
+const ACTOR_PAYLOAD_PLACEMENT_BACKEND_METHODS = Object.freeze([
     'stageActorPayloadActionPlacement',
+    'submitActorActionPlacements',
     'drainCompletedActorActionPlacements',
+    'getActorActionPlacementRuntimeStatus',
     'getActorActionPlacementGpuBinding',
-    'releaseActorActionPlacement',
+    'releaseActorActionPlacement'
+]);
+const ACTOR_PAYLOAD_TRANSIT_BACKEND_METHODS = Object.freeze([
     'registerCommittedActorTransitBatch',
     'drainCompletedActorTransits',
     'isActorTransitAirborne',
@@ -1035,8 +1039,12 @@ export class GpuEnemySimulationEndpoint {
             = ACTOR_PAYLOAD_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
-        this.actorPayloadThrowBackendSupported
-            = ACTOR_PAYLOAD_THROW_BACKEND_METHODS.every(
+        this.actorPayloadPlacementBackendSupported
+            = ACTOR_PAYLOAD_PLACEMENT_BACKEND_METHODS.every(
+                (methodName) => typeof this.backend?.[methodName] === 'function'
+            );
+        this.actorPayloadTransitBackendSupported
+            = ACTOR_PAYLOAD_TRANSIT_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
         this.actorPayloadTransactions = new Map();
@@ -1951,6 +1959,11 @@ export class GpuEnemySimulationEndpoint {
         const subjectCount = Number(completion?.subjectCount);
         const throwAction = command?.actionCode
             === SENTENCE_ACTION_CODE.THROW;
+        const placementAction = [
+            SENTENCE_ACTION_CODE.THROW,
+            SENTENCE_ACTION_CODE.EMIT,
+            SENTENCE_ACTION_CODE.SUMMON
+        ].includes(command?.actionCode);
         if (transactionId.length === 0
             || !command || !completion?.snapshotToken
             || !Number.isSafeInteger(subjectCount) || subjectCount <= 0
@@ -1961,7 +1974,9 @@ export class GpuEnemySimulationEndpoint {
             || command.payloadCode !== ACTOR_PAYLOAD_CODE.ENEMY
             || ![
                 SENTENCE_ACTION_CODE.SHOOT,
-                SENTENCE_ACTION_CODE.THROW
+                SENTENCE_ACTION_CODE.THROW,
+                SENTENCE_ACTION_CODE.EMIT,
+                SENTENCE_ACTION_CODE.SUMMON
             ].includes(command.actionCode)
             || this.actorPayloadTransactions.has(transactionId)) {
             return Object.freeze({
@@ -1970,7 +1985,9 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: false
             });
         }
-        if (throwAction && !this.actorPayloadThrowBackendSupported) {
+        if ((placementAction
+                && !this.actorPayloadPlacementBackendSupported)
+            || (throwAction && !this.actorPayloadTransitBackendSupported)) {
             return Object.freeze({
                 accepted: false,
                 reason: 'actor-payload-runtime-unavailable',
@@ -2163,7 +2180,7 @@ export class GpuEnemySimulationEndpoint {
             towerTarget: payloadTargets.towerTarget,
             coreTarget: payloadTargets.coreTarget
         };
-        const stage = throwAction
+        const stage = placementAction
             ? this.backend.stageActorPayloadActionPlacement({
                 ...stageRequest,
                 actorActionProfile: transaction.actorActionProfile
@@ -2187,7 +2204,7 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: stage?.requiresRecovery === true
             });
         }
-        transaction.state = throwAction
+        transaction.state = placementAction
             ? 'gpu-placement-pending'
             : 'gpu-materialization-pending';
         this.actorPayloadTransactions.set(transactionId, transaction);
@@ -2213,7 +2230,7 @@ export class GpuEnemySimulationEndpoint {
             throw new TypeError('actor payload completion output은 배열이어야 합니다.');
         }
         if (!this.actorPayloadBackendSupported) return out;
-        if (this.actorPayloadThrowBackendSupported) {
+        if (this.actorPayloadPlacementBackendSupported) {
             const placements = [];
             this.backend.drainCompletedActorActionPlacements(
                 placements,
@@ -2238,7 +2255,8 @@ export class GpuEnemySimulationEndpoint {
                             .actorActionProfileFingerprint
                     && placement.subjectCount
                         === transaction.handles.length
-                    && placement.actionCode === SENTENCE_ACTION_CODE.THROW
+                    && placement.actionCode
+                        === transaction.command.actionCode
                     && placement.payloadCode === ACTOR_PAYLOAD_CODE.ENEMY;
                 if (exactPlacement && placement.status
                     === GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE) {
@@ -2337,6 +2355,11 @@ export class GpuEnemySimulationEndpoint {
             }
             const throwAction = transaction.command.actionCode
                 === SENTENCE_ACTION_CODE.THROW;
+            const placementAction = [
+                SENTENCE_ACTION_CODE.THROW,
+                SENTENCE_ACTION_CODE.EMIT,
+                SENTENCE_ACTION_CODE.SUMMON
+            ].includes(transaction.command.actionCode);
             const exact = aggregate.executionOrdinal
                     === transaction.command.executionOrdinal
                 && aggregate.commandFingerprint
@@ -2344,7 +2367,7 @@ export class GpuEnemySimulationEndpoint {
                 && aggregate.snapshotFingerprint
                     === transaction.completion.snapshotFingerprint
                 && aggregate.subjectCount === transaction.handles.length
-                && (!throwAction
+                && (!placementAction
                     || (aggregate.actorActionProfileFingerprint
                             === transaction.command
                                 .actorActionProfileFingerprint
@@ -2564,7 +2587,7 @@ export class GpuEnemySimulationEndpoint {
         if (!Array.isArray(out)) {
             throw new TypeError('actor transit completion 출력은 배열이어야 합니다.');
         }
-        if (!this.actorPayloadThrowBackendSupported) return out;
+        if (!this.actorPayloadTransitBackendSupported) return out;
         const completed = [];
         this.backend.drainCompletedActorTransits(
             completed,
@@ -2669,7 +2692,7 @@ export class GpuEnemySimulationEndpoint {
     }
 
     isActorTransitAirborne(handle) {
-        return this.actorPayloadThrowBackendSupported
+        return this.actorPayloadTransitBackendSupported
             && this.backend.isActorTransitAirborne(handle);
     }
 
@@ -2722,7 +2745,16 @@ export class GpuEnemySimulationEndpoint {
                 subjectReadbackPolicy: 'aggregate-only',
                 perSubjectCpuCommandCount: 0
             });
-        const transit = this.actorPayloadThrowBackendSupported
+        const placement = this.actorPayloadPlacementBackendSupported
+            ? this.backend.getActorActionPlacementRuntimeStatus()
+            : Object.freeze({
+                state: this.destroyed ? 'destroyed' : 'unsupported',
+                pendingCount: 0,
+                inFlightCount: 0,
+                retainedPlacementCount: 0,
+                requiresRecovery: false
+            });
+        const transit = this.actorPayloadTransitBackendSupported
             ? this.backend.getActorTransitRuntimeStatus()
             : Object.freeze({
                 state: this.destroyed ? 'destroyed' : 'unsupported',
@@ -2738,12 +2770,14 @@ export class GpuEnemySimulationEndpoint {
             rejectedExecutionCount: this.actorPayloadRejectedCount,
             capacityRejectedExecutionCount:
                 this.actorPayloadCapacityRejectedCount,
+            placement,
             transit,
             pendingTransitLandingCount:
                 this.actorPayloadTransitLandings.size,
             failure: this.actorPayloadFailure ?? backend.failure ?? null,
             requiresRecovery: this.actorPayloadFailure !== null
                 || backend.requiresRecovery === true
+                || placement.requiresRecovery === true
                 || transit.requiresRecovery === true
         });
     }
@@ -5257,6 +5291,20 @@ export class GpuEnemySimulationEndpoint {
                 .requiresRecovery) {
             return false;
         }
+        let actorPayloadPlacementSubmitted = false;
+        if (this.actorPayloadPlacementBackendSupported
+            && Number.isSafeInteger(Number(sourceTick))
+            && Number(sourceTick) > 0) {
+            const placementStatus = this.backend
+                .getActorActionPlacementRuntimeStatus();
+            if ((placementStatus?.pendingCount ?? 0) > 0) {
+                const placementSubmission = this.backend
+                    .submitActorActionPlacements(Number(sourceTick));
+                if (placementSubmission?.failure) return false;
+                actorPayloadPlacementSubmitted
+                    = (placementSubmission?.submittedCount ?? 0) > 0;
+            }
+        }
         const submitted = this.backend.fixedUpdate(delta, sourceTick);
         this.effectBackendPort.noteFixedSubmit(sourceTick, submitted === true);
         this.#formationBackendPort.noteFixedSubmit(
@@ -5277,7 +5325,7 @@ export class GpuEnemySimulationEndpoint {
                 return false;
             }
         }
-        return submitted;
+        return submitted || actorPayloadPlacementSubmitted;
     }
 
     /** 렌더 프레임 presentation clock만 갱신합니다. */

@@ -407,10 +407,13 @@ export class ActorPayloadMaterializer {
         let rejectedCount = 0;
         for (let index = 0; index < ready.length; index++) {
             const record = ready[index];
-            // Turn 5는 Shoot/Throw만 materialization capability를 소유합니다.
+            // R5 actor payload matrix는 네 동사를 같은 0/N settlement로
+            // materialize하며 production slot 구성은 별도 data authority입니다.
             if (![
                 SENTENCE_ACTION_CODE.SHOOT,
-                SENTENCE_ACTION_CODE.THROW
+                SENTENCE_ACTION_CODE.THROW,
+                SENTENCE_ACTION_CODE.EMIT,
+                SENTENCE_ACTION_CODE.SUMMON
             ].includes(record.command.actionCode)) {
                 this.totalRuntimeUnavailable++;
                 this.#rejectReady(
