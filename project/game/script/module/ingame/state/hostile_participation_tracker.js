@@ -224,6 +224,7 @@ export class HostileParticipationTracker {
         this.snapshot = Object.freeze({
             revision: this.revision,
             registryRevision: this.registryRevision,
+            countExact: this.reconciled,
             liveHostileActorCount: this.liveHostileActorCount,
             pendingHostileActorCount: this.pending.hostileActorCount,
             hostileActorCount: this.liveHostileActorCount + this.pending.hostileActorCount,
@@ -246,6 +247,7 @@ export class HostileParticipationTracker {
         return Object.freeze({
             revision: this.revision,
             registryRevision: this.registryRevision,
+            countExact: false,
             liveHostileActorCount: 0,
             pendingHostileActorCount: 0,
             hostileActorCount: 0,

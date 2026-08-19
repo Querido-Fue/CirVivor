@@ -746,6 +746,9 @@ test('zero living Share는 placement/body/registry prelease 전에 whole reject�
             reasonFlags: 0
         }]
     });
+    // 유일한 body가 retire되며 GPU snapshot binding도 사라진 경계에서도
+    // canonical living-Share 0 판정이 SOURCE_STATE_CHANGED보다 우선합니다.
+    fixture.snapshotRuntime.binding = null;
     fixture.coordinator.requestTowerCreation(fixture.request);
     const rejected = fixture.coordinator.stageForFixedTick(
         fixture.command.targetFixedTick

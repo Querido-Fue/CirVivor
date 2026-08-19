@@ -144,8 +144,11 @@ function normalizeGpuSubjectActorActionRequest(source = {}) {
         source.requestedFixedTick ?? source.targetFixedTick
             ?? command.targetFixedTick
     );
-    if (requestedFixedTick !== command.targetFixedTick) {
-        throw new RangeError('R5 Tower target fixed tick이 command와 다릅니다.');
+    if (requestedFixedTick < command.targetFixedTick
+        || requestedFixedTick < completion.sourceTick) {
+        throw new RangeError(
+            'R5 Tower materialization tick은 snapshot tick보다 빠를 수 없습니다.'
+        );
     }
     const snapshotToken = source.snapshotToken ?? completion.snapshotToken;
     if (!snapshotToken || typeof snapshotToken !== 'object'
@@ -376,6 +379,10 @@ export class TowerCreationCoordinator {
         const entry = {
             transactionId: request.transactionId,
             requestFingerprint,
+            actorActionProfileFingerprint: request.mode
+                === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION
+                ? request.actorActionProfileFingerprint
+                : 0,
             stage: 'received',
             receipt: null
         };
@@ -402,6 +409,8 @@ export class TowerCreationCoordinator {
             reason: null,
             transactionId: request.transactionId,
             requestFingerprint,
+            actorActionProfileFingerprint:
+                entry.actorActionProfileFingerprint,
             childCount: request.childCount,
             requestedFixedTick: request.requestedFixedTick,
             capacity,
@@ -500,6 +509,12 @@ export class TowerCreationCoordinator {
         }
         if (request.requestedFixedTick < tick) {
             this.queued = null;
+            if (request.mode
+                === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+                this.abilitySubjectSnapshotRuntime?.releaseSnapshot(
+                    request.snapshotToken
+                );
+            }
             return this.#publishTerminal(terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
                 TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
@@ -700,7 +715,13 @@ export class TowerCreationCoordinator {
             return this.#publishTerminal(terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_CAPACITY,
                 String(prelease?.reason ?? 'BODY_CAPACITY'),
-                { transactionId: request.transactionId, sourceTick: tick }
+                {
+                    transactionId: request.transactionId,
+                    sourceTick: tick,
+                    ...(prelease?.failure
+                        ? { failure: prelease.failure }
+                        : {})
+                }
             ));
         }
 
@@ -754,7 +775,11 @@ export class TowerCreationCoordinator {
             return this.#publishTerminal(terminalResult(
                 result,
                 String(staged?.reason ?? 'PROGRAM_CAPACITY'),
-                { transactionId: request.transactionId, sourceTick: tick }
+                {
+                    transactionId: request.transactionId,
+                    sourceTick: tick,
+                    ...(staged?.failure ? { failure: staged.failure } : {})
+                }
             ));
         }
 
@@ -799,6 +824,9 @@ export class TowerCreationCoordinator {
             && this.actorActionPlacementRuntime.canAccept();
         if (!supportsR5) {
             this.queued = null;
+            this.abilitySubjectSnapshotRuntime?.releaseSnapshot(
+                request.snapshotToken
+            );
             return this.#publishTerminal(terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_CAPACITY,
                 'RUNTIME_UNAVAILABLE',
@@ -808,6 +836,22 @@ export class TowerCreationCoordinator {
                     recoveryRequired: false
                 }
             ));
+        }
+        const zeroSharePreflight = this.towerGroupState.previewCreation({
+            transactionId: request.transactionId,
+            childCount: request.childCount
+        });
+        if (zeroSharePreflight?.result
+            === TOWER_CREATION_RESULT.REJECTED_ZERO_SHARE) {
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(Object.freeze({
+                ...zeroSharePreflight,
+                transactionId: request.transactionId,
+                sourceTick: tick
+            }));
         }
         const snapshotBinding = this.abilitySubjectSnapshotRuntime
             .getSnapshotGpuBinding(request.snapshotToken);
@@ -1033,7 +1077,13 @@ export class TowerCreationCoordinator {
             return this.#publishTerminal(terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_CAPACITY,
                 String(prelease?.reason ?? 'BODY_CAPACITY'),
-                { transactionId: request.transactionId, sourceTick: tick }
+                {
+                    transactionId: request.transactionId,
+                    sourceTick: tick,
+                    ...(prelease?.failure
+                        ? { failure: prelease.failure }
+                        : {})
+                }
             ));
         }
         const destinationLeases = Object.freeze(handles.map((handle, index) => (
@@ -1400,7 +1450,11 @@ export class TowerCreationCoordinator {
             return this.#publishTerminal(terminalResult(
                 result,
                 String(staged?.reason ?? 'PROGRAM_CAPACITY'),
-                { transactionId: pending.request.transactionId, sourceTick: tick }
+                {
+                    transactionId: pending.request.transactionId,
+                    sourceTick: tick,
+                    ...(staged?.failure ? { failure: staged.failure } : {})
+                }
             ));
         }
         this.pending = Object.freeze({
@@ -1494,6 +1548,12 @@ export class TowerCreationCoordinator {
         if (this.queued) {
             const queued = this.queued;
             this.queued = null;
+            if (queued.mode
+                === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+                this.abilitySubjectSnapshotRuntime?.releaseSnapshot(
+                    queued.snapshotToken
+                );
+            }
             const receipt = this.#publishTerminal(terminalResult(
                 TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
                 String(reason || 'cancelled'),
@@ -2085,6 +2145,10 @@ export class TowerCreationCoordinator {
                 ? this.transactionEntries.get(transactionId)
                     ?.requestFingerprint ?? null
                 : null,
+            actorActionProfileFingerprint: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.actorActionProfileFingerprint ?? 0
+                : 0,
             capacity: this.#getCapacityStatus(0)
         });
         if (transactionId) this.#completeTransaction(transactionId, receipt);
@@ -2101,6 +2165,8 @@ export class TowerCreationCoordinator {
             ? Object.freeze({
                 ...result,
                 requestFingerprint: entry.requestFingerprint,
+                actorActionProfileFingerprint:
+                    entry.actorActionProfileFingerprint,
                 capacity: result.capacity ?? this.#getCapacityStatus(0)
             })
             : result;

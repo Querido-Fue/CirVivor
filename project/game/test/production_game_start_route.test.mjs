@@ -42,7 +42,9 @@ const {
 } = await loadGameModule('ingame/contract/word_sentence_contract.js');
 const {
     R3_ENEMIES_SHOOT_ENEMIES_SENTENCE,
-    R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    R3_TOWER_SHOOTS_ENEMY_SENTENCE,
+    R5_ENEMIES_SHOOT_TOWER_SENTENCE,
+    R5_TOWER_SHOOTS_TOWER_SENTENCE
 } = await loadGameModule('data/word/r3_word_catalog_data.js');
 const {
     TowerCombatRoster
@@ -74,6 +76,14 @@ test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1
     assert.strictEqual(
         options.wordSystemOptions.loadout[ABILITY_SLOT_ID.E],
         R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
+    );
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.SHIFT],
+        R5_TOWER_SHOOTS_TOWER_SENTENCE
+    );
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.SPACE],
+        R5_ENEMIES_SHOOT_TOWER_SENTENCE
     );
     assert.equal(
         options.towerMaxHp,
@@ -125,6 +135,14 @@ test('두 번째 production map 선택은 폭 10 ㄹ자 10,000-body 성능 세�
     assert.strictEqual(
         options.wordSystemOptions.loadout[ABILITY_SLOT_ID.Q],
         R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    );
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.SHIFT],
+        R5_TOWER_SHOOTS_TOWER_SENTENCE
+    );
+    assert.strictEqual(
+        options.wordSystemOptions.loadout[ABILITY_SLOT_ID.SPACE],
+        R5_ENEMIES_SHOOT_TOWER_SENTENCE
     );
     assert.equal(options.towerMaxHp,
         PERFORMANCE_SERPENTINE_SESSION.towerMaxHp);

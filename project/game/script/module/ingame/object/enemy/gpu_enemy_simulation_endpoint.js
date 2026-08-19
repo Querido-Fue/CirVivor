@@ -864,7 +864,7 @@ export class GpuEnemySimulationEndpoint {
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number,abilitySubjectCommandCapacity?:number,abilitySubjectCapacity?:number,abilitySubjectReadbackSlotCount?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number,abilitySubjectCommandCapacity?:number,abilitySubjectCapacity?:number,abilitySubjectReadbackSlotCount?:number,actorActionPlacementCommandCapacity?:number,actorActionPlacementSubjectCapacity?:number,actorActionPlacementReadbackSlotCount?:number,towerGroupMemberCapacity?:number,towerGroupReadbackSlotCount?:number,towerCreationReadbackSlotCount?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         if (dependencies.coreImpactCleanupPortReceiver !== undefined
@@ -943,6 +943,16 @@ export class GpuEnemySimulationEndpoint {
                 options.actorPayloadCommandCapacity,
             actorPayloadReadbackSlotCount:
                 options.actorPayloadReadbackSlotCount,
+            actorActionPlacementCommandCapacity:
+                options.actorActionPlacementCommandCapacity,
+            actorActionPlacementSubjectCapacity:
+                options.actorActionPlacementSubjectCapacity,
+            actorActionPlacementReadbackSlotCount:
+                options.actorActionPlacementReadbackSlotCount,
+            towerGroupMemberCapacity: options.towerGroupMemberCapacity,
+            towerGroupReadbackSlotCount: options.towerGroupReadbackSlotCount,
+            towerCreationReadbackSlotCount:
+                options.towerCreationReadbackSlotCount,
             sessionGeneration: this.sessionGeneration
         };
         const injectedBackend = typeof backendFactory

@@ -45,6 +45,9 @@ import {
     GpuActorPayloadMaterializationRuntime
 } from '../../physics/gpu/gpu_actor_payload_materialization_runtime.js';
 import {
+    GpuActorActionPlacementRuntime
+} from '../../physics/gpu/gpu_actor_action_placement_runtime.js';
+import {
     GPU_TOWER_GROUP_MEMBER_FLAG
 } from '../../physics/gpu/gpu_tower_group_abi.js';
 import {
@@ -57,6 +60,7 @@ import {
     GpuTowerTargetQueryRuntime
 } from '../../physics/gpu/gpu_tower_target_query_runtime.js';
 import {
+    GPU_TOWER_CREATION_MODE,
     GPU_TOWER_CREATION_RECORD_KIND
 } from '../../physics/gpu/gpu_tower_creation_abi.js';
 import {
@@ -222,6 +226,12 @@ export class EnemySimulationBackend {
             = options.actorPayloadCommandCapacity;
         this.actorPayloadReadbackSlotCount
             = options.actorPayloadReadbackSlotCount;
+        this.actorActionPlacementCommandCapacity
+            = options.actorActionPlacementCommandCapacity;
+        this.actorActionPlacementSubjectCapacity
+            = options.actorActionPlacementSubjectCapacity;
+        this.actorActionPlacementReadbackSlotCount
+            = options.actorActionPlacementReadbackSlotCount;
         const towerGroupMemberCapacity = requirePositiveSafeInteger(
             options.towerGroupMemberCapacity
                 ?? Math.min(
@@ -254,6 +264,14 @@ export class EnemySimulationBackend {
                 sessionGeneration: this.sessionGeneration,
                 commandCapacity: this.actorPayloadCommandCapacity,
                 readbackSlotCount: this.actorPayloadReadbackSlotCount
+            });
+        this.actorActionPlacementRuntime
+            = new GpuActorActionPlacementRuntime({
+                sessionGeneration: this.sessionGeneration,
+                commandCapacity: this.actorActionPlacementCommandCapacity,
+                subjectCapacity: this.actorActionPlacementSubjectCapacity,
+                readbackSlotCount:
+                    this.actorActionPlacementReadbackSlotCount
             });
         this.towerGroupRuntime = new GpuTowerGroupRuntime({
             // Member records are addressed by stable body slot. The separate
@@ -526,6 +544,67 @@ export class EnemySimulationBackend {
 
     getAbilitySubjectSnapshotStatus() {
         return this.abilitySubjectSnapshotRuntime.getStatus();
+    }
+
+    /** R5 Tower payload의 snapshot→placement→creation GPU chain capability입니다. */
+    supportsGpuSubjectActorActionTowerCreation() {
+        return this.#ensureTowerCreationRuntime()
+            && this.#ensureActorActionPlacementRuntime(null);
+    }
+
+    canStageActorActionPlacement() {
+        return this.#ensureActorActionPlacementRuntime(null)
+            && this.actorActionPlacementRuntime.canAccept();
+    }
+
+    stageActorActionPlacement(request = {}) {
+        if (!this.#ensureActorActionPlacementRuntime(
+            request.snapshotBinding ?? null
+        )) {
+            return Object.freeze({
+                accepted: false,
+                retryable: false,
+                reason: 'actor-action-placement-runtime-unavailable'
+            });
+        }
+        return this.actorActionPlacementRuntime.stage(request);
+    }
+
+    submitActorActionPlacements(sourceTick) {
+        return this.actorActionPlacementRuntime
+            .submitPendingForFixedTick(sourceTick);
+    }
+
+    drainCompletedActorActionPlacements(out = []) {
+        return this.actorActionPlacementRuntime.drainCompleted(out);
+    }
+
+    getActorActionPlacementGpuBinding(token) {
+        return this.actorActionPlacementRuntime.getPlacementGpuBinding(token);
+    }
+
+    releaseActorActionPlacement(token) {
+        return this.actorActionPlacementRuntime.releasePlacement(token);
+    }
+
+    cancelAllActorActionPlacements(reason = 'cancelled') {
+        return this.actorActionPlacementRuntime.cancelAll(reason);
+    }
+
+    getActorActionPlacementRuntimeStatus() {
+        return this.actorActionPlacementRuntime.getStatus();
+    }
+
+    getActorActionPlacementSdfDescriptor() {
+        const simulation = this.simulation;
+        if (!simulation?.sdf || !simulation?.worldSize) return null;
+        return Object.freeze({
+            enabled: simulation.sdf.enabled === true,
+            cols: simulation.sdf.cols ?? 1,
+            rows: simulation.sdf.rows ?? 1,
+            worldWidth: simulation.worldSize.x,
+            worldHeight: simulation.worldSize.y
+        });
     }
 
     /** R3 data order의 첫 route를 player-created hostile default로 고정합니다. */
@@ -1878,8 +1957,7 @@ export class EnemySimulationBackend {
             return {
                 ...intent,
                 entityId,
-                incarnation,
-                alive: false
+                incarnation
             };
         });
         const result = this.simulation.spawnBodies(bodies);
@@ -1930,10 +2008,20 @@ export class EnemySimulationBackend {
                     requiresRecovery: true
                 });
             }
-            records.push(Object.freeze({
+            const simulationView = new DataView(
+                this.simulation.hostStorage.simulationBuffer
+            );
+            const simulationLayout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+            records.push({
                 slot: exact.slot,
-                handle: Object.freeze({ ...exact.handle })
-            }));
+                handle: Object.freeze({ ...exact.handle }),
+                key: abilityPayloadHandleKey(exact.handle),
+                baselineFlags: simulationView.getUint32(
+                    exact.slot * simulationLayout.STRIDE
+                        + simulationLayout.FLAGS,
+                    LITTLE_ENDIAN
+                )
+            });
         }
         const cleared = this.abilitySubjectSnapshotRuntime
             .synchronizeEntityMetadata(records.map(({ slot }) => ({
@@ -1956,19 +2044,65 @@ export class EnemySimulationBackend {
             });
         }
         const token = Object.freeze({});
-        this.towerCreationBodyPreleases.set(token, {
+        const prelease = {
             token,
             transactionId: String(request.transactionId ?? ''),
             handles: Object.freeze(handles.map((handle) => Object.freeze({
                 entityId: Number(handle.entityId),
                 incarnation: Number(handle.incarnation)
             }))),
-            records: Object.freeze(records),
+            records: Object.freeze(records.map((entry) => Object.freeze({
+                ...entry,
+                handle: Object.freeze({ ...entry.handle })
+            }))),
             spawnIntents: Object.freeze([...spawnIntents]),
             state: 'preleased',
             creationRecords: null,
             childAbilityMetadata: null
-        });
+        };
+        const simulation = this.simulation;
+        const simulationView = new DataView(
+            simulation.hostStorage.simulationBuffer
+        );
+        const simulationLayout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+        try {
+            for (const entry of prelease.records) {
+                simulation.handleToSlot.delete(entry.key);
+                simulation.slotHandles[entry.slot] = null;
+                simulation.slotActive[entry.slot] = 2;
+                simulation.pendingSlotHandles[entry.slot] = entry.handle;
+                simulation.pendingHandleToSlot.set(entry.key, entry.slot);
+                simulation.activeBodyCount--;
+                simulation.pendingBodyCount++;
+                simulationView.setUint32(
+                    entry.slot * simulationLayout.STRIDE
+                        + simulationLayout.FLAGS,
+                    entry.baselineFlags & ~GPU_CIRCLE_BODY_META.ALIVE_BIT,
+                    LITTLE_ENDIAN
+                );
+            }
+            uploadActorPayloadPreleaseRanges(
+                simulation,
+                prelease.records,
+                simulationLayout.STRIDE
+            );
+            this.towerCreationBodyPreleases.set(token, prelease);
+        } catch (error) {
+            this.towerCreationFailure = Object.freeze({
+                stage: 'tower-creation-prelease-upload',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            this.#rollbackUntrackedTowerCreationBodyPrelease(prelease);
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-creation-prelease-upload',
+                requestedCount: handles.length,
+                preleasedCount: 0,
+                requiresRecovery: true
+            });
+        }
         this.towerCreationPreleaseHighWater = Math.max(
             this.towerCreationPreleaseHighWater,
             this.towerCreationBodyPreleases.size
@@ -2116,6 +2250,8 @@ export class EnemySimulationBackend {
                     members: targetMembers,
                     protocol
                 });
+            const mode = request.mode
+                ?? GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS;
             const staged = this.towerCreationRuntime.stage({
                 transactionId: plan.transactionId,
                 transactionFingerprint: request.transactionFingerprint,
@@ -2128,7 +2264,11 @@ export class EnemySimulationBackend {
                 childCount: plan.children.length,
                 towerDefinitionCode: request.towerDefinitionCode,
                 records: creationRecords,
-                protocol
+                protocol,
+                mode,
+                actorAction: request.actorAction,
+                actorActionPlacementBinding:
+                    request.actorActionPlacementBinding
             });
             if (staged?.accepted !== true) {
                 this.towerGroupRuntime.finalizeRosterTransition(
@@ -2142,6 +2282,7 @@ export class EnemySimulationBackend {
             prelease.childAbilityMetadata = Object.freeze([
                 ...childAbilityMetadata
             ]);
+            prelease.mode = mode;
             return Object.freeze({
                 ...staged,
                 preleaseToken: request.preleaseToken,
@@ -2180,9 +2321,9 @@ export class EnemySimulationBackend {
                 requiresRecovery: false
             });
         }
-        const removed = this.simulation.despawnBodies(prelease.handles);
-        const clean = removed?.removed === prelease.handles.length
-            && removed?.rejected === 0;
+        const clean = this.#rollbackUntrackedTowerCreationBodyPrelease(
+            prelease
+        );
         this.towerCreationBodyPreleases.delete(preleaseToken);
         if (!clean) {
             this.towerCreationFailure = Object.freeze({
@@ -2222,11 +2363,12 @@ export class EnemySimulationBackend {
         if (!committed) {
             const transition = this.towerGroupRuntime
                 .finalizeRosterTransition(transactionId, false);
-            const removed = this.simulation.despawnBodies(prelease.handles);
+            const bodyClean = this.#rollbackUntrackedTowerCreationBodyPrelease(
+                prelease
+            );
             this.towerCreationBodyPreleases.delete(request.preleaseToken);
             const clean = transition?.accepted === true
-                && removed?.removed === prelease.handles.length
-                && removed?.rejected === 0;
+                && bodyClean;
             if (!clean || request.recoveryRequired === true) {
                 this.towerCreationFailure = Object.freeze({
                     stage: 'tower-creation-rejected-rollback',
@@ -2245,12 +2387,21 @@ export class EnemySimulationBackend {
             });
         }
 
-        const exactChildren = prelease.handles.every((handle) => (
-            this.simulation.resolveExactBodySlot(handle) !== null
+        const committedChildAbilityMetadata = Array.isArray(
+            request.childAbilityMetadata
+        )
+            ? request.childAbilityMetadata
+            : prelease.childAbilityMetadata;
+        const exactChildren = prelease.records.every((entry) => (
+            this.resolveExactAbilityBodySlot(entry.handle)?.slot === entry.slot
+            && this.simulation.slotActive[entry.slot] === 2
+            && this.simulation.pendingHandleToSlot.get(entry.key) === entry.slot
         ));
         if (!exactChildren
             || !Array.isArray(prelease.creationRecords)
-            || !Array.isArray(prelease.childAbilityMetadata)) {
+            || !Array.isArray(committedChildAbilityMetadata)
+            || committedChildAbilityMetadata.length
+                !== prelease.records.length) {
             this.towerCreationFailure = Object.freeze({
                 stage: 'tower-creation-commit-identity',
                 message: 'Committed Tower prelease identity가 다릅니다.'
@@ -2314,9 +2465,18 @@ export class EnemySimulationBackend {
                     this.abilitySubjectSnapshotRuntime.metadataBytes,
                     this.capacity,
                     record.slot,
-                    prelease.childAbilityMetadata[index]
+                    committedChildAbilityMetadata[index]
                 );
             });
+            for (const record of prelease.records) {
+                this.simulation.pendingHandleToSlot.delete(record.key);
+                this.simulation.pendingSlotHandles[record.slot] = null;
+                this.simulation.slotActive[record.slot] = 1;
+                this.simulation.slotHandles[record.slot] = record.handle;
+                this.simulation.handleToSlot.set(record.key, record.slot);
+                this.simulation.pendingBodyCount--;
+                this.simulation.activeBodyCount++;
+            }
             prelease.state = 'committed';
             this.towerCreationBodyPreleases.delete(request.preleaseToken);
             this.#syncState();
@@ -2357,9 +2517,10 @@ export class EnemySimulationBackend {
             } catch {
                 // transition이 없는 prelease도 body rollback은 계속합니다.
             }
-            const removed = this.simulation?.despawnBodies(prelease.handles);
-            if (removed?.removed === prelease.handles.length
-                && removed?.rejected === 0) {
+            const clean = this.#rollbackUntrackedTowerCreationBodyPrelease(
+                prelease
+            );
+            if (clean) {
                 cancelledPreleaseCount += prelease.handles.length;
             } else {
                 requiresRecovery = true;
@@ -2495,6 +2656,8 @@ export class EnemySimulationBackend {
                     this.abilitySubjectSnapshotRuntime.getStatus(),
                 actorPayloadMaterializations:
                     this.getActorPayloadMaterializationStatus(),
+                actorActionPlacements:
+                    this.getActorActionPlacementRuntimeStatus(),
                 towerGroup: this.towerGroupRuntime.getStatus(),
                 towerCreation: this.getTowerCreationRuntimeStatus(),
                 towerTargetQuery: this.towerTargetQueryRuntime.getStatus()
@@ -2559,6 +2722,7 @@ export class EnemySimulationBackend {
             || this.state === 'gpu-failed'
             || this.abilitySubjectSnapshotRuntime.requiresRecovery()
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
+            || this.actorActionPlacementRuntime.getStatus().failure !== null
             || this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
@@ -2573,8 +2737,10 @@ export class EnemySimulationBackend {
         }
         this.destroyed = true;
         this.cancelAllActorPayloadMaterializations('destroyed');
+        this.cancelAllActorActionPlacements('destroyed');
         this.cancelAllTowerCreations('destroyed');
         this.actorPayloadMaterializationRuntime.destroy();
+        this.actorActionPlacementRuntime.destroy();
         this.abilitySubjectSnapshotRuntime.destroy();
         this.simulation?.attachTowerCreationRuntime?.(null);
         this.towerCreationRuntime.destroy();
@@ -2595,6 +2761,7 @@ export class EnemySimulationBackend {
 
     #syncState() {
         if (this.towerGroupRuntime.requiresRecovery()
+            || this.actorActionPlacementRuntime.getStatus().failure !== null
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
             || this.towerCreationFailure !== null) {
@@ -2849,6 +3016,51 @@ export class EnemySimulationBackend {
         }
     }
 
+    #ensureActorActionPlacementRuntime(snapshotBinding) {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()
+            || !this.#ensureTowerGroupRuntime()) return false;
+        const simulation = this.simulation;
+        const snapshotBuffer = snapshotBinding?.buffer
+            ?? this.abilitySubjectSnapshotRuntime.buffers?.output;
+        const groupResources = this.towerGroupRuntime.getCreationResources?.();
+        const abilityMetadata = this.abilitySubjectSnapshotRuntime
+            .buffers?.metadata;
+        if (!snapshotBuffer || !abilityMetadata
+            || !groupResources?.members || !groupResources?.roster
+            || !simulation.device || !simulation.buffers?.physics
+            || !simulation.buffers.simulation || !simulation.buffers.sdf) {
+            return false;
+        }
+        try {
+            return this.actorActionPlacementRuntime.initialize(
+                simulation.device,
+                {
+                    snapshot: snapshotBuffer,
+                    physics: simulation.buffers.physics,
+                    simulation: simulation.buffers.simulation,
+                    abilityMetadata,
+                    towerMembers: groupResources.members,
+                    towerRoster: groupResources.roster,
+                    sdf: simulation.buffers.sdf
+                },
+                {
+                    sessionGeneration: this.sessionGeneration,
+                    deviceGeneration: simulation.deviceGeneration,
+                    authoritativeEpoch: simulation.authoritativeEpoch,
+                    bodyCapacity: this.capacity,
+                    // Tower member records are indexed by stable body slot, so
+                    // the bound storage capacity is the body capacity. The
+                    // separate towerGroupMemberCapacity remains the logical
+                    // living-Tower count limit enforced by the coordinator.
+                    towerMemberCapacity: this.capacity
+                }
+            );
+        } catch {
+            return false;
+        }
+    }
+
     #rollbackUntrackedActorPayloadPrelease(prelease) {
         const simulation = this.simulation;
         if (!simulation || !prelease?.records) return false;
@@ -2883,6 +3095,47 @@ export class EnemySimulationBackend {
         } catch (error) {
             this.actorPayloadPreleaseFailure = Object.freeze({
                 stage: 'actor-payload-prelease-rollback',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            return false;
+        }
+    }
+
+    #rollbackUntrackedTowerCreationBodyPrelease(prelease) {
+        const simulation = this.simulation;
+        if (!simulation || !prelease?.records) return false;
+        try {
+            let restoredCount = 0;
+            for (const entry of prelease.records) {
+                if (simulation.slotActive[entry.slot] === 2
+                    && simulation.pendingHandleToSlot.get(entry.key)
+                        === entry.slot) {
+                    simulation.pendingHandleToSlot.delete(entry.key);
+                    simulation.pendingSlotHandles[entry.slot] = null;
+                    simulation.slotActive[entry.slot] = 1;
+                    simulation.slotHandles[entry.slot] = entry.handle;
+                    simulation.handleToSlot.set(entry.key, entry.slot);
+                    restoredCount++;
+                }
+            }
+            if (restoredCount > 0) {
+                simulation.pendingBodyCount -= restoredCount;
+                simulation.activeBodyCount += restoredCount;
+            }
+            const result = simulation.despawnBodies(prelease.handles);
+            const clean = result?.removed === prelease.records.length
+                && result?.rejected === 0;
+            if (!clean) {
+                this.towerCreationFailure = Object.freeze({
+                    stage: 'tower-creation-prelease-rollback',
+                    message: 'pending Tower body prelease를 전체 회수하지 못했습니다.'
+                });
+            }
+            return clean;
+        } catch (error) {
+            this.towerCreationFailure = Object.freeze({
+                stage: 'tower-creation-prelease-rollback',
                 name: String(error?.name ?? 'Error'),
                 message: String(error?.message ?? error)
             });

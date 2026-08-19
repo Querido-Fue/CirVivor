@@ -2,6 +2,7 @@ import {
     R5_SENTENCE_DEFINITION_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
+    ACTOR_PAYLOAD_CODE,
     ABILITY_SLOT_IDS,
     SENTENCE_RUNTIME_PHASE,
     normalizeAbilitySlotId,
@@ -11,6 +12,7 @@ import { SentenceCompiler } from './sentence_compiler.js';
 
 export const ABILITY_ACTIVATION_RESULT_CODE = Object.freeze({
     REQUESTED: 'REQUESTED',
+    RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE',
     EMPTY_SLOT: 'EMPTY_SLOT',
     INVALID_SENTENCE: 'INVALID_SENTENCE',
     WRONG_PHASE: 'WRONG_PHASE',
@@ -22,6 +24,7 @@ export const ABILITY_ACTIVATION_RESULT_CODE = Object.freeze({
 
 export const ABILITY_EXECUTION_OUTCOME_CODE = Object.freeze({
     COMPLETED: 'COMPLETED',
+    RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE',
     ZERO_SUBJECT: 'ZERO_SUBJECT',
     SUBJECT_CAPACITY_REJECTED: 'SUBJECT_CAPACITY_REJECTED',
     DESTINATION_CAPACITY_REJECTED: 'DESTINATION_CAPACITY_REJECTED',
@@ -51,7 +54,8 @@ function freezeActivationResult(code, options = {}) {
         slotId: options.slotId ?? null,
         targetFixedTick: options.targetFixedTick ?? null,
         abilityRequestId: options.abilityRequestId ?? null,
-        compiledAbilityId: options.compiledAbilityId ?? null
+        compiledAbilityId: options.compiledAbilityId ?? null,
+        reason: options.reason ?? null
     });
 }
 
@@ -220,6 +224,7 @@ export class WordSystem {
                 { slotId: normalizedSlotId, targetFixedTick }
             ));
         }
+        const compiledAbility = slot.compileResult.compiledAbility;
         if (this.phase !== SENTENCE_RUNTIME_PHASE.COMBAT) {
             return this.#rememberActivationResult(freezeActivationResult(
                 ABILITY_ACTIVATION_RESULT_CODE.WRONG_PHASE,
@@ -239,6 +244,53 @@ export class WordSystem {
                     targetFixedTick,
                     compiledAbilityId:
                         slot.compileResult.compiledAbility.compiledAbilityId
+                }
+            ));
+        }
+        // Preview는 일반 runtime 거절의 권위가 아니지만, materialization
+        // capability 자체가 없다는 명시적 gate는 GPU snapshot ingress 전에
+        // fail-closed 처리합니다. 이 결과는 cooldown이나 execution ordinal을
+        // 소비하지 않는 정상 결과입니다.
+        let ingressPreview = null;
+        if (this.runtimePreviewProvider) {
+            try {
+                ingressPreview = this.runtimePreviewProvider.estimate(
+                    compiledAbility,
+                    Object.freeze({
+                        slotId: normalizedSlotId,
+                        compiledAbilityId: compiledAbility.compiledAbilityId,
+                        cooldown: Object.freeze({
+                            remainingTicks: Math.max(
+                                0,
+                                slot.nextEligibleFixedTick - this.currentFixedTick
+                            ),
+                            nextEligibleFixedTick: slot.nextEligibleFixedTick
+                        })
+                    })
+                );
+            } catch {
+                ingressPreview = null;
+            }
+        }
+        const towerPayloadRequiresRuntimeGate
+            = compiledAbility.payloadCode === ACTOR_PAYLOAD_CODE.TOWER;
+        const runtimeAvailabilityUnknown = towerPayloadRequiresRuntimeGate
+            && typeof ingressPreview?.executionEnabled !== 'boolean';
+        const runtimeExplicitlyUnavailable
+            = ingressPreview?.executionEnabled === false
+                && [
+                    'RUNTIME_UNAVAILABLE',
+                    'TOWER_CREATION_PREVIEW_UNAVAILABLE'
+                ].includes(ingressPreview.executionDisabledReason);
+        if (runtimeAvailabilityUnknown || runtimeExplicitlyUnavailable) {
+            return this.#rememberActivationResult(freezeActivationResult(
+                ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE,
+                {
+                    slotId: normalizedSlotId,
+                    targetFixedTick,
+                    compiledAbilityId: compiledAbility.compiledAbilityId,
+                    reason: ingressPreview?.executionDisabledReason
+                        ?? 'RUNTIME_UNAVAILABLE'
                 }
             ));
         }
@@ -268,7 +320,6 @@ export class WordSystem {
         }
 
         const requestSequence = this.nextRequestSequence++;
-        const compiledAbility = slot.compileResult.compiledAbility;
         const rawAimX = Number(options.aimViewport?.x ?? 0);
         const rawAimY = Number(options.aimViewport?.y ?? 0);
         const aimViewport = Object.freeze({
@@ -391,14 +442,22 @@ export class WordSystem {
                 message: slot.compileResult.message
             })
         };
-        return Object.freeze({
-            ...base,
-            preview: compiledAbility && this.runtimePreviewProvider
-                ? this.runtimePreviewProvider.estimate(
+        let preview = null;
+        if (compiledAbility && this.runtimePreviewProvider) {
+            try {
+                preview = this.runtimePreviewProvider.estimate(
                     compiledAbility,
                     base
-                )
-                : null
+                );
+            } catch {
+                // Preview는 관측용이며 HUD/game loop를 중단시킬 수 없습니다.
+                // Tower payload activation은 null preview를 unavailable로 처리합니다.
+                preview = null;
+            }
+        }
+        return Object.freeze({
+            ...base,
+            preview
         });
     }
 

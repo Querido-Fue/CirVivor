@@ -59,7 +59,6 @@ const {
     R3_SHOOT_WORD_INSTANCE,
     R3_TOWER_SHOOTS_ENEMY_SENTENCE,
     R3_TOWER_WORD_INSTANCE,
-    R3_SHOWCASE_SENTENCE_LOADOUT,
     R5_EMIT_WORD_INSTANCE,
     R5_ENEMIES_SHOOT_TOWER_SENTENCE,
     R5_SHOWCASE_SENTENCE_LOADOUT,
@@ -402,7 +401,7 @@ test('localized text는 R5 semantic identity와 무관하고 modifier는 계속 
     }).code, SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER);
 });
 
-test('R5 candidate loadout은 보존하되 production은 Turn 4 전까지 SHIFT/SPACE를 AbilityRuntime에 넣지 않는다', () => {
+test('Turn 4 production loadout은 SHIFT/SPACE를 노출하되 unavailable ingress는 정상 0-mutation이다', () => {
     assert.strictEqual(
         R5_SHOWCASE_SENTENCE_LOADOUT[ABILITY_SLOT_ID.SHIFT],
         R5_TOWER_SHOOTS_TOWER_SENTENCE
@@ -427,20 +426,67 @@ test('R5 candidate loadout은 보존하되 production은 Turn 4 전까지 SHIFT/
         CORRIDOR_EIGHT_MAP_DATA.id
     );
     assert.strictEqual(options.wordSystemOptions.loadout,
-        R3_SHOWCASE_SENTENCE_LOADOUT);
+        R5_SHOWCASE_SENTENCE_LOADOUT);
     const wordSystem = new WordSystem(options.wordSystemOptions);
     wordSystem.beginFixedTick(1);
     for (const slotId of [ABILITY_SLOT_ID.SHIFT, ABILITY_SLOT_ID.SPACE]) {
-        assert.equal(wordSystem.hasCompiledAbility(slotId), false);
         const result = wordSystem.requestSlotActivation(slotId, {
             targetFixedTick: 1,
             aimViewport: { x: 1, y: 1 }
         });
-        assert.equal(result.code, ABILITY_ACTIVATION_RESULT_CODE.EMPTY_SLOT);
+        assert.equal(result.code,
+            ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE);
         assert.equal(result.accepted, false);
+        assert.equal(result.reason, 'RUNTIME_UNAVAILABLE');
+    }
+    assert.equal(wordSystem.drainActivationRequests().length, 0);
+
+    wordSystem.bindRuntimePreviewProvider(Object.freeze({
+        estimate: () => {
+            throw new Error('preview runtime unavailable');
+        }
+    }));
+    assert.equal(wordSystem.getSlotView(ABILITY_SLOT_ID.SHIFT).preview, null);
+    const previewFailure = wordSystem.requestSlotActivation(
+        ABILITY_SLOT_ID.SHIFT,
+        { targetFixedTick: 1, aimViewport: { x: 1, y: 1 } }
+    );
+    assert.equal(previewFailure.code,
+        ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE);
+    assert.equal(wordSystem.drainActivationRequests().length, 0);
+
+    wordSystem.bindRuntimePreviewProvider(Object.freeze({
+        estimate: () => Object.freeze({
+            executionEnabled: false,
+            executionDisabledReason: 'RUNTIME_UNAVAILABLE'
+        })
+    }));
+    for (const slotId of [ABILITY_SLOT_ID.SHIFT, ABILITY_SLOT_ID.SPACE]) {
+        assert.equal(wordSystem.hasCompiledAbility(slotId), true);
+        const result = wordSystem.requestSlotActivation(slotId, {
+            targetFixedTick: 1,
+            aimViewport: { x: 1, y: 1 }
+        });
+        assert.equal(result.code,
+            ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE);
+        assert.equal(result.accepted, false);
+        assert.equal(result.reason, 'RUNTIME_UNAVAILABLE');
         assert.equal(wordSystem.getSlotView(slotId).cooldown.remainingTicks, 0);
     }
     assert.equal(wordSystem.drainActivationRequests().length, 0);
+
+    wordSystem.bindRuntimePreviewProvider(Object.freeze({
+        estimate: () => Object.freeze({ executionEnabled: true })
+    }));
+    for (const slotId of [ABILITY_SLOT_ID.SHIFT, ABILITY_SLOT_ID.SPACE]) {
+        const result = wordSystem.requestSlotActivation(slotId, {
+            targetFixedTick: 1,
+            aimViewport: { x: 1, y: 1 }
+        });
+        assert.equal(result.code, ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+        assert.equal(result.accepted, true);
+    }
+    assert.equal(wordSystem.drainActivationRequests().length, 2);
     wordSystem.destroy();
 });
 

@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { waitForChildWithTimeout } from './nw_child_process_guard.mjs';
+
 const RUN_DIRECTORY_PREFIX = 'cirvivor-r3-enemy-word-';
 const RUN_TIMEOUT_MS = 180_000;
 const NW_RUNTIME_ROOT_FILES = Object.freeze([
@@ -76,13 +78,6 @@ function assertResult(result) {
     if (!valid) {
         throw new Error(`R3 Enemy Word actual WebGPU 계약 실패: ${JSON.stringify(result)}`);
     }
-}
-
-function waitForChild(child) {
-    return new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
-    });
 }
 
 async function linkFile(sourcePath, destinationPath) {
@@ -218,19 +213,23 @@ async function runHarness() {
             stdio: 'inherit',
             windowsHide: true
         });
-        let timedOut = false;
-        const timeoutId = setTimeout(() => {
-            timedOut = true;
-            child.kill();
-        }, RUN_TIMEOUT_MS);
-        let exit;
-        try {
-            exit = await waitForChild(child);
-        } finally {
-            clearTimeout(timeoutId);
-        }
-        if (timedOut) {
-            throw new Error(`R3 WebGPU 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`);
+        const processResult = await waitForChildWithTimeout(
+            child,
+            RUN_TIMEOUT_MS
+        );
+        const exit = processResult.exit;
+        if (processResult.timedOut) {
+            let checkpoint = null;
+            try {
+                checkpoint = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+            } catch {
+                checkpoint = null;
+            }
+            throw new Error([
+                `R3 WebGPU 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`,
+                `termination=${processResult.terminationMethod}`,
+                `checkpoint=${JSON.stringify(checkpoint)}`
+            ].join(', '));
         }
         const result = JSON.parse(await fs.readFile(resultPath, 'utf8'));
         if (exit.exitCode !== 0 || exit.signal !== null) {

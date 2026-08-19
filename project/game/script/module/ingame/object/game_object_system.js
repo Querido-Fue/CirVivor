@@ -60,6 +60,9 @@ import {
     TowerCreationCoordinator
 } from './tower/tower_creation_coordinator.js';
 import {
+    TOWER_RECOVERY_PLACEMENT_POLICY_ID
+} from './tower/tower_group_contract.js';
+import {
     GPU_TOWER_WORLD_KIND_ID,
     createGpuTowerSpawnIntent
 } from './tower/gpu_tower_spawn_adapter.js';
@@ -314,12 +317,19 @@ export class GameObjectSystem {
         this.actorPayloadMaterializer = this.abilityRuntime
             ? new ActorPayloadMaterializer({
                 abilityRuntime: this.abilityRuntime,
-                endpoint: this.enemySimulationEndpoint
+                endpoint: this.enemySimulationEndpoint,
+                towerCreationCoordinatorProvider:
+                    () => this.towerCreationCoordinator,
+                towerPayloadContextProvider:
+                    () => this.#createTowerPayloadRuntimeContext()
             })
             : null;
         this.sentenceRuntimeEstimator = this.wordSystem
             ? new SentenceRuntimeEstimator({
-                getRuntimeState: () => this.#createSentenceRuntimePreviewState()
+                getRuntimeState: () => this.#createSentenceRuntimePreviewState(),
+                previewTowerCreation: (request) => (
+                    this.#previewTowerPayloadCreation(request)
+                )
             })
             : null;
         this.wordSystem?.bindRuntimePreviewProvider?.(
@@ -816,12 +826,34 @@ export class GameObjectSystem {
         if (this.pendingEnemyFixedTick === 0 && this.towerCreationCoordinator) {
             const creationObservation = this.towerCreationCoordinator
                 .observeCompletedAtFixedBoundary(proposedFixedTick);
-            if (creationObservation?.pending === true) {
-                return false;
-            }
+            const actorCreationReadyForSubmit
+                = creationObservation?.pending === true
+                    && creationObservation.phase === 'tower-creation'
+                    && creationObservation.staged === true;
             if (creationObservation?.recoveryRequired === true) {
                 return this.#pauseForGpuRecovery(
                     'tower-creation-completion',
+                    proposedFixedTick
+                );
+            }
+            if (creationObservation?.pending === true
+                && !actorCreationReadyForSubmit) {
+                if (this.enemySimulationEndpoint.requiresRecovery()) {
+                    return this.#pauseForGpuRecovery(
+                        'tower-creation-pending-runtime',
+                        proposedFixedTick
+                    );
+                }
+                return false;
+            }
+            const towerPayloadObservation = this.actorPayloadMaterializer
+                ?.observeTowerCreationCompletion(
+                    creationObservation,
+                    proposedFixedTick
+                ) ?? null;
+            if (towerPayloadObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery(
+                    'tower-payload-completion',
                     proposedFixedTick
                 );
             }
@@ -1268,6 +1300,18 @@ export class GameObjectSystem {
                 if (towerCreationStage?.recoveryRequired === true) {
                     return this.#pauseForGpuRecovery(
                         'tower-creation-stage',
+                        proposedFixedTick
+                    );
+                }
+                const towerPayloadStageObservation
+                    = this.actorPayloadMaterializer
+                        ?.observeTowerCreationCompletion(
+                            towerCreationStage,
+                            proposedFixedTick
+                        ) ?? null;
+                if (towerPayloadStageObservation?.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery(
+                        'tower-payload-stage-completion',
                         proposedFixedTick
                     );
                 }
@@ -2820,10 +2864,58 @@ export class GameObjectSystem {
         ))) {
             return null;
         }
+        const r5BackendMethods = [
+            'supportsGpuSubjectActorActionTowerCreation',
+            'canStageActorActionPlacement',
+            'stageActorActionPlacement',
+            'submitActorActionPlacements',
+            'drainCompletedActorActionPlacements',
+            'getActorActionPlacementGpuBinding',
+            'releaseActorActionPlacement',
+            'cancelAllActorActionPlacements',
+            'getAbilitySubjectSnapshotGpuBinding',
+            'releaseAbilitySubjectSnapshot'
+        ];
+        const r5Available = r5BackendMethods.every((method) => (
+            typeof backend[method] === 'function'
+        ));
+        const abilitySubjectSnapshotRuntime = r5Available
+            ? Object.freeze({
+                getSnapshotGpuBinding: (token) => (
+                    backend.getAbilitySubjectSnapshotGpuBinding(token)
+                ),
+                releaseSnapshot: (token) => (
+                    backend.releaseAbilitySubjectSnapshot(token)
+                )
+            })
+            : null;
+        const actorActionPlacementRuntime = r5Available
+            ? Object.freeze({
+                canAccept: () => backend.canStageActorActionPlacement(),
+                stage: (request) => backend.stageActorActionPlacement(request),
+                submitPendingForFixedTick: (tick) => (
+                    backend.submitActorActionPlacements(tick)
+                ),
+                drainCompleted: (out) => (
+                    backend.drainCompletedActorActionPlacements(out)
+                ),
+                getPlacementGpuBinding: (token) => (
+                    backend.getActorActionPlacementGpuBinding(token)
+                ),
+                releasePlacement: (token) => (
+                    backend.releaseActorActionPlacement(token)
+                ),
+                cancelAll: (reason) => (
+                    backend.cancelAllActorActionPlacements(reason)
+                )
+            })
+            : null;
         return new TowerCreationCoordinator({
             towerGroupState: this.towerCombatRoster.getTowerGroupState(),
             registry,
-            backend
+            backend,
+            abilitySubjectSnapshotRuntime,
+            actorActionPlacementRuntime
         });
     }
 
@@ -3640,7 +3732,9 @@ export class GameObjectSystem {
         return Object.freeze({
             livingTowerCount: towerStatus?.livingTowerCount
                 ?? (this.tower ? 1 : 0),
+            towerSubjectCountExact: true,
             liveHostileActorCount: hostile.liveHostileActorCount ?? 0,
+            hostileSubjectCountExact: hostile.countExact === true,
             pendingHostileActorCount:
                 hostile.pendingHostileActorCount ?? 0,
             siegeWeight: hostile.siegeWeight ?? 0,
@@ -3650,6 +3744,64 @@ export class GameObjectSystem {
             siegeWeightPerEnemy: economy.siegeWeightPerEnemy ?? 0,
             dangerThreshold: this.hostileDangerThreshold
         });
+    }
+
+    #createTowerPayloadRuntimeContext() {
+        const backend = this.enemySimulationBackend;
+        const coordinator = this.towerCreationCoordinator;
+        if (!backend || !coordinator
+            || coordinator.requiresRecovery?.() === true
+            || typeof backend.supportsGpuSubjectActorActionTowerCreation
+                !== 'function'
+            || typeof backend.getActorActionPlacementSdfDescriptor
+                !== 'function'
+            || backend.supportsGpuSubjectActorActionTowerCreation() !== true) {
+            return Object.freeze({ runtimeAvailable: false });
+        }
+        const sdf = backend.getActorActionPlacementSdfDescriptor();
+        if (!sdf) {
+            return Object.freeze({ runtimeAvailable: false });
+        }
+        const coreTarget = this.coreProxyHandle
+            && typeof backend.resolveExactAbilityBodySlot === 'function'
+            ? backend.resolveExactAbilityBodySlot(this.coreProxyHandle)
+            : null;
+        const anchorPosition = this.tileMap.getTowerSpawnPosition();
+        return Object.freeze({
+            runtimeAvailable: true,
+            sdf,
+            coreTarget,
+            recoveryPlacementPolicy: Object.freeze({
+                policyId: TOWER_RECOVERY_PLACEMENT_POLICY_ID
+                    .MAP_ANCHOR_LATTICE_V1,
+                mapRecoveryAnchorId: [
+                    'map',
+                    this.tileMap.mapId ?? 'unknown',
+                    'tower-spawn'
+                ].join(':'),
+                mapLatticeVersion: 1,
+                anchorPosition: Object.freeze({
+                    x: Number(anchorPosition.x),
+                    y: Number(anchorPosition.y)
+                })
+            })
+        });
+    }
+
+    #previewTowerPayloadCreation(request) {
+        const context = this.#createTowerPayloadRuntimeContext();
+        if (context.runtimeAvailable !== true
+            || typeof this.towerCreationCoordinator?.previewTowerCreation
+                !== 'function') {
+            return Object.freeze({
+                accepted: false,
+                executionEnabled: false,
+                result: null,
+                reason: 'RUNTIME_UNAVAILABLE',
+                recoveryRequired: false
+            });
+        }
+        return this.towerCreationCoordinator.previewTowerCreation(request);
     }
 
     #pauseForGpuRecovery(stage = 'unclassified', proposedFixedTick = null) {

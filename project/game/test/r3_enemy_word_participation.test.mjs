@@ -449,6 +449,7 @@ test('preview는 runtime subject/count와 동일하고 shared capacity 판정을
     const runtime = Object.freeze({
         livingTowerCount: 1,
         liveHostileActorCount: 4,
+        hostileSubjectCountExact: true,
         pendingHostileActorCount: 1,
         siegeWeight: 5,
         registryAvailable: 8,
@@ -480,7 +481,7 @@ test('preview는 runtime subject/count와 동일하고 shared capacity 판정을
     assert.equal(preview.eligibleSubjectCount, 4);
     assert.equal(preview.previewSubjectCount, 4);
     assert.equal(preview.subjectBudget, 1000);
-    assert.equal(preview.countExact, false);
+    assert.equal(preview.countExact, true);
     assert.equal(preview.newEnemyCount, 4);
     assert.equal(preview.resultingHostileCount, 9);
     assert.equal(preview.potentialBounty, 4);
@@ -544,7 +545,7 @@ test('preview는 runtime subject/count와 동일하고 shared capacity 판정을
         previewSubjectCount: 0,
         newEnemyCount: 0,
         subjectBudget: 1000,
-        countExact: false,
+        countExact: true,
         capacityValidity: false,
         executionEnabled: false,
         executionDisabledReason: 'SUBJECT_BUDGET_EXCEEDED'

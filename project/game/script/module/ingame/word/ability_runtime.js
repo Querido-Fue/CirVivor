@@ -14,6 +14,7 @@ export const ABILITY_EXECUTION_STATE = Object.freeze({
     DESTINATION_PRELEASE_PENDING: 'DESTINATION_PRELEASE_PENDING',
     GPU_MATERIALIZATION_PENDING: 'GPU_MATERIALIZATION_PENDING',
     COMMITTED: 'COMMITTED',
+    RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE',
     ZERO_SUBJECT: 'ZERO_SUBJECT',
     REJECTED_CAPACITY: 'REJECTED_CAPACITY',
     FAILED_PROTOCOL: 'FAILED_PROTOCOL',
@@ -23,6 +24,7 @@ export const ABILITY_EXECUTION_STATE = Object.freeze({
 
 const TERMINAL_EXECUTION_STATES = new Set([
     ABILITY_EXECUTION_STATE.COMMITTED,
+    ABILITY_EXECUTION_STATE.RUNTIME_UNAVAILABLE,
     ABILITY_EXECUTION_STATE.ZERO_SUBJECT,
     ABILITY_EXECUTION_STATE.REJECTED_CAPACITY,
     ABILITY_EXECUTION_STATE.FAILED_PROTOCOL,
@@ -76,6 +78,9 @@ function terminalStateForOutcome(code) {
     }
     if (code === ABILITY_EXECUTION_OUTCOME_CODE.ZERO_SUBJECT) {
         return ABILITY_EXECUTION_STATE.ZERO_SUBJECT;
+    }
+    if (code === ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE) {
+        return ABILITY_EXECUTION_STATE.RUNTIME_UNAVAILABLE;
     }
     if (code === ABILITY_EXECUTION_OUTCOME_CODE.SUBJECT_CAPACITY_REJECTED
         || code
@@ -451,16 +456,18 @@ export class AbilityRuntime {
 
     #settleReadySnapshot(record, code, cooldownConsumed, options) {
         if (!record?.completion?.snapshotToken) return false;
-        const released = this.endpoint.releaseAbilitySubjectSnapshot(
-            record.completion.snapshotToken
-        );
-        if (!released) {
-            this.recoveryRequired = true;
-            this.failure = Object.freeze({
-                code: 'ability-subject-snapshot-release-failed',
-                message: 'GPU subject snapshot token을 release하지 못했습니다.'
-            });
-            return false;
+        if (options.snapshotAlreadyReleased !== true) {
+            const released = this.endpoint.releaseAbilitySubjectSnapshot(
+                record.completion.snapshotToken
+            );
+            if (!released) {
+                this.recoveryRequired = true;
+                this.failure = Object.freeze({
+                    code: 'ability-subject-snapshot-release-failed',
+                    message: 'GPU subject snapshot token을 release하지 못했습니다.'
+                });
+                return false;
+            }
         }
         this.#recordTerminalOutcome(
             record,

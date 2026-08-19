@@ -1,14 +1,26 @@
 import {
     ACTOR_PAYLOAD_MATERIALIZATION_STATUS,
     ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION,
-    R3_ENEMY_ACTOR_PAYLOAD_DEFINITION
+    R3_ENEMY_ACTOR_PAYLOAD_DEFINITION,
+    R5_TOWER_ACTOR_PAYLOAD_DEFINITION
 } from '../contract/actor_payload_contract.js';
-import { ACTOR_PAYLOAD_CODE } from '../contract/word_sentence_contract.js';
+import {
+    ACTOR_PAYLOAD_CODE,
+    SENTENCE_ACTION_CODE
+} from '../contract/word_sentence_contract.js';
+import {
+    TOWER_CREATION_COORDINATOR_MODE,
+    TOWER_CREATION_RESULT
+} from '../object/tower/tower_group_contract.js';
 import {
     ABILITY_EXECUTION_OUTCOME_CODE
 } from './word_system.js';
 
 const MAX_MATERIALIZATION_HISTORY = 128;
+const MATERIALIZATION_KIND = Object.freeze({
+    ENEMY: 'ENEMY',
+    TOWER: 'TOWER'
+});
 
 function assertEndpoint(endpoint) {
     const methods = [
@@ -41,7 +53,9 @@ function freezeHistory(source) {
         subjectCount: source.subjectCount,
         generatedCount: source.generatedCount,
         targetFixedTick: source.targetFixedTick,
-        completedFixedTick: source.completedFixedTick
+        completedFixedTick: source.completedFixedTick,
+        payloadCode: source.payloadCode ?? null,
+        reason: source.reason ?? null
     });
 }
 
@@ -66,6 +80,20 @@ export class ActorPayloadMaterializer {
         this.endpoint = assertEndpoint(options.endpoint);
         this.payloadDefinition = options.payloadDefinition
             ?? R3_ENEMY_ACTOR_PAYLOAD_DEFINITION;
+        this.towerPayloadDefinition = options.towerPayloadDefinition
+            ?? R5_TOWER_ACTOR_PAYLOAD_DEFINITION;
+        if (options.towerCreationCoordinatorProvider !== undefined
+            && typeof options.towerCreationCoordinatorProvider !== 'function') {
+            throw new TypeError('Tower creation coordinator provider는 함수여야 합니다.');
+        }
+        if (options.towerPayloadContextProvider !== undefined
+            && typeof options.towerPayloadContextProvider !== 'function') {
+            throw new TypeError('Tower payload context provider는 함수여야 합니다.');
+        }
+        this.towerCreationCoordinatorProvider
+            = options.towerCreationCoordinatorProvider ?? null;
+        this.towerPayloadContextProvider
+            = options.towerPayloadContextProvider ?? null;
         this.inFlight = new Map();
         this.history = [];
         this.recoveryRequired = false;
@@ -77,6 +105,9 @@ export class ActorPayloadMaterializer {
         this.totalGenerated = 0;
         this.totalCapacityRejected = 0;
         this.totalPlacementRejected = 0;
+        this.totalRuntimeUnavailable = 0;
+        this.totalTowerStaged = 0;
+        this.totalTowerCommitted = 0;
         this.totalCancelled = 0;
     }
 
@@ -99,7 +130,7 @@ export class ActorPayloadMaterializer {
         const committedHandles = [];
         for (const completion of completions) {
             const record = this.inFlight.get(completion?.transactionId);
-            if (!record) continue;
+            if (!record || record.kind !== MATERIALIZATION_KIND.ENEMY) continue;
             this.inFlight.delete(completion.transactionId);
             observedCount++;
             const exact = completion.executionOrdinal
@@ -194,6 +225,151 @@ export class ActorPayloadMaterializer {
         });
     }
 
+    /** TowerCreationCoordinator가 인증한 terminal receipt를 cooldown owner에 연결합니다. */
+    observeTowerCreationCompletion(completion, currentFixedTick) {
+        const tick = requirePositiveInteger(
+            currentFixedTick,
+            'currentFixedTick'
+        );
+        const empty = Object.freeze({
+            observedCount: 0,
+            committedCount: 0,
+            committedHandles: Object.freeze([]),
+            recoveryRequired: this.requiresRecovery()
+        });
+        if (this.destroyed || !completion?.transactionId
+            || completion.pending === true || completion.result === null) {
+            return empty;
+        }
+        const record = this.inFlight.get(completion.transactionId);
+        if (!record || record.kind !== MATERIALIZATION_KIND.TOWER) {
+            return empty;
+        }
+        this.inFlight.delete(completion.transactionId);
+        const ready = record.ready;
+        const expectedProfileFingerprint
+            = ready.command.actorActionProfileFingerprint;
+        const exact = completion.transactionId === record.transactionId
+            && (record.requestFingerprint === null
+                || completion.requestFingerprint === record.requestFingerprint)
+            && completion.actorActionProfileFingerprint
+                === expectedProfileFingerprint;
+        if (!exact) {
+            this.recoveryRequired = true;
+            this.failure = Object.freeze({
+                code: 'tower-payload-completion-mismatch',
+                message: 'Tower payload completion이 execution과 다릅니다.'
+            });
+            this.#settleTowerRejected(
+                record,
+                ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                tick,
+                completion
+            );
+            return Object.freeze({
+                observedCount: 1,
+                committedCount: 0,
+                committedHandles: Object.freeze([]),
+                recoveryRequired: true
+            });
+        }
+
+        const committed = completion.result === TOWER_CREATION_RESULT.COMMITTED
+            && completion.committed === true
+            && completion.createdCount === ready.completion.subjectCount
+            && Array.isArray(completion.handles)
+            && completion.handles.length === completion.createdCount;
+        if (committed) {
+            const settled = this.abilityRuntime.completeSnapshotExecution(
+                ready,
+                {
+                    completedFixedTick: completion.sourceTick ?? tick,
+                    generatedCount: completion.createdCount,
+                    snapshotAlreadyReleased: true
+                }
+            );
+            if (!settled) {
+                this.recoveryRequired = true;
+                this.failure = Object.freeze({
+                    code: 'tower-payload-snapshot-settlement',
+                    message: 'committed Tower payload execution을 정리하지 못했습니다.'
+                });
+                return Object.freeze({
+                    observedCount: 1,
+                    committedCount: 0,
+                    committedHandles: Object.freeze([]),
+                    recoveryRequired: true
+                });
+            }
+            const handles = Object.freeze(completion.handles.map((handle) => (
+                Object.freeze({
+                    entityId: handle.entityId,
+                    incarnation: handle.incarnation
+                })
+            )));
+            this.totalCommitted++;
+            this.totalTowerCommitted++;
+            this.totalGenerated += completion.createdCount;
+            this.#remember(record, 'COMMITTED', completion, tick);
+            return Object.freeze({
+                observedCount: 1,
+                committedCount: 1,
+                committedHandles: handles,
+                recoveryRequired: this.requiresRecovery()
+            });
+        }
+
+        if (completion.result === TOWER_CREATION_RESULT.COMMITTED) {
+            this.recoveryRequired = true;
+            this.failure = Object.freeze({
+                code: 'tower-payload-committed-shape',
+                message: 'Tower payload COMMITTED receipt의 count/handle shape가 다릅니다.'
+            });
+            this.#settleTowerRejected(
+                record,
+                ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                tick,
+                completion
+            );
+            return Object.freeze({
+                observedCount: 1,
+                committedCount: 0,
+                committedHandles: Object.freeze([]),
+                recoveryRequired: true
+            });
+        }
+
+        let code = ABILITY_EXECUTION_OUTCOME_CODE
+            .DESTINATION_CAPACITY_REJECTED;
+        if (completion.result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE
+            || completion.recoveryRequired === true) {
+            code = ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED;
+            this.recoveryRequired = true;
+            this.failure = Object.freeze({
+                code: 'tower-payload-protocol-rejected',
+                message: 'Tower payload transaction protocol이 거절됐습니다.'
+            });
+        } else if (completion.reason === 'RUNTIME_UNAVAILABLE') {
+            code = ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE;
+            this.totalRuntimeUnavailable++;
+        } else if (completion.reason === 'ACTOR_ACTION_PLACEMENT_REJECTED') {
+            code = ABILITY_EXECUTION_OUTCOME_CODE.PLACEMENT_REJECTED;
+            this.totalPlacementRejected++;
+        } else if (String(completion.reason ?? '').includes('cancel')) {
+            code = ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED;
+            this.totalCancelled++;
+        } else {
+            this.totalCapacityRejected++;
+        }
+        this.#settleTowerRejected(record, code, tick, completion);
+        return Object.freeze({
+            observedCount: 1,
+            committedCount: 0,
+            committedHandles: Object.freeze([]),
+            recoveryRequired: this.requiresRecovery()
+        });
+    }
+
     stageReadyForFixedTick({ targetFixedTick } = {}) {
         const tick = requirePositiveInteger(targetFixedTick, 'targetFixedTick');
         if (this.destroyed || this.closed) {
@@ -205,7 +381,156 @@ export class ActorPayloadMaterializer {
         let rejectedCount = 0;
         for (let index = 0; index < ready.length; index++) {
             const record = ready[index];
+            // Turn 4 production slice는 Shoot만 활성화합니다. 이후 verb는 해당
+            // runtime turn에서 capability를 열기 전까지 정상 unavailable입니다.
+            if (record.command.actionCode !== SENTENCE_ACTION_CODE.SHOOT) {
+                this.totalRuntimeUnavailable++;
+                this.#rejectReady(
+                    record,
+                    ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                    tick
+                );
+                rejectedCount++;
+                continue;
+            }
+
+            if (record.command.payloadCode === ACTOR_PAYLOAD_CODE.TOWER) {
+                const coordinator = this.towerCreationCoordinatorProvider?.()
+                    ?? null;
+                if (!coordinator
+                    || typeof coordinator.requestTowerCreation !== 'function'
+                    || typeof coordinator.getStatus !== 'function') {
+                    this.totalRuntimeUnavailable++;
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                        tick
+                    );
+                    rejectedCount++;
+                    continue;
+                }
+                const coordinatorState = coordinator.getStatus()?.state;
+                if (coordinatorState === 'queued'
+                    || coordinatorState === 'pending') {
+                    for (let remaining = ready.length - 1;
+                        remaining >= index;
+                        remaining--) {
+                        this.abilityRuntime.returnReadySnapshot(
+                            ready[remaining]
+                        );
+                    }
+                    break;
+                }
+                let context = null;
+                try {
+                    context = this.towerPayloadContextProvider?.({
+                        command: record.command,
+                        subjectCompletion: record.completion,
+                        targetFixedTick: tick
+                    }) ?? null;
+                } catch {
+                    context = null;
+                }
+                if (context?.runtimeAvailable !== true
+                    || !context.sdf || !context.recoveryPlacementPolicy) {
+                    this.totalRuntimeUnavailable++;
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                        tick
+                    );
+                    rejectedCount++;
+                    continue;
+                }
+                const transactionId = [
+                    'actor-payload.r5.tower',
+                    record.command.executionId
+                ].join(':');
+                const result = coordinator.requestTowerCreation({
+                    mode: TOWER_CREATION_COORDINATOR_MODE
+                        .GPU_SUBJECT_ACTOR_ACTION,
+                    transactionId,
+                    command: record.command,
+                    subjectCompletion: record.completion,
+                    snapshotToken: record.completion.snapshotToken,
+                    childCount: record.completion.subjectCount,
+                    actorActionProfile:
+                        record.command.compiledAbility.actorActionProfile,
+                    actorActionProfileId:
+                        record.command.compiledAbility.actorActionProfileId,
+                    payloadDefinition: this.towerPayloadDefinition,
+                    requestedFixedTick: tick,
+                    sdf: context.sdf,
+                    coreTarget: context.coreTarget ?? null,
+                    recoveryPlacementPolicy:
+                        context.recoveryPlacementPolicy
+                });
+                if (result?.accepted === true) {
+                    const inFlight = Object.freeze({
+                        kind: MATERIALIZATION_KIND.TOWER,
+                        transactionId,
+                        requestFingerprint: result.requestFingerprint ?? null,
+                        ready: record,
+                        targetFixedTick: tick,
+                        coordinator
+                    });
+                    this.inFlight.set(transactionId, inFlight);
+                    if (!this.abilityRuntime.markGpuMaterializationPending(
+                        record,
+                        tick
+                    )) {
+                        this.recoveryRequired = true;
+                        this.failure = Object.freeze({
+                            code: 'tower-payload-execution-state',
+                            message: 'Tower materialization pending 상태를 기록하지 못했습니다.'
+                        });
+                    }
+                    this.totalStaged++;
+                    this.totalTowerStaged++;
+                    stagedCount++;
+                    continue;
+                }
+                if (result?.reason === 'RUNTIME_UNAVAILABLE') {
+                    this.totalRuntimeUnavailable++;
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                        tick
+                    );
+                } else if (result?.result
+                        === TOWER_CREATION_RESULT.REJECTED_CAPACITY
+                    && result?.requiresRecovery !== true) {
+                    this.totalCapacityRejected++;
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE
+                            .DESTINATION_CAPACITY_REJECTED,
+                        tick
+                    );
+                } else {
+                    this.recoveryRequired = true;
+                    this.failure = Object.freeze({
+                        code: result?.reason
+                            ?? 'tower-payload-stage-rejected',
+                        message: result?.failure?.message
+                            ?? 'Tower payload stage가 거절됐습니다.'
+                    });
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                        tick
+                    );
+                }
+                rejectedCount++;
+                continue;
+            }
+
             if (record.command.payloadCode !== ACTOR_PAYLOAD_CODE.ENEMY) {
+                this.recoveryRequired = true;
+                this.failure = Object.freeze({
+                    code: 'actor-payload-code-unsupported',
+                    message: '알려지지 않은 actor payload code입니다.'
+                });
                 this.#rejectReady(
                     record,
                     ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
@@ -227,6 +552,7 @@ export class ActorPayloadMaterializer {
             });
             if (result?.accepted === true) {
                 const inFlight = Object.freeze({
+                    kind: MATERIALIZATION_KIND.ENEMY,
                     transactionId,
                     ready: record,
                     targetFixedTick: tick
@@ -323,11 +649,16 @@ export class ActorPayloadMaterializer {
             totalGenerated: this.totalGenerated,
             totalCapacityRejected: this.totalCapacityRejected,
             totalPlacementRejected: this.totalPlacementRejected,
+            totalRuntimeUnavailable: this.totalRuntimeUnavailable,
+            totalTowerStaged: this.totalTowerStaged,
+            totalTowerCommitted: this.totalTowerCommitted,
             totalCancelled: this.totalCancelled,
             recoveryRequired: this.requiresRecovery(),
             failure: this.failure,
             history: Object.freeze([...this.history]),
-            gpu: this.endpoint?.getActorPayloadMaterializationStatus() ?? null
+            gpu: this.endpoint?.getActorPayloadMaterializationStatus() ?? null,
+            towerCreation: this.towerCreationCoordinatorProvider?.()
+                ?.getStatus?.() ?? null
         });
     }
 
@@ -340,6 +671,8 @@ export class ActorPayloadMaterializer {
         this.history.length = 0;
         this.endpoint = null;
         this.abilityRuntime = null;
+        this.towerCreationCoordinatorProvider = null;
+        this.towerPayloadContextProvider = null;
     }
 
     #settleRejected(record, code, fixedTick, completion) {
@@ -359,6 +692,26 @@ export class ActorPayloadMaterializer {
         return settled;
     }
 
+    #settleTowerRejected(record, code, fixedTick, completion) {
+        const settled = this.abilityRuntime.rejectSnapshotExecution(
+            record.ready,
+            code,
+            {
+                completedFixedTick: completion.sourceTick ?? fixedTick,
+                generatedCount: 0,
+                snapshotAlreadyReleased: true
+            }
+        );
+        if (!settled) this.recoveryRequired = true;
+        this.#remember(
+            record,
+            completion.reason ?? completion.result ?? code,
+            completion,
+            fixedTick
+        );
+        return settled;
+    }
+
     #rejectReady(record, code, fixedTick) {
         return this.abilityRuntime.rejectSnapshotExecution(
             record,
@@ -374,10 +727,14 @@ export class ActorPayloadMaterializer {
             executionOrdinal: record.ready.command.executionOrdinal,
             state,
             subjectCount: record.ready.completion.subjectCount,
-            generatedCount: completion.generatedCount ?? 0,
+            generatedCount: completion.generatedCount
+                ?? completion.createdCount ?? 0,
             targetFixedTick: record.targetFixedTick,
             completedFixedTick:
-                completion.materializationTargetTick ?? fixedTick
+                completion.materializationTargetTick
+                    ?? completion.sourceTick ?? fixedTick,
+            payloadCode: record.ready.command.payloadCode,
+            reason: completion.reason ?? null
         });
         this.history.push(entry);
         while (this.history.length > MAX_MATERIALIZATION_HISTORY) {
@@ -387,13 +744,25 @@ export class ActorPayloadMaterializer {
 
     #cancelOwnedState(reason) {
         this.endpoint?.cancelPendingActorPayloadMaterializations(reason);
+        const towerCoordinators = new Set();
+        for (const record of this.inFlight.values()) {
+            if (record.kind === MATERIALIZATION_KIND.TOWER
+                && record.coordinator) {
+                towerCoordinators.add(record.coordinator);
+            }
+        }
+        for (const coordinator of towerCoordinators) {
+            coordinator.cancelPending?.(reason);
+        }
         for (const record of this.inFlight.values()) {
             this.abilityRuntime.rejectSnapshotExecution(
                 record.ready,
                 ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
                 {
                     completedFixedTick: record.targetFixedTick,
-                    generatedCount: 0
+                    generatedCount: 0,
+                    snapshotAlreadyReleased:
+                        record.kind === MATERIALIZATION_KIND.TOWER
                 }
             );
             this.totalCancelled++;

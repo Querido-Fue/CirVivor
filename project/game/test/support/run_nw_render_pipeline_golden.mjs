@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { waitForChildWithTimeout } from './nw_child_process_guard.mjs';
+
 const RUN_DIRECTORY_PREFIX = 'cirvivor-render-golden-';
 const RUN_TIMEOUT_MS = 120_000;
 const EXPECTED_PLATFORM = 'win32';
@@ -62,18 +64,6 @@ function parseMode(args) {
         throw new Error('정확히 하나의 모드만 지정해야 합니다: --check 또는 --update');
     }
     return hasUpdate ? 'update' : 'check';
-}
-
-/**
- * 테스트 NW.js 프로세스가 종료될 때까지 기다립니다.
- * @param {import('node:child_process').ChildProcess} child - 실행한 NW.js 프로세스입니다.
- * @returns {Promise<{exitCode:number|null, signal:string|null}>} 종료 정보입니다.
- */
-function waitForChild(child) {
-    return new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
-    });
 }
 
 /**
@@ -261,19 +251,23 @@ async function runHarness(mode) {
             windowsHide: false
         });
 
-        let timedOut = false;
-        const timeoutId = setTimeout(() => {
-            timedOut = true;
-            child.kill();
-        }, RUN_TIMEOUT_MS);
-        let exit;
-        try {
-            exit = await waitForChild(child);
-        } finally {
-            clearTimeout(timeoutId);
-        }
-        if (timedOut) {
-            throw new Error(`NW.js 렌더 golden 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`);
+        const processResult = await waitForChildWithTimeout(
+            child,
+            RUN_TIMEOUT_MS
+        );
+        const exit = processResult.exit;
+        if (processResult.timedOut) {
+            let checkpoint = null;
+            try {
+                checkpoint = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+            } catch {
+                checkpoint = null;
+            }
+            throw new Error([
+                `NW.js 렌더 golden 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`,
+                `termination=${processResult.terminationMethod}`,
+                `checkpoint=${JSON.stringify(checkpoint)}`
+            ].join(', '));
         }
 
         let result;

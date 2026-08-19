@@ -416,12 +416,20 @@ async function readPlacementBinding(device, binding) {
 
 async function waitForCompletion(runtime) {
     await runtime.device.queue.onSubmittedWorkDone();
-    for (let attempt = 0; attempt < 120; attempt++) {
+    for (let attempt = 0; attempt < 500; attempt++) {
         const completed = runtime.drainCompleted([]);
         if (completed.length > 0) return completed[0];
-        await new Promise((resolve) => setTimeout(resolve, 0));
+        const status = runtime.getStatus();
+        if (status.state === 'failed' || status.failure) {
+            throw new Error(
+                `ActorAction placement aggregate readback failed: ${JSON.stringify(status)}`
+            );
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    throw new Error('ActorAction placement aggregate readback timeout');
+    throw new Error(
+        `ActorAction placement aggregate readback timeout: ${JSON.stringify(runtime.getStatus())}`
+    );
 }
 
 async function runGpuCase(device, source) {

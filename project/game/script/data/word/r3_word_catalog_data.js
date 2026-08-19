@@ -298,7 +298,7 @@ export const R3_SHOWCASE_SENTENCE_LOADOUT = Object.freeze({
     [ABILITY_SLOT_ID.E]: R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
 });
 
-/** Turn 4 vertical slice용 R5 candidate loadout입니다. 현재 production에는 주입하지 않습니다. */
+/** Turn 4 production vertical slice의 SHIFT/SPACE Shoot + R3 호환 loadout입니다. */
 export const R5_SHOWCASE_SENTENCE_LOADOUT = Object.freeze({
     [ABILITY_SLOT_ID.SHIFT]: R5_TOWER_SHOOTS_TOWER_SENTENCE,
     [ABILITY_SLOT_ID.SPACE]: R5_ENEMIES_SHOOT_TOWER_SENTENCE,

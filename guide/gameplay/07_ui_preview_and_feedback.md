@@ -1,6 +1,6 @@
 # 07. UI Preview and Sandbox Feedback
 
-## R5 Turn 2 preview boundary (2026-08-19)
+## R5 Turn 4 preview/runtime boundary (2026-08-19)
 
 Compiled actor plans now expose action profile ID, cast-start target snapshot policy, payload/allegiance, budgets,
 and payload-specific preview formula. Tower Payload preview can consume the R4 `previewTowerCreation()` callback
@@ -10,6 +10,14 @@ not Tower payload execution evidence. Turn 2's aggregate-only GPU placement does
 to CPU/UI and therefore does not upgrade placement preview to exact. An unknown Subject count returns
 `SUBJECT_COUNT_NOT_EXACT`; an exact zero returns `ZERO_SUBJECT`. Both set `executionEnabled=false`, skip the Tower
 creation-preview callback, and consume no cooldown.
+
+Production now exposes `The Tower shoots The Tower` and `Enemies shoot The Tower`. Tower Payload activation
+requires an explicit available runtime preview before it may enter `AbilityRuntime`; a missing or throwing preview,
+or an unavailable placement/creation capability, returns normal `RUNTIME_UNAVAILABLE` with no execution ordinal,
+snapshot, or cooldown mutation. Other disabled preview reasons remain presentation/planning facts rather than
+proof that the asynchronous execution will commit. Frozen Subject count, current Tower Share, and final capacity
+are revalidated by the GPU placement + Tower creation transaction, and only its authenticated `COMMITTED` receipt
+consumes cooldown.
 
 ## Post-R3 implementation status (2026-08-17)
 
@@ -68,8 +76,8 @@ cooldown uses `COOLDOWN_ACTIVE`. A dangerous but otherwise valid result stays en
 
 ## 3. Examples
 
-Only the Enemy-payload examples that do not create Towers are current R3 runtime examples. The
-`Enemies shoot The Tower` preview remains a future Tower Payload/Tower Share target.
+Enemy-payload examples remain the completed R3 path. The Tower-payload Shoot examples are the current R5 Turn 4
+production vertical slice; actual NW/WebGPU acceptance is still pending and must not be inferred from preview.
 
 ### The Tower shoots Enemies
 

@@ -33,6 +33,9 @@ const { ActorPayloadMaterializer } = await loadGameModule(
 const {
     ABILITY_EXECUTION_OUTCOME_CODE
 } = await loadGameModule('ingame/word/word_system.js');
+const {
+    SENTENCE_ACTION_CODE
+} = await loadGameModule('ingame/contract/word_sentence_contract.js');
 
 const BACKEND_SOURCE = await readFile(new URL(
     '../script/module/ingame/object/enemy/enemy_simulation_backend.js',
@@ -58,6 +61,7 @@ function readyRecord(executionOrdinal = 7, subjectCount = 2) {
             executionId: `execution-${executionOrdinal}`,
             executionOrdinal,
             fingerprint: 1000 + executionOrdinal,
+            actionCode: SENTENCE_ACTION_CODE.SHOOT,
             payloadCode: 1
         }),
         completion: Object.freeze({

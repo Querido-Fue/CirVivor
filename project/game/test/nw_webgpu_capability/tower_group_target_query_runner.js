@@ -82,6 +82,9 @@ import {
 import {
     THE_TOWER_RUNTIME_DATA
 } from './production/script/data/object/tower/the_tower_data.js';
+import {
+    R5_SHOOT_ACTOR_ACTION_PROFILE
+} from './production/script/data/word/r5_actor_action_profile_data.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const CAPACITY = 8;
@@ -1141,6 +1144,12 @@ async function runR3TowerSubjectAfterSplit(
             actionCode: SENTENCE_ACTION_CODE.SHOOT,
             payloadCode: ACTOR_PAYLOAD_CODE.ENEMY,
             targetPolicyCode: ABILITY_TARGET_POLICY_CODE.SHARED_AIM_POINT,
+            actorActionProfileId: R5_SHOOT_ACTOR_ACTION_PROFILE.id,
+            actorActionProfileFingerprint:
+                R5_SHOOT_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint,
+            actorActionProfile: R5_SHOOT_ACTOR_ACTION_PROFILE,
+            targetSnapshotPolicy:
+                R5_SHOOT_ACTOR_ACTION_PROFILE.targetSnapshotPolicy,
             budgets: Object.freeze({ subjectCount: 1_000, generation: 65_535 })
         });
         const staged = runtime.stageExecution({

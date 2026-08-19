@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { waitForChildWithTimeout } from './nw_child_process_guard.mjs';
+
 const RUN_DIRECTORY_PREFIX = 'cirvivor-webgpu-capability-';
 const RUN_TIMEOUT_MS = 180_000;
 const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
@@ -36,6 +38,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/projectile/hostile_basic_bullet_data.js',
     'data/object/projectile/hostile_rhom_projectile_data.js',
     'data/object/tower/the_tower_data.js',
+    'data/word/r3_word_catalog_data.js',
     'data/word/r5_actor_action_profile_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
@@ -74,6 +77,11 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/state/core_integrity.js',
     'module/ingame/state/run_outcome.js',
     'module/ingame/word/actor_payload_budget.js',
+    'module/ingame/word/ability_runtime.js',
+    'module/ingame/word/actor_payload_materializer.js',
+    'module/ingame/word/sentence_compiler.js',
+    'module/ingame/word/sentence_runtime_estimator.js',
+    'module/ingame/word/word_system.js',
     'module/ingame/object/enemy/enemy_core_impact_director.js',
     'module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     'module/ingame/object/enemy/enemy_simulation_backend.js',
@@ -458,6 +466,48 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.resultStride === 40
             && fixture.storageMaximum === 9
             && fixture.noCpuRosterOrPoseReadback === true;
+    } else if (fixtureStage === 'r5-actor-verbs') {
+        fixture = result?.r5ActorVerbs;
+        scenarioValid = fixture?.scenario
+                === 'r5-shoot-tower-production-vertical-slice'
+            && fixture?.towerRecursion?.towerCounts?.join(',') === '1,2,4'
+            && fixture.towerRecursion.subjectCounts?.join(',') === '1,2'
+            && fixture.towerRecursion.generatedCounts?.join(',') === '1,2'
+            && fixture.towerRecursion.sameExecutionExcluded === true
+            && fixture.towerRecursion.replayNoDuplicate === true
+            && fixture?.enemyTen?.subjectCount === 10
+            && fixture.enemyTen.generatedCount === 10
+            && fixture.enemyTen.towerCount === 11
+            && fixture.enemyTenTotalsConserved === true
+            && fixture?.capacity?.exactSubjectCount === 255
+            && fixture.capacity.exactTowerCount === 256
+            && fixture.capacity.overSubjectCount === 256
+            && fixture.capacity.overRejected === true
+            && fixture.capacity.overGeneratedCount === 0
+            && fixture.capacity.overCooldownConsumed === false
+            && fixture.capacity.exactTotalsConserved === true
+            && fixture.capacity.overTotalsConserved === true
+            && fixture?.sourceDeath?.subjectCount === 1
+            && fixture.sourceDeath.generatedCount === 1
+            && fixture.sourceDeath.sourceRemoved === true
+            && fixture.sourceDeath.towerCount === 2
+            && fixture?.towerSourceDeath?.subjectCount === 2
+            && fixture.towerSourceDeath.generatedCount === 2
+            && fixture.towerSourceDeath.sourceRemoved === true
+            && fixture.towerSourceDeath.towerCount === 3
+            && fixture.towerSourceDeath.survivorTotalsConserved === true
+            && fixture.towerSourceDeath.cooldownConsumed === true
+            && fixture?.zeroShare?.subjectCount === 1
+            && fixture.zeroShare.generatedCount === 0
+            && fixture.zeroShare.sourceRemoved === true
+            && fixture.zeroShare.towerCount === 0
+            && fixture.zeroShare.livingShareUnits === 0
+            && fixture.zeroShare.result === 'REJECTED_ZERO_SHARE'
+            && fixture.zeroShare.cooldownConsumed === false
+            && fixture.profileFingerprintBound === true
+            && fixture.storageMaximum <= 9
+            && fixture.recoveryRequired === false
+            && fixture.destroyedTeardown === true;
     } else if (fixtureStage === 'actor-action-placement') {
         fixture = result?.actorActionPlacement;
         const actions = fixture?.actions;
@@ -2611,6 +2661,7 @@ function assertFixtureStageResult(result) {
     if (
         fixtureStage === 'enemy-arrow-charge'
         || fixtureStage === 'actor-action-placement'
+        || fixtureStage === 'r5-actor-verbs'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
@@ -2626,13 +2677,6 @@ function assertFixtureStageResult(result) {
         return;
     }
     throw new Error(`지원하지 않는 NW WebGPU fixture stage입니다: ${fixtureStage}`);
-}
-
-function waitForChild(child) {
-    return new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', (exitCode, signal) => resolve({ exitCode, signal }));
-    });
 }
 
 async function removeRunDirectory(runDirectory) {
@@ -2728,6 +2772,8 @@ async function prepareHarnessApp(
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
     const runnerFileName = fixtureStage === 'tower-group-target-query'
         ? 'tower_group_target_query_runner.js'
+        : fixtureStage === 'r5-actor-verbs'
+            ? 'r5_actor_verbs_bootstrap.js'
         : fixtureStage === 'actor-action-placement'
             ? 'actor_action_placement_runner.js'
         : fixtureStage === 'enemy-pentagon-effect'
@@ -2749,6 +2795,12 @@ async function prepareHarnessApp(
         path.join(harnessDirectory, runnerFileName),
         path.join(appDirectory, 'runner.js')
     );
+    if (fixtureStage === 'r5-actor-verbs') {
+        await linkRuntimeFile(
+            path.join(harnessDirectory, 'r5_actor_verbs_runner.js'),
+            path.join(appDirectory, 'r5_actor_verbs_runner.js')
+        );
+    }
     const productionDirectory = path.join(appDirectory, 'production');
     await fs.mkdir(productionDirectory, { recursive: true });
     for (const relativePath of PRODUCTION_SCRIPT_MODULE_FILES) {
@@ -2859,20 +2911,23 @@ async function runHarness() {
             windowsHide: true
         });
 
-        let timedOut = false;
-        const timeoutId = setTimeout(() => {
-            timedOut = true;
-            child.kill();
-        }, RUN_TIMEOUT_MS);
-        let exit;
-        try {
-            exit = await waitForChild(child);
-        } finally {
-            clearTimeout(timeoutId);
-        }
-
-        if (timedOut) {
-            throw new Error(`NW.js WebGPU capability 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`);
+        const processResult = await waitForChildWithTimeout(
+            child,
+            RUN_TIMEOUT_MS
+        );
+        const exit = processResult.exit;
+        if (processResult.timedOut) {
+            let checkpoint = null;
+            try {
+                checkpoint = JSON.parse(await fs.readFile(resultPath, 'utf8'));
+            } catch {
+                checkpoint = null;
+            }
+            throw new Error([
+                `NW.js WebGPU capability 실행 제한시간 초과: ${RUN_TIMEOUT_MS}ms`,
+                `termination=${processResult.terminationMethod}`,
+                `checkpoint=${JSON.stringify(checkpoint)}`
+            ].join(', '));
         }
 
         let result;
