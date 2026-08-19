@@ -96,6 +96,7 @@ export class WordSystem {
         this.lastActivationResult = null;
         this.lastExecutionOutcome = null;
         this.runtimePreviewProvider = null;
+        this.totalCancelledActivationRequests = 0;
         this.destroyed = false;
         this.replaceLoadout(options.loadout ?? {});
     }
@@ -364,6 +365,21 @@ export class WordSystem {
         return drained;
     }
 
+    /** GPU-world 교체/terminal 경계에서 아직 ordinal을 받지 않은 요청을 폐기합니다. */
+    cancelPendingActivationRequests(reason = 'cancelled') {
+        if (this.destroyed) {
+            return Object.freeze({ cancelledCount: 0, reason: 'destroyed' });
+        }
+        const cancelledCount = this.pendingActivationRequests.length;
+        this.pendingActivationRequests.length = 0;
+        this.pendingActivationKeys.clear();
+        this.totalCancelledActivationRequests += cancelledCount;
+        return Object.freeze({
+            cancelledCount,
+            reason: String(reason || 'cancelled')
+        });
+    }
+
     /** AbilityRuntime이 final outcome과 cooldown 소비 여부를 확정합니다. */
     recordExecutionOutcome(source = {}) {
         if (this.destroyed) return false;
@@ -472,6 +488,8 @@ export class WordSystem {
             phase: this.phase,
             slots: this.getSlotViews(),
             pendingActivationCount: this.pendingActivationRequests.length,
+            totalCancelledActivationRequests:
+                this.totalCancelledActivationRequests,
             lastActivationResult: this.lastActivationResult,
             lastExecutionOutcome: this.lastExecutionOutcome
         });

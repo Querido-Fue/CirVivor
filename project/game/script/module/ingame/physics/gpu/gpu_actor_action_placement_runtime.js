@@ -409,6 +409,9 @@ export class GpuActorActionPlacementRuntime {
         this.sdfRejectedCount = 0;
         this.protocolRejectedCount = 0;
         this.ringDeferredCount = 0;
+        this.commandHighWater = 0;
+        this.subjectHighWater = 0;
+        this.retainedPlacementHighWater = 0;
         this.aggregateReadbackByteSize
             = GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STRIDE;
     }
@@ -677,6 +680,15 @@ export class GpuActorActionPlacementRuntime {
             };
             this.pending.push(entry);
             this.knownTransactionIds.add(transactionId);
+            this.commandHighWater = Math.max(
+                this.commandHighWater,
+                this.pending.length + this.inFlight.size
+                    + this.retainedPlacementTokens.size
+            );
+            this.subjectHighWater = Math.max(
+                this.subjectHighWater,
+                subjectCount
+            );
             return Object.freeze({
                 accepted: true,
                 transactionId,
@@ -966,6 +978,10 @@ export class GpuActorActionPlacementRuntime {
             sdfRejectedCount: this.sdfRejectedCount,
             protocolRejectedCount: this.protocolRejectedCount,
             ringDeferredCount: this.ringDeferredCount,
+            commandHighWater: this.commandHighWater,
+            subjectHighWater: this.subjectHighWater,
+            retainedPlacementHighWater:
+                this.retainedPlacementHighWater,
             storageBindingCount:
                 GPU_ACTOR_ACTION_PLACEMENT_STORAGE_BINDING_COUNT,
             dispatchStorageBindingCount:
@@ -1069,6 +1085,10 @@ export class GpuActorActionPlacementRuntime {
                         resourceLease: this.resourceLease
                     }));
                     this.retainedPlacementTokens.add(placementToken);
+                    this.retainedPlacementHighWater = Math.max(
+                        this.retainedPlacementHighWater,
+                        this.retainedPlacementTokens.size
+                    );
                     this.#destroyEntryBuffers(entry, false);
                 } else {
                     this.#destroyEntryBuffers(entry, true);

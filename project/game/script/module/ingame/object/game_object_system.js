@@ -326,7 +326,9 @@ export class GameObjectSystem {
             : null;
         this.sentenceRuntimeEstimator = this.wordSystem
             ? new SentenceRuntimeEstimator({
-                getRuntimeState: () => this.#createSentenceRuntimePreviewState(),
+                getRuntimeState: (compiledAbility) => (
+                    this.#createSentenceRuntimePreviewState(compiledAbility)
+                ),
                 previewTowerCreation: (request) => (
                     this.#previewTowerPayloadCreation(request)
                 )
@@ -3466,7 +3468,8 @@ export class GameObjectSystem {
                 maxHpFixedPoint: record.maxHpFixedPoint,
                 powerFixedPoint: record.powerFixedPoint,
                 towerGroupRevision: groupStatus?.groupRevision
-                    ?? towerStatus?.groupRevision
+                    ?? towerStatus?.groupRevision,
+                creationMetadata: record.creationMetadata
             });
             return Object.freeze({
                 logicalTowerId: record.logicalTowerId,
@@ -3749,19 +3752,47 @@ export class GameObjectSystem {
         );
     }
 
-    #createSentenceRuntimePreviewState() {
+    #createSentenceRuntimePreviewState(compiledAbility = null) {
         const hostile = this.hostileParticipationTracker?.getStatus() ?? {};
         const capacity = this.enemySimulationEndpoint
             ?.getActorPayloadCapacityView?.(0) ?? {};
         const economy = this.enemySimulationEndpoint
             ?.getActorPayloadEconomyView?.() ?? {};
         const towerStatus = this.towerCombatRoster?.getStatus?.() ?? null;
+        const generationLimit = Number(
+            compiledAbility?.budgets?.generation
+        );
+        const towerGroupState = this.towerCombatRoster
+            ?.getTowerGroupState?.() ?? null;
+        const towerRecords = towerGroupState?.getTowerRecords?.() ?? [];
+        const eligibleTowerActorCount = towerRecords.filter((record) => {
+            const generation = record.creationMetadata?.generation ?? 0;
+            return record.alive === true
+                && Number.isSafeInteger(generationLimit)
+                && generation < generationLimit
+                && this.enemySimulationEndpoint
+                    ?.isActorTransitAirborne?.(record.exactGpuBinding)
+                    !== true;
+        }).length;
+        const livingTowerCount = towerStatus?.livingTowerCount
+            ?? (this.tower ? 1 : 0);
+        const towerGenerationEligibilityExact = towerGroupState !== null
+            && towerRecords.filter((record) => record.alive).length
+                === livingTowerCount
+            && Number.isSafeInteger(generationLimit)
+            && generationLimit > 0;
+        const liveHostileActorCount = hostile.liveHostileActorCount ?? 0;
+        const hostileCountExact = hostile.countExact === true;
         return Object.freeze({
-            livingTowerCount: towerStatus?.livingTowerCount
-                ?? (this.tower ? 1 : 0),
+            livingTowerCount,
             towerSubjectCountExact: true,
-            liveHostileActorCount: hostile.liveHostileActorCount ?? 0,
-            hostileSubjectCountExact: hostile.countExact === true,
+            eligibleTowerActorCount,
+            towerGenerationEligibilityExact,
+            liveHostileActorCount,
+            hostileSubjectCountExact: hostileCountExact,
+            eligibleHostileActorCount: liveHostileActorCount,
+            hostileGenerationEligibilityExact:
+                hostileCountExact && liveHostileActorCount === 0,
             pendingHostileActorCount:
                 hostile.pendingHostileActorCount ?? 0,
             siegeWeight: hostile.siegeWeight ?? 0,

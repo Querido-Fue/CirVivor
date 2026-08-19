@@ -1821,6 +1821,151 @@ export function normalizeGpuSpawnIntent(source, options = {}) {
     });
 }
 
+const TOWER_RECOVERY_ABILITY_METADATA_FIELDS = Object.freeze([
+    'abilityGeneration',
+    'abilityCreationOriginCode',
+    'sourceAbilityCode',
+    'sourceExecutionFingerprint',
+    'sourceExecutionOrdinal',
+    'visibleFromExecutionOrdinal',
+    'actorActionCode',
+    'actorActionProfileId',
+    'actorActionProfileFingerprint',
+    'recoveryPlacementPolicyId',
+    'recoveryLogicalTowerOrdinal',
+    'mapRecoveryAnchorId',
+    'mapRecoveryLatticeVersion',
+    'mapRecoveryAnchorX',
+    'mapRecoveryAnchorY'
+]);
+
+function copyOptionalTowerRecoveryAbilityMetadata(intent) {
+    const presentCount = TOWER_RECOVERY_ABILITY_METADATA_FIELDS.reduce(
+        (count, field) => count + (
+            intent[field] === undefined || intent[field] === null ? 0 : 1
+        ),
+        0
+    );
+    if (presentCount === 0) return {};
+    if (presentCount !== TOWER_RECOVERY_ABILITY_METADATA_FIELDS.length) {
+        throw new TypeError(
+            'Tower recovery ability provenance field는 모두 함께 제공해야 합니다.'
+        );
+    }
+    const logicalTowerOrdinal = requireUint32(
+        intent.logicalTowerOrdinal,
+        'spawnIntent.logicalTowerOrdinal',
+        false
+    );
+    const recoveryLogicalTowerOrdinal = requireUint32(
+        intent.recoveryLogicalTowerOrdinal,
+        'spawnIntent.recoveryLogicalTowerOrdinal',
+        false
+    );
+    const sourceExecutionOrdinal = requireUint32(
+        intent.sourceExecutionOrdinal,
+        'spawnIntent.sourceExecutionOrdinal',
+        false
+    );
+    const visibleFromExecutionOrdinal = requireUint32(
+        intent.visibleFromExecutionOrdinal,
+        'spawnIntent.visibleFromExecutionOrdinal',
+        false
+    );
+    const mapRecoveryAnchorX = Number(intent.mapRecoveryAnchorX);
+    const mapRecoveryAnchorY = Number(intent.mapRecoveryAnchorY);
+    if (logicalTowerOrdinal !== recoveryLogicalTowerOrdinal
+        || visibleFromExecutionOrdinal !== sourceExecutionOrdinal + 1
+        || !Number.isFinite(mapRecoveryAnchorX)
+        || !Number.isFinite(mapRecoveryAnchorY)
+        || mapRecoveryAnchorX !== Number(intent.position?.x)
+        || mapRecoveryAnchorY !== Number(intent.position?.y)) {
+        throw new RangeError(
+            'Tower recovery ordinal/visibility/anchor provenance가 다릅니다.'
+        );
+    }
+    return {
+        logicalTowerOrdinal,
+        shareUnits: requireUint32(
+            intent.shareUnits,
+            'spawnIntent.shareUnits',
+            false
+        ),
+        currentHpFixedPoint: requireUint32(
+            intent.currentHpFixedPoint,
+            'spawnIntent.currentHpFixedPoint',
+            false
+        ),
+        maxHpFixedPoint: requireUint32(
+            intent.maxHpFixedPoint,
+            'spawnIntent.maxHpFixedPoint',
+            false
+        ),
+        powerFixedPoint: requireUint32(
+            intent.powerFixedPoint,
+            'spawnIntent.powerFixedPoint',
+            false
+        ),
+        towerGroupRevision: requireUint32(
+            intent.towerGroupRevision,
+            'spawnIntent.towerGroupRevision',
+            false
+        ),
+        abilityGeneration: requireUint32(
+            intent.abilityGeneration,
+            'spawnIntent.abilityGeneration',
+            false
+        ),
+        abilityCreationOriginCode: requireUint32(
+            intent.abilityCreationOriginCode,
+            'spawnIntent.abilityCreationOriginCode',
+            false
+        ),
+        sourceAbilityCode: requireUint32(
+            intent.sourceAbilityCode,
+            'spawnIntent.sourceAbilityCode',
+            false
+        ),
+        sourceExecutionFingerprint: requireUint32(
+            intent.sourceExecutionFingerprint,
+            'spawnIntent.sourceExecutionFingerprint',
+            false
+        ),
+        sourceExecutionOrdinal,
+        visibleFromExecutionOrdinal,
+        actorActionCode: requireUint32(
+            intent.actorActionCode,
+            'spawnIntent.actorActionCode',
+            false
+        ),
+        actorActionProfileId: requireNonEmptyString(
+            intent.actorActionProfileId,
+            'spawnIntent.actorActionProfileId'
+        ),
+        actorActionProfileFingerprint: requireUint32(
+            intent.actorActionProfileFingerprint,
+            'spawnIntent.actorActionProfileFingerprint',
+            false
+        ),
+        recoveryPlacementPolicyId: requireNonEmptyString(
+            intent.recoveryPlacementPolicyId,
+            'spawnIntent.recoveryPlacementPolicyId'
+        ),
+        recoveryLogicalTowerOrdinal,
+        mapRecoveryAnchorId: requireNonEmptyString(
+            intent.mapRecoveryAnchorId,
+            'spawnIntent.mapRecoveryAnchorId'
+        ),
+        mapRecoveryLatticeVersion: requireUint32(
+            intent.mapRecoveryLatticeVersion,
+            'spawnIntent.mapRecoveryLatticeVersion',
+            false
+        ),
+        mapRecoveryAnchorX,
+        mapRecoveryAnchorY
+    };
+}
+
 /** Registry가 GPU body identity와 함께 보존할 CPU domain metadata를 만듭니다. */
 export function createGpuRegistryMetadata(intent, activationEvidence = null) {
     const common = {
@@ -1872,6 +2017,13 @@ export function createGpuRegistryMetadata(intent, activationEvidence = null) {
             ...copyOptionalEnemyEffectMetadata(intent),
             ...copyOptionalEnemyFormationMetadata(intent),
             ...copyOptionalResolvedEnemyStatMetadata(intent)
+        };
+    }
+    if (intent.kindId === 'tower') {
+        return {
+            ...common,
+            spawnSequence: intent.spawnSequence,
+            ...copyOptionalTowerRecoveryAbilityMetadata(intent)
         };
     }
     if (intent.kindId !== 'projectile') {

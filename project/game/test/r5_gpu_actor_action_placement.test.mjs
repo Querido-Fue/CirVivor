@@ -549,6 +549,9 @@ test('runtime stage는 exact snapshot/lease와 capacity를 검증하고 aggregat
         assert.equal(status.placementRecordCpuReadback, false);
         assert.equal(status.transitRecordCpuReadback, false);
         assert.equal(status.bodyStateCommitCount, 0);
+        assert.equal(status.commandHighWater, 1);
+        assert.equal(status.subjectHighWater, 2);
+        assert.equal(status.retainedPlacementHighWater, 0);
         runtime.destroy();
     });
 });

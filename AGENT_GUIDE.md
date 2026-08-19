@@ -31,7 +31,7 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R5 status (2026-08-19): `R5 Turns 1–6 COMPLETE`; `Turn 7 Preview/UI NEXT`.
+Current R5 status (2026-08-19): `R5 Turns 1–7 COMPLETE`; `Turn 8 Acceptance/Docs NEXT`.
 Turn 1 preserves the R3 Q/E compiled identities while appending Throw/Emit/Summon action codes and immutable
 data-owned action profiles. Tower/Enemy Subject × four actor verbs × Tower/Enemy Payload compiles as 16 typed
 plans. Production injects the Turn 4 R5 SHIFT/SPACE Shoot sentences beside the preserved R3 Q/E loadout. Tower
@@ -88,6 +88,18 @@ transit capabilities are checked independently so an unavailable path returns no
 compile/materializer matrix is covered in Node, and the actual NW/WebGPU runner additionally commits representative
 Tower/Enemy Emit/Summon × Tower/Enemy payload injections end to end with no transit. The Turn 6 gate is 1,638/1,638;
 the hardware run reports storage maximum nine, zero uncaptured errors, recovery false, and destroyed teardown.
+Turn 7 freezes the first due activation command before any retryable submit. Event/telemetry backpressure reuses the
+exact execution ID, ordinal, ActorAction profile fingerprint, Aim, target, and requested tick; a later activation gets
+a new identity. Explicit runtime unavailability remains a normal zero-mutation result. GPU-world replacement and
+terminal sealing cancel undrained Word requests plus staged Shoot/Throw/Emit/Summon work exactly once, make late old-
+generation completions inert, and leave cooldown unconsumed. A committed generated Tower's durable recovery descriptor
+preserves sentence/execution/action/profile and generation provenance, but reconstructs it at the map-owned anchor as
+an ordinary active body with no stale transit. Preview counts generation-eligible Subjects, distinguishes unknown from
+exact zero, and exposes exact Tower capacity/Share allocation evidence only when known. Runtime/materializer telemetry
+uses fixed verb buckets, scalar byte counts/high-water marks, and bounded histories. The R4 CPU-explicit Tower creation
+path does not require ActorTransit storage; R5 GPU ActorAction creation still fails closed without the shared transit
+buffer. The full Node gate is 1,644/1,644, and the R3, R4, and R5 actual NW/WebGPU gates pass with storage maximum nine,
+zero protocol/recovery/uncaptured errors, and orderly destroyed teardown.
 
 Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower

@@ -127,69 +127,97 @@ export class AbilityRuntime {
         this.totalZeroSubject = 0;
         this.totalCapacityRejected = 0;
         this.totalCancelled = 0;
+        this.retryableReplayCount = 0;
+        this.deferredHighWater = 0;
+        this.inFlightHighWater = 0;
     }
 
     /** WordSystem request를 stable ordinal command로 변환해 current endpoint에 stage합니다. */
     stageForFixedTick({ targetFixedTick, camera } = {}) {
         if (this.destroyed || this.closed) {
+            const cancelled = this.wordSystem
+                ?.cancelPendingActivationRequests?.(
+                    this.destroyed
+                        ? 'ability-runtime-destroyed'
+                        : 'ability-runtime-closed'
+                );
+            this.totalCancelled += cancelled?.cancelledCount ?? 0;
             return Object.freeze({ acceptedCount: 0, deferredCount: 0 });
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const drained = this.wordSystem.drainActivationRequests();
         if (drained.length > 0) {
-            this.deferredActivationRequests.push(...drained);
+            this.deferredActivationRequests.push(...drained.map(
+                (request) => ({ request, record: null })
+            ));
             this.totalRequested += drained.length;
+            this.deferredHighWater = Math.max(
+                this.deferredHighWater,
+                this.deferredActivationRequests.length
+            );
         }
         let acceptedCount = 0;
         let rejectedCount = 0;
         for (let index = 0; index < this.deferredActivationRequests.length;) {
-            const request = this.deferredActivationRequests[index];
+            const deferred = this.deferredActivationRequests[index];
+            const request = deferred.request;
             if (request.targetFixedTick > tick) {
                 index++;
                 continue;
             }
-            const ordinal = this.nextExecutionOrdinal;
-            if (ordinal >= 0xffffffff) {
-                this.recoveryRequired = true;
-                this.failure = Object.freeze({
-                    code: 'ability-execution-ordinal-exhausted',
-                    message: 'ability execution ordinal이 고갈됐습니다.'
+            let record = deferred.record;
+            if (!record) {
+                const ordinal = this.nextExecutionOrdinal;
+                if (ordinal >= 0xffffffff) {
+                    this.recoveryRequired = true;
+                    this.failure = Object.freeze({
+                        code: 'ability-execution-ordinal-exhausted',
+                        message: 'ability execution ordinal이 고갈됐습니다.'
+                    });
+                    break;
+                }
+                const aimWorld = camera?.viewportToWorld?.(
+                    request.aimViewport.x,
+                    request.aimViewport.y,
+                    {}
+                ) ?? request.aimViewport;
+                const sessionGeneration = this.endpoint.getStatus()
+                    .sessionGeneration;
+                const executionId = [
+                    'ability-execution.r3',
+                    sessionGeneration,
+                    ordinal,
+                    request.abilityRequestId
+                ].join(':');
+                const command = normalizeAbilityExecutionCommand({
+                    compiledAbility: request.compiledAbility,
+                    executionId,
+                    executionOrdinal: ordinal,
+                    targetFixedTick: tick,
+                    aimPoint: aimWorld,
+                    subjectLimit:
+                        request.compiledAbility.budgets.subjectCount,
+                    generationLimit:
+                        request.compiledAbility.budgets.generation
                 });
-                break;
+                record = Object.freeze({ request, command });
+                deferred.record = record;
+                this.#transitionExecution(
+                    record,
+                    ABILITY_EXECUTION_STATE.REQUESTED,
+                    tick
+                );
             }
-            const aimWorld = camera?.viewportToWorld?.(
-                request.aimViewport.x,
-                request.aimViewport.y,
-                {}
-            ) ?? request.aimViewport;
-            const sessionGeneration = this.endpoint.getStatus()
-                .sessionGeneration;
-            const executionId = [
-                'ability-execution.r3',
-                sessionGeneration,
-                ordinal,
-                request.abilityRequestId
-            ].join(':');
-            const command = normalizeAbilityExecutionCommand({
-                compiledAbility: request.compiledAbility,
-                executionId,
-                executionOrdinal: ordinal,
-                targetFixedTick: tick,
-                aimPoint: aimWorld,
-                subjectLimit: request.compiledAbility.budgets.subjectCount,
-                generationLimit: request.compiledAbility.budgets.generation
-            });
-            const record = Object.freeze({ request, command });
-            this.#transitionExecution(
-                record,
-                ABILITY_EXECUTION_STATE.REQUESTED,
-                tick
-            );
+            const command = record.command;
             const receipt = this.endpoint.requestAbilityExecutionCommand(command);
             if (receipt?.accepted === true) {
                 this.deferredActivationRequests.splice(index, 1);
                 this.nextExecutionOrdinal++;
-                this.inFlightByExecutionId.set(executionId, record);
+                this.inFlightByExecutionId.set(command.executionId, record);
+                this.inFlightHighWater = Math.max(
+                    this.inFlightHighWater,
+                    this.inFlightByExecutionId.size
+                );
                 this.#transitionExecution(
                     record,
                     ABILITY_EXECUTION_STATE.SUBJECT_SNAPSHOT_PENDING,
@@ -200,13 +228,26 @@ export class AbilityRuntime {
             }
             const retryable = receipt?.retryable === true
                 || receipt?.reason === 'ability-command-capacity';
-            if (retryable) break;
+            if (retryable) {
+                this.retryableReplayCount++;
+                break;
+            }
             this.deferredActivationRequests.splice(index, 1);
+            this.nextExecutionOrdinal++;
             rejectedCount++;
-            this.recoveryRequired ||= receipt?.requiresRecovery === true;
+            const runtimeUnavailable = receipt?.runtimeUnavailable === true
+                || [
+                    'runtime-unavailable',
+                    'ability-runtime-unavailable',
+                    'actor-payload-runtime-unavailable'
+                ].includes(receipt?.reason);
+            this.recoveryRequired ||= !runtimeUnavailable
+                && receipt?.requiresRecovery === true;
             this.#recordTerminalOutcome(
                 record,
-                ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                runtimeUnavailable
+                    ? ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE
+                    : ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
                 tick,
                 { subjectCount: 0, capacityDemand: 0 }
             );
@@ -434,6 +475,10 @@ export class AbilityRuntime {
             totalZeroSubject: this.totalZeroSubject,
             totalCapacityRejected: this.totalCapacityRejected,
             totalCancelled: this.totalCancelled,
+            retryableReplayCount: this.retryableReplayCount,
+            deferredHighWater: this.deferredHighWater,
+            inFlightHighWater: this.inFlightHighWater,
+            historyCapacity: MAX_EXECUTION_HISTORY,
             recoveryRequired: this.requiresRecovery(),
             failure: this.failure,
             history: Object.freeze([...this.history]),
@@ -564,6 +609,9 @@ export class AbilityRuntime {
     }
 
     #cancelOwnedState(reason) {
+        const pendingActivationCancellation = this.wordSystem
+            ?.cancelPendingActivationRequests?.(reason);
+        const readySnapshotCount = this.readySnapshots.length;
         for (const ready of this.readySnapshots) {
             this.endpoint?.releaseAbilitySubjectSnapshot(
                 ready.completion.snapshotToken
@@ -594,7 +642,9 @@ export class AbilityRuntime {
             );
         }
         this.totalCancelled += this.inFlightByExecutionId.size
-            + this.deferredActivationRequests.length;
+            + readySnapshotCount
+            + this.deferredActivationRequests.length
+            + (pendingActivationCancellation?.cancelledCount ?? 0);
         this.inFlightByExecutionId.clear();
         this.deferredActivationRequests.length = 0;
         this.endpoint?.getBackend?.()?.cancelPendingAbilityExecutions?.(reason);

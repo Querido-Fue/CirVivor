@@ -1488,6 +1488,8 @@ export class TowerCreationCoordinator {
     }
 
     getStatus() {
+        const runtime = this.backend?.getTowerCreationRuntimeStatus?.()
+            ?? null;
         return Object.freeze({
             state: this.destroyed
                 ? 'destroyed'
@@ -1526,6 +1528,9 @@ export class TowerCreationCoordinator {
             replayedCount: this.replayedCount,
             replayMismatchCount: this.replayMismatchCount,
             reservationHighWater: this.reservationHighWater,
+            aggregateReadbackByteSize:
+                runtime?.aggregateReadbackByteSize ?? 0,
+            storageProfile: runtime?.storageProfile ?? null,
             historyCount: this.completedTransactionOrder.length,
             historyCapacity: this.historyCapacity,
             transactionEntryCount: this.transactionEntries.size,

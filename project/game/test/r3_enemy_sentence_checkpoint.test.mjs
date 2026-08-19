@@ -238,17 +238,41 @@ test('GPU ingress pressure 재시도는 ordinal/request를 보존하고 상태�
     };
     const harness = createHarness(endpoint);
     const { wordSystem, abilityRuntime } = harness;
+    let projectionCount = 0;
+    const firstCamera = Object.freeze({
+        viewportToWorld(x, y) {
+            projectionCount++;
+            return Object.freeze({ x: x + 10, y: y + 20 });
+        }
+    });
+    const changedCamera = Object.freeze({
+        viewportToWorld() {
+            projectionCount++;
+            return Object.freeze({ x: 999, y: 999 });
+        }
+    });
     wordSystem.beginFixedTick(11);
-    wordSystem.requestSlotActivation(ABILITY_SLOT_ID.E);
-    const deferred = abilityRuntime.stageForFixedTick({ targetFixedTick: 11 });
+    wordSystem.requestSlotActivation(ABILITY_SLOT_ID.E, {
+        aimViewport: { x: 3, y: 4 }
+    });
+    const deferred = abilityRuntime.stageForFixedTick({
+        targetFixedTick: 11,
+        camera: firstCamera
+    });
     assert.equal(deferred.deferredCount, 1);
     assert.equal(abilityRuntime.getStatus().activeExecutions[0].state,
         ABILITY_EXECUTION_STATE.REQUESTED);
-    const accepted = abilityRuntime.stageForFixedTick({ targetFixedTick: 11 });
+    const accepted = abilityRuntime.stageForFixedTick({
+        targetFixedTick: 12,
+        camera: changedCamera
+    });
     assert.equal(accepted.acceptedCount, 1);
     assert.equal(endpoint.abilityRequests.length, 2);
-    assert.equal(endpoint.abilityRequests[0].executionId,
-        endpoint.abilityRequests[1].executionId);
+    assert.deepEqual(endpoint.abilityRequests[1], endpoint.abilityRequests[0]);
+    assert.deepEqual(endpoint.abilityRequests[0].aimPoint, { x: 13, y: 24 });
+    assert.equal(endpoint.abilityRequests[0].targetFixedTick, 11);
+    assert.equal(projectionCount, 1);
+    assert.equal(abilityRuntime.getStatus().retryableReplayCount, 1);
     assert.deepEqual(
         abilityRuntime.getStatus().executionStateHistory.map(({ state }) => state),
         [
@@ -256,6 +280,102 @@ test('GPU ingress pressure 재시도는 ordinal/request를 보존하고 상태�
             ABILITY_EXECUTION_STATE.SUBJECT_SNAPSHOT_PENDING
         ]
     );
+
+    wordSystem.beginFixedTick(12);
+    wordSystem.requestSlotActivation(ABILITY_SLOT_ID.Q);
+    assert.equal(abilityRuntime.stageForFixedTick({ targetFixedTick: 12 })
+        .acceptedCount, 1);
+    assert.notEqual(endpoint.abilityRequests[2].executionId,
+        endpoint.abilityRequests[0].executionId);
+    assert.equal(endpoint.abilityRequests[2].executionOrdinal, 2);
+    destroyHarness(harness);
+});
+
+test('GPU 교체와 terminal seal은 ordinal/cooldown 없이 undrained Word 요청까지 취소한다', () => {
+    const oldEndpoint = new FakeSentenceGpuEndpoint(7);
+    const harness = createHarness(oldEndpoint);
+    const { wordSystem, abilityRuntime } = harness;
+    wordSystem.beginFixedTick(17);
+    wordSystem.requestSlotActivation(ABILITY_SLOT_ID.Q);
+    assert.equal(wordSystem.getStatusView().pendingActivationCount, 1);
+
+    const replacement = new FakeSentenceGpuEndpoint(8);
+    assert.equal(abilityRuntime.resetGpuBinding(replacement), true);
+    assert.equal(wordSystem.getStatusView().pendingActivationCount, 0);
+    assert.equal(wordSystem.getStatusView().totalCancelledActivationRequests, 1);
+    assert.equal(abilityRuntime.getStatus().nextExecutionOrdinal, 1);
+    assert.equal(abilityRuntime.getStatus().history.length, 0);
+    assert.equal(wordSystem.getSlotView(ABILITY_SLOT_ID.Q)
+        .cooldown.nextEligibleFixedTick, 0);
+
+    assert.equal(abilityRuntime.closeForTerminal('run-defeated'), true);
+    wordSystem.beginFixedTick(18);
+    assert.equal(wordSystem.requestSlotActivation(ABILITY_SLOT_ID.E).code,
+        ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+    assert.equal(abilityRuntime.stageForFixedTick({ targetFixedTick: 18 })
+        .acceptedCount, 0);
+    assert.equal(wordSystem.getStatusView().pendingActivationCount, 0);
+    assert.equal(wordSystem.getStatusView().totalCancelledActivationRequests, 2);
+    assert.equal(abilityRuntime.getStatus().totalCancelled, 2);
+    assert.equal(replacement.abilityRequests.length, 0);
+    assert.equal(wordSystem.getSlotView(ABILITY_SLOT_ID.E)
+        .cooldown.nextEligibleFixedTick, 0);
+    destroyHarness(harness);
+});
+
+test('명시적 runtime unavailable receipt는 protocol failure나 cooldown으로 승격하지 않는다', () => {
+    const endpoint = new FakeSentenceGpuEndpoint();
+    endpoint.nextAbilityReceipt = Object.freeze({
+        accepted: false,
+        runtimeUnavailable: true,
+        reason: 'ability-runtime-unavailable',
+        requiresRecovery: false
+    });
+    const harness = createHarness(endpoint);
+    const { wordSystem, abilityRuntime } = harness;
+    wordSystem.beginFixedTick(19);
+    wordSystem.requestSlotActivation(ABILITY_SLOT_ID.Q);
+    const staged = abilityRuntime.stageForFixedTick({ targetFixedTick: 19 });
+
+    assert.equal(staged.acceptedCount, 0);
+    assert.equal(staged.rejectedCount, 1);
+    assert.equal(abilityRuntime.getStatus().history.at(-1).code,
+        ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE);
+    assert.equal(abilityRuntime.getStatus().lastExecutionState.state,
+        ABILITY_EXECUTION_STATE.RUNTIME_UNAVAILABLE);
+    assert.equal(abilityRuntime.getStatus().recoveryRequired, false);
+    assert.equal(wordSystem.getStatusView().lastExecutionOutcome
+        .cooldownConsumed, false);
+    assert.equal(wordSystem.getSlotView(ABILITY_SLOT_ID.Q)
+        .cooldown.nextEligibleFixedTick, 0);
+    destroyHarness(harness);
+});
+
+test('execution history 경계 뒤에도 retired ID를 재사용하지 않는다', () => {
+    const harness = createHarness();
+    const { wordSystem, abilityRuntime, endpoint } = harness;
+    for (let index = 0; index < 140; index++) {
+        const tick = 100 + index;
+        wordSystem.beginFixedTick(tick);
+        assert.equal(wordSystem.requestSlotActivation(ABILITY_SLOT_ID.Q).code,
+            ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+        assert.equal(abilityRuntime.stageForFixedTick({ targetFixedTick: tick })
+            .acceptedCount, 1);
+        endpoint.completeSubjects(endpoint.abilityRequests.at(-1), 0);
+        assert.equal(abilityRuntime.observeCompletedSubjectSnapshots(tick)
+            .observedCount, 1);
+    }
+
+    const status = abilityRuntime.getStatus();
+    const executionIds = endpoint.abilityRequests.map(
+        (command) => command.executionId
+    );
+    assert.equal(new Set(executionIds).size, 140);
+    assert.equal(status.nextExecutionOrdinal, 141);
+    assert.equal(status.history.length, status.historyCapacity);
+    assert.equal(status.history.length, 128);
+    assert.equal(status.history.at(0).executionOrdinal, 13);
+    assert.equal(status.history.at(-1).executionOrdinal, 140);
     destroyHarness(harness);
 });
 

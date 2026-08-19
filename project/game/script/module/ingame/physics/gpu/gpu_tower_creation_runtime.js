@@ -266,7 +266,6 @@ export class GpuTowerCreationRuntime {
             'physics',
             'simulation',
             'abilityMetadata',
-            'actorTransit',
             'members',
             'roster'
         ]) {
@@ -429,6 +428,11 @@ export class GpuTowerCreationRuntime {
                 program
             );
             if (actorActionPlacementBinding) {
+                if (!this.resources.actorTransit) {
+                    throw new TypeError(
+                        'R5 ActorAction Tower creation에는 shared actorTransit buffer가 필요합니다.'
+                    );
+                }
                 actorBindGroup = this.device.createBindGroup({
                     label: 'cirvivor-gpu-tower-creation-actor-action-bind-group',
                     layout: this.pipelines.actorLayout,
@@ -745,6 +749,8 @@ export class GpuTowerCreationRuntime {
             lastSubmittedTick: this.lastSubmittedTick,
             lastCompletedTick: this.lastCompletedTick,
             recordCountHighWater: this.recordCountHighWater,
+            actorTransitBufferAvailable:
+                Boolean(this.resources?.actorTransit),
             resultReadbackBytes: GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
             metadataCommitRecordBytes:
                 GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE,

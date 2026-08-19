@@ -84,7 +84,7 @@ export class SentenceRuntimeEstimator {
 
     estimate(compiledAbility, slotView = {}) {
         if (this.destroyed || !compiledAbility) return null;
-        const runtime = this.getRuntimeState() ?? {};
+        const runtime = this.getRuntimeState(compiledAbility) ?? {};
         const actorAction = createActorActionPreview(compiledAbility);
         const selectorCode = compiledAbility.subjectSelector?.code;
         const towerCount = readNonNegativeInteger(runtime.livingTowerCount);
@@ -96,18 +96,39 @@ export class SentenceRuntimeEstimator {
             : selectorCode === SUBJECT_SELECTOR_CODE.ENEMY
                 ? hostileCount.value
                 : 0;
-        const subjectBudget = nonNegativeInteger(
-            compiledAbility.budgets?.subjectCount
-        );
-        const subjectBudgetExceeded = rawSubjectCount > subjectBudget;
         const countExact = selectorCode === SUBJECT_SELECTOR_CODE.ENEMY
             ? hostileCount.known && runtime.hostileSubjectCountExact === true
             : selectorCode === SUBJECT_SELECTOR_CODE.TOWER
                 ? towerCount.known && runtime.towerSubjectCountExact !== false
                 : false;
-        // Enemy generation eligibility is GPU-owned. Until that aggregate is
-        // available, preview uses the raw count as a conservative upper bound.
-        const eligibleSubjectCount = rawSubjectCount;
+        const eligibleTowerCount = readNonNegativeInteger(
+            runtime.eligibleTowerActorCount
+        );
+        const eligibleHostileCount = readNonNegativeInteger(
+            runtime.eligibleHostileActorCount
+        );
+        const generationEligibilityExact
+            = selectorCode === SUBJECT_SELECTOR_CODE.TOWER
+                ? eligibleTowerCount.known
+                    && runtime.towerGenerationEligibilityExact === true
+                : selectorCode === SUBJECT_SELECTOR_CODE.ENEMY
+                    ? eligibleHostileCount.known
+                        && runtime.hostileGenerationEligibilityExact === true
+                    : false;
+        // GPU-only generation eligibility를 CPU가 모르면 raw exact count를
+        // conservative upper bound로 유지하고 그 비정확성을 별도 노출합니다.
+        const eligibleSubjectCount = generationEligibilityExact
+            ? Math.min(
+                rawSubjectCount,
+                selectorCode === SUBJECT_SELECTOR_CODE.TOWER
+                    ? eligibleTowerCount.value
+                    : eligibleHostileCount.value
+            )
+            : rawSubjectCount;
+        const subjectBudget = nonNegativeInteger(
+            compiledAbility.budgets?.subjectCount
+        );
+        const subjectBudgetExceeded = eligibleSubjectCount > subjectBudget;
         const previewSubjectCount = subjectBudgetExceeded
             ? 0
             : eligibleSubjectCount;
@@ -115,7 +136,7 @@ export class SentenceRuntimeEstimator {
             compiledAbility.budgets?.generatedBodyCount
         );
         const capacity = evaluateActorPayloadCapacity({
-            requiredBodies: rawSubjectCount,
+            requiredBodies: eligibleSubjectCount,
             registryAvailable: nonNegativeInteger(runtime.registryAvailable),
             bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
             generatedBodyBudget
@@ -155,6 +176,8 @@ export class SentenceRuntimeEstimator {
             : !countExact
             ? 'SUBJECT_COUNT_NOT_EXACT'
             : rawSubjectCount === 0
+                || (generationEligibilityExact
+                    && eligibleSubjectCount === 0)
                 ? 'ZERO_SUBJECT'
                 : subjectBudgetExceeded
                     ? 'SUBJECT_BUDGET_EXCEEDED'
@@ -214,6 +237,13 @@ export class SentenceRuntimeEstimator {
             activationDelayFixedTicks:
                 actorAction?.activationDelayFixedTicks ?? 0,
             payloadCode,
+            generationLimit: nonNegativeInteger(
+                compiledAbility.budgets?.generation
+            ),
+            generationEligibilityExact,
+            eligibleSubjectCountExact:
+                countExact && generationEligibilityExact,
+            rawSubjectCountExact: countExact,
             rawSubjectCount,
             eligibleSubjectCount,
             previewSubjectCount,
@@ -247,6 +277,30 @@ export class SentenceRuntimeEstimator {
             capacityValidity: capacity,
             towerCreationPreview,
             towerDilution: towerPayload ? towerCreationPreview : null,
+            towerCapacity: towerPayload
+                ? towerCreationPreview?.capacity ?? null
+                : null,
+            towerShare: towerPayload && towerCreationPreview
+                ? Object.freeze({
+                    livingShareUnits:
+                        towerCreationPreview.livingShareUnits ?? null,
+                    lostShareUnits:
+                        towerCreationPreview.lostShareUnits ?? null,
+                    totalLivingCurrentHp:
+                        towerCreationPreview.totalLivingCurrentHp ?? null
+                })
+                : null,
+            towerAllocations: towerPayload && towerCreationPreview
+                ? Object.freeze({
+                    existing: towerCreationPreview.existing ?? null,
+                    children: towerCreationPreview.children ?? null
+                })
+                : null,
+            towerPlanExact: towerPayload
+                ? towerCreationPreview !== null
+                    && countExact
+                    && generationEligibilityExact
+                : null,
             placementExact: false,
             previewExact: false,
             dangerous,

@@ -2774,7 +2774,11 @@ export class GpuEnemySimulationEndpoint {
             transit,
             pendingTransitLandingCount:
                 this.actorPayloadTransitLandings.size,
-            failure: this.actorPayloadFailure ?? backend.failure ?? null,
+            failure: this.actorPayloadFailure
+                ?? placement.failure
+                ?? backend.failure
+                ?? transit.failure
+                ?? null,
             requiresRecovery: this.actorPayloadFailure !== null
                 || backend.requiresRecovery === true
                 || placement.requiresRecovery === true

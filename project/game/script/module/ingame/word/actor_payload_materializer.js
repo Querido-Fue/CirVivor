@@ -21,6 +21,28 @@ const MATERIALIZATION_KIND = Object.freeze({
     ENEMY: 'ENEMY',
     TOWER: 'TOWER'
 });
+const VERB_TELEMETRY_NAMES = Object.freeze(new Map([
+    [SENTENCE_ACTION_CODE.SHOOT, 'Shoot'],
+    [SENTENCE_ACTION_CODE.THROW, 'Throw'],
+    [SENTENCE_ACTION_CODE.EMIT, 'Emit'],
+    [SENTENCE_ACTION_CODE.SUMMON, 'Summon']
+]));
+
+function createVerbTelemetry() {
+    return new Map([...VERB_TELEMETRY_NAMES.keys()].map((actionCode) => [
+        actionCode,
+        { staged: 0, committed: 0, rejected: 0, cancelled: 0 }
+    ]));
+}
+
+function freezeVerbTelemetry(source) {
+    return Object.freeze(Object.fromEntries(
+        [...VERB_TELEMETRY_NAMES].map(([actionCode, name]) => [
+            name,
+            Object.freeze({ ...source.get(actionCode) })
+        ])
+    ));
+}
 
 function assertEndpoint(endpoint) {
     const methods = [
@@ -108,7 +130,21 @@ export class ActorPayloadMaterializer {
         this.totalRuntimeUnavailable = 0;
         this.totalTowerStaged = 0;
         this.totalTowerCommitted = 0;
+        this.totalTowerRejected = 0;
         this.totalCancelled = 0;
+        this.verbTelemetry = createVerbTelemetry();
+        this.rejectionReasonCounts = {
+            runtimeUnavailable: 0,
+            destinationCapacity: 0,
+            placement: 0,
+            cancelled: 0,
+            protocol: 0
+        };
+        this.inFlightHighWater = 0;
+        this.subjectHighWater = 0;
+        this.generatedHighWater = 0;
+        this.lastSubjectCount = 0;
+        this.lastGeneratedCount = 0;
     }
 
     observeCompleted(currentFixedTick) {
@@ -209,6 +245,12 @@ export class ActorPayloadMaterializer {
                 }
                 this.totalCommitted++;
                 this.totalGenerated += completion.generatedCount;
+                this.generatedHighWater = Math.max(
+                    this.generatedHighWater,
+                    completion.generatedCount
+                );
+                this.lastGeneratedCount = completion.generatedCount;
+                this.#countVerb(record, 'committed');
                 this.#remember(record, 'COMMITTED', completion, tick);
                 continue;
             }
@@ -336,6 +378,12 @@ export class ActorPayloadMaterializer {
             this.totalCommitted++;
             this.totalTowerCommitted++;
             this.totalGenerated += completion.createdCount;
+            this.generatedHighWater = Math.max(
+                this.generatedHighWater,
+                completion.createdCount
+            );
+            this.lastGeneratedCount = completion.createdCount;
+            this.#countVerb(record, 'committed');
             this.#remember(record, 'COMMITTED', completion, tick);
             return Object.freeze({
                 observedCount: 1,
@@ -407,6 +455,12 @@ export class ActorPayloadMaterializer {
         let rejectedCount = 0;
         for (let index = 0; index < ready.length; index++) {
             const record = ready[index];
+            const subjectCount = Number(record.completion?.subjectCount) || 0;
+            this.lastSubjectCount = subjectCount;
+            this.subjectHighWater = Math.max(
+                this.subjectHighWater,
+                subjectCount
+            );
             // R5 actor payload matrix는 네 동사를 같은 0/N settlement로
             // materialize하며 production slot 구성은 별도 data authority입니다.
             if (![
@@ -518,6 +572,11 @@ export class ActorPayloadMaterializer {
                     }
                     this.totalStaged++;
                     this.totalTowerStaged++;
+                    this.#countVerb(record, 'staged');
+                    this.inFlightHighWater = Math.max(
+                        this.inFlightHighWater,
+                        this.inFlight.size
+                    );
                     stagedCount++;
                     continue;
                 }
@@ -600,6 +659,11 @@ export class ActorPayloadMaterializer {
                     });
                 }
                 this.totalStaged++;
+                this.#countVerb(record, 'staged');
+                this.inFlightHighWater = Math.max(
+                    this.inFlightHighWater,
+                    this.inFlight.size
+                );
                 stagedCount++;
                 continue;
             }
@@ -681,6 +745,37 @@ export class ActorPayloadMaterializer {
     }
 
     getStatus() {
+        const gpu = this.endpoint?.getActorPayloadMaterializationStatus()
+            ?? null;
+        const towerCreation = this.towerCreationCoordinatorProvider?.()
+            ?.getStatus?.() ?? null;
+        const telemetry = Object.freeze({
+            lastSubjectCount: this.lastSubjectCount,
+            lastGeneratedCount: this.lastGeneratedCount,
+            subjectHighWater: this.subjectHighWater,
+            generatedHighWater: this.generatedHighWater,
+            inFlightHighWater: this.inFlightHighWater,
+            placementHighWater:
+                gpu?.placement?.commandHighWater ?? 0,
+            transitActiveCount: gpu?.transit?.activeActorCount ?? 0,
+            transitActiveHighWater:
+                gpu?.transit?.activeActorHighWater ?? 0,
+            towerPayloadCommitted: this.totalTowerCommitted,
+            towerPayloadRejected: this.totalTowerRejected,
+            perVerbCounts: freezeVerbTelemetry(this.verbTelemetry),
+            capacityReasons: Object.freeze({
+                ...this.rejectionReasonCounts
+            }),
+            readbackBytes: Object.freeze({
+                payloadAggregate: gpu?.aggregateReadbackByteSize ?? 0,
+                placementAggregate:
+                    gpu?.placement?.aggregateReadbackByteSize ?? 0,
+                transitAggregate:
+                    gpu?.transit?.aggregateReadbackByteSize ?? 0,
+                towerCreationAggregate:
+                    towerCreation?.aggregateReadbackByteSize ?? 0
+            })
+        });
         return Object.freeze({
             abiVersion: ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION,
             destroyed: this.destroyed,
@@ -694,13 +789,15 @@ export class ActorPayloadMaterializer {
             totalRuntimeUnavailable: this.totalRuntimeUnavailable,
             totalTowerStaged: this.totalTowerStaged,
             totalTowerCommitted: this.totalTowerCommitted,
+            totalTowerRejected: this.totalTowerRejected,
             totalCancelled: this.totalCancelled,
+            historyCapacity: MAX_MATERIALIZATION_HISTORY,
+            telemetry,
             recoveryRequired: this.requiresRecovery(),
             failure: this.failure,
             history: Object.freeze([...this.history]),
-            gpu: this.endpoint?.getActorPayloadMaterializationStatus() ?? null,
-            towerCreation: this.towerCreationCoordinatorProvider?.()
-                ?.getStatus?.() ?? null
+            gpu,
+            towerCreation
         });
     }
 
@@ -717,7 +814,43 @@ export class ActorPayloadMaterializer {
         this.towerPayloadContextProvider = null;
     }
 
+    #countVerb(record, field) {
+        const actionCode = record?.ready?.command?.actionCode
+            ?? record?.command?.actionCode;
+        const counter = this.verbTelemetry.get(actionCode);
+        if (!counter || !Object.hasOwn(counter, field)) return;
+        counter[field]++;
+    }
+
+    #countTerminal(record, code) {
+        this.lastGeneratedCount = 0;
+        if (code === ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED) {
+            this.#countVerb(record, 'cancelled');
+            this.rejectionReasonCounts.cancelled++;
+        } else {
+            this.#countVerb(record, 'rejected');
+            if (code === ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE) {
+                this.rejectionReasonCounts.runtimeUnavailable++;
+            } else if (code
+                    === ABILITY_EXECUTION_OUTCOME_CODE
+                        .DESTINATION_CAPACITY_REJECTED) {
+                this.rejectionReasonCounts.destinationCapacity++;
+            } else if (code
+                    === ABILITY_EXECUTION_OUTCOME_CODE.PLACEMENT_REJECTED) {
+                this.rejectionReasonCounts.placement++;
+            } else {
+                this.rejectionReasonCounts.protocol++;
+            }
+        }
+        const payloadCode = record?.ready?.command?.payloadCode
+            ?? record?.command?.payloadCode;
+        if (payloadCode === ACTOR_PAYLOAD_CODE.TOWER) {
+            this.totalTowerRejected++;
+        }
+    }
+
     #settleRejected(record, code, fixedTick, completion) {
+        this.#countTerminal(record, code);
         const settled = this.abilityRuntime.rejectSnapshotExecution(
             record.ready,
             code,
@@ -735,6 +868,7 @@ export class ActorPayloadMaterializer {
     }
 
     #settleTowerRejected(record, code, fixedTick, completion) {
+        this.#countTerminal(record, code);
         const settled = this.abilityRuntime.rejectSnapshotExecution(
             record.ready,
             code,
@@ -755,6 +889,7 @@ export class ActorPayloadMaterializer {
     }
 
     #rejectReady(record, code, fixedTick) {
+        this.#countTerminal(record, code);
         return this.abilityRuntime.rejectSnapshotExecution(
             record,
             code,
@@ -808,6 +943,10 @@ export class ActorPayloadMaterializer {
                 }
             );
             this.totalCancelled++;
+            this.#countTerminal(
+                record,
+                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED
+            );
         }
         this.inFlight.clear();
     }

@@ -30,6 +30,21 @@ const {
     'ingame/object/tower/gpu_tower_spawn_adapter.js'
 );
 const {
+    TOWER_RECOVERY_PLACEMENT_POLICY_ID,
+    createTowerRecoveryPlacementDescriptor
+} = await loadGameModule(
+    'ingame/object/tower/tower_group_contract.js'
+);
+const {
+    ABILITY_CREATION_ORIGIN_CODE
+} = await loadGameModule('ingame/contract/ability_execution_contract.js');
+const {
+    SENTENCE_ACTION_CODE
+} = await loadGameModule('ingame/contract/word_sentence_contract.js');
+const {
+    R5_THROW_ACTOR_ACTION_PROFILE
+} = await loadGameModule('data/word/r5_actor_action_profile_data.js');
+const {
     R3_ENEMIES_SHOOT_ENEMIES_SENTENCE,
     R3_TOWER_SHOOTS_ENEMY_SENTENCE
 } = await loadGameModule('data/word/r3_word_catalog_data.js');
@@ -1522,7 +1537,34 @@ test('1→2 TowerGroup recovery는 모든 논리 상태를 보존하고 exact �
         (handle) => !sameHandle(handle, initialTowerHandle)
     );
     assert.ok(childHandle);
-    const creationCommit = towerGroupState.commitCreation(creationPlan);
+    const childRecoveryPlacementDescriptor
+        = createTowerRecoveryPlacementDescriptor({
+            policyId:
+                TOWER_RECOVERY_PLACEMENT_POLICY_ID.MAP_ANCHOR_LATTICE_V1,
+            mapRecoveryAnchorId: 'map:recovery-test:tower-spawn',
+            mapLatticeVersion: 3,
+            anchorPosition: childDescriptor.position
+        }, childPlan.logicalTowerOrdinal);
+    const childCreationMetadata = Object.freeze({
+        generation: 7,
+        creationOriginCode:
+            ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD,
+        sourceAbilityCode: 731,
+        sourceExecutionId: 'ability-execution.r5.recovery:41',
+        sourceExecutionFingerprint: 0x1234abcd,
+        sourceExecutionOrdinal: 41,
+        visibleFromExecutionOrdinal: 42,
+        actorActionCode: SENTENCE_ACTION_CODE.THROW,
+        actorActionProfileId: R5_THROW_ACTOR_ACTION_PROFILE.id,
+        actorActionProfileFingerprint:
+            R5_THROW_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint,
+        recoveryPlacementDescriptor: childRecoveryPlacementDescriptor
+    });
+    const creationCommit = towerGroupState.commitCreation({
+        plan: creationPlan,
+        childCreationMetadata: [childCreationMetadata],
+        childRecoverySpawnDescriptors: [childRecoveryPlacementDescriptor]
+    });
     assert.equal(creationCommit.accepted, true);
     towerGroupState.bindGpuBody(
         childPlan.logicalTowerId,
@@ -1547,6 +1589,7 @@ test('1→2 TowerGroup recovery는 모든 논리 상태를 보존하고 exact �
             maxHpFixedPoint: record.maxHpFixedPoint,
             powerFixedPoint: record.powerFixedPoint,
             recoverySpawnDescriptor: record.recoverySpawnDescriptor,
+            creationMetadata: record.creationMetadata,
             state: record.state
         })
     );
@@ -1689,7 +1732,48 @@ test('1→2 TowerGroup recovery는 모든 논리 상태를 보존하고 exact �
         { ...restoredTowerBodies[1].position },
         { ...childDescriptor.position }
     );
+    assert.equal(restoredTowerBodies[1].abilityGeneration, 7);
+    assert.equal(
+        restoredTowerBodies[1].abilityCreationOriginCode,
+        ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD
+    );
+    assert.equal(restoredTowerBodies[1].sourceAbilityCode, 731);
+    assert.equal('sourceExecutionId' in restoredTowerBodies[1], false);
+    assert.equal(
+        restoredTowerBodies[1].sourceExecutionFingerprint,
+        0x1234abcd
+    );
+    assert.equal(restoredTowerBodies[1].sourceExecutionOrdinal, 41);
+    assert.equal(restoredTowerBodies[1].visibleFromExecutionOrdinal, 42);
+    assert.equal(
+        restoredTowerBodies[1].actorActionCode,
+        SENTENCE_ACTION_CODE.THROW
+    );
+    assert.equal(
+        restoredTowerBodies[1].actorActionProfileId,
+        R5_THROW_ACTOR_ACTION_PROFILE.id
+    );
+    assert.equal(
+        restoredTowerBodies[1].actorActionProfileFingerprint,
+        R5_THROW_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint
+    );
+    assert.equal(
+        restoredTowerBodies[1].recoveryPlacementPolicyId,
+        TOWER_RECOVERY_PLACEMENT_POLICY_ID.MAP_ANCHOR_LATTICE_V1
+    );
+    assert.equal(restoredTowerBodies[1].recoveryLogicalTowerOrdinal,
+        childPlan.logicalTowerOrdinal);
+    assert.equal(restoredTowerBodies[1].mapRecoveryAnchorId,
+        'map:recovery-test:tower-spawn');
+    assert.equal(restoredTowerBodies[1].mapRecoveryLatticeVersion, 3);
+    assert.deepEqual({ ...restoredTowerBodies[1].velocity }, { x: 0, y: 0 });
+    assert.equal('actorTransitPhase' in restoredTowerBodies[1], false);
     assert.deepEqual(snapshotLogicalRecords(), logicalRecordsBeforeRecovery);
+    assert.equal(
+        towerGroupState.getTowerRecords()[1].creationMetadata
+            .sourceExecutionId,
+        'ability-execution.r5.recovery:41'
+    );
     const reboundRecords = towerGroupState.getTowerRecords();
     assert.equal(reboundRecords.every(({ exactGpuBinding }) => (
         exactGpuBinding?.sessionGeneration
