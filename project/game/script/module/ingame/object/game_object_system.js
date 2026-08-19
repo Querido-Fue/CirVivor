@@ -2892,12 +2892,18 @@ export class GameObjectSystem {
         const actorActionPlacementRuntime = r5Available
             ? Object.freeze({
                 canAccept: () => backend.canStageActorActionPlacement(),
-                stage: (request) => backend.stageActorActionPlacement(request),
+                stage: (request) => backend.stageActorActionPlacement({
+                    ...request,
+                    completionOwner: 'tower-creation'
+                }),
                 submitPendingForFixedTick: (tick) => (
                     backend.submitActorActionPlacements(tick)
                 ),
                 drainCompleted: (out) => (
-                    backend.drainCompletedActorActionPlacements(out)
+                    backend.drainCompletedActorActionPlacements(
+                        out,
+                        'tower-creation'
+                    )
                 ),
                 getPlacementGpuBinding: (token) => (
                     backend.getActorActionPlacementGpuBinding(token)
@@ -3610,8 +3616,18 @@ export class GameObjectSystem {
                 ? this.#cutoverCommittedTowerDeath()
                 : true;
         }
-        const primary = towerGroupState.getPrimaryTowerRecord();
-        if (!primary?.alive) {
+        const primary = towerGroupState.getTowerRecords().find((record) => (
+            record.alive
+            && record.exactGpuBinding
+            && this.enemySimulationEndpoint
+                ?.isActorTransitAirborne?.(record.exactGpuBinding) !== true
+        )) ?? null;
+        if (!primary) {
+            if (towerGroupState.getLivingTowerCount() > 0) {
+                return this.towerHandle
+                    ? this.#cutoverAirborneTowerBinding()
+                    : true;
+            }
             return this.towerHandle
                 ? this.#cutoverCommittedTowerDeath()
                 : true;
@@ -3626,6 +3642,17 @@ export class GameObjectSystem {
             primary.exactGpuBinding,
             true
         );
+    }
+
+    #cutoverAirborneTowerBinding() {
+        const gameplayTarget = this.enemySimulationEndpoint
+            .configureTowerGameplayTarget(null);
+        this.enemySimulationEndpoint.configureTrackedBody(null);
+        this.tower.resetGpuBinding();
+        this.towerGameplayTargetConfigured = false;
+        this.trackedTowerConfigured = false;
+        this.towerHandle = null;
+        return gameplayTarget?.accepted === true;
     }
 
     #activatePrimaryTowerBinding(handle, forceRosterSync) {

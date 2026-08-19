@@ -225,12 +225,18 @@ function createHarness(device, capacity) {
     });
     const placementPort = Object.freeze({
         canAccept: () => backend.canStageActorActionPlacement(),
-        stage: (request) => backend.stageActorActionPlacement(request),
+        stage: (request) => backend.stageActorActionPlacement({
+            ...request,
+            completionOwner: 'tower-creation'
+        }),
         submitPendingForFixedTick: (tick) => (
             backend.submitActorActionPlacements(tick)
         ),
         drainCompleted: (out) => (
-            backend.drainCompletedActorActionPlacements(out)
+            backend.drainCompletedActorActionPlacements(
+                out,
+                'tower-creation'
+            )
         ),
         getPlacementGpuBinding: (token) => (
             backend.getActorActionPlacementGpuBinding(token)

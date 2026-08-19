@@ -8,7 +8,9 @@ import {
     ABILITY_ENTITY_METADATA_ABI_VERSION
 } from '../../contract/ability_execution_contract.js';
 import {
+    ACTOR_PAYLOAD_CODE,
     GAMEPLAY_NOUN_MASK,
+    SENTENCE_ACTION_CODE,
     SUBJECT_SELECTOR_CODE
 } from '../../contract/word_sentence_contract.js';
 import { GAMEPLAY_TEAM_ID } from '../../contract/gameplay_team_contract.js';
@@ -25,12 +27,25 @@ import {
     writeGpuActorPayloadLeaseHeader
 } from './gpu_actor_payload_materialization_abi.js';
 import {
+    GPU_ACTOR_ACTION_PLACEMENT_ABI,
+    GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION,
+    GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS,
+    GPU_ACTOR_ACTION_PLACEMENT_STATUS,
+    GPU_ACTOR_ACTION_TRANSIT_FLAG,
+    GPU_ACTOR_ACTION_TRANSIT_PHASE
+} from './gpu_actor_action_placement_abi.js';
+import {
     GPU_CIRCLE_BODY_ABI_VERSION,
     GPU_CIRCLE_BODY_COLLISION_LAYER,
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
+import {
+    GPU_ACTOR_TRANSIT_ABI,
+    GPU_ACTOR_TRANSIT_ABI_VERSION,
+    GPU_ACTOR_TRANSIT_PHASE
+} from './gpu_actor_transit_abi.js';
 import {
     GPU_TOWER_GROUP_ABI_VERSION,
     GPU_TOWER_GROUP_INVALID_COMPONENT,
@@ -76,6 +91,26 @@ const S = Object.freeze(Object.fromEntries(
 ));
 const V = Object.freeze(Object.fromEntries(
     Object.entries(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.VALIDATION_RECORD)
+        .filter(([key]) => key !== 'STRIDE')
+        .map(([key, value]) => [key, value / 4])
+));
+const AP = Object.freeze(Object.fromEntries(
+    Object.entries(GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD)
+        .filter(([key]) => key !== 'STRIDE')
+        .map(([key, value]) => [key, value / 4])
+));
+const AA = Object.freeze(Object.fromEntries(
+    Object.entries(GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE)
+        .filter(([key]) => key !== 'STRIDE')
+        .map(([key, value]) => [key, value / 4])
+));
+const AT = Object.freeze(Object.fromEntries(
+    Object.entries(GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD)
+        .filter(([key]) => key !== 'STRIDE')
+        .map(([key, value]) => [key, value / 4])
+));
+const TR = Object.freeze(Object.fromEntries(
+    Object.entries(GPU_ACTOR_TRANSIT_ABI.RECORD)
         .filter(([key]) => key !== 'STRIDE')
         .map(([key, value]) => [key, value / 4])
 ));
@@ -429,7 +464,7 @@ fn reject(status: u32, errors: u32) {
 
 @compute @workgroup_size(1)
 fn initialize_actor_payload() {
-    for (var word = 0u; word < 16u; word++) {
+    for (var word = 0u; word < AGGREGATE_WORDS; word++) {
         store_aggregate(word, 0u);
     }
     store_aggregate(0u, MATERIALIZER_ABI);
@@ -443,6 +478,9 @@ fn initialize_actor_payload() {
     store_aggregate(9u, header(${H.SUBJECT_COUNT}u));
     store_aggregate(11u, header(${H.COMMAND_FINGERPRINT}u));
     store_aggregate(12u, header(${H.SNAPSHOT_FINGERPRINT}u));
+    store_aggregate(15u,
+        header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u));
+    store_aggregate(16u, header(${H.PLACEMENT_FINGERPRINT}u));
 
     if (header(${H.ABI_VERSION}u) != MATERIALIZER_ABI) {
         reject(STATUS_PROTOCOL_REJECTED, ERROR_LEASE_ABI);
@@ -1000,6 +1038,539 @@ fn query_actor_payload_tower_target(
 }
 `;
 
+const ACTOR_ACTION_PLACEMENT_AGGREGATE_WORDS
+    = GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STRIDE / 4;
+const ACTOR_ACTION_PLACEMENT_RECORD_WORDS
+    = GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE / 4;
+const ACTOR_ACTION_PLACEMENT_TRANSIT_WORDS
+    = GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE / 4;
+const ACTOR_TRANSIT_RECORD_WORDS = GPU_ACTOR_TRANSIT_ABI.RECORD.STRIDE / 4;
+const ACTOR_ACTION_ALL_TRANSIT_FLAGS = Object.values(
+    GPU_ACTOR_ACTION_TRANSIT_FLAG
+).reduce((mask, value) => mask | value, 0);
+
+export const GPU_ACTOR_ACTION_ENEMY_MATERIALIZATION_WGSL = /* wgsl */`
+struct ActorBodyPhysics {
+    position: vec2f,
+    velocity: vec2f,
+    radius: f32,
+    inverse_mass: f32,
+    physical_meta: u32,
+    interaction_meta: u32,
+}
+
+struct ActorBodySimulation {
+    lifetime: f32,
+    health: atomic<i32>,
+    gameplay_meta: u32,
+    flags: atomic<u32>,
+    flow_field_index: u32,
+    flow_speed: f32,
+    entity_id: u32,
+    incarnation: u32,
+}
+
+struct ActorAbilityMetadata {
+    abi_version: u32,
+    noun_mask: u32,
+    definition_code: u32,
+    owner_entity_id: u32,
+    owner_incarnation: u32,
+    source_ability_code: u32,
+    source_execution_fingerprint: u32,
+    source_execution_ordinal: u32,
+    generation: u32,
+    visible_from_execution_ordinal: u32,
+    creation_origin_code: u32,
+    power_fixed_point: u32,
+}
+
+struct ActorRouteRuntimeState {
+    route_meta: u32,
+    self_entity_id: u32,
+    self_incarnation: u32,
+    current_path_index: u32,
+    route_set_index: u32,
+    closure_index: u32,
+    observed_availability_version: u32,
+    phase_entered_fixed_tick: u32,
+    travel_radius: f32,
+    blocker_radius: f32,
+    expansion_duration_fixed_ticks: u32,
+    pending_field_index: u32,
+    lease_generation: u32,
+    profile_code: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+}
+
+struct ActorRawReadBuffer { values: array<u32> }
+struct ActorRawWriteBuffer { values: array<u32> }
+struct ActorRawAtomicBuffer { values: array<atomic<u32>> }
+struct ActorPhysicsBuffer { values: array<ActorBodyPhysics> }
+struct ActorSimulationBuffer { values: array<ActorBodySimulation> }
+struct ActorMetadataBuffer { values: array<ActorAbilityMetadata> }
+struct ActorRouteBuffer { values: array<ActorRouteRuntimeState> }
+
+@group(0) @binding(0) var<storage, read> actor_snapshots: ActorRawReadBuffer;
+@group(0) @binding(1) var<storage, read> actor_leases: ActorRawReadBuffer;
+@group(0) @binding(2) var<storage, read> actor_placement: ActorRawReadBuffer;
+@group(0) @binding(3) var<storage, read_write> actor_physics: ActorPhysicsBuffer;
+@group(0) @binding(4) var<storage, read_write> actor_simulations: ActorSimulationBuffer;
+@group(0) @binding(5) var<storage, read_write> actor_metadata: ActorMetadataBuffer;
+@group(0) @binding(6) var<storage, read_write> actor_routes: ActorRouteBuffer;
+@group(0) @binding(7) var<storage, read_write> actor_transits: ActorRawWriteBuffer;
+@group(0) @binding(8) var<storage, read_write> actor_aggregate: ActorRawAtomicBuffer;
+
+const ACTOR_MATERIALIZER_ABI: u32 = ${GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION}u;
+const ACTOR_PLACEMENT_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION}u;
+const ACTOR_TRANSIT_ABI: u32 = ${GPU_ACTOR_TRANSIT_ABI_VERSION}u;
+const ACTOR_BODY_ABI: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
+const ACTOR_METADATA_ABI: u32 = ${ABILITY_ENTITY_METADATA_ABI_VERSION}u;
+const ACTOR_HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
+const ACTOR_LEASE_WORDS: u32 = ${LEASE_WORD_COUNT}u;
+const ACTOR_SNAPSHOT_WORDS: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const ACTOR_AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
+const ACTOR_VALIDATION_WORDS: u32 = ${VALIDATION_WORD_COUNT}u;
+const PLACEMENT_AGGREGATE_WORDS: u32 = ${ACTOR_ACTION_PLACEMENT_AGGREGATE_WORDS}u;
+const PLACEMENT_RECORD_WORDS: u32 = ${ACTOR_ACTION_PLACEMENT_RECORD_WORDS}u;
+const PLACEMENT_TRANSIT_WORDS: u32 = ${ACTOR_ACTION_PLACEMENT_TRANSIT_WORDS}u;
+const TRANSIT_RECORD_WORDS: u32 = ${ACTOR_TRANSIT_RECORD_WORDS}u;
+const ACTOR_INVALID: u32 = 0xffffffffu;
+const ACTOR_FNV_OFFSET: u32 = ${FNV_OFFSET}u;
+const ACTOR_FNV_PRIME: u32 = ${FNV_PRIME}u;
+const ACTOR_ALIVE: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
+const ACTOR_CONTROLLED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.CONTROLLED_THIS_TICK}u;
+const ACTOR_EXTERNAL_MOTION: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.EXTERNAL_MOTION_OWNER_THIS_TICK}u;
+const ACTOR_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
+const ACTOR_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
+const ACTOR_HOSTILE_TEAM: u32 = ${GAMEPLAY_TEAM_ID.HOSTILE}u;
+const ACTOR_ENEMY_NOUN: u32 = ${GAMEPLAY_NOUN_MASK.ENEMY}u;
+const ACTOR_THROW: u32 = ${SENTENCE_ACTION_CODE.THROW}u;
+const ACTOR_ENEMY_PAYLOAD: u32 = ${ACTOR_PAYLOAD_CODE.ENEMY}u;
+const ACTOR_STATUS_PENDING: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PENDING}u;
+const ACTOR_STATUS_COMPLETE: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE}u;
+const ACTOR_STATUS_PROTOCOL: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PROTOCOL_REJECTED}u;
+const PLACEMENT_COMPLETE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE}u;
+const PLACEMENT_RECORD_VALID: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS.VALID}u;
+const PLACEMENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_ACTION_TRANSIT_PHASE.AIRBORNE}u;
+const PERSISTENT_TRANSIT_AIRBORNE: u32 = ${GPU_ACTOR_TRANSIT_PHASE.AIRBORNE}u;
+const REQUIRED_TRANSIT_FLAGS: u32 = ${ACTOR_ACTION_ALL_TRANSIT_FLAGS}u;
+const ACTOR_ERROR_BODY_ABI: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.BODY_ABI}u;
+const ACTOR_ERROR_DESTINATION: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DESTINATION_IDENTITY}u;
+const ACTOR_ERROR_SOURCE: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SOURCE_RECORD}u;
+const ACTOR_ERROR_GENERATION: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.GENERATION}u;
+const ACTOR_ERROR_STALE: u32 = ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.STALE_PROTOCOL}u;
+
+fn actor_header(field: u32) -> u32 {
+    return actor_leases.values[field];
+}
+
+fn actor_lease(rank: u32, field: u32) -> u32 {
+    return actor_leases.values[ACTOR_HEADER_WORDS + rank * ACTOR_LEASE_WORDS + field];
+}
+
+fn actor_snapshot(rank: u32, field: u32) -> u32 {
+    return actor_snapshots.values[
+        actor_header(${H.SNAPSHOT_WORD_OFFSET}u) + rank * ACTOR_SNAPSHOT_WORDS + field
+    ];
+}
+
+fn actor_store_aggregate(field: u32, value: u32) {
+    atomicStore(&actor_aggregate.values[field], value);
+}
+
+fn actor_store_validation(rank: u32, field: u32, value: u32) {
+    atomicStore(&actor_aggregate.values[
+        ACTOR_AGGREGATE_WORDS + rank * ACTOR_VALIDATION_WORDS + field
+    ], value);
+}
+
+fn actor_validation(rank: u32, field: u32) -> u32 {
+    return atomicLoad(&actor_aggregate.values[
+        ACTOR_AGGREGATE_WORDS + rank * ACTOR_VALIDATION_WORDS + field
+    ]);
+}
+
+fn placement_word(rank: u32, field: u32) -> u32 {
+    return actor_placement.values[
+        PLACEMENT_AGGREGATE_WORDS + rank * PLACEMENT_RECORD_WORDS + field
+    ];
+}
+
+fn placement_transit_word(rank: u32, field: u32) -> u32 {
+    return actor_placement.values[
+        PLACEMENT_AGGREGATE_WORDS
+            + actor_header(${H.SUBJECT_COUNT}u) * PLACEMENT_RECORD_WORDS
+            + rank * PLACEMENT_TRANSIT_WORDS + field
+    ];
+}
+
+fn transit_base(slot: u32) -> u32 {
+    return slot * TRANSIT_RECORD_WORDS;
+}
+
+fn transit_word(slot: u32, field: u32) -> u32 {
+    return actor_transits.values[transit_base(slot) + field];
+}
+
+fn set_transit_word(slot: u32, field: u32, value: u32) {
+    actor_transits.values[transit_base(slot) + field] = value;
+}
+
+fn actor_hash_word(hash: u32, word: u32) -> u32 {
+    return (hash ^ word) * ACTOR_FNV_PRIME;
+}
+
+fn actor_nonzero_hash(hash: u32) -> u32 {
+    return select(hash, ACTOR_FNV_OFFSET, hash == 0u);
+}
+
+fn transit_record_fingerprint(slot: u32) -> u32 {
+    var hash = actor_hash_word(ACTOR_FNV_OFFSET,
+        transit_word(slot, ${TR.ABI_VERSION}u));
+    for (var field = ${TR.FLAGS}u; field <= ${TR.DURATION_FIXED_TICKS}u;
+        field += 1u) {
+        hash = actor_hash_word(hash, transit_word(slot, field));
+    }
+    for (var field = ${TR.START_X}u;
+        field <= ${TR.PRESENTATION_ARC_HEIGHT}u; field += 1u) {
+        hash = actor_hash_word(hash, transit_word(slot, field));
+    }
+    for (var field = ${TR.BASELINE_PHYSICAL_META}u;
+        field <= ${TR.BASELINE_VELOCITY_Y}u; field += 1u) {
+        hash = actor_hash_word(hash, transit_word(slot, field));
+    }
+    hash = actor_hash_word(hash, transit_word(slot, ${TR.SOURCE_RANK}u));
+    return actor_nonzero_hash(hash);
+}
+
+fn actor_body_team(slot: u32) -> u32 {
+    return (actor_simulations.values[slot].gameplay_meta
+        >> ACTOR_TEAM_SHIFT) & ACTOR_TEAM_MASK;
+}
+
+fn actor_finite(value: f32) -> bool {
+    return value == value && abs(value) <= 3.402823466e+38;
+}
+
+@compute @workgroup_size(1)
+fn initialize_actor_action_enemy_payload() {
+    for (var word = 0u; word < ACTOR_AGGREGATE_WORDS; word += 1u) {
+        actor_store_aggregate(word, 0u);
+    }
+    actor_store_aggregate(0u, ACTOR_MATERIALIZER_ABI);
+    actor_store_aggregate(1u, ACTOR_BODY_ABI);
+    actor_store_aggregate(2u, actor_header(${H.SESSION_GENERATION}u));
+    actor_store_aggregate(3u, actor_header(${H.DEVICE_GENERATION}u));
+    actor_store_aggregate(4u, actor_header(${H.AUTHORITATIVE_EPOCH}u));
+    actor_store_aggregate(5u, actor_header(${H.SNAPSHOT_SOURCE_TICK}u));
+    actor_store_aggregate(6u, actor_header(${H.MATERIALIZATION_TARGET_TICK}u));
+    actor_store_aggregate(7u, actor_header(${H.EXECUTION_ORDINAL}u));
+    actor_store_aggregate(8u, ACTOR_STATUS_PENDING);
+    actor_store_aggregate(9u, actor_header(${H.SUBJECT_COUNT}u));
+    actor_store_aggregate(11u, actor_header(${H.COMMAND_FINGERPRINT}u));
+    actor_store_aggregate(12u, actor_header(${H.SNAPSHOT_FINGERPRINT}u));
+    actor_store_aggregate(15u,
+        actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u));
+    actor_store_aggregate(16u,
+        actor_header(${H.PLACEMENT_FINGERPRINT}u));
+    let count = actor_header(${H.SUBJECT_COUNT}u);
+    let placement_exact = actor_placement.values[${AA.ABI_VERSION}u]
+            == ACTOR_PLACEMENT_ABI
+        && actor_placement.values[${AA.STATUS}u] == PLACEMENT_COMPLETE
+        && actor_placement.values[${AA.SUBJECT_COUNT}u] == count
+        && actor_placement.values[${AA.VALID_COUNT}u] == count
+        && actor_placement.values[${AA.ERROR_FLAGS}u] == 0u
+        && actor_placement.values[${AA.EXECUTION_ORDINAL}u]
+            == actor_header(${H.EXECUTION_ORDINAL}u)
+        && actor_placement.values[${AA.COMMAND_FINGERPRINT}u]
+            == actor_header(${H.COMMAND_FINGERPRINT}u)
+        && actor_placement.values[${AA.SNAPSHOT_FINGERPRINT}u]
+            == actor_header(${H.SNAPSHOT_FINGERPRINT}u)
+        && actor_placement.values[${AA.PLACEMENT_FINGERPRINT}u]
+            == actor_header(${H.PLACEMENT_FINGERPRINT}u)
+        && actor_placement.values[${AA.PROFILE_FINGERPRINT}u]
+            == actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u)
+        && actor_placement.values[${AA.ACTION_CODE}u] == ACTOR_THROW
+        && actor_placement.values[${AA.PAYLOAD_CODE}u] == ACTOR_ENEMY_PAYLOAD;
+    if (actor_header(${H.ABI_VERSION}u) != ACTOR_MATERIALIZER_ABI
+        || actor_header(${H.BODY_ABI_VERSION}u) != ACTOR_BODY_ABI
+        || count == 0u
+        || actor_header(${H.ACTION_CODE}u) != ACTOR_THROW
+        || actor_header(${H.PAYLOAD_CODE}u) != ACTOR_ENEMY_PAYLOAD
+        || actor_header(${H.PAYLOAD_NOUN_MASK}u) != ACTOR_ENEMY_NOUN
+        || actor_header(${H.PAYLOAD_TEAM_ID}u) != ACTOR_HOSTILE_TEAM
+        || actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u) == 0u
+        || actor_header(${H.PLACEMENT_FINGERPRINT}u) == 0u
+        || !placement_exact) {
+        actor_store_aggregate(8u, ACTOR_STATUS_PROTOCOL);
+        actor_store_aggregate(14u, ACTOR_ERROR_STALE | ACTOR_ERROR_BODY_ABI);
+    }
+}
+
+@compute @workgroup_size(${GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE})
+fn validate_actor_action_enemy_payload(
+    @builtin(global_invocation_id) invocation: vec3u
+) {
+    let rank = invocation.x;
+    let count = actor_header(${H.SUBJECT_COUNT}u);
+    if (rank >= count || atomicLoad(&actor_aggregate.values[8u])
+        != ACTOR_STATUS_PENDING) { return; }
+    for (var word = 0u; word < ACTOR_VALIDATION_WORDS; word += 1u) {
+        actor_store_validation(rank, word, 0u);
+    }
+    var errors = 0u;
+    let slot = actor_lease(rank, ${R.DESTINATION_SLOT}u);
+    let entity_id = actor_lease(rank, ${R.DESTINATION_ENTITY_ID}u);
+    let incarnation = actor_lease(rank, ${R.DESTINATION_INCARNATION}u);
+    let slot_valid = slot < arrayLength(&actor_simulations.values)
+        && slot < arrayLength(&actor_physics.values)
+        && slot < arrayLength(&actor_metadata.values)
+        && slot * TRANSIT_RECORD_WORDS < arrayLength(&actor_transits.values);
+    if (actor_lease(rank, ${R.SNAPSHOT_RANK}u) != rank
+        || !slot_valid || entity_id == 0u || entity_id == ACTOR_INVALID
+        || incarnation == 0u || incarnation == ACTOR_INVALID) {
+        errors |= ACTOR_ERROR_DESTINATION;
+    }
+    if (slot_valid
+        && (actor_simulations.values[slot].entity_id != entity_id
+            || actor_simulations.values[slot].incarnation != incarnation
+            || (atomicLoad(&actor_simulations.values[slot].flags)
+                & ACTOR_ALIVE) != 0u
+            || actor_body_team(slot) != ACTOR_HOSTILE_TEAM)) {
+        errors |= ACTOR_ERROR_DESTINATION;
+    }
+    let source_generation = actor_snapshot(rank, ${S.GENERATION}u);
+    if (source_generation >= actor_header(${H.GENERATION_LIMIT}u)) {
+        errors |= ACTOR_ERROR_GENERATION;
+    }
+    let duration = placement_word(rank, ${AP.TRANSIT_DURATION_FIXED_TICKS}u);
+    let start = vec2f(
+        bitcast<f32>(placement_word(rank, ${AP.SPAWN_X}u)),
+        bitcast<f32>(placement_word(rank, ${AP.SPAWN_Y}u))
+    );
+    let landing = vec2f(
+        bitcast<f32>(placement_transit_word(rank, ${AT.LANDING_X}u)),
+        bitcast<f32>(placement_transit_word(rank, ${AT.LANDING_Y}u))
+    );
+    let velocity = vec2f(
+        bitcast<f32>(placement_transit_word(rank, ${AT.VELOCITY_X}u)),
+        bitcast<f32>(placement_transit_word(rank, ${AT.VELOCITY_Y}u))
+    );
+    let derived_velocity = (landing - start) * (60.0 / f32(duration));
+    if (placement_word(rank, ${AP.ABI_VERSION}u) != ACTOR_PLACEMENT_ABI
+        || placement_word(rank, ${AP.STATUS}u) != PLACEMENT_RECORD_VALID
+        || placement_word(rank, ${AP.ERROR_FLAGS}u) != 0u
+        || placement_word(rank, ${AP.SOURCE_RANK}u) != rank
+        || placement_word(rank, ${AP.DESTINATION_RANK}u) != rank
+        || placement_word(rank, ${AP.DESTINATION_SLOT}u) != slot
+        || placement_word(rank, ${AP.DESTINATION_ENTITY_ID}u) != entity_id
+        || placement_word(rank, ${AP.DESTINATION_INCARNATION}u) != incarnation
+        || placement_word(rank, ${AP.ACTION_CODE}u) != ACTOR_THROW
+        || placement_word(rank, ${AP.PAYLOAD_CODE}u) != ACTOR_ENEMY_PAYLOAD
+        || placement_word(rank, ${AP.PLACEMENT_FINGERPRINT}u) == 0u
+        || placement_word(rank, ${AP.CHILD_GENERATION}u)
+            != source_generation + 1u
+        || placement_transit_word(rank, ${AT.ABI_VERSION}u)
+            != ACTOR_PLACEMENT_ABI
+        || placement_transit_word(rank, ${AT.PHASE}u)
+            != PLACEMENT_TRANSIT_AIRBORNE
+        || placement_transit_word(rank, ${AT.FLAGS}u)
+            != REQUIRED_TRANSIT_FLAGS
+        || placement_transit_word(rank, ${AT.DURATION_FIXED_TICKS}u)
+            != duration
+        || duration == 0u
+        || !actor_finite(start.x) || !actor_finite(start.y)
+        || !actor_finite(landing.x) || !actor_finite(landing.y)
+        || !actor_finite(velocity.x) || !actor_finite(velocity.y)
+        || any(derived_velocity != velocity)) {
+        errors |= ACTOR_ERROR_SOURCE | ACTOR_ERROR_STALE;
+    }
+    actor_store_validation(rank, ${V.ERROR_FLAGS}u, errors);
+}
+
+@compute @workgroup_size(1)
+fn aggregate_actor_action_enemy_payload() {
+    if (atomicLoad(&actor_aggregate.values[8u])
+        != ACTOR_STATUS_PENDING) { return; }
+    let count = actor_header(${H.SUBJECT_COUNT}u);
+    var errors = 0u;
+    var destination_fingerprint = actor_hash_word(
+        ACTOR_FNV_OFFSET,
+        actor_header(${H.COMMAND_FINGERPRINT}u)
+    );
+    for (var rank = 0u; rank < count; rank += 1u) {
+        errors |= actor_validation(rank, ${V.ERROR_FLAGS}u);
+        destination_fingerprint = actor_hash_word(
+            destination_fingerprint,
+            actor_lease(rank, ${R.DESTINATION_SLOT}u)
+        );
+        destination_fingerprint = actor_hash_word(
+            destination_fingerprint,
+            actor_lease(rank, ${R.DESTINATION_ENTITY_ID}u)
+        );
+        destination_fingerprint = actor_hash_word(
+            destination_fingerprint,
+            actor_lease(rank, ${R.DESTINATION_INCARNATION}u)
+        );
+    }
+    actor_store_aggregate(13u, destination_fingerprint);
+    actor_store_aggregate(14u, errors);
+    actor_store_aggregate(8u,
+        select(ACTOR_STATUS_COMPLETE, ACTOR_STATUS_PROTOCOL, errors != 0u));
+}
+
+@compute @workgroup_size(${GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE})
+fn materialize_actor_action_enemy_payload(
+    @builtin(global_invocation_id) invocation: vec3u
+) {
+    let rank = invocation.x;
+    let count = actor_header(${H.SUBJECT_COUNT}u);
+    if (rank >= count || atomicLoad(&actor_aggregate.values[8u])
+        != ACTOR_STATUS_COMPLETE) { return; }
+    let slot = actor_lease(rank, ${R.DESTINATION_SLOT}u);
+    let entity_id = actor_lease(rank, ${R.DESTINATION_ENTITY_ID}u);
+    let incarnation = actor_lease(rank, ${R.DESTINATION_INCARNATION}u);
+    let start = vec2f(
+        bitcast<f32>(placement_word(rank, ${AP.SPAWN_X}u)),
+        bitcast<f32>(placement_word(rank, ${AP.SPAWN_Y}u))
+    );
+    actor_physics.values[slot].position = start;
+
+    if (actor_header(${H.SOURCE_SELECTOR_CODE}u) == ${SUBJECT_SELECTOR_CODE.ENEMY}u) {
+        actor_simulations.values[slot].flow_field_index
+            = actor_snapshot(rank, ${S.FLOW_FIELD_INDEX}u);
+        actor_simulations.values[slot].flow_speed = bitcast<f32>(
+            actor_snapshot(rank, ${S.FLOW_SPEED}u)
+        );
+        actor_routes.values[slot].route_meta
+            = actor_snapshot(rank, ${S.ROUTE_META}u);
+        actor_routes.values[slot].current_path_index
+            = actor_snapshot(rank, ${S.ROUTE_PATH_INDEX}u);
+        actor_routes.values[slot].route_set_index
+            = actor_snapshot(rank, ${S.ROUTE_SET_INDEX}u);
+        actor_routes.values[slot].profile_code
+            = actor_snapshot(rank, ${S.ROUTE_PROFILE_CODE}u);
+    } else {
+        actor_simulations.values[slot].flow_field_index
+            = actor_header(${H.DEFAULT_FLOW_FIELD_INDEX}u);
+        actor_routes.values[slot].route_meta
+            = actor_lease(rank, ${R.DEFAULT_ROUTE_META}u);
+        actor_routes.values[slot].current_path_index
+            = actor_header(${H.DEFAULT_CURRENT_PATH_INDEX}u);
+        actor_routes.values[slot].route_set_index
+            = actor_header(${H.DEFAULT_ROUTE_SET_INDEX}u);
+        actor_routes.values[slot].profile_code
+            = actor_lease(rank, ${R.DEFAULT_ROUTE_PROFILE_CODE}u);
+    }
+    actor_routes.values[slot].self_entity_id = entity_id;
+    actor_routes.values[slot].self_incarnation = incarnation;
+
+    actor_metadata.values[slot].abi_version = ACTOR_METADATA_ABI;
+    actor_metadata.values[slot].noun_mask
+        = actor_header(${H.PAYLOAD_NOUN_MASK}u);
+    actor_metadata.values[slot].definition_code
+        = actor_header(${H.PAYLOAD_DEFINITION_CODE}u);
+    actor_metadata.values[slot].owner_entity_id
+        = actor_snapshot(rank, ${S.ENTITY_ID}u);
+    actor_metadata.values[slot].owner_incarnation
+        = actor_snapshot(rank, ${S.INCARNATION}u);
+    actor_metadata.values[slot].source_ability_code
+        = actor_header(${H.SOURCE_ABILITY_CODE}u);
+    actor_metadata.values[slot].source_execution_fingerprint
+        = actor_header(${H.SOURCE_EXECUTION_FINGERPRINT}u);
+    actor_metadata.values[slot].source_execution_ordinal
+        = actor_header(${H.EXECUTION_ORDINAL}u);
+    actor_metadata.values[slot].generation
+        = placement_word(rank, ${AP.CHILD_GENERATION}u);
+    actor_metadata.values[slot].visible_from_execution_ordinal
+        = actor_header(${H.EXECUTION_ORDINAL}u) + 1u;
+    actor_metadata.values[slot].creation_origin_code
+        = actor_header(${H.CREATION_ORIGIN_CODE}u);
+    actor_metadata.values[slot].power_fixed_point
+        = actor_snapshot(rank, ${S.POWER_FIXED_POINT}u);
+
+    set_transit_word(slot, ${TR.ABI_VERSION}u, ACTOR_TRANSIT_ABI);
+    set_transit_word(slot, ${TR.PHASE}u, PERSISTENT_TRANSIT_AIRBORNE);
+    set_transit_word(slot, ${TR.FLAGS}u,
+        placement_transit_word(rank, ${AT.FLAGS}u));
+    set_transit_word(slot, ${TR.PAYLOAD_CODE}u, ACTOR_ENEMY_PAYLOAD);
+    set_transit_word(slot, ${TR.ENTITY_ID}u, entity_id);
+    set_transit_word(slot, ${TR.INCARNATION}u, incarnation);
+    set_transit_word(slot, ${TR.SOURCE_ENTITY_ID}u,
+        placement_word(rank, ${AP.SOURCE_ENTITY_ID}u));
+    set_transit_word(slot, ${TR.SOURCE_INCARNATION}u,
+        placement_word(rank, ${AP.SOURCE_INCARNATION}u));
+    set_transit_word(slot, ${TR.ACTION_CODE}u, ACTOR_THROW);
+    set_transit_word(slot, ${TR.PROFILE_CODE}u,
+        placement_word(rank, ${AP.PROFILE_CODE}u));
+    set_transit_word(slot, ${TR.PROFILE_FINGERPRINT}u,
+        actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u));
+    set_transit_word(slot, ${TR.EXECUTION_ORDINAL}u,
+        actor_header(${H.EXECUTION_ORDINAL}u));
+    set_transit_word(slot, ${TR.EXECUTION_FINGERPRINT}u,
+        actor_header(${H.SOURCE_EXECUTION_FINGERPRINT}u));
+    set_transit_word(slot, ${TR.PLACEMENT_FINGERPRINT}u,
+        actor_header(${H.PLACEMENT_FINGERPRINT}u));
+    set_transit_word(slot, ${TR.START_TICK}u,
+        actor_header(${H.MATERIALIZATION_TARGET_TICK}u));
+    set_transit_word(slot, ${TR.ACTIVATION_TICK}u,
+        placement_word(rank, ${AP.ACTIVATION_TICK}u));
+    set_transit_word(slot, ${TR.DURATION_FIXED_TICKS}u,
+        placement_word(rank, ${AP.TRANSIT_DURATION_FIXED_TICKS}u));
+    set_transit_word(slot, ${TR.PROGRESS_FIXED_TICKS}u, 0u);
+    set_transit_word(slot, ${TR.START_X}u,
+        placement_word(rank, ${AP.SPAWN_X}u));
+    set_transit_word(slot, ${TR.START_Y}u,
+        placement_word(rank, ${AP.SPAWN_Y}u));
+    set_transit_word(slot, ${TR.LANDING_X}u,
+        placement_transit_word(rank, ${AT.LANDING_X}u));
+    set_transit_word(slot, ${TR.LANDING_Y}u,
+        placement_transit_word(rank, ${AT.LANDING_Y}u));
+    set_transit_word(slot, ${TR.GROUND_VELOCITY_X}u,
+        placement_transit_word(rank, ${AT.VELOCITY_X}u));
+    set_transit_word(slot, ${TR.GROUND_VELOCITY_Y}u,
+        placement_transit_word(rank, ${AT.VELOCITY_Y}u));
+    set_transit_word(slot, ${TR.PRESENTATION_ARC_HEIGHT}u,
+        placement_transit_word(rank, ${AT.PRESENTATION_ARC_HEIGHT}u));
+    set_transit_word(slot, ${TR.CURRENT_PRESENTATION_ARC_HEIGHT}u, 0u);
+    set_transit_word(slot, ${TR.BASELINE_PHYSICAL_META}u,
+        actor_physics.values[slot].physical_meta);
+    set_transit_word(slot, ${TR.BASELINE_INTERACTION_META}u,
+        actor_physics.values[slot].interaction_meta);
+    set_transit_word(slot, ${TR.BASELINE_NOUN_MASK}u,
+        actor_metadata.values[slot].noun_mask);
+    set_transit_word(slot, ${TR.BASELINE_FLOW_FIELD_INDEX}u,
+        actor_simulations.values[slot].flow_field_index);
+    set_transit_word(slot, ${TR.BASELINE_FLOW_SPEED}u,
+        bitcast<u32>(actor_simulations.values[slot].flow_speed));
+    set_transit_word(slot, ${TR.BASELINE_VELOCITY_X}u,
+        bitcast<u32>(actor_physics.values[slot].velocity.x));
+    set_transit_word(slot, ${TR.BASELINE_VELOCITY_Y}u,
+        bitcast<u32>(actor_physics.values[slot].velocity.y));
+    set_transit_word(slot, ${TR.SOURCE_RANK}u, rank);
+    set_transit_word(slot, ${TR.RESERVED_0}u, 0u);
+    set_transit_word(slot, ${TR.RESERVED_1}u, 0u);
+    set_transit_word(slot, ${TR.RESERVED_2}u, 0u);
+    set_transit_word(slot, ${TR.RESERVED_3}u, 0u);
+    set_transit_word(slot, ${TR.RESERVED_4}u, 0u);
+    set_transit_word(slot, ${TR.RECORD_FINGERPRINT}u,
+        transit_record_fingerprint(slot));
+
+    actor_physics.values[slot].velocity = vec2f(0.0);
+    actor_physics.values[slot].physical_meta = 0u;
+    actor_physics.values[slot].interaction_meta = 0u;
+    actor_metadata.values[slot].noun_mask = 0u;
+    actor_simulations.values[slot].flow_speed = 0.0;
+    let baseline_flags = actor_lease(rank, ${R.BASELINE_FLAGS}u)
+        & ~ACTOR_ALIVE;
+    atomicStore(&actor_simulations.values[slot].flags,
+        baseline_flags | ACTOR_CONTROLLED | ACTOR_EXTERNAL_MOTION);
+    atomicAdd(&actor_aggregate.values[10u], 1u);
+}
+`;
+
 function requirePositiveInteger(value, label) {
     const number = Number(value);
     if (!Number.isSafeInteger(number) || number <= 0 || number > 0xffffffff) {
@@ -1087,6 +1658,20 @@ function getPipelines(device, stage) {
         label: 'cirvivor-gpu-actor-payload-tower-target-query-shader',
         code: GPU_ACTOR_PAYLOAD_TOWER_TARGET_QUERY_WGSL
     });
+    const actorActionLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-action-enemy-materialization-layout',
+        entries: Array.from({ length: 9 }, (_, binding) => ({
+            binding,
+            visibility: stage.COMPUTE,
+            buffer: {
+                type: binding <= 2 ? 'read-only-storage' : 'storage'
+            }
+        }))
+    });
+    const actorActionModule = device.createShaderModule({
+        label: 'cirvivor-gpu-actor-action-enemy-materialization-shader',
+        code: GPU_ACTOR_ACTION_ENEMY_MATERIALIZATION_WGSL
+    });
     const pipelineLayout = device.createPipelineLayout({
         label: 'cirvivor-gpu-actor-payload-materialization-pipeline-layout',
         bindGroupLayouts: [layout]
@@ -1096,9 +1681,21 @@ function getPipelines(device, stage) {
         layout: pipelineLayout,
         compute: { module, entryPoint }
     });
+    const actorActionPipelineLayout = device.createPipelineLayout({
+        label: 'cirvivor-gpu-actor-action-enemy-materialization-pipeline-layout',
+        bindGroupLayouts: [actorActionLayout]
+    });
+    const createActorActionPipeline = (entryPoint) => (
+        device.createComputePipeline({
+            label: `cirvivor-gpu-actor-action-enemy-${entryPoint}`,
+            layout: actorActionPipelineLayout,
+            compute: { module: actorActionModule, entryPoint }
+        })
+    );
     cached = Object.freeze({
         layout,
         queryLayout,
+        actorActionLayout,
         query: device.createComputePipeline({
             label: 'cirvivor-gpu-actor-payload-tower-target-query-pipeline',
             layout: device.createPipelineLayout({
@@ -1125,6 +1722,18 @@ function getPipelines(device, stage) {
         materialize: createPipeline(
             'materialize_actor_payload',
             'cirvivor-gpu-actor-payload-materialize-pipeline'
+        ),
+        initializeActorAction: createActorActionPipeline(
+            'initialize_actor_action_enemy_payload'
+        ),
+        validateActorAction: createActorActionPipeline(
+            'validate_actor_action_enemy_payload'
+        ),
+        aggregateActorAction: createActorActionPipeline(
+            'aggregate_actor_action_enemy_payload'
+        ),
+        materializeActorAction: createActorActionPipeline(
+            'materialize_actor_action_enemy_payload'
         )
     });
     PIPELINES_BY_DEVICE.set(device, cached);
@@ -1140,7 +1749,35 @@ function sameResources(left, right) {
         && left?.enemyBehaviorStates === right?.enemyBehaviorStates
         && left?.sdf === right?.sdf
         && left?.towerMembers === right?.towerMembers
-        && left?.towerRoster === right?.towerRoster;
+        && left?.towerRoster === right?.towerRoster
+        && left?.actorTransit === right?.actorTransit;
+}
+
+function normalizeActorActionPlacementBinding(binding, command, completion) {
+    if (binding === undefined || binding === null) return null;
+    const exact = binding && typeof binding === 'object'
+        && binding.buffer
+        && binding.abiVersion === GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION
+        && binding.subjectCount === completion.subjectCount
+        && binding.executionOrdinal === command.executionOrdinal
+        && binding.commandFingerprint === command.fingerprint
+        && binding.snapshotFingerprint === completion.snapshotFingerprint
+        && binding.actorActionProfileFingerprint
+            === command.actorActionProfileFingerprint
+        && Number.isSafeInteger(binding.placementFingerprint)
+        && binding.placementFingerprint > 0
+        && binding.placementRecordStride
+            === GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE
+        && binding.transitRecordStride
+            === GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE
+        && Number.isSafeInteger(binding.aggregateByteOffset)
+        && binding.aggregateByteOffset >= 0
+        && Number.isSafeInteger(binding.byteLength)
+        && binding.byteLength > 0;
+    if (!exact) {
+        throw new RangeError('Enemy ActorAction placement binding이 exact하지 않습니다.');
+    }
+    return Object.freeze({ ...binding });
 }
 
 function freezeCompletion(entry, aggregate, extra = {}) {
@@ -1217,7 +1854,8 @@ export class GpuActorPayloadMaterializationRuntime {
             'enemyBehaviorStates',
             'sdf',
             'towerMembers',
-            'towerRoster'
+            'towerRoster',
+            'actorTransit'
         ]) {
             if (!resources?.[key]) {
                 throw new TypeError(`ActorPayloadMaterialization ${key} buffer가 없습니다.`);
@@ -1326,6 +1964,30 @@ export class GpuActorPayloadMaterializationRuntime {
                 reason: 'actor-payload-snapshot-contract'
             });
         }
+        let actorActionPlacementBinding;
+        try {
+            actorActionPlacementBinding = normalizeActorActionPlacementBinding(
+                request.actorActionPlacementBinding,
+                command,
+                completion
+            );
+        } catch (error) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-placement-contract',
+                message: String(error?.message ?? error)
+            });
+        }
+        const actorActionMode = actorActionPlacementBinding !== null;
+        if ((command.actionCode === SENTENCE_ACTION_CODE.THROW)
+            !== actorActionMode
+            || (actorActionMode
+                && command.payloadCode !== ACTOR_PAYLOAD_CODE.ENEMY)) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-action-mode-contract'
+            });
+        }
         const leaseBytes = createGpuActorPayloadLeaseStorage(
             destinationLeases.length
         );
@@ -1367,7 +2029,13 @@ export class GpuActorPayloadMaterializationRuntime {
             generationLimit: command.generationLimit,
             snapshotWordOffset: snapshotBinding.wordOffset,
             defaultCurrentPathIndex: request.defaultRoute.currentPathIndex,
-            defaultRouteSetIndex: request.defaultRoute.routeSetIndex
+            defaultRouteSetIndex: request.defaultRoute.routeSetIndex,
+            actorActionProfileFingerprint: actorActionMode
+                ? command.actorActionProfileFingerprint
+                : 0,
+            placementFingerprint: actorActionMode
+                ? actorActionPlacementBinding.placementFingerprint
+                : 0
         });
         for (let index = 0; index < destinationLeases.length; index++) {
             writeGpuActorPayloadDestinationLease(
@@ -1405,6 +2073,13 @@ export class GpuActorPayloadMaterializationRuntime {
             ),
             destinationCount: destinationLeases.length,
             destinationFingerprint: request.destinationFingerprint >>> 0,
+            actorActionPlacementBinding,
+            actorActionProfileFingerprint: actorActionMode
+                ? command.actorActionProfileFingerprint
+                : 0,
+            placementFingerprint: actorActionMode
+                ? actorActionPlacementBinding.placementFingerprint
+                : 0,
             leaseBuffer,
             aggregateBuffer,
             aggregateStorageByteSize,
@@ -1454,7 +2129,9 @@ export class GpuActorPayloadMaterializationRuntime {
                 label: `cirvivor-gpu-actor-payload-materialization-${tick}`
             });
             for (const entry of claims) {
-                const bindGroup = this.device.createBindGroup({
+                const bindGroup = entry.actorActionPlacementBinding
+                    ? null
+                    : this.device.createBindGroup({
                     label: `cirvivor-gpu-actor-payload-bind-${entry.transactionId}`,
                     layout: this.pipeline.layout,
                     entries: [
@@ -1469,7 +2146,9 @@ export class GpuActorPayloadMaterializationRuntime {
                         { binding: 8, resource: { buffer: entry.aggregateBuffer } }
                     ]
                 });
-                const targetQueryBindGroup = this.device.createBindGroup({
+                const targetQueryBindGroup = entry.actorActionPlacementBinding
+                    ? null
+                    : this.device.createBindGroup({
                     label: `cirvivor-gpu-actor-payload-target-query-bind-${entry.transactionId}`,
                     layout: this.pipeline.queryLayout,
                     entries: [
@@ -1483,6 +2162,31 @@ export class GpuActorPayloadMaterializationRuntime {
                         { binding: 7, resource: { buffer: entry.aggregateBuffer } }
                     ]
                 });
+                const actorActionBindGroup = entry.actorActionPlacementBinding
+                    ? this.device.createBindGroup({
+                        label: `cirvivor-gpu-actor-action-enemy-bind-${entry.transactionId}`,
+                        layout: this.pipeline.actorActionLayout,
+                        entries: [
+                            { binding: 0, resource: { buffer: this.resources.snapshot } },
+                            { binding: 1, resource: { buffer: entry.leaseBuffer } },
+                            {
+                                binding: 2,
+                                resource: {
+                                    buffer: entry.actorActionPlacementBinding.buffer,
+                                    offset: entry.actorActionPlacementBinding
+                                        .aggregateByteOffset,
+                                    size: entry.actorActionPlacementBinding.byteLength
+                                }
+                            },
+                            { binding: 3, resource: { buffer: this.resources.physics } },
+                            { binding: 4, resource: { buffer: this.resources.simulation } },
+                            { binding: 5, resource: { buffer: this.resources.abilityMetadata } },
+                            { binding: 6, resource: { buffer: this.resources.routeRuntimeStates } },
+                            { binding: 7, resource: { buffer: this.resources.actorTransit } },
+                            { binding: 8, resource: { buffer: entry.aggregateBuffer } }
+                        ]
+                    })
+                    : null;
                 const dispatch = (
                     pipeline,
                     workgroupCount,
@@ -1501,24 +2205,51 @@ export class GpuActorPayloadMaterializationRuntime {
                     entry.destinationCount
                         / GPU_ACTOR_PAYLOAD_MATERIALIZATION_WORKGROUP_SIZE
                 );
-                dispatch(this.pipeline.initialize, 1, 'initialize');
-                dispatch(
-                    this.pipeline.query,
-                    parallelWorkgroupCount,
-                    'tower-target-query',
-                    targetQueryBindGroup
-                );
-                dispatch(
-                    this.pipeline.validate,
-                    parallelWorkgroupCount,
-                    'validate'
-                );
-                dispatch(this.pipeline.aggregate, 1, 'aggregate');
-                dispatch(
-                    this.pipeline.materialize,
-                    parallelWorkgroupCount,
-                    'materialize'
-                );
+                if (actorActionBindGroup) {
+                    dispatch(
+                        this.pipeline.initializeActorAction,
+                        1,
+                        'actor-action-initialize',
+                        actorActionBindGroup
+                    );
+                    dispatch(
+                        this.pipeline.validateActorAction,
+                        parallelWorkgroupCount,
+                        'actor-action-validate',
+                        actorActionBindGroup
+                    );
+                    dispatch(
+                        this.pipeline.aggregateActorAction,
+                        1,
+                        'actor-action-aggregate',
+                        actorActionBindGroup
+                    );
+                    dispatch(
+                        this.pipeline.materializeActorAction,
+                        parallelWorkgroupCount,
+                        'actor-action-materialize',
+                        actorActionBindGroup
+                    );
+                } else {
+                    dispatch(this.pipeline.initialize, 1, 'initialize');
+                    dispatch(
+                        this.pipeline.query,
+                        parallelWorkgroupCount,
+                        'tower-target-query',
+                        targetQueryBindGroup
+                    );
+                    dispatch(
+                        this.pipeline.validate,
+                        parallelWorkgroupCount,
+                        'validate'
+                    );
+                    dispatch(this.pipeline.aggregate, 1, 'aggregate');
+                    dispatch(
+                        this.pipeline.materialize,
+                        parallelWorkgroupCount,
+                        'materialize'
+                    );
+                }
                 encoder.copyBufferToBuffer(
                     entry.aggregateBuffer,
                     0,
@@ -1555,6 +2286,9 @@ export class GpuActorPayloadMaterializationRuntime {
                     snapshotFingerprint:
                         entry.completion.snapshotFingerprint,
                     destinationFingerprint: entry.destinationFingerprint,
+                    actorActionProfileFingerprint:
+                        entry.actorActionProfileFingerprint,
+                    placementFingerprint: entry.placementFingerprint,
                     errorFlags:
                         ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.STALE_PROTOCOL
                 }, { failure: this.failure }));
@@ -1717,7 +2451,11 @@ export class GpuActorPayloadMaterializationRuntime {
                     && aggregate.commandFingerprint
                         === entry.command.fingerprint
                     && aggregate.snapshotFingerprint
-                        === entry.completion.snapshotFingerprint;
+                        === entry.completion.snapshotFingerprint
+                    && aggregate.actorActionProfileFingerprint
+                        === entry.actorActionProfileFingerprint
+                    && aggregate.placementFingerprint
+                        === entry.placementFingerprint;
                 if (!exact) {
                     throw new RangeError('actor payload aggregate provenance가 다릅니다.');
                 }
@@ -1758,6 +2496,9 @@ export class GpuActorPayloadMaterializationRuntime {
                     snapshotFingerprint:
                         entry.completion.snapshotFingerprint,
                     destinationFingerprint: entry.destinationFingerprint,
+                    actorActionProfileFingerprint:
+                        entry.actorActionProfileFingerprint,
+                    placementFingerprint: entry.placementFingerprint,
                     errorFlags:
                         ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.STALE_PROTOCOL
                 }, { failure: this.failure }));
@@ -1797,6 +2538,9 @@ export class GpuActorPayloadMaterializationRuntime {
             commandFingerprint: entry.command.fingerprint,
             snapshotFingerprint: entry.completion.snapshotFingerprint,
             destinationFingerprint: entry.destinationFingerprint,
+            actorActionProfileFingerprint:
+                entry.actorActionProfileFingerprint,
+            placementFingerprint: entry.placementFingerprint,
             errorFlags: 0
         }, { reason });
     }

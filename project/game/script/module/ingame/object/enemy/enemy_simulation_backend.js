@@ -48,6 +48,9 @@ import {
     GpuActorActionPlacementRuntime
 } from '../../physics/gpu/gpu_actor_action_placement_runtime.js';
 import {
+    GpuActorTransitRuntime
+} from '../../physics/gpu/gpu_actor_transit_runtime.js';
+import {
     GPU_TOWER_GROUP_MEMBER_FLAG
 } from '../../physics/gpu/gpu_tower_group_abi.js';
 import {
@@ -72,6 +75,9 @@ import {
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    SENTENCE_ACTION_CODE
+} from '../../contract/word_sentence_contract.js';
 import {
     BASIC_CIRCLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
@@ -232,6 +238,8 @@ export class EnemySimulationBackend {
             = options.actorActionPlacementSubjectCapacity;
         this.actorActionPlacementReadbackSlotCount
             = options.actorActionPlacementReadbackSlotCount;
+        this.actorTransitReadbackSlotCount
+            = options.actorTransitReadbackSlotCount;
         const towerGroupMemberCapacity = requirePositiveSafeInteger(
             options.towerGroupMemberCapacity
                 ?? Math.min(
@@ -273,6 +281,13 @@ export class EnemySimulationBackend {
                 readbackSlotCount:
                     this.actorActionPlacementReadbackSlotCount
             });
+        this.actorTransitRuntime = new GpuActorTransitRuntime({
+            sessionGeneration: this.sessionGeneration,
+            readbackSlotCount: this.actorTransitReadbackSlotCount
+        });
+        this.actorActionPlacementOwners = new Map();
+        this.actorActionPlacementCompletionQueues = new Map();
+        this.actorTransitCompletionQueues = new Map();
         this.towerGroupRuntime = new GpuTowerGroupRuntime({
             // Member records are addressed by stable body slot. The separate
             // towerGroupMemberCapacity remains the production member-count cap.
@@ -567,7 +582,24 @@ export class EnemySimulationBackend {
                 reason: 'actor-action-placement-runtime-unavailable'
             });
         }
-        return this.actorActionPlacementRuntime.stage(request);
+        const completionOwner = String(
+            request.completionOwner ?? 'default'
+        );
+        if (completionOwner.length === 0) {
+            return Object.freeze({
+                accepted: false,
+                retryable: false,
+                reason: 'actor-action-placement-completion-owner'
+            });
+        }
+        const result = this.actorActionPlacementRuntime.stage(request);
+        if (result?.accepted === true) {
+            this.actorActionPlacementOwners.set(
+                String(request.transactionId),
+                completionOwner
+            );
+        }
+        return result;
     }
 
     submitActorActionPlacements(sourceTick) {
@@ -575,8 +607,16 @@ export class EnemySimulationBackend {
             .submitPendingForFixedTick(sourceTick);
     }
 
-    drainCompletedActorActionPlacements(out = []) {
-        return this.actorActionPlacementRuntime.drainCompleted(out);
+    drainCompletedActorActionPlacements(out = [], completionOwner = 'default') {
+        if (!Array.isArray(out)) {
+            throw new TypeError('actor action placement completion 출력은 배열이어야 합니다.');
+        }
+        this.#routeActorActionPlacementCompletions();
+        const owner = String(completionOwner);
+        const queue = this.actorActionPlacementCompletionQueues.get(owner);
+        if (queue?.length > 0) out.push(...queue);
+        this.actorActionPlacementCompletionQueues.delete(owner);
+        return out;
     }
 
     getActorActionPlacementGpuBinding(token) {
@@ -588,11 +628,43 @@ export class EnemySimulationBackend {
     }
 
     cancelAllActorActionPlacements(reason = 'cancelled') {
-        return this.actorActionPlacementRuntime.cancelAll(reason);
+        const result = this.actorActionPlacementRuntime.cancelAll(reason);
+        this.#routeActorActionPlacementCompletions();
+        return result;
     }
 
     getActorActionPlacementRuntimeStatus() {
         return this.actorActionPlacementRuntime.getStatus();
+    }
+
+    registerCommittedActorTransitBatch(source = {}) {
+        if (!this.#ensureActorTransitRuntime()) return false;
+        return this.actorTransitRuntime.registerCommittedBatch(source);
+    }
+
+    advanceActorTransits(sourceTick) {
+        if (!this.#ensureActorTransitRuntime()) return false;
+        return this.actorTransitRuntime.advanceForFixedTick(sourceTick);
+    }
+
+    drainCompletedActorTransits(out = [], completionOwner = 'default') {
+        if (!Array.isArray(out)) {
+            throw new TypeError('actor transit completion 출력은 배열이어야 합니다.');
+        }
+        this.#routeActorTransitCompletions();
+        const owner = String(completionOwner);
+        const queue = this.actorTransitCompletionQueues.get(owner);
+        if (queue?.length > 0) out.push(...queue);
+        this.actorTransitCompletionQueues.delete(owner);
+        return out;
+    }
+
+    isActorTransitAirborne(handle) {
+        return this.actorTransitRuntime.isAirborne(handle);
+    }
+
+    getActorTransitRuntimeStatus() {
+        return this.actorTransitRuntime.getStatus();
     }
 
     getActorActionPlacementSdfDescriptor() {
@@ -845,7 +917,9 @@ export class EnemySimulationBackend {
         const prelease = this.actorPayloadBodyPreleases.get(
             request.preleaseToken
         );
-        if (!prelease || prelease.state !== 'preleased') {
+        if (!prelease || !['preleased', 'placement-pending'].includes(
+            prelease.state
+        )) {
             return Object.freeze({
                 accepted: false,
                 reason: 'actor-payload-prelease-token'
@@ -905,6 +979,39 @@ export class EnemySimulationBackend {
         });
         if (result?.accepted === true) {
             prelease.state = 'materialization-pending';
+            prelease.transactionId = request.transactionId;
+        }
+        return result;
+    }
+
+    stageActorPayloadActionPlacement(request = {}) {
+        const prelease = this.actorPayloadBodyPreleases.get(
+            request.preleaseToken
+        );
+        if (!prelease || prelease.state !== 'preleased') {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-prelease-token'
+            });
+        }
+        const destinationLeases = Object.freeze(prelease.records.map(
+            (entry, index) => Object.freeze({
+                destinationSlot: entry.slot,
+                destinationEntityId: entry.handle.entityId,
+                destinationIncarnation: entry.handle.incarnation,
+                snapshotRank: index,
+                destinationRank: index,
+                baselineFlags: entry.baselineFlags
+            })
+        ));
+        const result = this.stageActorActionPlacement({
+            ...request,
+            destinationLeases,
+            completionOwner: 'actor-payload',
+            sdf: request.sdf ?? this.getActorActionPlacementSdfDescriptor()
+        });
+        if (result?.accepted === true) {
+            prelease.state = 'placement-pending';
             prelease.transactionId = request.transactionId;
         }
         return result;
@@ -2283,6 +2390,15 @@ export class EnemySimulationBackend {
                 ...childAbilityMetadata
             ]);
             prelease.mode = mode;
+            prelease.actorAction = mode
+                    === GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION
+                ? Object.freeze({
+                    ...request.actorAction,
+                    placementTargetTick:
+                        request.actorActionPlacementBinding
+                            ?.placementTargetTick
+                })
+                : null;
             return Object.freeze({
                 ...staged,
                 preleaseToken: request.preleaseToken,
@@ -2477,6 +2593,30 @@ export class EnemySimulationBackend {
                 this.simulation.pendingBodyCount--;
                 this.simulation.activeBodyCount++;
             }
+            if (prelease.actorAction?.actionCode
+                === SENTENCE_ACTION_CODE.THROW) {
+                const registered = this.registerCommittedActorTransitBatch({
+                    transactionId,
+                    completionOwner: 'tower-creation',
+                    handles: prelease.handles,
+                    startTick: prelease.actorAction.placementTargetTick,
+                    durationFixedTicks:
+                        prelease.actorAction.travelDurationFixedTicks,
+                    actionCode: prelease.actorAction.actionCode,
+                    payloadCode: prelease.actorAction.payloadCode,
+                    executionOrdinal:
+                        prelease.actorAction.executionOrdinal,
+                    executionFingerprint:
+                        prelease.actorAction.sourceExecutionFingerprint,
+                    actorActionProfileFingerprint:
+                        prelease.actorAction.actorActionProfileFingerprint,
+                    placementFingerprint:
+                        prelease.actorAction.placementFingerprint
+                });
+                if (!registered) {
+                    throw new Error('Committed Tower transit 등록에 실패했습니다.');
+                }
+            }
             prelease.state = 'committed';
             this.towerCreationBodyPreleases.delete(request.preleaseToken);
             this.#syncState();
@@ -2565,12 +2705,18 @@ export class EnemySimulationBackend {
         // 모든 적 행동이 같은 TowerGroup query 결과를 소비하므로, actor payload나
         // group command가 없는 저수준 endpoint에서도 fixed pass 전에 runtime을 붙인다.
         if (hadActiveBodies) this.#ensureTowerGroupRuntime();
-        const payloadSubmission = Number.isSafeInteger(Number(sourceTick))
-            && Number(sourceTick) >= 0
+        const validSourceTick = Number.isSafeInteger(Number(sourceTick))
+            && Number(sourceTick) >= 0;
+        const transitStatus = this.actorTransitRuntime.getStatus();
+        const transitSubmitted = validSourceTick
+            && transitStatus.state === 'ready'
+            && transitStatus.activeBatchCount > 0
+            ? this.actorTransitRuntime.advanceForFixedTick(Number(sourceTick))
+            : false;
+        const payloadSubmission = validSourceTick
             ? this.submitActorPayloadMaterializations(sourceTick)
             : Object.freeze({ submittedCount: 0, deferredCount: 0 });
-        const abilitySubmission = Number.isSafeInteger(Number(sourceTick))
-            && Number(sourceTick) >= 0
+        const abilitySubmission = validSourceTick
             ? this.submitAbilitySubjectSnapshots(sourceTick)
             : Object.freeze({ submittedCount: 0, deferredCount: 0 });
         const submitted = this.simulation.fixedUpdate(delta, sourceTick);
@@ -2589,7 +2735,8 @@ export class EnemySimulationBackend {
         this.#syncState();
         return submitted || (!hadActiveBodies
             && (abilitySubmission.submittedCount > 0
-                || payloadSubmission.submittedCount > 0));
+                || payloadSubmission.submittedCount > 0
+                || transitSubmitted));
     }
 
     /**
@@ -2658,6 +2805,7 @@ export class EnemySimulationBackend {
                     this.getActorPayloadMaterializationStatus(),
                 actorActionPlacements:
                     this.getActorActionPlacementRuntimeStatus(),
+                actorTransits: this.getActorTransitRuntimeStatus(),
                 towerGroup: this.towerGroupRuntime.getStatus(),
                 towerCreation: this.getTowerCreationRuntimeStatus(),
                 towerTargetQuery: this.towerTargetQueryRuntime.getStatus()
@@ -2723,6 +2871,7 @@ export class EnemySimulationBackend {
             || this.abilitySubjectSnapshotRuntime.requiresRecovery()
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
             || this.actorActionPlacementRuntime.getStatus().failure !== null
+            || this.actorTransitRuntime.requiresRecovery()
             || this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
@@ -2738,9 +2887,14 @@ export class EnemySimulationBackend {
         this.destroyed = true;
         this.cancelAllActorPayloadMaterializations('destroyed');
         this.cancelAllActorActionPlacements('destroyed');
+        this.actorTransitRuntime.cancelAll('destroyed');
         this.cancelAllTowerCreations('destroyed');
         this.actorPayloadMaterializationRuntime.destroy();
         this.actorActionPlacementRuntime.destroy();
+        this.actorTransitRuntime.destroy();
+        this.actorActionPlacementOwners.clear();
+        this.actorActionPlacementCompletionQueues.clear();
+        this.actorTransitCompletionQueues.clear();
         this.abilitySubjectSnapshotRuntime.destroy();
         this.simulation?.attachTowerCreationRuntime?.(null);
         this.towerCreationRuntime.destroy();
@@ -2759,9 +2913,42 @@ export class EnemySimulationBackend {
         this.state = 'destroyed';
     }
 
+    #routeActorActionPlacementCompletions() {
+        const completions = this.actorActionPlacementRuntime
+            .drainCompleted([]);
+        for (const completion of completions) {
+            const transactionId = String(completion.transactionId ?? '');
+            const owner = this.actorActionPlacementOwners.get(transactionId)
+                ?? 'default';
+            this.actorActionPlacementOwners.delete(transactionId);
+            let queue = this.actorActionPlacementCompletionQueues.get(owner);
+            if (!queue) {
+                queue = [];
+                this.actorActionPlacementCompletionQueues.set(owner, queue);
+            }
+            queue.push(completion);
+        }
+    }
+
+    #routeActorTransitCompletions() {
+        const completions = this.actorTransitRuntime.drainCompleted([]);
+        for (const completion of completions) {
+            const owner = String(
+                completion.completionOwner ?? 'default'
+            );
+            let queue = this.actorTransitCompletionQueues.get(owner);
+            if (!queue) {
+                queue = [];
+                this.actorTransitCompletionQueues.set(owner, queue);
+            }
+            queue.push(completion);
+        }
+    }
+
     #syncState() {
         if (this.towerGroupRuntime.requiresRecovery()
             || this.actorActionPlacementRuntime.getStatus().failure !== null
+            || this.actorTransitRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
             || this.towerCreationFailure !== null) {
@@ -2883,7 +3070,8 @@ export class EnemySimulationBackend {
     #ensureTowerCreationRuntime() {
         if (this.destroyed || !this.simulation) return false;
         if (!this.#ensureTowerGroupRuntime()
-            || !this.#ensureAbilitySubjectSnapshotRuntime()) {
+            || !this.#ensureAbilitySubjectSnapshotRuntime()
+            || !this.#ensureActorTransitRuntime()) {
             return false;
         }
         const simulation = this.simulation;
@@ -2891,9 +3079,11 @@ export class EnemySimulationBackend {
             .getCreationResources?.();
         const abilityMetadata = this.abilitySubjectSnapshotRuntime
             .buffers?.metadata;
+        const actorTransit = this.actorTransitRuntime.getGpuBinding();
         if (!groupResources?.members
             || !groupResources?.roster
             || !abilityMetadata
+            || !actorTransit?.buffer
             || !simulation.device
             || !simulation.buffers) {
             return false;
@@ -2913,6 +3103,8 @@ export class EnemySimulationBackend {
                 === simulation.buffers.simulation
             && this.towerCreationRuntime.resources?.abilityMetadata
                 === abilityMetadata
+            && this.towerCreationRuntime.resources?.actorTransit
+                === actorTransit.buffer
             && this.towerCreationRuntime.resources?.members
                 === groupResources.members
             && this.towerCreationRuntime.resources?.roster
@@ -2926,6 +3118,7 @@ export class EnemySimulationBackend {
                         physics: simulation.buffers.physics,
                         simulation: simulation.buffers.simulation,
                         abilityMetadata,
+                        actorTransit: actorTransit.buffer,
                         members: groupResources.members,
                         roster: groupResources.roster
                     },
@@ -2968,18 +3161,55 @@ export class EnemySimulationBackend {
         }
     }
 
+    #ensureActorTransitRuntime() {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.#ensureAbilitySubjectSnapshotRuntime()) return false;
+        const simulation = this.simulation;
+        const abilityMetadata = this.abilitySubjectSnapshotRuntime
+            .buffers?.metadata;
+        if (!simulation.device || !simulation.buffers?.physics
+            || !simulation.buffers.simulation
+            || !simulation.buffers.enemyBehaviorStates
+            || !abilityMetadata) {
+            return false;
+        }
+        try {
+            return this.actorTransitRuntime.initialize(
+                simulation.device,
+                {
+                    physics: simulation.buffers.physics,
+                    simulation: simulation.buffers.simulation,
+                    abilityMetadata,
+                    enemyBehaviorStates:
+                        simulation.buffers.enemyBehaviorStates
+                },
+                {
+                    sessionGeneration: this.sessionGeneration,
+                    deviceGeneration: simulation.deviceGeneration,
+                    authoritativeEpoch: simulation.authoritativeEpoch,
+                    bodyCapacity: this.capacity
+                }
+            );
+        } catch {
+            return false;
+        }
+    }
+
     #ensureActorPayloadMaterializationRuntime(snapshotBinding) {
         if (this.destroyed || !this.simulation) return false;
         if (!this.#ensureAbilitySubjectSnapshotRuntime()
-            || !this.#ensureTowerGroupRuntime()) return false;
+            || !this.#ensureTowerGroupRuntime()
+            || !this.#ensureActorTransitRuntime()) return false;
         const snapshotBuffer = snapshotBinding?.buffer
             ?? this.abilitySubjectSnapshotRuntime.buffers?.output;
         const simulation = this.simulation;
         const groupResources = this.towerGroupRuntime.getCreationResources?.();
+        const actorTransit = this.actorTransitRuntime.getGpuBinding();
         if (!snapshotBuffer
             || !simulation.device
             || !simulation.buffers
             || !this.abilitySubjectSnapshotRuntime.buffers?.metadata
+            || !actorTransit?.buffer
             || !groupResources?.members
             || !groupResources?.roster) {
             return false;
@@ -2993,6 +3223,7 @@ export class EnemySimulationBackend {
                     simulation: simulation.buffers.simulation,
                     abilityMetadata:
                         this.abilitySubjectSnapshotRuntime.buffers.metadata,
+                    actorTransit: actorTransit?.buffer,
                     routeRuntimeStates:
                         simulation.buffers.routeRuntimeStates,
                     enemyBehaviorStates:

@@ -123,11 +123,33 @@ export class ActorPayloadMaterializer {
                 committedHandles: Object.freeze([])
             });
         }
+        const transitCompletions = [];
+        this.endpoint.drainCompletedActorTransits?.(transitCompletions);
         const completions = [];
         this.endpoint.drainCompletedActorPayloadMaterializations(completions);
-        let observedCount = 0;
+        let observedCount = transitCompletions.length;
         let committedCount = 0;
         const committedHandles = [];
+        for (const completion of transitCompletions) {
+            if (completion.state === 'LANDED'
+                && completion.landed === true
+                && completion.requiresRecovery !== true) {
+                for (const handle of completion.handles ?? []) {
+                    committedHandles.push(Object.freeze({
+                        entityId: handle.entityId,
+                        incarnation: handle.incarnation
+                    }));
+                }
+                continue;
+            }
+            if (completion.requiresRecovery === true) {
+                this.recoveryRequired = true;
+                this.failure = Object.freeze({
+                    code: 'actor-transit-completion-rejected',
+                    message: 'Actor transit landing completion이 거절됐습니다.'
+                });
+            }
+        }
         for (const completion of completions) {
             const record = this.inFlight.get(completion?.transactionId);
             if (!record || record.kind !== MATERIALIZATION_KIND.ENEMY) continue;
@@ -156,7 +178,9 @@ export class ActorPayloadMaterializer {
                 continue;
             }
             if (completion.committed === true
-                && completion.state === 'COMMITTED'
+                && ['COMMITTED', 'COMMITTED_AIRBORNE'].includes(
+                    completion.state
+                )
                 && completion.status
                     === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE
                 && completion.generatedCount === completion.subjectCount) {
@@ -175,11 +199,13 @@ export class ActorPayloadMaterializer {
                     continue;
                 }
                 committedCount++;
-                for (const handle of completion.handles ?? []) {
-                    committedHandles.push(Object.freeze({
-                        entityId: handle.entityId,
-                        incarnation: handle.incarnation
-                    }));
+                if (completion.state !== 'COMMITTED_AIRBORNE') {
+                    for (const handle of completion.handles ?? []) {
+                        committedHandles.push(Object.freeze({
+                            entityId: handle.entityId,
+                            incarnation: handle.incarnation
+                        }));
+                    }
                 }
                 this.totalCommitted++;
                 this.totalGenerated += completion.generatedCount;
@@ -381,9 +407,11 @@ export class ActorPayloadMaterializer {
         let rejectedCount = 0;
         for (let index = 0; index < ready.length; index++) {
             const record = ready[index];
-            // Turn 4 production slice는 Shoot만 활성화합니다. 이후 verb는 해당
-            // runtime turn에서 capability를 열기 전까지 정상 unavailable입니다.
-            if (record.command.actionCode !== SENTENCE_ACTION_CODE.SHOOT) {
+            // Turn 5는 Shoot/Throw만 materialization capability를 소유합니다.
+            if (![
+                SENTENCE_ACTION_CODE.SHOOT,
+                SENTENCE_ACTION_CODE.THROW
+            ].includes(record.command.actionCode)) {
                 this.totalRuntimeUnavailable++;
                 this.#rejectReady(
                     record,
@@ -580,6 +608,17 @@ export class ActorPayloadMaterializer {
                     record,
                     ABILITY_EXECUTION_OUTCOME_CODE
                         .DESTINATION_CAPACITY_REJECTED,
+                    tick
+                );
+                rejectedCount++;
+                continue;
+            }
+            if (result?.runtimeUnavailable === true
+                || result?.reason === 'actor-payload-runtime-unavailable') {
+                this.totalRuntimeUnavailable++;
+                this.#rejectReady(
+                    record,
+                    ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
                     tick
                 );
                 rejectedCount++;

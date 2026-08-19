@@ -10,7 +10,7 @@ import {
 
 const LITTLE_ENDIAN = true;
 
-export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 2;
+export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 3;
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
     LEASE_HEADER: Object.freeze({
@@ -57,8 +57,8 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         SNAPSHOT_WORD_OFFSET: 156,
         DEFAULT_CURRENT_PATH_INDEX: 160,
         DEFAULT_ROUTE_SET_INDEX: 164,
-        RESERVED: 168,
-        RESERVED_1: 172
+        ACTOR_ACTION_PROFILE_FINGERPRINT: 168,
+        PLACEMENT_FINGERPRINT: 172
     }),
     DESTINATION_LEASE: Object.freeze({
         STRIDE: 32,
@@ -72,7 +72,7 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         RESERVED: 28
     }),
     AGGREGATE: Object.freeze({
-        STRIDE: 64,
+        STRIDE: 72,
         ABI_VERSION: 0,
         BODY_ABI_VERSION: 4,
         SESSION_GENERATION: 8,
@@ -88,7 +88,9 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         SNAPSHOT_FINGERPRINT: 48,
         DESTINATION_FINGERPRINT: 52,
         ERROR_FLAGS: 56,
-        RESERVED: 60
+        ACTOR_ACTION_PROFILE_FINGERPRINT: 60,
+        PLACEMENT_FINGERPRINT: 64,
+        RESERVED: 68
     }),
     VALIDATION_RECORD: Object.freeze({
         STRIDE: 32,
@@ -184,8 +186,9 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         [h.SNAPSHOT_WORD_OFFSET, source.snapshotWordOffset],
         [h.DEFAULT_CURRENT_PATH_INDEX, source.defaultCurrentPathIndex],
         [h.DEFAULT_ROUTE_SET_INDEX, source.defaultRouteSetIndex],
-        [h.RESERVED, 0],
-        [h.RESERVED_1, 0]
+        [h.ACTOR_ACTION_PROFILE_FINGERPRINT,
+            source.actorActionProfileFingerprint ?? 0],
+        [h.PLACEMENT_FINGERPRINT, source.placementFingerprint ?? 0]
     ];
     for (const [offset, value] of uintValues) {
         view.setUint32(
@@ -291,7 +294,15 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
             a.DESTINATION_FINGERPRINT,
             LITTLE_ENDIAN
         ),
-        errorFlags: view.getUint32(a.ERROR_FLAGS, LITTLE_ENDIAN)
+        errorFlags: view.getUint32(a.ERROR_FLAGS, LITTLE_ENDIAN),
+        actorActionProfileFingerprint: view.getUint32(
+            a.ACTOR_ACTION_PROFILE_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        placementFingerprint: view.getUint32(
+            a.PLACEMENT_FINGERPRINT,
+            LITTLE_ENDIAN
+        )
     });
     if (result.abiVersion
             !== GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION

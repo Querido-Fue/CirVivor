@@ -64,6 +64,7 @@ function sameResources(left, right) {
         && left?.physics === right?.physics
         && left?.simulation === right?.simulation
         && left?.abilityMetadata === right?.abilityMetadata
+        && left?.actorTransit === right?.actorTransit
         && left?.members === right?.members
         && left?.roster === right?.roster;
 }
@@ -163,11 +164,11 @@ function getPipelines(device, stage) {
     });
     const actorLayout = device.createBindGroupLayout({
         label: 'cirvivor-gpu-tower-creation-actor-action-layout',
-        entries: Array.from({ length: 7 }, (_, binding) => ({
+        entries: Array.from({ length: 9 }, (_, binding) => ({
             binding,
             visibility: stage.COMPUTE,
             buffer: {
-                type: [2, 4, 5, 6].includes(binding)
+                type: [2, 4, 5, 6, 7, 8].includes(binding)
                     ? 'storage'
                     : 'read-only-storage'
             }
@@ -265,6 +266,7 @@ export class GpuTowerCreationRuntime {
             'physics',
             'simulation',
             'abilityMetadata',
+            'actorTransit',
             'members',
             'roster'
         ]) {
@@ -446,10 +448,18 @@ export class GpuTowerCreationRuntime {
                         { binding: 4, resource: bufferResource(this.resources.physics) },
                         {
                             binding: 5,
-                            resource: bufferResource(this.resources.abilityMetadata)
+                            resource: bufferResource(this.resources.simulation)
                         },
                         {
                             binding: 6,
+                            resource: bufferResource(this.resources.abilityMetadata)
+                        },
+                        {
+                            binding: 7,
+                            resource: bufferResource(this.resources.actorTransit)
+                        },
+                        {
+                            binding: 8,
                             resource: bufferResource(this.buffers.metadataCommits)
                         }
                     ]

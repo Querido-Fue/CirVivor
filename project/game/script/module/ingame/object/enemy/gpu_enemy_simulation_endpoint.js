@@ -22,11 +22,18 @@ import {
 } from '../../contract/actor_payload_contract.js';
 import { GAMEPLAY_TEAM_ID } from '../../contract/gameplay_team_contract.js';
 import {
+    ACTOR_PAYLOAD_CODE,
+    SENTENCE_ACTION_CODE
+} from '../../contract/word_sentence_contract.js';
+import {
     evaluateActorPayloadCapacity
 } from '../../word/actor_payload_budget.js';
 import {
     GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION
 } from '../../physics/gpu/gpu_ability_subject_snapshot_abi.js';
+import {
+    GPU_ACTOR_ACTION_PLACEMENT_STATUS
+} from '../../physics/gpu/gpu_actor_action_placement_abi.js';
 import {
     GPU_CIRCLE_APPLIED_EVENT_FLAG,
     GPU_CIRCLE_BODY_COLLISION_LAYER,
@@ -176,6 +183,16 @@ const ACTOR_PAYLOAD_BACKEND_METHODS = Object.freeze([
     'cancelActorPayloadBodyPrelease',
     'cancelAllActorPayloadMaterializations',
     'getActorPayloadMaterializationStatus'
+]);
+const ACTOR_PAYLOAD_THROW_BACKEND_METHODS = Object.freeze([
+    'stageActorPayloadActionPlacement',
+    'drainCompletedActorActionPlacements',
+    'getActorActionPlacementGpuBinding',
+    'releaseActorActionPlacement',
+    'registerCommittedActorTransitBatch',
+    'drainCompletedActorTransits',
+    'isActorTransitAirborne',
+    'getActorTransitRuntimeStatus'
 ]);
 let nextGpuSimulationSessionGeneration = 1;
 const CORE_IMPACT_CLEANUP_OPTIONS = Object.freeze({
@@ -949,6 +966,8 @@ export class GpuEnemySimulationEndpoint {
                 options.actorActionPlacementSubjectCapacity,
             actorActionPlacementReadbackSlotCount:
                 options.actorActionPlacementReadbackSlotCount,
+            actorTransitReadbackSlotCount:
+                options.actorTransitReadbackSlotCount,
             towerGroupMemberCapacity: options.towerGroupMemberCapacity,
             towerGroupReadbackSlotCount: options.towerGroupReadbackSlotCount,
             towerCreationReadbackSlotCount:
@@ -1016,7 +1035,12 @@ export class GpuEnemySimulationEndpoint {
             = ACTOR_PAYLOAD_BACKEND_METHODS.every(
                 (methodName) => typeof this.backend?.[methodName] === 'function'
             );
+        this.actorPayloadThrowBackendSupported
+            = ACTOR_PAYLOAD_THROW_BACKEND_METHODS.every(
+                (methodName) => typeof this.backend?.[methodName] === 'function'
+            );
         this.actorPayloadTransactions = new Map();
+        this.actorPayloadTransitLandings = new Map();
         this.actorPayloadCompleted = [];
         this.actorPayloadFailure = null;
         this.actorPayloadCommittedCount = 0;
@@ -1925,6 +1949,8 @@ export class GpuEnemySimulationEndpoint {
         const command = request.command;
         const completion = request.subjectCompletion;
         const subjectCount = Number(completion?.subjectCount);
+        const throwAction = command?.actionCode
+            === SENTENCE_ACTION_CODE.THROW;
         if (transactionId.length === 0
             || !command || !completion?.snapshotToken
             || !Number.isSafeInteger(subjectCount) || subjectCount <= 0
@@ -1932,10 +1958,26 @@ export class GpuEnemySimulationEndpoint {
             || completion.executionId !== command.executionId
             || completion.executionOrdinal !== command.executionOrdinal
             || completion.commandFingerprint !== command.fingerprint
+            || command.payloadCode !== ACTOR_PAYLOAD_CODE.ENEMY
+            || ![
+                SENTENCE_ACTION_CODE.SHOOT,
+                SENTENCE_ACTION_CODE.THROW
+            ].includes(command.actionCode)
             || this.actorPayloadTransactions.has(transactionId)) {
             return Object.freeze({
                 accepted: false,
                 reason: 'actor-payload-request-contract',
+                requiresRecovery: false
+            });
+        }
+        if (throwAction && !this.actorPayloadThrowBackendSupported) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-runtime-unavailable',
+                runtimeUnavailable: true,
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
                 requiresRecovery: false
             });
         }
@@ -2103,10 +2145,14 @@ export class GpuEnemySimulationEndpoint {
             handles: Object.freeze(handles),
             bodyPreleaseToken: bodyPrelease.token,
             targetFixedTick: request.targetFixedTick,
+            snapshotBinding,
+            actorActionProfile:
+                command.compiledAbility.actorActionProfile,
             state: 'preleased'
         };
         const payloadTargets = this.actorPayloadTargetProvider.resolveTargets();
-        const stage = this.backend.stageActorPayloadMaterialization({
+        transaction.payloadTargets = payloadTargets;
+        const stageRequest = {
             transactionId,
             preleaseToken: bodyPrelease.token,
             command,
@@ -2116,7 +2162,13 @@ export class GpuEnemySimulationEndpoint {
             targetFixedTick: request.targetFixedTick,
             towerTarget: payloadTargets.towerTarget,
             coreTarget: payloadTargets.coreTarget
-        });
+        };
+        const stage = throwAction
+            ? this.backend.stageActorPayloadActionPlacement({
+                ...stageRequest,
+                actorActionProfile: transaction.actorActionProfile
+            })
+            : this.backend.stageActorPayloadMaterialization(stageRequest);
         if (stage?.accepted !== true) {
             this.backend.cancelActorPayloadBodyPrelease(
                 bodyPrelease.token,
@@ -2135,7 +2187,9 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: stage?.requiresRecovery === true
             });
         }
-        transaction.state = 'gpu-materialization-pending';
+        transaction.state = throwAction
+            ? 'gpu-placement-pending'
+            : 'gpu-materialization-pending';
         this.actorPayloadTransactions.set(transactionId, transaction);
         this.actorPayloadPreleaseHighWater = Math.max(
             this.actorPayloadPreleaseHighWater,
@@ -2159,6 +2213,115 @@ export class GpuEnemySimulationEndpoint {
             throw new TypeError('actor payload completion output은 배열이어야 합니다.');
         }
         if (!this.actorPayloadBackendSupported) return out;
+        if (this.actorPayloadThrowBackendSupported) {
+            const placements = [];
+            this.backend.drainCompletedActorActionPlacements(
+                placements,
+                'actor-payload'
+            );
+            for (const placement of placements) {
+                const transaction = this.actorPayloadTransactions.get(
+                    placement?.transactionId
+                );
+                if (!transaction
+                    || transaction.state !== 'gpu-placement-pending') {
+                    continue;
+                }
+                const exactPlacement = placement.executionOrdinal
+                        === transaction.command.executionOrdinal
+                    && placement.commandFingerprint
+                        === transaction.command.fingerprint
+                    && placement.snapshotFingerprint
+                        === transaction.completion.snapshotFingerprint
+                    && placement.actorActionProfileFingerprint
+                        === transaction.command
+                            .actorActionProfileFingerprint
+                    && placement.subjectCount
+                        === transaction.handles.length
+                    && placement.actionCode === SENTENCE_ACTION_CODE.THROW
+                    && placement.payloadCode === ACTOR_PAYLOAD_CODE.ENEMY;
+                if (exactPlacement && placement.status
+                    === GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE) {
+                    const binding = this.backend
+                        .getActorActionPlacementGpuBinding(
+                            placement.placementToken
+                        );
+                    const bindingExact = binding
+                        && binding.placementFingerprint
+                            === placement.placementFingerprint
+                        && binding.actorActionProfileFingerprint
+                            === transaction.command
+                                .actorActionProfileFingerprint
+                        && binding.placementTargetTick
+                            === transaction.targetFixedTick;
+                    const stage = bindingExact
+                        ? this.backend.stageActorPayloadMaterialization({
+                            transactionId: transaction.transactionId,
+                            preleaseToken:
+                                transaction.bodyPreleaseToken,
+                            command: transaction.command,
+                            subjectCompletion: transaction.completion,
+                            snapshotBinding: transaction.snapshotBinding,
+                            payloadDefinition:
+                                transaction.payloadDefinition,
+                            actorActionProfile:
+                                transaction.actorActionProfile,
+                            actorActionPlacementBinding: binding,
+                            targetFixedTick:
+                                transaction.targetFixedTick,
+                            towerTarget: transaction.payloadTargets
+                                .towerTarget,
+                            coreTarget: transaction.payloadTargets
+                                .coreTarget
+                        })
+                        : null;
+                    if (stage?.accepted === true) {
+                        transaction.state = 'gpu-materialization-pending';
+                        transaction.placementToken
+                            = placement.placementToken;
+                        transaction.placementFingerprint
+                            = placement.placementFingerprint;
+                        continue;
+                    }
+                    this.backend.releaseActorActionPlacement(
+                        placement.placementToken
+                    );
+                }
+                this.actorPayloadTransactions.delete(
+                    transaction.transactionId
+                );
+                this.#cancelActorPayloadTransaction(
+                    transaction,
+                    placement.status
+                            === GPU_ACTOR_ACTION_PLACEMENT_STATUS.SDF_REJECTED
+                        ? 'sdf-placement-rejected'
+                        : 'actor-action-placement-rejected'
+                );
+                const placementRejected = exactPlacement
+                    && placement.status
+                        === GPU_ACTOR_ACTION_PLACEMENT_STATUS.SDF_REJECTED;
+                const cancelled = exactPlacement
+                    && placement.status
+                        === GPU_ACTOR_ACTION_PLACEMENT_STATUS.CANCELLED;
+                const protocolFailure = !placementRejected && !cancelled;
+                if (protocolFailure) {
+                    this.actorPayloadFailure = Object.freeze({
+                        stage: 'actor-payload-placement-protocol',
+                        message: 'ActorAction placement provenance가 다르거나 GPU protocol이 거절됐습니다.'
+                    });
+                }
+                this.actorPayloadRejectedCount++;
+                out.push(Object.freeze({
+                    ...placement,
+                    state: placementRejected
+                        ? 'REJECTED_PLACEMENT'
+                        : cancelled ? 'CANCELLED' : 'FAILED_PROTOCOL',
+                    committed: false,
+                    generatedCount: 0,
+                    requiresRecovery: protocolFailure
+                }));
+            }
+        }
         const completed = [];
         this.backend.drainCompletedActorPayloadMaterializations(completed);
         for (const aggregate of completed) {
@@ -2167,13 +2330,26 @@ export class GpuEnemySimulationEndpoint {
             );
             if (!transaction) continue;
             this.actorPayloadTransactions.delete(transaction.transactionId);
+            if (transaction.placementToken) {
+                this.backend.releaseActorActionPlacement(
+                    transaction.placementToken
+                );
+            }
+            const throwAction = transaction.command.actionCode
+                === SENTENCE_ACTION_CODE.THROW;
             const exact = aggregate.executionOrdinal
                     === transaction.command.executionOrdinal
                 && aggregate.commandFingerprint
                     === transaction.command.fingerprint
                 && aggregate.snapshotFingerprint
                     === transaction.completion.snapshotFingerprint
-                && aggregate.subjectCount === transaction.handles.length;
+                && aggregate.subjectCount === transaction.handles.length
+                && (!throwAction
+                    || (aggregate.actorActionProfileFingerprint
+                            === transaction.command
+                                .actorActionProfileFingerprint
+                        && aggregate.placementFingerprint
+                            === transaction.placementFingerprint));
             if (!exact) {
                 this.actorPayloadFailure = Object.freeze({
                     stage: 'actor-payload-completion-authentication',
@@ -2194,15 +2370,36 @@ export class GpuEnemySimulationEndpoint {
             }
             if (aggregate.status
                 === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE) {
-                const activationEntries = transaction.handles.map(
-                    (handle, index) => Object.freeze({
-                        handle,
-                        metadata: createActorPayloadRegistryMetadata(
+                const landingMetadata = transaction.handles.map(
+                    (_handle, index) => {
+                        const metadata = createActorPayloadRegistryMetadata(
                             transaction.spawnTemplate,
                             transaction.command,
                             index
-                        )
-                    })
+                        );
+                        if (throwAction) {
+                            metadata.actorTransitPhase = 'ACTIVE';
+                            metadata.actorActivationEligible = true;
+                            metadata.countsTowardBountyPotential = true;
+                        }
+                        return Object.freeze(metadata);
+                    }
+                );
+                const activationEntries = transaction.handles.map(
+                    (handle, index) => {
+                        const metadata = throwAction
+                            ? Object.freeze({
+                                ...landingMetadata[index],
+                                actorTransitPhase: 'AIRBORNE',
+                                actorActivationEligible: false,
+                                countsTowardHostile: false,
+                                countsTowardSiege: false,
+                                countsTowardBountyPotential: false,
+                                rewardEligible: false
+                            })
+                            : landingMetadata[index];
+                        return Object.freeze({ handle, metadata });
+                    }
                 );
                 const activation = this.registry.activateReservedBatch(
                     activationEntries
@@ -2256,12 +2453,73 @@ export class GpuEnemySimulationEndpoint {
                     }));
                     continue;
                 }
+                if (throwAction) {
+                    const registered = this.backend
+                        .registerCommittedActorTransitBatch({
+                            transactionId: transaction.transactionId,
+                            completionOwner: 'actor-payload',
+                            handles: transaction.handles,
+                            startTick: transaction.targetFixedTick,
+                            durationFixedTicks:
+                                transaction.actorActionProfile
+                                    .travelDurationFixedTicks,
+                            actionCode: transaction.command.actionCode,
+                            payloadCode: transaction.command.payloadCode,
+                            executionOrdinal:
+                                transaction.command.executionOrdinal,
+                            executionFingerprint:
+                                transaction.command
+                                    .executionIdFingerprint,
+                            actorActionProfileFingerprint:
+                                transaction.command
+                                    .actorActionProfileFingerprint,
+                            placementFingerprint:
+                                transaction.placementFingerprint
+                        });
+                    if (!registered) {
+                        this.actorPayloadFailure = Object.freeze({
+                            stage: 'actor-payload-transit-registration',
+                            message: 'Committed actor transit batch를 등록하지 못했습니다.'
+                        });
+                        out.push(Object.freeze({
+                            ...aggregate,
+                            state: 'FAILED_PROTOCOL',
+                            committed: false,
+                            generatedCount: 0,
+                            requiresRecovery: true
+                        }));
+                        continue;
+                    }
+                    this.actorPayloadTransitLandings.set(
+                        transaction.transactionId,
+                        Object.freeze({
+                            transactionId: transaction.transactionId,
+                            handles: transaction.handles,
+                            landingMetadata: Object.freeze(landingMetadata),
+                            actionCode: transaction.command.actionCode,
+                            payloadCode: transaction.command.payloadCode,
+                            executionOrdinal:
+                                transaction.command.executionOrdinal,
+                            executionFingerprint:
+                                transaction.command
+                                    .executionIdFingerprint,
+                            actorActionProfileFingerprint:
+                                transaction.command
+                                    .actorActionProfileFingerprint,
+                            placementFingerprint:
+                                transaction.placementFingerprint
+                        })
+                    );
+                }
                 transaction.state = 'committed';
                 this.actorPayloadCommittedCount += transaction.handles.length;
                 out.push(Object.freeze({
                     ...aggregate,
-                    state: 'COMMITTED',
+                    state: throwAction
+                        ? 'COMMITTED_AIRBORNE'
+                        : 'COMMITTED',
                     committed: true,
+                    airborne: throwAction,
                     generatedCount: transaction.handles.length,
                     handles: transaction.handles,
                     requiresRecovery: false
@@ -2301,6 +2559,120 @@ export class GpuEnemySimulationEndpoint {
         return out;
     }
 
+    drainCompletedActorTransits(out = []) {
+        this.#assertUsable();
+        if (!Array.isArray(out)) {
+            throw new TypeError('actor transit completion 출력은 배열이어야 합니다.');
+        }
+        if (!this.actorPayloadThrowBackendSupported) return out;
+        const completed = [];
+        this.backend.drainCompletedActorTransits(
+            completed,
+            'actor-payload'
+        );
+        for (const completion of completed) {
+            const landing = this.actorPayloadTransitLandings.get(
+                completion?.transactionId
+            );
+            if (!landing) continue;
+            const exact = completion.actionCode === landing.actionCode
+                && completion.payloadCode === landing.payloadCode
+                && completion.executionOrdinal
+                    === landing.executionOrdinal
+                && completion.executionFingerprint
+                    === landing.executionFingerprint
+                && completion.actorActionProfileFingerprint
+                    === landing.actorActionProfileFingerprint
+                && completion.placementFingerprint
+                    === landing.placementFingerprint
+                && completion.handles.length === landing.handles.length
+                && completion.handles.every((handle, index) => (
+                    handle.entityId === landing.handles[index].entityId
+                    && handle.incarnation
+                        === landing.handles[index].incarnation
+                ));
+            if (!exact || completion.landed !== true) {
+                this.actorPayloadFailure = Object.freeze({
+                    stage: 'actor-payload-transit-completion',
+                    message: 'Actor transit completion identity가 다릅니다.'
+                });
+                this.actorPayloadTransitLandings.delete(
+                    landing.transactionId
+                );
+                out.push(Object.freeze({
+                    ...completion,
+                    state: 'FAILED_PROTOCOL',
+                    landed: false,
+                    requiresRecovery: true
+                }));
+                continue;
+            }
+            try {
+                const mutations = landing.handles.map((handle, index) => {
+                    const view = this.registry.copyEntityView(handle, {});
+                    if (!view) {
+                        throw new Error('landing registry identity가 없습니다.');
+                    }
+                    return Object.freeze({
+                        handle,
+                        expectedMetadata: view.metadata,
+                        expectedMetadataRevision: view.metadataRevision,
+                        nextMetadata: landing.landingMetadata[index]
+                    });
+                });
+                const preflight = this.registry
+                    .preflightActiveMetadataMutationBatch(
+                        { mutations },
+                        this.#activeMetadataMutationRegistryAuthority
+                    );
+                const committed = preflight?.accepted === true
+                    ? this.registry.commitActiveMetadataMutationBatch(
+                        preflight.token,
+                        this.#activeMetadataMutationRegistryAuthority
+                    )
+                    : null;
+                if (committed?.accepted !== true
+                    || committed.mutations.length
+                        !== landing.handles.length) {
+                    throw new Error(
+                        preflight?.reason
+                            ?? 'landing metadata batch commit이 실패했습니다.'
+                    );
+                }
+                this.actorPayloadTransitLandings.delete(
+                    landing.transactionId
+                );
+                out.push(Object.freeze({
+                    ...completion,
+                    state: 'LANDED',
+                    landed: true,
+                    handles: landing.handles,
+                    requiresRecovery: false
+                }));
+            } catch (error) {
+                this.actorPayloadFailure = Object.freeze({
+                    stage: 'actor-payload-transit-publication',
+                    message: String(error?.message ?? error)
+                });
+                this.actorPayloadTransitLandings.delete(
+                    landing.transactionId
+                );
+                out.push(Object.freeze({
+                    ...completion,
+                    state: 'FAILED_PROTOCOL',
+                    landed: false,
+                    requiresRecovery: true
+                }));
+            }
+        }
+        return out;
+    }
+
+    isActorTransitAirborne(handle) {
+        return this.actorPayloadThrowBackendSupported
+            && this.backend.isActorTransitAirborne(handle);
+    }
+
     cancelPendingActorPayloadMaterializations(reason = 'cancelled') {
         if (this.destroyed || !this.actorPayloadBackendSupported) {
             return Object.freeze({
@@ -2313,6 +2685,11 @@ export class GpuEnemySimulationEndpoint {
             .cancelAllActorPayloadMaterializations(reason);
         let reservationCount = 0;
         for (const transaction of this.actorPayloadTransactions.values()) {
+            if (transaction.placementToken) {
+                this.backend.releaseActorActionPlacement(
+                    transaction.placementToken
+                );
+            }
             for (const handle of transaction.handles) {
                 if (this.registry.cancelReservation(handle)) {
                     reservationCount++;
@@ -2345,6 +2722,14 @@ export class GpuEnemySimulationEndpoint {
                 subjectReadbackPolicy: 'aggregate-only',
                 perSubjectCpuCommandCount: 0
             });
+        const transit = this.actorPayloadThrowBackendSupported
+            ? this.backend.getActorTransitRuntimeStatus()
+            : Object.freeze({
+                state: this.destroyed ? 'destroyed' : 'unsupported',
+                activeBatchCount: 0,
+                activeActorCount: 0,
+                requiresRecovery: false
+            });
         return Object.freeze({
             ...backend,
             transactionCount: this.actorPayloadTransactions.size,
@@ -2353,9 +2738,13 @@ export class GpuEnemySimulationEndpoint {
             rejectedExecutionCount: this.actorPayloadRejectedCount,
             capacityRejectedExecutionCount:
                 this.actorPayloadCapacityRejectedCount,
+            transit,
+            pendingTransitLandingCount:
+                this.actorPayloadTransitLandings.size,
             failure: this.actorPayloadFailure ?? backend.failure ?? null,
             requiresRecovery: this.actorPayloadFailure !== null
                 || backend.requiresRecovery === true
+                || transit.requiresRecovery === true
         });
     }
 
@@ -5137,6 +5526,7 @@ export class GpuEnemySimulationEndpoint {
         this.routeAvailabilityBatchScratch.length = 0;
         this.lastCompletedRouteAvailabilityPrograms = null;
         this.actorPayloadTransactions.clear();
+        this.actorPayloadTransitLandings.clear();
         this.actorPayloadCompleted.length = 0;
         this.actorPayloadTowerTargetHandle = null;
         this.actorPayloadCoreTargetHandle = null;
@@ -6590,6 +6980,12 @@ export class GpuEnemySimulationEndpoint {
     }
 
     #cancelActorPayloadTransaction(transaction, reason) {
+        if (transaction.placementToken) {
+            this.backend.releaseActorActionPlacement(
+                transaction.placementToken
+            );
+            transaction.placementToken = null;
+        }
         const body = this.backend.cancelActorPayloadBodyPrelease(
             transaction.bodyPreleaseToken,
             reason

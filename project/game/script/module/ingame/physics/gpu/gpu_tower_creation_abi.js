@@ -66,7 +66,7 @@ export const GPU_TOWER_CREATION_HARD_FAILURE_MASK = (
 export const GPU_TOWER_CREATION_STORAGE_PROFILE = Object.freeze({
     validateStorageBuffersPerStage: 9,
     applyStorageBuffersPerStage: 9,
-    actorActionStorageBuffersPerStage: 7,
+    actorActionStorageBuffersPerStage: 9,
     maximumStorageBuffersPerStage: 9
 });
 

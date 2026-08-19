@@ -1098,6 +1098,7 @@ export class TowerCreationCoordinator {
         )));
         const placementStage = this.actorActionPlacementRuntime.stage({
             transactionId: request.transactionId,
+            completionOwner: 'tower-creation',
             command: request.command,
             subjectCompletion: request.subjectCompletion,
             snapshotBinding,
@@ -1400,6 +1401,9 @@ export class TowerCreationCoordinator {
                 pending.request.command.executionIdFingerprint,
             actionCode: pending.request.command.actionCode,
             payloadCode: pending.request.command.payloadCode,
+            travelDurationFixedTicks:
+                pending.request.actorActionProfile
+                    .travelDurationFixedTicks,
             creationOriginCode:
                 pending.request.payloadDefinition.creationOriginCode,
             visibleFromExecutionOrdinal:

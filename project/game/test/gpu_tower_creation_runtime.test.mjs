@@ -853,6 +853,7 @@ function gpuResources(device, capacity = 4) {
         physics: buffer('physics', capacity * 32),
         simulation: buffer('simulation', capacity * 32),
         abilityMetadata: buffer('ability-metadata', capacity * 48),
+        actorTransit: buffer('actor-transit', capacity * 160),
         members: buffer('members', capacity * 40),
         roster: buffer('roster', 32 + capacity * 4),
         bodyControlStates: buffer('body-control', capacity * 64)
@@ -1219,7 +1220,7 @@ test('creation shader/ABI는 <=9 storage, validate-before-apply, child ALIVE-las
     assert.deepEqual(GPU_TOWER_CREATION_STORAGE_PROFILE, {
         validateStorageBuffersPerStage: 9,
         applyStorageBuffersPerStage: 9,
-        actorActionStorageBuffersPerStage: 7,
+        actorActionStorageBuffersPerStage: 9,
         maximumStorageBuffersPerStage: 9
     });
     for (const entry of [
@@ -1251,7 +1252,7 @@ test('creation shader/ABI는 <=9 storage, validate-before-apply, child ALIVE-las
         new Set([...GPU_TOWER_CREATION_ACTOR_ACTION_WGSL.matchAll(
             /@binding\((\d+)\)/g
         )].map((match) => Number(match[1]))).size,
-        7
+        9
     );
 
     const storage = createGpuTowerCreationHostStorage(2);
