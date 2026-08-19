@@ -1,5 +1,17 @@
 # 01. Sentence Grammar and Entity Words
 
+## R5 Turn 1 typed-contract status (2026-08-19)
+
+Shoot keeps action code `1`; Throw/Emit/Summon append codes `2/3/4`. Immutable data-owned actor-action profiles
+now define spawn anchor, cast-start target snapshot, placement, launch/travel values, activation, and transit
+suppression. Tower/Enemy Subject × four verbs × Tower/Enemy Payload compiles as 16 immutable plans. Tower Payload
+uses the canonical Tower definition, `FIXED_PLAYER`, and its Tower preview formula; Enemy remains
+`FIXED_HOSTILE` and preserves the exact R3 Q/E compiled identities.
+
+Production assigns SHIFT `The Tower shoots The Tower`, SPACE `Enemies shoot The Tower`, and keeps Q/E plus the
+empty PRIMARY/LMB compatibility boundary. This checkpoint is typed/compiler/loadout/preview-contract only:
+Tower GPU placement/Share transaction and Throw/Emit/Summon execution are not implemented or claimed yet.
+
 ## Post-R3 implementation status (2026-08-17)
 
 R3 Enemy Entity Word is complete. The typed catalog/compiler, five-slot `WordSystem`, Q/E semantic input,
@@ -15,8 +27,10 @@ parallel materialize. CPU code preleases exact WorldRegistry/body destinations a
 completion; it never reads back the Subject array. A failed validation or one-short capacity check publishes
 zero of N destinations.
 
-R3 implements only `Shoot + Enemy`. The Tower payload, `Enemies shoot The Tower`, other actor nouns/verbs,
-Merge, full modifier grammar, the Shop/editor transaction UI, and save integration remain later milestones.
+R3 materialization still implements only `Shoot + Enemy`. R5 Turn 1 compiles the Tower payload and four verbs,
+but GPU execution/materialization of the new R5 sentences (including `Enemies shoot The Tower`), other actor
+nouns/verbs, Merge, full modifier grammar, the Shop/editor transaction UI, and save integration remain later
+milestones.
 
 ## 1. Runtime model
 

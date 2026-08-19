@@ -1,5 +1,13 @@
 # 06. GPU Runtime and Transaction Requirements
 
+## R5 Turn 1 contract boundary (2026-08-19)
+
+The CPU typed layer now appends Throw/Emit/Summon, canonical Tower Payload metadata, immutable action profiles,
+all 16 Tower/Enemy actor combinations, SHIFT/SPACE production slot assignments, and a non-exact Tower preview
+adapter prepared for R4 `previewTowerCreation()`. No GPU ABI, pass, placement buffer, child materializer, Share
+transaction, or transit state changed in this turn. The R3 GPU runtime below remains the only executable actor
+payload path until later R5 checkpoints.
+
 ## Post-R3 implementation status (2026-08-17)
 
 R3 Enemy Entity Word is now a concrete GPU runtime, not a future seam. CPU code submits one semantic execution;

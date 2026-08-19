@@ -1,5 +1,5 @@
 import {
-    R3_SENTENCE_DEFINITION_BY_ID
+    R5_SENTENCE_DEFINITION_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
     ABILITY_SLOT_IDS,
@@ -74,7 +74,7 @@ export class WordSystem {
             ? options.compiler
             : new SentenceCompiler(options.compilerOptions);
         this.sentenceDefinitionsById = options.sentenceDefinitionsById
-            ?? R3_SENTENCE_DEFINITION_BY_ID;
+            ?? R5_SENTENCE_DEFINITION_BY_ID;
         this.slots = new Map();
         for (const slotId of ABILITY_SLOT_IDS) {
             this.slots.set(slotId, {
@@ -183,7 +183,7 @@ export class WordSystem {
 
     /**
      * Slot controller가 호출하는 semantic request seam입니다. Turn 1은 이 request를
-     * GPU Subject selection이나 spawn으로 materialize하지 않습니다.
+     * GPU owner는 compiled actor-action/payload 지원 상태에 따라 후속 실행을 확정합니다.
      */
     requestSlotActivation(slotId, options = {}) {
         let normalizedSlotId;

@@ -1,6 +1,7 @@
 import {
     THE_TOWER_COMBAT_DATA,
     THE_TOWER_DATA,
+    THE_TOWER_DEFINITION_ID,
     THE_TOWER_RENDER_DATA
 } from 'data/object/tower/the_tower_data.js';
 import {
@@ -18,7 +19,7 @@ import {
 } from '../../contract/gameplay_team_contract.js';
 
 export const GPU_TOWER_WORLD_KIND_ID = 'tower';
-export const GPU_TOWER_DEFINITION_ID = 'the-tower';
+export const GPU_TOWER_DEFINITION_ID = THE_TOWER_DEFINITION_ID;
 
 function requireFinitePosition(source, label) {
     const x = Number(source?.x);

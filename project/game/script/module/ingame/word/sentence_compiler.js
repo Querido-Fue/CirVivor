@@ -1,8 +1,11 @@
 import {
-    R3_WORD_DEFINITION_BY_ID,
-    R3_WORD_INSTANCE_BY_ID,
-    R3_WORD_PROTOCOL_DATA
+    R5_WORD_PROTOCOL_DATA,
+    R5_WORD_DEFINITION_BY_ID,
+    R5_WORD_INSTANCE_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
+import {
+    R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE
+} from 'data/word/r5_actor_action_profile_data.js';
 import {
     ABILITY_TARGET_POLICY_CODE,
     SENTENCE_ACTION_CODE,
@@ -105,15 +108,20 @@ export class SentenceCompileError extends Error {
 export class SentenceCompiler {
     constructor(options = {}) {
         this.wordDefinitionsById = requireCatalog(
-            options.wordDefinitionsById ?? R3_WORD_DEFINITION_BY_ID,
+            options.wordDefinitionsById ?? R5_WORD_DEFINITION_BY_ID,
             'wordDefinitionsById'
         );
         this.wordInstancesById = requireCatalog(
-            options.wordInstancesById ?? R3_WORD_INSTANCE_BY_ID,
+            options.wordInstancesById ?? R5_WORD_INSTANCE_BY_ID,
             'wordInstancesById'
         );
+        this.actorActionProfilesByActionCode = requireCatalog(
+            options.actorActionProfilesByActionCode
+                ?? R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE,
+            'actorActionProfilesByActionCode'
+        );
         this.protocol = normalizeProtocolData(
-            options.protocol ?? R3_WORD_PROTOCOL_DATA
+            options.protocol ?? R5_WORD_PROTOCOL_DATA
         );
         this.cache = new Map();
     }
@@ -202,12 +210,15 @@ export class SentenceCompiler {
                 'Subject slot에는 Subject Entity Word가 필요합니다.'
             );
         }
+        const actorActionProfile = this.actorActionProfilesByActionCode[
+            verbDefinition.actionCode
+        ];
         if (verbDefinition.kind !== WORD_KIND.VERB
-            || verbDefinition.id !== WORD_DEFINITION_ID.SHOOT
-            || verbDefinition.actionCode !== SENTENCE_ACTION_CODE.SHOOT) {
+            || !actorActionProfile
+            || actorActionProfile.actionCode !== verbDefinition.actionCode) {
             throw new SentenceCompileError(
                 SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
-                'R3에서 지원하는 verb implementation이 아닙니다.'
+                '지원하는 actor verb profile이 아닙니다.'
             );
         }
         if (payloadDefinition.kind !== WORD_KIND.ENTITY
@@ -218,12 +229,15 @@ export class SentenceCompiler {
                 'Payload slot에는 Payload Entity Word가 필요합니다.'
             );
         }
-        if (payloadDefinition.payload.runtimeSupport
+        if ((payloadDefinition.payload.runtimeSupport
                 !== WORD_RUNTIME_SUPPORT.R3
-            || payloadDefinition.id !== WORD_DEFINITION_ID.ENEMY) {
+            && payloadDefinition.payload.runtimeSupport
+                !== WORD_RUNTIME_SUPPORT.R5)
+            || (payloadDefinition.id !== WORD_DEFINITION_ID.ENEMY
+                && payloadDefinition.id !== WORD_DEFINITION_ID.TOWER)) {
             throw new SentenceCompileError(
                 SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_PAYLOAD,
-                `${payloadDefinition.id} Payload runtime은 R3 범위가 아닙니다.`
+                `${payloadDefinition.id} actor Payload runtime은 R5 범위가 아닙니다.`
             );
         }
 
@@ -241,6 +255,8 @@ export class SentenceCompiler {
             );
         }
 
+        const previewFormulaId = payloadDefinition.payload.previewFormulaId
+            ?? this.protocol.previewFormulaId;
         const semanticKey = [
             COMPILED_ABILITY_SCHEMA_VERSION,
             this.protocol.abiVersion,
@@ -251,25 +267,56 @@ export class SentenceCompiler {
             payloadDefinition.payload.payloadCode,
             payloadDefinition.payload.definitionId,
             payloadDefinition.payload.allegiancePolicy,
+            payloadDefinition.payload.runtimeSupport,
+            actorActionProfile.abiVersion,
+            actorActionProfile.id,
+            actorActionProfile.spawnAnchorPolicy,
+            actorActionProfile.targetPolicy,
+            actorActionProfile.targetSnapshotPolicy,
+            actorActionProfile.activationPolicy,
+            actorActionProfile.placementPolicy,
+            actorActionProfile.launchSpeed,
+            actorActionProfile.travelSpeed,
+            actorActionProfile.travelDurationFixedTicks,
+            actorActionProfile.surfaceGap,
+            actorActionProfile.summonLatticeSpacing,
+            actorActionProfile.presentationArcHeight,
+            actorActionProfile.transit.policy,
+            actorActionProfile.transit.suspendControl,
+            actorActionProfile.transit.suspendSubjectSelection,
+            actorActionProfile.transit.suspendTargetAcceptance,
+            actorActionProfile.transit.suppressContact,
             targetPolicyCode,
             this.protocol.cooldownTicks,
             this.protocol.subjectBudget,
             this.protocol.generatedBodyBudget,
             this.protocol.generationLimit,
-            this.protocol.previewFormulaId
+            previewFormulaId
         ].join('|');
         const cached = this.cache.get(semanticKey);
         if (cached) {
             return cached;
         }
 
-        const compiledAbilityId = [
-            'compiled-ability.r3',
-            subjectDefinition.id,
-            verbDefinition.id,
-            payloadDefinition.id,
-            `abi${this.protocol.abiVersion}`
-        ].join(':');
+        const preservesR3ExecutionIdentity
+            = verbDefinition.actionCode === SENTENCE_ACTION_CODE.SHOOT
+                && payloadDefinition.id === WORD_DEFINITION_ID.ENEMY;
+        const compiledAbilityId = preservesR3ExecutionIdentity
+            ? [
+                'compiled-ability.r3',
+                subjectDefinition.id,
+                verbDefinition.id,
+                payloadDefinition.id,
+                `abi${this.protocol.abiVersion}`
+            ].join(':')
+            : [
+                'compiled-ability.r5',
+                subjectDefinition.id,
+                verbDefinition.id,
+                payloadDefinition.id,
+                actorActionProfile.id,
+                `abi${this.protocol.abiVersion}`
+            ].join(':');
         const compiledAbility = Object.freeze({
             schemaVersion: COMPILED_ABILITY_SCHEMA_VERSION,
             protocolVersion: this.protocol.abiVersion,
@@ -282,10 +329,14 @@ export class SentenceCompiler {
                 deterministicOrder: 'private-stable-slot-ascending'
             }),
             actionCode: verbDefinition.actionCode,
+            actorActionProfileId: actorActionProfile.id,
+            actorActionProfile,
             payloadCode: payloadDefinition.payload.payloadCode,
             payloadDefinitionId: payloadDefinition.payload.definitionId,
+            payloadRuntimeSupport: payloadDefinition.payload.runtimeSupport,
             allegiancePolicy: payloadDefinition.payload.allegiancePolicy,
             targetPolicyCode,
+            targetSnapshotPolicy: actorActionProfile.targetSnapshotPolicy,
             executionPolicy: Object.freeze({
                 atomic: true,
                 generatedSubjectsJoinCurrentExecution: false,
@@ -297,7 +348,7 @@ export class SentenceCompiler {
                 generatedBodyCount: this.protocol.generatedBodyBudget,
                 generation: this.protocol.generationLimit
             }),
-            previewFormulaId: this.protocol.previewFormulaId,
+            previewFormulaId,
             displaySentenceData: Object.freeze({
                 subjectWordDefinitionId: subjectDefinition.id,
                 verbWordDefinitionId: verbDefinition.id,

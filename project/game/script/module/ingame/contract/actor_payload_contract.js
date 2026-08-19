@@ -15,6 +15,9 @@ import {
 import {
     BASIC_CIRCLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
+import {
+    R5_SHOOT_ACTOR_ACTION_PROFILE
+} from 'data/word/r5_actor_action_profile_data.js';
 
 export const ACTOR_PAYLOAD_DEFINITION_ABI_VERSION = 1;
 export const ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION = 1;
@@ -138,11 +141,11 @@ export function createR3EnemyActorPayloadDefinition(overrides = {}) {
         enemyTargetPolicy:
             ACTOR_PAYLOAD_TARGET_POLICY.NEAREST_TOWER_THEN_CORE_THEN_FACING,
         launchSpeed: requirePositiveFloat32(
-            overrides.launchSpeed ?? 7,
+            overrides.launchSpeed ?? R5_SHOOT_ACTOR_ACTION_PROFILE.launchSpeed,
             'actorPayload.launchSpeed'
         ),
         surfaceGap: requirePositiveFloat32(
-            overrides.surfaceGap ?? 0.0625,
+            overrides.surfaceGap ?? R5_SHOOT_ACTOR_ACTION_PROFILE.surfaceGap,
             'actorPayload.surfaceGap'
         ),
         visibleExecutionOffset: 1,

@@ -1,5 +1,12 @@
 # 02. Team, Ownership, Targeting, and Action Semantics
 
+## R5 Turn 1 typed-contract status (2026-08-19)
+
+Tower Payload is now a typed `FIXED_PLAYER` payload with canonical Tower definition identity. Enemy Payload
+remains `FIXED_HOSTILE`. Shoot/Throw/Emit/Summon have append-only codes and immutable data profiles; every
+Tower/Enemy Subject/Payload matrix entry compiles with a cast-start target snapshot. These are execution plans,
+not GPU execution evidence. Until later R5 turns, only R3 Shoot + Enemy materializes end to end.
+
 ## R3 implementation status (2026-08-16)
 
 R3 materializes only a fixed-HOSTILE Enemy payload. Q uses the living Tower subject and shared world Aim Point;

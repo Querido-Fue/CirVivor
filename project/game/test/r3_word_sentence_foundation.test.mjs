@@ -69,7 +69,10 @@ test('R3 stable WordDefinition/WordInstance와 Enemy normal catalog metadata가 
     assert.deepEqual({ ...WORD_DEFINITION_ID }, {
         TOWER: 'word.entity.tower',
         ENEMY: 'word.entity.enemy',
-        SHOOT: 'verb.shoot'
+        SHOOT: 'verb.shoot',
+        THROW: 'verb.throw',
+        EMIT: 'verb.emit',
+        SUMMON: 'verb.summon'
     });
     assert.equal(R3_TOWER_WORD_INSTANCE.definitionId, WORD_DEFINITION_ID.TOWER);
     assert.equal(R3_SHOOT_WORD_INSTANCE.definitionId, WORD_DEFINITION_ID.SHOOT);
@@ -102,7 +105,7 @@ test('R3 stable WordDefinition/WordInstance와 Enemy normal catalog metadata가 
     assert.equal(isFixedHostileEnemyPayload(ENEMY_ENTITY_WORD_DEFINITION), true);
     assert.equal(
         TOWER_ENTITY_WORD_DEFINITION.payload.runtimeSupport,
-        WORD_RUNTIME_SUPPORT.FUTURE_R5
+        WORD_RUNTIME_SUPPORT.R5
     );
     assert.equal(SHOOT_VERB_WORD_DEFINITION.actionCode, SENTENCE_ACTION_CODE.SHOOT);
     assertDeepFrozen(R3_WORD_DEFINITIONS);
@@ -164,19 +167,19 @@ test('localized singular/plural display 변경은 compiler semantic identity를 
     );
 });
 
-test('Tower Payload, modifier, missing slot, Shop phase는 정확한 구조/runtime 이유로 거절된다', () => {
+test('Tower Payload는 R5 typed plan이고 modifier/missing/Shop은 정확한 이유로 거절된다', () => {
     const compiler = new SentenceCompiler();
     const towerPayload = normalizeSentenceDefinition({
-        id: 'sentence.r3.enemy-shoots-tower.unsupported',
+        id: 'sentence.r5.tower-shoots-tower.typed',
         subjectWordInstanceId: R3_TOWER_SHOOTS_ENEMY_SENTENCE.subjectWordInstanceId,
         verbWordInstanceId: R3_TOWER_SHOOTS_ENEMY_SENTENCE.verbWordInstanceId,
         payloadWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
         modifierWordInstanceIds: []
     });
-    assert.equal(
-        compiler.tryCompile(towerPayload).code,
-        SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_PAYLOAD
-    );
+    const towerPayloadResult = compiler.tryCompile(towerPayload);
+    assert.equal(towerPayloadResult.valid, true);
+    assert.equal(towerPayloadResult.compiledAbility.payloadCode,
+        ACTOR_PAYLOAD_CODE.TOWER);
     assert.equal(
         compiler.tryCompile({
             ...R3_TOWER_SHOOTS_ENEMY_SENTENCE,

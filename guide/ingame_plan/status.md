@@ -14,8 +14,12 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
-**R4 TowerGroup + Share Ledger is complete as of 2026-08-17 and Post-R4 stabilization is complete as of
-2026-08-18. R5 Tower Payload + actor verbs is next.** `GameSystem` owns canonical CPU-run-domain
+**R4 TowerGroup + Share Ledger is complete as of 2026-08-17, Post-R4 stabilization is complete as of
+2026-08-18, and R5 Turn 1 typed actor contracts are complete as of 2026-08-19. R5 Turn 2 GPU actor placement is
+next.** Turn 1 appends Throw/Emit/Summon to Shoot, freezes four data-owned action profiles, compiles all 16
+Tower/Enemy Subject/verb/Payload plans, binds canonical fixed-Player Tower Payload, assigns SHIFT/SPACE while
+preserving Q/E and PRIMARY/LMB compatibility, and exposes a non-exact Tower preview seam. It changes no GPU ABI
+and claims no Tower payload materialization. `GameSystem` owns canonical CPU-run-domain
 `TowerGroupState`/`TowerShareLedger`, exact logical Tower records, Share/Lost Share, `WordSystem`, five Sentence
 slots/cooldowns, `SentenceSlotController`, and `GoldLedger`. `TowerCombatRoster` is only the primary-Tower
 compatibility view. The active GPU world owns compact Tower group roster/control/summary, atomic technical

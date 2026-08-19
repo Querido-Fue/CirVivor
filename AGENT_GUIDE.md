@@ -31,7 +31,16 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`; `R5 Tower Payload + actor verbs NEXT`.
+Current R5 status (2026-08-19): `R5 Turn 1 typed actor contracts COMPLETE`; `Turn 2 GPU actor placement NEXT`.
+Turn 1 preserves the R3 Q/E compiled identities while appending Throw/Emit/Summon action codes and immutable
+data-owned action profiles. Tower/Enemy Subject × four actor verbs × Tower/Enemy Payload compiles as 16 typed
+plans. Tower Payload now binds the canonical `the-tower` definition and fixed Player allegiance; the production
+loadout binds SHIFT/SPACE to the two Tower Shoot sentences, keeps Q/E unchanged, and leaves PRIMARY_POINTER to
+the existing LMB compatibility path. Tower preview exposes a non-exact placement boundary and an optional R4
+creation-preview callback. No R5 GPU placement, Tower payload transaction, actor transit, or end-to-end
+SHIFT/SPACE execution is claimed at this checkpoint; the only materialized actor payload remains R3 Shoot + Enemy.
+
+Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower
 creation, source-local targeting, complete-group GPU-world recovery/R3 integration, and final acceptance. Post-R4
 stabilization moves non-viable derived current HP rejection into the shared CPU planner/preview, exposes the

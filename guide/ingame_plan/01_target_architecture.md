@@ -2,8 +2,9 @@
 >
 > Tower HP/death, Enemy Entity Word, and multi-Tower Share/group control are implemented. Canonical logical
 > Tower state belongs to CPU `TowerGroupState`/`TowerShareLedger`; GPU bodies own combat/transform and compact
-> roster/control/summary/query/creation runtimes. Tower Payload/actor verbs, Merge, Overtime, Shop, and checkpoint
-> remain target systems. Read `../gameplay/README.md`; any no-HP/no-Enemy/single-Tower authority is superseded.
+> roster/control/summary/query/creation runtimes. R5 Turn 1 completes typed Tower Payload and four actor-verb
+> plans/loadout/preview contracts only; their GPU execution, Merge, Overtime, Shop, and checkpoint remain target
+> systems. Read `../gameplay/README.md`; any no-HP/no-Enemy/single-Tower authority is superseded.
 
 # 01. Target Architecture
 

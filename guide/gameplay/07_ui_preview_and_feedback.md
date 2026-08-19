@@ -1,5 +1,13 @@
 # 07. UI Preview and Sandbox Feedback
 
+## R5 Turn 1 preview-contract status (2026-08-19)
+
+Compiled actor plans now expose action profile ID, cast-start target snapshot policy, payload/allegiance, budgets,
+and payload-specific preview formula. Tower Payload preview can consume the R4 `previewTowerCreation()` callback
+only when its runtime Subject count is exact. Missing count/callback and GPU-only placement remain explicitly
+non-exact; danger (`TOWER_SHARE_DILUTION`) is separate from technical execution validity. This is a preview seam,
+not Tower payload execution evidence.
+
 ## Post-R3 implementation status (2026-08-17)
 
 R3 exposes bounded, deep-frozen runtime preview/status data for the five Sentence slots, exact subject/generated

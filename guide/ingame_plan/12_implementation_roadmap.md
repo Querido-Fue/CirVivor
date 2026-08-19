@@ -115,7 +115,17 @@ Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 targeting, primary death
 The runtime-only 1,000-Tower control fixture is not a production creation-cap increase. Manual interactive smoke
 was not executed and is not claimed as PASS.
 
-## R5 — Tower Payload + actor verbs — NEXT
+## R5 — Tower Payload + actor verbs — IN PROGRESS (Turn 1/8 complete, 2026-08-19)
+
+Turn 1 complete:
+
+- append-only Shoot/Throw/Emit/Summon typed IDs/codes and immutable data-owned profiles;
+- canonical fixed-Player Tower Payload plus unchanged fixed-Hostile Enemy Payload;
+- all 16 Tower/Enemy Subject × verb × Payload compiled plans;
+- SHIFT/SPACE production loadout, unchanged Q/E, empty PRIMARY/LMB compatibility;
+- Tower preview schema prepared for exact R4 creation preview without claiming GPU placement exactness.
+
+Turn 1 does not claim GPU placement/materialization or end-to-end Tower Payload execution.
 
 - The Tower shoots The Tower;
 - Enemies shoot The Tower;

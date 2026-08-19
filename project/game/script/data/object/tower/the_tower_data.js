@@ -27,6 +27,9 @@ export const THE_TOWER_DATA = Object.freeze({
     MAX_LINEAR_SPEED_TILES_PER_SECOND: 25
 });
 
+/** Registry/GPU/Word catalog가 공유하는 canonical Tower definition identity입니다. */
+export const THE_TOWER_DEFINITION_ID = 'the-tower';
+
 /** GPU_WORLD R1 single-Tower combat baseline의 단일 수치 권위입니다. */
 export const THE_TOWER_COMBAT_DATA = Object.freeze({
     MAX_HEALTH: 30,

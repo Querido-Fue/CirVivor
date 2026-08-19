@@ -9,7 +9,10 @@ import {
 export const WORD_DEFINITION_ID = Object.freeze({
     TOWER: 'word.entity.tower',
     ENEMY: 'word.entity.enemy',
-    SHOOT: 'verb.shoot'
+    SHOOT: 'verb.shoot',
+    THROW: 'verb.throw',
+    EMIT: 'verb.emit',
+    SUMMON: 'verb.summon'
 });
 
 export const WORD_KIND = Object.freeze({
@@ -24,7 +27,8 @@ export const WORD_GRAMMATICAL_ROLE = Object.freeze({
 
 export const WORD_RUNTIME_SUPPORT = Object.freeze({
     R3: 'r3',
-    FUTURE_R5: 'future-r5'
+    FUTURE_R5: 'future-r5',
+    R5: 'r5'
 });
 
 /** GPU metadata와 공유할 append-only gameplay noun bits입니다. */
@@ -41,7 +45,10 @@ export const SUBJECT_SELECTOR_CODE = Object.freeze({
 });
 
 export const SENTENCE_ACTION_CODE = Object.freeze({
-    SHOOT: 1
+    SHOOT: 1,
+    THROW: 2,
+    EMIT: 3,
+    SUMMON: 4
 });
 
 export const ACTOR_PAYLOAD_CODE = Object.freeze({
@@ -197,7 +204,8 @@ function freezePayloadDefinition(payload, label) {
             'payloadCode',
             'definitionId',
             'allegiancePolicy',
-            'runtimeSupport'
+            'runtimeSupport',
+            'previewFormulaId'
         ]),
         label
     );
@@ -216,9 +224,18 @@ function freezePayloadDefinition(payload, label) {
     const definitionId = payload.definitionId === null
         ? null
         : requireNonEmptyString(payload.definitionId, `${label}.definitionId`);
-    if (runtimeSupport === WORD_RUNTIME_SUPPORT.R3 && definitionId === null) {
-        throw new RangeError(`${label}.definitionId는 R3 payload에 필요합니다.`);
+    if ((runtimeSupport === WORD_RUNTIME_SUPPORT.R3
+            || runtimeSupport === WORD_RUNTIME_SUPPORT.R5)
+        && definitionId === null) {
+        throw new RangeError(`${label}.definitionId는 runtime payload에 필요합니다.`);
     }
+    const previewFormulaId = payload.previewFormulaId === undefined
+        || payload.previewFormulaId === null
+        ? null
+        : requireNonEmptyString(
+            payload.previewFormulaId,
+            `${label}.previewFormulaId`
+        );
     return Object.freeze({
         payloadCode,
         definitionId,
@@ -226,7 +243,8 @@ function freezePayloadDefinition(payload, label) {
             payload.allegiancePolicy,
             `${label}.allegiancePolicy`
         ),
-        runtimeSupport
+        runtimeSupport,
+        previewFormulaId
     });
 }
 
@@ -382,4 +400,14 @@ export function isFixedHostileEnemyPayload(wordDefinition) {
         && wordDefinition.payload?.allegiancePolicy
             === GAMEPLAY_ALLEGIANCE_POLICY.FIXED_HOSTILE
         && wordDefinition.subject?.teamId === GAMEPLAY_TEAM_ID.HOSTILE;
+}
+
+/** R5 Tower Payload의 fixed Player allegiance와 canonical noun을 확인합니다. */
+export function isFixedPlayerTowerPayload(wordDefinition) {
+    return wordDefinition?.id === WORD_DEFINITION_ID.TOWER
+        && wordDefinition.payload?.payloadCode === ACTOR_PAYLOAD_CODE.TOWER
+        && wordDefinition.payload?.allegiancePolicy
+            === GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+        && wordDefinition.payload?.runtimeSupport === WORD_RUNTIME_SUPPORT.R5
+        && wordDefinition.subject?.teamId === GAMEPLAY_TEAM_ID.PLAYER;
 }

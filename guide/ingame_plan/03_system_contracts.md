@@ -75,6 +75,14 @@
 > uses Core camera fallback without default run failure. Tower Payload/actor verbs, Merge, Overtime, Shop, and save
 > remain future work.
 
+> **2026-08-19 R5 Turn 1 typed actor contract complete**
+>
+> Append-only Shoot/Throw/Emit/Summon vocabulary and immutable data-owned action profiles now compile all 16
+> Tower/Enemy Subject/verb/Payload plans. Tower Payload binds canonical Tower identity and fixed Player
+> allegiance. SHIFT/SPACE are assigned while Q/E and empty PRIMARY/LMB compatibility remain unchanged. The
+> preview provider accepts an optional R4 Tower creation-preview port and never claims GPU placement exactness.
+> No GPU actor placement, Tower Share transaction, transit, or new materialization owner is part of this turn.
+
 # 03. GameSystem and Subsystem Contracts
 
 ## 1. 상속이 아닌 조합

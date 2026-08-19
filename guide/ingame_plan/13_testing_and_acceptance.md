@@ -90,6 +90,19 @@ Static tests must fail if production guides/contracts silently reintroduce:
 - a dangerous valid sentence remains executable.
 - atomic world-capacity failure creates zero result bodies.
 
+### R5 Turn 1 typed-contract evidence (2026-08-19)
+
+- Shoot/Enemy/Tower existing numeric identities remain `1/1/2`; Throw/Emit/Summon append `2/3/4`.
+- All 16 Tower/Enemy Subject × four verbs × Tower/Enemy Payload combinations compile into deep-frozen plans.
+- Tower Payload is canonical fixed Player; Enemy remains fixed Hostile. R3 Q/E compiled IDs and command
+  fingerprint replay remain exact, while different verb profiles produce distinct identities/fingerprints.
+- Production loadout is SHIFT Tower→Tower, SPACE Enemies→Tower, unchanged Q/E, and empty PRIMARY/LMB
+  compatibility. Localized display text does not affect semantic identity; modifiers remain structurally invalid.
+- Tower preview calls the R4 creation-preview seam only for an exact Subject count and always reports GPU
+  placement as non-exact. Dilution danger does not itself disable an otherwise technically valid plan.
+- Focused Node `31/31`, changed production syntax `11/11`, and `git diff --check` pass. No GPU, WASM, golden,
+  full Node, or manual acceptance is claimed by this restricted Turn 1 checkpoint.
+
 ### Post-R3 stabilization evidence (2026-08-17)
 
 - Changed JS/MJS syntax: `34/34` PASS; full Node: `1543/1543` PASS, fail 0.
