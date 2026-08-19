@@ -1529,7 +1529,11 @@ export class TowerCreationCoordinator {
             replayMismatchCount: this.replayMismatchCount,
             reservationHighWater: this.reservationHighWater,
             aggregateReadbackByteSize:
-                runtime?.aggregateReadbackByteSize ?? 0,
+                runtime?.resultReadbackBytes ?? 0,
+            metadataCommitRecordByteSize:
+                runtime?.metadataCommitRecordBytes ?? 0,
+            metadataCommitReadbackBytesMax:
+                runtime?.metadataCommitReadbackBytesMax ?? 0,
             storageProfile: runtime?.storageProfile ?? null,
             historyCount: this.completedTransactionOrder.length,
             historyCapacity: this.historyCapacity,

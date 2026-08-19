@@ -31,7 +31,7 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R5 status (2026-08-19): `R5 Turns 1–7 COMPLETE`; `Turn 8 Acceptance/Docs NEXT`.
+Current R5 status (2026-08-19): `R5 COMPLETE`; `R6 Merge NEXT`.
 Turn 1 preserves the R3 Q/E compiled identities while appending Throw/Emit/Summon action codes and immutable
 data-owned action profiles. Tower/Enemy Subject × four actor verbs × Tower/Enemy Payload compiles as 16 typed
 plans. Production injects the Turn 4 R5 SHIFT/SPACE Shoot sentences beside the preserved R3 Q/E loadout. Tower
@@ -100,6 +100,20 @@ uses fixed verb buckets, scalar byte counts/high-water marks, and bounded histor
 path does not require ActorTransit storage; R5 GPU ActorAction creation still fails closed without the shared transit
 buffer. The full Node gate is 1,644/1,644, and the R3, R4, and R5 actual NW/WebGPU gates pass with storage maximum nine,
 zero protocol/recovery/uncaptured errors, and orderly destroyed teardown.
+Turn 8 completes the cumulative automated acceptance without starting R6. The actual R5 NW/WebGPU stress runner
+covers exact zero Subjects, Enemy 100 → Tower 100, repeated Tower Shoot growth through 256, Hostile 1,000 against a
+full Tower 256 roster, 256 simultaneous Throw AIRBORNE actors, 256 Summon placements, three mixed
+Shoot/Throw/Emit/Summon churn cycles with Throw landing, and device-generation recovery of a committed Tower
+descriptor. Observed high-water marks are 1,256 active bodies, Tower 256, Enemy 1,000, placement Subjects 256, and
+transit actors 256. CPU reads remain bounded aggregate/metadata records only (64/72/96/64/96-byte aggregate paths
+and 32-byte Tower metadata records), the per-stage storage maximum remains nine, and per-Subject transform/spawn
+readback, per-actor CPU advance/JS controller, partial creation, protocol failure, recovery, and ending reservation/
+pending-command counts are all zero. Timestamp-query evidence around serialized GPU submissions reports action
+102 samples at p50/p95 1.6384/2.162688 ms, placement 36 at 1.572864/2.031616 ms, and transit 83 at
+1.769472/2.031616 ms; full-boundary wall timing is diagnostic rather than a claimed frame budget. The final gate also
+passes Node 1,644/1,644, both WASM reproducibility checks, capability plus R3/R4/R5 actual NW/WebGPU, unchanged render
+golden 10 surfaces/3 cases (`3acaa4a58bc7e8d6a6573d6283816f317203aed4575e1f917554d0d7c9663aaf`), and title GPU
+smoke T0–T5. Manual GameScene play remains explicitly `NOT EXECUTED`, not a claimed PASS.
 
 Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower
