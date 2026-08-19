@@ -1,12 +1,34 @@
 # 06. GPU Runtime and Transaction Requirements
 
-## R5 Turn 1 contract boundary (2026-08-19)
+## R5 Turn 2 GPU placement boundary (2026-08-19)
 
-The CPU typed layer now appends Throw/Emit/Summon, canonical Tower Payload metadata, immutable action profiles,
-all 16 Tower/Enemy actor combinations, SHIFT/SPACE production slot assignments, and a non-exact Tower preview
-adapter prepared for R4 `previewTowerCreation()`. No GPU ABI, pass, placement buffer, child materializer, Share
-transaction, or transit state changed in this turn. The R3 GPU runtime below remains the only executable actor
-payload path until later R5 checkpoints.
+ActorActionPlacement ABI v1 is an independent side-plane rather than an extension of Body ABI v8 or the R3
+Enemy materializer. Its program header, lease, aggregate, placement record, transit record, and indirect-dispatch
+strides are `224/32/96/144/80/16` bytes. Initialize, parallel resolve, parallel validate, and aggregate passes
+freeze cast-start source/target/direction, validate finite/SDF placement, author deterministic Summon stable-rank
+lattice offsets, and initialize Throw landing/duration without advancing transit. Every stage stays at or below
+nine storage buffers.
+
+ActorAction profile ABI v2 computes `actorActionProfileFingerprint` over every semantic field, including profile
+identity, target/placement/activation policies, all float/tick parameters, and every transit flag. The compiler,
+AbilityExecutionCommand ABI v2/fingerprint, GPU program header, 96-byte aggregate completion, and retained
+binding must all carry the same value. A stale or substituted profile is rejected before GPU submission.
+
+Throw's `travelDurationFixedTicks` is authoritative. The GPU derives ground velocity as
+`(landing - spawn) × 60 / duration`; authored `travelSpeed` must remain zero. Both the source-surface spawn and
+landing point pass finite/world/SDF validation in the same aggregate-gated batch. Either invalid endpoint yields
+normal `SDF_REJECTED` with no consumable token or mutation.
+
+The runtime maps only the fixed 96-byte aggregate. Successful output remains in GPU storage behind a
+generation-qualified placement token; no per-subject record or body array is read back. Exact and one-invalid
+SDF batches, one-short capacity, stale device/destination identity, and protocol corruption all fail closed with
+zero body/Tower mutation. `cancel`, `rebind`, and `destroy` revoke pending/in-flight/retained tokens.
+
+This Turn 2 side-plane is intentionally not registered in the endpoint fixed loop and does not replace the R3
+materializer. It commits no body, Tower record, Share, cooldown, or lifecycle event. Turn 3 owns the atomic Tower
+payload transaction that will consume the token; Turn 5 owns Throw transit advance. Production therefore keeps
+the R3 Q/E loadout, leaving SHIFT/SPACE empty until the Turn 4 vertical slice rather than routing unavailable
+Tower Payload into `AbilityRuntime`.
 
 ## Post-R3 implementation status (2026-08-17)
 

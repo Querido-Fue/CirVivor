@@ -96,12 +96,37 @@ Static tests must fail if production guides/contracts silently reintroduce:
 - All 16 Tower/Enemy Subject × four verbs × Tower/Enemy Payload combinations compile into deep-frozen plans.
 - Tower Payload is canonical fixed Player; Enemy remains fixed Hostile. R3 Q/E compiled IDs and command
   fingerprint replay remain exact, while different verb profiles produce distinct identities/fingerprints.
-- Production loadout is SHIFT Tower→Tower, SPACE Enemies→Tower, unchanged Q/E, and empty PRIMARY/LMB
-  compatibility. Localized display text does not affect semantic identity; modifiers remain structurally invalid.
+- The R5 candidate loadout is SHIFT Tower→Tower and SPACE Enemies→Tower, but production retains only unchanged
+  R3 Q/E and empty SHIFT/SPACE until the Turn 4 vertical slice. Localized display text does not affect semantic
+  identity; modifiers remain structurally invalid.
 - Tower preview calls the R4 creation-preview seam only for an exact Subject count and always reports GPU
   placement as non-exact. Dilution danger does not itself disable an otherwise technically valid plan.
 - Focused Node `31/31`, changed production syntax `11/11`, and `git diff --check` pass. No GPU, WASM, golden,
   full Node, or manual acceptance is claimed by this restricted Turn 1 checkpoint.
+
+### R5 Turn 2 GPU actor-placement evidence (2026-08-19)
+
+- ActorAction profile ABI v2 normalizes each verb before WGSL encoding and computes one canonical nonzero
+  fingerprint over every semantic field. CompiledAbility, AbilityExecutionCommand ABI v2/fingerprint, GPU program,
+  96-byte aggregate completion, and retained token all bind the same value; replay preserves it and a valid
+  semantic profile variation changes command identity.
+- Production route uses the R3 Q/E loadout. SHIFT/SPACE return `EMPTY_SLOT`, queue no activation request, and
+  leave cooldown at zero. No unavailable Tower Payload reaches `AbilityRuntime`, and this is not represented as
+  `PROTOCOL_REJECTED`.
+- Unknown Subject count previews return `SUBJECT_COUNT_NOT_EXACT`; exact zero returns `ZERO_SUBJECT`. Both set
+  `executionEnabled=false`, skip Tower creation preview, and retain cooldown zero.
+- Placement ABI v1 uses program/lease/aggregate/placement/transit/dispatch strides
+  `224/32/96/144/80/16`. Initialize → resolve → validate → aggregate keeps records GPU-resident and CPU maps only
+  the fixed aggregate. No body/Tower state is written and every stage uses at most nine storage buffers.
+- Actual WebGPU passes Shoot/Emit/Summon/Throw; shared Aim; nearest Tower/Core/facing; target→velocity→facing/
+  route→`+X`; source-death snapshot survival; stable rank; one-short/capacity/stale device/destination rejection;
+  and exact/one-invalid all-or-nothing SDF. Throw duration 30 derives velocity from spawn-to-landing distance;
+  exact source+landing SDF completes, while either invalid endpoint returns `SDF_REJECTED` with no token.
+- Focused Node `45/45` PASS. Dedicated NW.js `0.108.0` receipt reports adapter/requested/device storage
+  `10/9/9`, aggregate readback 96, profile fingerprint bound, record readback false, body commit 0,
+  `uncapturedErrorCount=0`, and `deviceLostReason=destroyed`. Full Node, WASM, golden, and manual gates were not
+  run or claimed for this restricted Turn 2 checkpoint. The separate existing R3 Enemy Word actual route also
+  passed AbilityExecutionCommand ABI v2 with zero protocol/recovery/uncaptured errors and destroyed teardown.
 
 ### Post-R3 stabilization evidence (2026-08-17)
 
@@ -526,7 +551,8 @@ below. Timer expiry, Overtime transition/DOT, Wave Clear, and final victory cons
 ## 9. GPU acceptance
 
 R3 completes the Enemy-only actor child allocation rows. R4 completes Tower group movement/share, technical
-creation, source-local targeting, and recovery rows. Tower actor-payload allocation remains an R5 gate.
+creation, source-local targeting, and recovery rows. R5 Turn 2 completes actor placement evidence only; Tower
+actor-payload token consumption/body+Share publication remains a later R5 gate.
 
 - team/target/share metadata host/WGSL compatibility.
 - GPU Tower HP/death and hostile projectile contact on actual NW.js/WebGPU.
@@ -560,6 +586,11 @@ creation, source-local targeting, and recovery rows. Tower actor-payload allocat
 - Route Runtime ABI v1 host/WGSL stride/version mismatch fails closed; 64-byte body state, 96-byte topology
   header, 64/32 availability and 32/32 cleanup layouts match exactly, advance/finalize requires at most 9 storage
   buffers, and terminal/replacement leave all routes open with zero Z roster/staged/readback/cleanup leaks.
+- ActorAction profile ABI v2 fingerprint covers every semantic field and matches CompiledAbility, execution
+  command, ActorActionPlacement program, aggregate completion, and retained token. Placement ABI v1 strides are
+  `224/32/96/144/80/16`; compute peaks at 9 storage buffers, reads back only 96 bytes, and writes no body state.
+- Throw treats duration as authority, derives ground velocity from spawn-to-landing distance, and validates both
+  endpoints against finite/world/SDF gates before the all-or-nothing aggregate can complete.
 - actual hardware fixture covers order-independent Maximum Damage Window, valid-zero projectile budget,
   continuous overlap/expiry, weight displacement, capacity preflight atomicity, exact Core cleanup, and terminal seal.
 - D1 mixed-producer hardware coverage requires contact, Arrow/Archer, and M Tower candidates to select one
@@ -587,6 +618,7 @@ npm run check:wasm:collision-contact
 npm run test:webgpu:capability
 npm run test:webgpu:r3-enemy-word
 npm run test:webgpu:r4-tower-group
+$env:CIRVIVOR_WEBGPU_FIXTURE_STAGE='actor-action-placement'; node project/game/test/support/run_nw_webgpu_capability.mjs
 npm run test:render:golden
 npm run test:title-gpu:smoke
 git diff --check

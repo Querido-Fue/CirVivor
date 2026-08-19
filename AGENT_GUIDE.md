@@ -31,14 +31,24 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R5 status (2026-08-19): `R5 Turn 1 typed actor contracts COMPLETE`; `Turn 2 GPU actor placement NEXT`.
+Current R5 status (2026-08-19): `R5 Turns 1–2 COMPLETE`; `Turn 3 Tower payload transaction NEXT`.
 Turn 1 preserves the R3 Q/E compiled identities while appending Throw/Emit/Summon action codes and immutable
 data-owned action profiles. Tower/Enemy Subject × four actor verbs × Tower/Enemy Payload compiles as 16 typed
-plans. Tower Payload now binds the canonical `the-tower` definition and fixed Player allegiance; the production
-loadout binds SHIFT/SPACE to the two Tower Shoot sentences, keeps Q/E unchanged, and leaves PRIMARY_POINTER to
-the existing LMB compatibility path. Tower preview exposes a non-exact placement boundary and an optional R4
-creation-preview callback. No R5 GPU placement, Tower payload transaction, actor transit, or end-to-end
-SHIFT/SPACE execution is claimed at this checkpoint; the only materialized actor payload remains R3 Shoot + Enemy.
+plans. Production still injects only the R3 Q/E loadout: SHIFT/SPACE remain empty until the Turn 4 vertical
+slice, so unsupported Tower Payload never enters `AbilityRuntime` or consumes cooldown. ActorAction profile ABI
+v2 computes one canonical fingerprint over every semantic field and binds it through CompiledAbility, execution
+command, GPU program, completion, and retained token. Turn 2 adds an independent ActorActionPlacement ABI v1/
+runtime: GPU initialize, parallel target/direction/
+placement, finite/SDF validation, deterministic Summon rank lattice, and aggregate passes write 144-byte
+placement records plus 80-byte Throw transit initialization. CPU reads only the fixed 96-byte aggregate and
+retains a generation-qualified GPU placement token; per-subject records stay GPU-resident. Player subjects use
+shared Aim, while hostile subjects choose the compact nearest-Tower roster, exact Core, then facing fallback.
+Throw duration is authoritative, ground velocity is derived from spawn-to-landing distance, and both endpoints
+must pass SDF in the same all-or-nothing batch. Unknown/zero Subject previews return
+`SUBJECT_COUNT_NOT_EXACT`/`ZERO_SUBJECT` with execution disabled and cooldown untouched.
+The side-plane is deliberately not wired into R3 materialization or the endpoint fixed loop yet: it writes no
+body/Tower state, advances no transit, and performs no Tower Share transaction. Turn 3 must consume the retained
+token in one atomic Tower payload transaction. SHIFT/SPACE therefore remain non-end-to-end at this checkpoint.
 
 Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower

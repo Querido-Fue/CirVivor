@@ -7,6 +7,9 @@ import {
     R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE
 } from 'data/word/r5_actor_action_profile_data.js';
 import {
+    actorActionProfileFingerprint as computeActorActionProfileFingerprint
+} from '../contract/actor_action_contract.js';
+import {
     ABILITY_TARGET_POLICY_CODE,
     SENTENCE_ACTION_CODE,
     SENTENCE_COMPILE_ERROR_CODE,
@@ -221,6 +224,28 @@ export class SentenceCompiler {
                 '지원하는 actor verb profile이 아닙니다.'
             );
         }
+        let actorActionProfileFingerprint;
+        try {
+            actorActionProfileFingerprint
+                = computeActorActionProfileFingerprint(
+                    actorActionProfile,
+                    `${verbDefinition.id} actorActionProfile`
+                );
+        } catch (error) {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
+                error.message
+            );
+        }
+        if (!Object.isFrozen(actorActionProfile)
+            || !Object.isFrozen(actorActionProfile.transit)
+            || actorActionProfile.actorActionProfileFingerprint
+                !== actorActionProfileFingerprint) {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
+                'actor verb profile은 canonical immutable identity여야 합니다.'
+            );
+        }
         if (payloadDefinition.kind !== WORD_KIND.ENTITY
             || !hasRole(payloadDefinition, WORD_GRAMMATICAL_ROLE.PAYLOAD)
             || !payloadDefinition.payload) {
@@ -286,6 +311,7 @@ export class SentenceCompiler {
             actorActionProfile.transit.suspendSubjectSelection,
             actorActionProfile.transit.suspendTargetAcceptance,
             actorActionProfile.transit.suppressContact,
+            actorActionProfileFingerprint,
             targetPolicyCode,
             this.protocol.cooldownTicks,
             this.protocol.subjectBudget,
@@ -330,6 +356,7 @@ export class SentenceCompiler {
             }),
             actionCode: verbDefinition.actionCode,
             actorActionProfileId: actorActionProfile.id,
+            actorActionProfileFingerprint,
             actorActionProfile,
             payloadCode: payloadDefinition.payload.payloadCode,
             payloadDefinitionId: payloadDefinition.payload.definitionId,

@@ -55,9 +55,10 @@ export const R5_THROW_ACTOR_ACTION_PROFILE = normalizeActorActionProfile({
     targetPolicy: ACTOR_ACTION_TARGET_POLICY.SUBJECT_DEFAULT,
     targetSnapshotPolicy: ACTOR_ACTION_TARGET_SNAPSHOT_POLICY.CAST_START,
     activationPolicy: ACTOR_ACTION_ACTIVATION_POLICY.ON_LANDING,
-    placementPolicy: ACTOR_ACTION_PLACEMENT_POLICY.SOURCE_SURFACE_ATOMIC_SDF,
+    placementPolicy:
+        ACTOR_ACTION_PLACEMENT_POLICY.SOURCE_AND_LANDING_ATOMIC_SDF,
     launchSpeed: 0,
-    travelSpeed: 7,
+    travelSpeed: 0,
     travelDurationFixedTicks: 30,
     surfaceGap: 0.0625,
     summonLatticeSpacing: 0,

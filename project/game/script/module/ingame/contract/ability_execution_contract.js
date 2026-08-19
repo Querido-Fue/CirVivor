@@ -2,9 +2,12 @@ import {
     GAMEPLAY_NOUN_MASK,
     SUBJECT_SELECTOR_CODE
 } from './word_sentence_contract.js';
+import {
+    actorActionProfileFingerprint as computeActorActionProfileFingerprint
+} from './actor_action_contract.js';
 
 export const ABILITY_ENTITY_METADATA_ABI_VERSION = 1;
-export const ABILITY_EXECUTION_COMMAND_ABI_VERSION = 1;
+export const ABILITY_EXECUTION_COMMAND_ABI_VERSION = 2;
 
 export const ABILITY_CREATION_ORIGIN_CODE = Object.freeze({
     NONE: 0,
@@ -206,10 +209,40 @@ export function normalizeAbilityExecutionCommand(command) {
         x: requireFiniteFloat32(command.aimPoint?.x ?? 0, 'aimPoint.x'),
         y: requireFiniteFloat32(command.aimPoint?.y ?? 0, 'aimPoint.y')
     });
+    const actorActionProfile = requireRecord(
+        compiledAbility.actorActionProfile,
+        'compiledAbility.actorActionProfile'
+    );
+    const canonicalActorActionProfileFingerprint
+        = computeActorActionProfileFingerprint(actorActionProfile);
+    const compiledActorActionProfileFingerprint = requireUint32(
+        compiledAbility.actorActionProfileFingerprint,
+        'compiledAbility.actorActionProfileFingerprint',
+        { positive: true }
+    );
+    if (compiledActorActionProfileFingerprint
+        !== canonicalActorActionProfileFingerprint) {
+        throw new RangeError(
+            'compiledAbility actor-action profile fingerprint가 다릅니다.'
+        );
+    }
+    const actorActionProfileFingerprint = requireUint32(
+        command.actorActionProfileFingerprint
+            ?? compiledActorActionProfileFingerprint,
+        'actorActionProfileFingerprint',
+        { positive: true }
+    );
+    if (actorActionProfileFingerprint
+        !== compiledActorActionProfileFingerprint) {
+        throw new RangeError(
+            'ability command actor-action profile fingerprint가 다릅니다.'
+        );
+    }
     const compiledAbilityCode = fingerprintAbilityProtocol(
         compiledAbility.compiledAbilityId,
         compiledAbility.schemaVersion,
-        compiledAbility.protocolVersion
+        compiledAbility.protocolVersion,
+        actorActionProfileFingerprint
     );
     const executionFingerprint = requireUint32(
         command.fingerprint ?? fingerprintAbilityProtocol(
@@ -224,6 +257,7 @@ export function normalizeAbilityExecutionCommand(command) {
             compiledAbility.actionCode,
             compiledAbility.payloadCode,
             compiledAbility.targetPolicyCode,
+            actorActionProfileFingerprint,
             subjectLimit,
             generationLimit,
             aimPoint.x,
@@ -249,6 +283,7 @@ export function normalizeAbilityExecutionCommand(command) {
             compiledAbility.targetPolicyCode,
             'targetPolicyCode'
         ),
+        actorActionProfileFingerprint,
         aimPoint,
         subjectLimit,
         generationLimit,

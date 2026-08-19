@@ -1,12 +1,15 @@
 # 07. UI Preview and Sandbox Feedback
 
-## R5 Turn 1 preview-contract status (2026-08-19)
+## R5 Turn 2 preview boundary (2026-08-19)
 
 Compiled actor plans now expose action profile ID, cast-start target snapshot policy, payload/allegiance, budgets,
 and payload-specific preview formula. Tower Payload preview can consume the R4 `previewTowerCreation()` callback
 only when its runtime Subject count is exact. Missing count/callback and GPU-only placement remain explicitly
 non-exact; danger (`TOWER_SHARE_DILUTION`) is separate from technical execution validity. This is a preview seam,
-not Tower payload execution evidence.
+not Tower payload execution evidence. Turn 2's aggregate-only GPU placement does not expose per-Subject records
+to CPU/UI and therefore does not upgrade placement preview to exact. An unknown Subject count returns
+`SUBJECT_COUNT_NOT_EXACT`; an exact zero returns `ZERO_SUBJECT`. Both set `executionEnabled=false`, skip the Tower
+creation-preview callback, and consume no cooldown.
 
 ## Post-R3 implementation status (2026-08-17)
 

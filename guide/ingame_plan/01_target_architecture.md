@@ -1,10 +1,11 @@
-> **2026-08-18 Post-R4 authority update**
+> **2026-08-19 R5 Turn 2 authority update**
 >
 > Tower HP/death, Enemy Entity Word, and multi-Tower Share/group control are implemented. Canonical logical
 > Tower state belongs to CPU `TowerGroupState`/`TowerShareLedger`; GPU bodies own combat/transform and compact
-> roster/control/summary/query/creation runtimes. R5 Turn 1 completes typed Tower Payload and four actor-verb
-> plans/loadout/preview contracts only; their GPU execution, Merge, Overtime, Shop, and checkpoint remain target
-> systems. Read `../gameplay/README.md`; any no-HP/no-Enemy/single-Tower authority is superseded.
+> roster/control/summary/query/creation runtimes. R5 Turn 2 adds an independent aggregate-only GPU actor
+> target/direction/placement side-plane and retained output token, without body/Tower mutation. The Tower payload
+> transaction, transit advance, Merge, Overtime, Shop, and checkpoint remain target systems. Read
+> `../gameplay/README.md`; any no-HP/no-Enemy/single-Tower authority is superseded.
 
 # 01. Target Architecture
 
@@ -64,7 +65,7 @@ Engine Shell
 `WaveDirector`, `ShopCoordinator`, `CheckpointCoordinator`는 여섯 번째 상위
 시스템이 아니라 GameSystem이 직접 소유하는 application service다.
 
-현재 Post-R4 slice는 이 계층을 축소해 유지한다. `GameScene`은 하나의 `GameSystem`을 계속 소유하고,
+현재 R5 Turn 2 slice는 이 계층을 축소해 유지한다. `GameScene`은 하나의 `GameSystem`을 계속 소유하고,
 `GameSystem`은 CPU `CoreIntegrity`, canonical `TowerGroupState`/`TowerShareLedger`, input/router/camera,
 `WordSystem`, 다섯 Sentence slot/cooldown, `GoldLedger`, 그리고 `GameObjectSystem`을 소유한다. ready
 session의 `GameObjectSystem` 안에는 교체 가능한 단일 mixed GPU World가 있으며 모든 living Tower,
@@ -73,13 +74,20 @@ technical creation, source-local target query, and R3 actor materialization을 �
 session은 별도 `CPU_NO_WAVE_FALLBACK`으로 시작한다. Device recovery는 CPU run domain을 재생성하지 않고
 GPU world만 교체하며 모든 committed living Tower를 새 exact handle에 재바인딩한다.
 
+R5의 `GpuActorActionPlacementRuntime`은 이 world에 연결하기 전 단계의 독립 GPU side-plane이다. Frozen
+R3 Subject snapshot, compact Tower roster/Core, shared Aim, immutable action profile, SDF를 입력받고 placement/
+Throw-transit storage와 96-byte aggregate만 만든다. CPU는 aggregate와 generation-qualified token만 보며
+body/Tower/Share를 변경하지 않는다. Turn 3 transaction owner가 이 token을 소비하기 전까지 endpoint
+fixed 순서, cooldown, lifecycle publication에는 참여하지 않는다. Production loadout도 Turn 4 vertical
+slice 전까지 R3 Q/E만 주입하므로 SHIFT/SPACE는 empty-slot 정상 결과이며 `AbilityRuntime` ingress가 없다.
+
 production primary-pointer/LMB는 CPU 물리 projectile을 만들지 않는다. 하나의
 `GpuTowerGroupFacade`가 semantic movement/Aim을 group command로 보내고, primary compatibility action은
 canonical lowest-living-ordinal Tower exact handle과 같은-tick GPU aim을 사용해 source-relative
 SpawnProgram을 요청한다. 각 Tower pose/collision/projectile origin은 GPU-authoritative이며 CPU는 bounded
 group summary만 presentation/camera에 소비한다. Primary death는 다음 living ordinal로 rebind하고, zero
-living Towers는 Core camera fallback을 사용한다. Tower Payload/actor verbs, Merge, wave completion/Overtime,
-Shop, checkpoint는 이 완료 slice에 포함되지 않는다.
+living Towers는 Core camera fallback을 사용한다. R5 actor placement는 준비됐지만 Tower Payload transaction,
+body commit, transit advance, Merge, wave completion/Overtime, Shop, checkpoint는 이 slice에 포함되지 않는다.
 
 ## 3. 의존 방향
 

@@ -115,22 +115,39 @@ Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 targeting, primary death
 The runtime-only 1,000-Tower control fixture is not a production creation-cap increase. Manual interactive smoke
 was not executed and is not claimed as PASS.
 
-## R5 — Tower Payload + actor verbs — IN PROGRESS (Turn 1/8 complete, 2026-08-19)
+## R5 — Tower Payload + actor verbs — IN PROGRESS (Turns 1–2/8 complete, 2026-08-19)
 
 Turn 1 complete:
 
 - append-only Shoot/Throw/Emit/Summon typed IDs/codes and immutable data-owned profiles;
 - canonical fixed-Player Tower Payload plus unchanged fixed-Hostile Enemy Payload;
 - all 16 Tower/Enemy Subject × verb × Payload compiled plans;
-- SHIFT/SPACE production loadout, unchanged Q/E, empty PRIMARY/LMB compatibility;
+- SHIFT/SPACE candidate loadout, with production R3 Q/E retained until the Turn 4 vertical slice;
 - Tower preview schema prepared for exact R4 creation preview without claiming GPU placement exactness.
 
 Turn 1 does not claim GPU placement/materialization or end-to-end Tower Payload execution.
 
+Turn 2 complete:
+
+- independent ActorActionPlacement ABI v1 and GPU initialize/resolve/validate/aggregate passes;
+- ActorAction profile ABI v2 canonical all-field fingerprint bound through compile/command/program/completion;
+- compact-roster nearest-Tower/Core/facing and shared-Player-Aim target/direction rules;
+- deterministic Summon stable-rank lattice plus authoritative-duration Throw whose speed is derived and whose
+  source/landing SDF validates atomically;
+- finite/SDF all-or-nothing validation, indirect dispatch, and maximum nine storage buffers;
+- fixed 96-byte CPU aggregate with generation-qualified GPU output token and no record/body readback;
+- dedicated actual-WebGPU coverage for all four verbs, targeting/fallback, source death, rank permutation,
+  SDF atomic rejection, one-short/capacity, ABA/stale identity, and zero body commit.
+
+Turn 2 deliberately does not publish bodies or Towers, mutate Share/cooldown, advance Throw transit, or wire the
+side-plane into the endpoint. Production SHIFT/SPACE remain empty, so unavailable Tower Payload cannot reach
+`AbilityRuntime`. Those are later transaction/integration turns.
+
 - The Tower shoots The Tower;
 - Enemies shoot The Tower;
 - actor Shoot/Throw/Emit/Summon semantics;
-- GPU child allocator/atomic batch;
+- Tower payload token consumption and atomic body/Tower/Share transaction;
+- Throw transit advance and action activation;
 - capacity all-or-nothing.
 
 Gate: 1→2 and high-count enemy-created Tower scenarios pass without CPU per-body objects.

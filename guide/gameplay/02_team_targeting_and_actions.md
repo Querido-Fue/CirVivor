@@ -1,11 +1,15 @@
 # 02. Team, Ownership, Targeting, and Action Semantics
 
-## R5 Turn 1 typed-contract status (2026-08-19)
+## R5 Turns 1–2 targeting/placement status (2026-08-19)
 
-Tower Payload is now a typed `FIXED_PLAYER` payload with canonical Tower definition identity. Enemy Payload
-remains `FIXED_HOSTILE`. Shoot/Throw/Emit/Summon have append-only codes and immutable data profiles; every
-Tower/Enemy Subject/Payload matrix entry compiles with a cast-start target snapshot. These are execution plans,
-not GPU execution evidence. Until later R5 turns, only R3 Shoot + Enemy materializes end to end.
+Tower Payload is a typed `FIXED_PLAYER` payload with canonical Tower definition identity. Enemy Payload remains
+`FIXED_HOSTILE`. Shoot/Throw/Emit/Summon have append-only codes and immutable data profiles; every Tower/Enemy
+Subject/Payload matrix entry compiles with a cast-start target snapshot. Turn 2 executes the placement portion
+on GPU: Player subjects use shared world Aim, hostile subjects select the nearest compact-roster Tower, exact
+Core, then facing, and every zero-distance case falls back target → velocity → facing/route → `+X`. The result is
+placement/transit evidence only; R3 Shoot + Enemy remains the only end-to-end materialized actor path. Throw's
+fixed duration is authoritative, its ground velocity is derived from exact spawn-to-landing distance, and source
+spawn plus landing SDF must both validate before the batch can complete.
 
 ## R3 implementation status (2026-08-16)
 

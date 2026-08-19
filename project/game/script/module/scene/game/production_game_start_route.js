@@ -14,7 +14,7 @@ import {
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
 import {
-    R5_SHOWCASE_SENTENCE_LOADOUT
+    R3_SHOWCASE_SENTENCE_LOADOUT
 } from 'data/word/r3_word_catalog_data.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
@@ -41,7 +41,7 @@ function createPlayableSessionOptions(mapData, waveDefinition, session) {
         coreMaxIntegrity: session.coreMaxIntegrity,
         waveDefinition,
         wordSystemOptions: Object.freeze({
-            loadout: R5_SHOWCASE_SENTENCE_LOADOUT
+            loadout: R3_SHOWCASE_SENTENCE_LOADOUT
         })
     };
 }

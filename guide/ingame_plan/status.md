@@ -14,12 +14,14 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
-**R4 TowerGroup + Share Ledger is complete as of 2026-08-17, Post-R4 stabilization is complete as of
-2026-08-18, and R5 Turn 1 typed actor contracts are complete as of 2026-08-19. R5 Turn 2 GPU actor placement is
-next.** Turn 1 appends Throw/Emit/Summon to Shoot, freezes four data-owned action profiles, compiles all 16
-Tower/Enemy Subject/verb/Payload plans, binds canonical fixed-Player Tower Payload, assigns SHIFT/SPACE while
-preserving Q/E and PRIMARY/LMB compatibility, and exposes a non-exact Tower preview seam. It changes no GPU ABI
-and claims no Tower payload materialization. `GameSystem` owns canonical CPU-run-domain
+**R4 TowerGroup + Share Ledger and Post-R4 stabilization are complete, and R5 Turns 1–2 are complete as of
+2026-08-19. R5 Turn 3 Tower payload transaction is next.** Turn 1 appends Throw/Emit/Summon to Shoot, freezes
+four data-owned action profiles, compiles all 16 Tower/Enemy Subject/verb/Payload plans, and binds canonical
+fixed-Player Tower Payload. The R5 SHIFT/SPACE loadout remains a candidate only: production still injects R3 Q/E
+and leaves SHIFT/SPACE empty until the Turn 4 vertical slice. Profile ABI v2 now fingerprints every semantic
+field through CompiledAbility, command, GPU program, completion, and token. Turn 2 adds independent aggregate-only
+GPU target/direction/placement and Throw-transit initialization without body/Tower/Share mutation. `GameSystem`
+owns canonical CPU-run-domain
 `TowerGroupState`/`TowerShareLedger`, exact logical Tower records, Share/Lost Share, `WordSystem`, five Sentence
 slots/cooldowns, `SentenceSlotController`, and `GoldLedger`. `TowerCombatRoster` is only the primary-Tower
 compatibility view. The active GPU world owns compact Tower group roster/control/summary, atomic technical
@@ -35,6 +37,17 @@ primary death/rebind, and zero-Tower Core camera fallback. Storage maximum is 9;
 commands, full-body readback, leaks, protocol/recovery failure, fixed-step drops/lost time, and uncaptured errors
 are zero; teardown reports `deviceLostReason=destroyed`. Manual interactive smoke was not executed and is not
 claimed as PASS.
+
+R5 Turn 2 focused Node passed `45/45`. The dedicated actual WebGPU placement route passed Shoot/Emit/Summon/
+Throw, shared Aim and nearest-Tower/Core/facing targeting, all degenerate direction fallbacks, stable-rank
+lattice, frozen-source survival, one-short/capacity/stale identity rejection, and aggregate-only output. Throw
+uses authoritative duration with distance-derived ground velocity; exact source+landing SDF passed and either
+invalid endpoint returned atomic `SDF_REJECTED`. The receipt reports NW.js `0.108.0`, adapter/requested/device
+storage `10/9/9`, profile fingerprint completion binding true, body commit 0, `uncapturedErrorCount=0`, and
+`deviceLostReason=destroyed`. Full Node/WASM/golden/manual gates were not run for this restricted checkpoint.
+The existing R3 Enemy Word actual-WebGPU route also passed after AbilityExecutionCommand ABI v2, including
+zero-subject cooldown 0, 256/1,000 fanout, generation boundary, bounty/Core paths, storage 9, protocol/recovery
+0, uncaptured errors 0, and destroyed teardown.
 
 ## Implemented runtime foundation
 
@@ -69,6 +82,11 @@ claimed as PASS.
 - Turn 8 keeps Body ABI v8 and adds independent Route Runtime ABI v1: 64-byte per-body state, 96-byte immutable
   topology header, availability header/record `64/32`, and cleanup header/record `32/32`. Route advance/finalize
   uses 9 storage buffers and does not append to `CombatState` or `EnemyBehaviorState`.
+- R5 Turn 2 keeps Body ABI v8 and adds independent ActorActionPlacement ABI v1. Program/lease/aggregate/
+  placement/transit/dispatch strides are `224/32/96/144/80/16`; initialize/resolve/validate/aggregate requires
+  at most 9 storage buffers. CPU reads only the aggregate and retains a generation-qualified GPU token. Profile
+  ABI v2 and AbilityExecutionCommand ABI v2 bind the canonical all-field fingerprint; no body/Tower state is
+  committed.
 - Default GPU damage permits PLAYER→HOSTILE and HOSTILE→PLAYER only. Same-team and Neutral pairs
   preserve non-damage interaction/physics while consuming no target HP or projectile penetration.
 - **R1 single-Tower HP/death foundation complete** (Turn 2/5):
@@ -101,7 +119,8 @@ claimed as PASS.
   descriptor, then exact-rebinds the group while resetting the transient Maximum Damage Window.
 - Current R4 production creation accepts at most 256 living Towers atomically. Multiple-Tower Share/control,
   bounded camera summary, source-local target query, death promotion, and complete-group recovery are live;
-  Tower actor payload, Merge, and broader hostile attack selection remain future work.
+  R5 actor placement evidence is available as an unconnected GPU side-plane, while Tower payload token
+  consumption/body+Share commit, Merge, and broader hostile attack selection remain future work.
 - Current `WaveDirector` remains spawn-schedule-only. It compiles the four-command authored 60Hz timeline,
   resolves immutable Enemy spawn stats once at queue time, and sends every same-tick set through one atomic
   batch whose rejection preserves schedule cursor/identity. Core impact/depletion is connected through the
@@ -577,9 +596,11 @@ claimed as PASS.
   readback/leaks/protocol/recovery/uncaptured errors all zero; destroyed teardown is orderly. Manual GameScene
   smoke remains `NOT EXECUTED`.
 
-## Post-R4 locked target not yet implemented
+## Post-R5 Turn 2 locked target not yet implemented
 
-- Tower actor payload, including `The Tower shoots The Tower` and `Enemies shoot The Tower`.
+- Production SHIFT/SPACE activation and Tower payload token consumption/body+Share commit, including
+  `The Tower shoots The Tower` and `Enemies shoot The Tower`.
+- Throw transit advance/landing activation after its Turn 2 initialization record.
 - `The Towers merge` and generic actor Merge transaction.
 - hostile attack/actor-verb policies beyond the current Enemy-only Shoot path.
 - full modifier grammar and other actor nouns/verbs.
@@ -588,14 +609,14 @@ claimed as PASS.
 - full five-offer Shop/purchase/reroll/editor UI and preview panels.
 - save/checkpoint schema and continue/migration for later TowerGroup state.
 
-## Post-R4 implementation gap
+## Post-R5 Turn 2 implementation gap
 
 The current GPU world still lacks the remaining gameplay policy and transaction layers required for:
 
 ```text
 definition-level target-policy expansion beyond the locked default team matrix
 hostile attack policies beyond the production Archer/M producers
-Tower/other-noun actor child allocation
+Tower/other-noun actor child publication after the existing placement token
 Tower Merge transaction
 full modifier grammar
 Wave timer/Overtime Core DOT/settlement
@@ -604,11 +625,11 @@ Shop/editor UI and save/checkpoint integration
 
 ## Closed checkpoint boundary
 
-R2 final acceptance and Post-R3 stabilization remain historical complete checkpoints. R4 Turns 1–6 and the
-Post-R4 automated stabilization close on 2026-08-18 with manual smoke still pending. This boundary completes
-TowerGroup/Share, technical creation, group control/summary, source-local targeting, and complete-group recovery;
-it does not start R5 Tower Payload/actor verbs, Merge, Overtime, full Shop/editor, or save work. Manual sandbox
-visual QA remains future evidence and was not substituted by automated hardware acceptance.
+R2 final acceptance, Post-R3 stabilization, R4 Turns 1–6, and Post-R4 stabilization remain historical complete
+checkpoints. R5 Turns 1–2 close on 2026-08-19 at typed actor plans plus an independent aggregate-only GPU
+placement side-plane. This boundary does not enable production SHIFT/SPACE, consume a Tower payload token,
+commit body/Tower/Share state, advance transit, or start Merge, Overtime, full Shop/editor, or save work. Manual
+sandbox visual QA remains future evidence and was not substituted by automated hardware acceptance.
 
 ## R1 final acceptance evidence
 

@@ -79,9 +79,21 @@
 >
 > Append-only Shoot/Throw/Emit/Summon vocabulary and immutable data-owned action profiles now compile all 16
 > Tower/Enemy Subject/verb/Payload plans. Tower Payload binds canonical Tower identity and fixed Player
-> allegiance. SHIFT/SPACE are assigned while Q/E and empty PRIMARY/LMB compatibility remain unchanged. The
+> allegiance. The R5 candidate assigns SHIFT/SPACE, but production keeps only R3 Q/E plus empty SHIFT/SPACE and
+> PRIMARY/LMB compatibility until the Turn 4 vertical slice. The
 > preview provider accepts an optional R4 Tower creation-preview port and never claims GPU placement exactness.
 > No GPU actor placement, Tower Share transaction, transit, or new materialization owner is part of this turn.
+
+> **2026-08-19 R5 Turn 2 GPU actor placement complete**
+>
+> `GpuActorActionPlacementRuntime` owns an independent ABI v1 side-plane and four GPU passes for initialize,
+> parallel target/direction/placement resolve, finite/SDF validation, and aggregate. CPU maps only a fixed
+> 96-byte aggregate and retains the successful GPU record/transit buffers behind a generation-qualified token.
+> ActorAction profile ABI v2 binds a canonical all-semantic-field fingerprint through compiler, command, GPU
+> program, aggregate, and token. Throw derives ground velocity from authoritative duration and validates source
+> spawn plus landing SDF atomically. Unknown/zero Subject preview is a disabled, cooldown-free normal result.
+> It neither writes bodies/Towers nor participates in the endpoint fixed loop yet. Turn 3 must authenticate and
+> consume that token in one Tower payload transaction; Turn 5 owns transit advance.
 
 # 03. GameSystem and Subsystem Contracts
 
@@ -482,6 +494,20 @@ production member-count policy. `GpuTowerTargetQueryRuntime` writes one 40-byte 
 source entirely from GPU body state plus compact Tower roster/Share. Selection is distance, higher Share, lower
 entity ID, then lower incarnation. Arrow, O, and selected-target projectile consumers share that result. Zero
 living Towers is a valid no-target state and roster death alone does not invent a revision.
+
+### R5 ActorActionPlacement side-plane
+
+`GpuActorActionPlacementRuntime` is a GPU-world-scoped staged owner, but Turn 2 leaves it unregistered from the
+production endpoint. One command binds the frozen R3 Subject snapshot, exact lease/destination fingerprint,
+immutable action profile, compact Tower member/roster inputs, exact Core, shared Aim, SDF, and device/session/
+epoch generation. It dispatches initialize, resolve, validate, then aggregate; per-Subject `PlacementRecord[]`
+and optional Throw `TransitRecord[]` remain GPU-resident.
+
+The host accepts only the 96-byte aggregate. A complete batch yields an opaque generation-qualified binding;
+any invalid Subject/destination/SDF/protocol record yields no consumable binding. `cancel`, GPU-world rebind, and
+destroy revoke pending, in-flight, and retained output. No caller may infer body/Tower publication, cooldown,
+Share mutation, or lifecycle success from placement completion alone. The Turn 3 transaction is the first
+allowed consumer and must preserve exact 0/N semantics.
 
 ### ShopCoordinator
 

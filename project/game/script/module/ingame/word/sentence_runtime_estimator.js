@@ -110,13 +110,17 @@ export class SentenceRuntimeEstimator {
         const dangerous = towerPayload
             ? previewSubjectCount > 0
             : resultingHostileCount > dangerThreshold;
-        let executionDisabledReason = subjectBudgetExceeded
-            ? 'SUBJECT_BUDGET_EXCEEDED'
-            : cooldownRemainingTicks > 0
-                ? 'COOLDOWN_ACTIVE'
-                : !capacity.valid
-                    ? 'DESTINATION_CAPACITY_EXCEEDED'
-                    : null;
+        let executionDisabledReason = !countExact
+            ? 'SUBJECT_COUNT_NOT_EXACT'
+            : rawSubjectCount === 0
+                ? 'ZERO_SUBJECT'
+                : subjectBudgetExceeded
+                    ? 'SUBJECT_BUDGET_EXCEEDED'
+                    : cooldownRemainingTicks > 0
+                        ? 'COOLDOWN_ACTIVE'
+                        : !capacity.valid
+                            ? 'DESTINATION_CAPACITY_EXCEEDED'
+                            : null;
         let towerCreationPreview = null;
         if (towerPayload && executionDisabledReason === null
             && previewSubjectCount > 0) {
@@ -153,6 +157,8 @@ export class SentenceRuntimeEstimator {
             formulaId: compiledAbility.previewFormulaId,
             actorActionProfileId:
                 compiledAbility.actorActionProfileId ?? null,
+            actorActionProfileFingerprint:
+                compiledAbility.actorActionProfileFingerprint ?? null,
             targetSnapshotPolicy:
                 compiledAbility.targetSnapshotPolicy ?? null,
             payloadCode,

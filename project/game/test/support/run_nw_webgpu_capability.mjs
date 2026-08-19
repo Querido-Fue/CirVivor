@@ -36,6 +36,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/projectile/hostile_basic_bullet_data.js',
     'data/object/projectile/hostile_rhom_projectile_data.js',
     'data/object/tower/the_tower_data.js',
+    'data/word/r5_actor_action_profile_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
     'data/scene/game/cork_dual_route_map_data.js',
@@ -43,6 +44,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/scene/game/performance_serpentine_map_data.js',
     'module/ingame/contract/camera_control_contract.js',
     'module/ingame/contract/ability_execution_contract.js',
+    'module/ingame/contract/actor_action_contract.js',
     'module/ingame/contract/actor_payload_contract.js',
     'module/ingame/contract/core_integrity_contract.js',
     'module/ingame/contract/enemy_capability_contract.js',
@@ -109,6 +111,9 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_ability_subject_snapshot_runtime.js',
     'module/ingame/physics/gpu/gpu_actor_payload_materialization_abi.js',
     'module/ingame/physics/gpu/gpu_actor_payload_materialization_runtime.js',
+    'module/ingame/physics/gpu/gpu_actor_action_placement_abi.js',
+    'module/ingame/physics/gpu/gpu_actor_action_placement_runtime.js',
+    'module/ingame/physics/gpu/gpu_actor_action_placement_shaders.js',
     'module/ingame/physics/gpu/gpu_body_presentation_clock.js',
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
@@ -453,6 +458,51 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.resultStride === 40
             && fixture.storageMaximum === 9
             && fixture.noCpuRosterOrPoseReadback === true;
+    } else if (fixtureStage === 'actor-action-placement') {
+        fixture = result?.actorActionPlacement;
+        const actions = fixture?.actions;
+        const targeting = fixture?.targeting;
+        const degenerate = fixture?.degenerate;
+        const sdf = fixture?.sdf;
+        const contracts = fixture?.contracts;
+        scenarioValid = fixture?.scenario
+                === 'r5-gpu-actor-action-placement-side-plane'
+            && ['shoot', 'emit', 'summon', 'throw'].every((key) => (
+                actions?.[key]?.status === 2
+                && actions[key].validCount === actions[key].subjectCount
+            ))
+            && actions.shoot.launchExact === true
+            && actions.emit.zeroVelocity === true
+            && actions.summon.stableLattice === true
+            && actions.throw.airborneExact === true
+            && actions.throw.durationDerivedGroundSpeed === true
+            && targeting?.sharedAim === true
+            && targeting.nearestTower === true
+            && targeting.coreFallback === true
+            && targeting.facingFallback === true
+            && degenerate?.velocityFallback === true
+            && degenerate.facingFallback === true
+            && degenerate.positiveXFallback === true
+            && sdf?.exactStatus === 2
+            && sdf.atomicRejectStatus === 3
+            && sdf.atomicRejectValidCount === 1
+            && sdf.atomicRejectSubjectCount === 2
+            && sdf.throwExactStatus === 2
+            && sdf.throwSourceRejectStatus === 3
+            && sdf.throwLandingRejectStatus === 3
+            && contracts?.actorActionProfileFingerprintBound === true
+            && contracts.sourceDeathSnapshotComplete === true
+            && contracts.stableRankRejected === true
+            && contracts.oneShortRejected === true
+            && contracts.capacityRejected === true
+            && contracts.staleDeviceRejected === true
+            && contracts.staleDestinationFingerprintRejected === true
+            && contracts.aggregateReadbackByteSize === 96
+            && contracts.placementRecordCpuReadback === false
+            && contracts.transitRecordCpuReadback === false
+            && contracts.bodyStateCommitCount === 0
+            && contracts.storageMaximum === 9
+            && contracts.dispatchStorageBindingCount === 2;
     } else if (fixtureStage === 'enemy-arrow-charge') {
         fixture = result?.productionEnemyArrowCharge;
         scenarioValid = fixture?.states?.trackedPoseIndependent?.entered === 1
@@ -2560,6 +2610,7 @@ function assertFixtureStageResult(result) {
     }
     if (
         fixtureStage === 'enemy-arrow-charge'
+        || fixtureStage === 'actor-action-placement'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
@@ -2677,6 +2728,8 @@ async function prepareHarnessApp(
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
     const runnerFileName = fixtureStage === 'tower-group-target-query'
         ? 'tower_group_target_query_runner.js'
+        : fixtureStage === 'actor-action-placement'
+            ? 'actor_action_placement_runner.js'
         : fixtureStage === 'enemy-pentagon-effect'
         ? 'enemy_pentagon_effect_runner.js'
         : fixtureStage === 'enemy-rhom-source-death-projectile'
@@ -2748,6 +2801,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'tower_group_target_query_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'actor_action_placement_runner.js'
             )),
             fs.access(path.join(
                 harnessDirectory,

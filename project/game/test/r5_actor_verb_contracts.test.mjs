@@ -5,10 +5,14 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
     ACTOR_ACTION_ACTIVATION_POLICY,
+    ACTOR_ACTION_PLACEMENT_POLICY,
+    ACTOR_ACTION_PROFILE_ABI_VERSION,
     ACTOR_ACTION_PROFILE_ID,
     ACTOR_ACTION_SPAWN_ANCHOR_POLICY,
     ACTOR_ACTION_TARGET_SNAPSHOT_POLICY,
-    ACTOR_ACTION_TRANSIT_POLICY
+    ACTOR_ACTION_TRANSIT_POLICY,
+    actorActionProfileFingerprint,
+    normalizeActorActionProfile
 } = await loadGameModule('ingame/contract/actor_action_contract.js');
 const {
     ACTOR_PAYLOAD_CODE,
@@ -55,6 +59,7 @@ const {
     R3_SHOOT_WORD_INSTANCE,
     R3_TOWER_SHOOTS_ENEMY_SENTENCE,
     R3_TOWER_WORD_INSTANCE,
+    R3_SHOWCASE_SENTENCE_LOADOUT,
     R5_EMIT_WORD_INSTANCE,
     R5_ENEMIES_SHOOT_TOWER_SENTENCE,
     R5_SHOWCASE_SENTENCE_LOADOUT,
@@ -80,6 +85,10 @@ const {
 const {
     SentenceRuntimeEstimator
 } = await loadGameModule('ingame/word/sentence_runtime_estimator.js');
+const {
+    ABILITY_ACTIVATION_RESULT_CODE,
+    WordSystem
+} = await loadGameModule('ingame/word/word_system.js');
 
 function assertDeepFrozen(value, visited = new Set()) {
     if (!value || typeof value !== 'object' || visited.has(value)) return;
@@ -98,6 +107,21 @@ function createSentence(subject, verb, payload, suffix = 'fixture') {
         payloadWordInstanceId: payload.id,
         modifierWordInstanceIds: []
     });
+}
+
+function mutableProfileSource(profile, overrides = {}) {
+    const {
+        actorActionProfileFingerprint: ignoredFingerprint,
+        ...source
+    } = profile;
+    return {
+        ...source,
+        ...overrides,
+        transit: {
+            ...profile.transit,
+            ...(overrides.transit ?? {})
+        }
+    };
 }
 
 test('R5 stable verb/action/payload identity는 기존 값을 보존하고 append-only로 확장된다', () => {
@@ -140,6 +164,7 @@ test('R5 stable verb/action/payload identity는 기존 값을 보존하고 appen
 });
 
 test('R5 actor-action profile catalog는 placement/activation/transit 숫자의 단일 불변 권위다', () => {
+    assert.equal(ACTOR_ACTION_PROFILE_ABI_VERSION, 2);
     assert.equal(R5_ACTOR_ACTION_PROFILES.length, 4);
     assert.equal(new Set(R5_ACTOR_ACTION_PROFILES.map(({ id }) => id)).size, 4);
     assert.equal(new Set(R5_ACTOR_ACTION_PROFILES.map(
@@ -154,6 +179,9 @@ test('R5 actor-action profile catalog는 placement/activation/transit 숫자의 
             profile.targetSnapshotPolicy,
             ACTOR_ACTION_TARGET_SNAPSHOT_POLICY.CAST_START
         );
+        assert.equal(profile.actorActionProfileFingerprint,
+            actorActionProfileFingerprint(profile));
+        assert.ok(profile.actorActionProfileFingerprint > 0);
     }
     assert.equal(R5_SHOOT_ACTOR_ACTION_PROFILE.id,
         ACTOR_ACTION_PROFILE_ID.SHOOT);
@@ -165,6 +193,9 @@ test('R5 actor-action profile catalog는 placement/activation/transit 숫자의 
         ACTOR_ACTION_TRANSIT_POLICY.AIRBORNE_GROUND_PATH);
     assert.equal(R5_THROW_ACTOR_ACTION_PROFILE.transit.suspendControl, true);
     assert.equal(R5_THROW_ACTOR_ACTION_PROFILE.transit.suppressContact, true);
+    assert.equal(R5_THROW_ACTOR_ACTION_PROFILE.placementPolicy,
+        ACTOR_ACTION_PLACEMENT_POLICY.SOURCE_AND_LANDING_ATOMIC_SDF);
+    assert.equal(R5_THROW_ACTOR_ACTION_PROFILE.travelSpeed, 0);
     assert.equal(R5_EMIT_ACTOR_ACTION_PROFILE.launchSpeed, 0);
     assert.equal(R5_SUMMON_ACTOR_ACTION_PROFILE.spawnAnchorPolicy,
         ACTOR_ACTION_SPAWN_ANCHOR_POLICY.TARGET_POINT);
@@ -175,6 +206,26 @@ test('R5 actor-action profile catalog는 placement/activation/transit 숫자의 
     assert.equal(R3_ENEMY_ACTOR_PAYLOAD_DEFINITION.surfaceGap,
         R5_SHOOT_ACTOR_ACTION_PROFILE.surfaceGap);
     assertDeepFrozen(R5_ACTOR_ACTION_PROFILES);
+});
+
+test('verb별 profile normalization은 WGSL encoding 전에 잘못된 조합과 stale fingerprint를 거절한다', () => {
+    for (const [profile, overrides, pattern] of [
+        [R5_SHOOT_ACTOR_ACTION_PROFILE, { launchSpeed: 0 }, /launchSpeed|Shoot/],
+        [R5_THROW_ACTOR_ACTION_PROFILE, { travelSpeed: 7 }, /Throw/],
+        [R5_EMIT_ACTOR_ACTION_PROFILE, { launchSpeed: 1 }, /Emit/],
+        [R5_SUMMON_ACTOR_ACTION_PROFILE,
+            { summonLatticeSpacing: 0 }, /summonLatticeSpacing|Summon/]
+    ]) {
+        assert.throws(() => normalizeActorActionProfile(
+            mutableProfileSource(profile, overrides)
+        ), pattern);
+    }
+    assert.throws(() => normalizeActorActionProfile({
+        ...R5_THROW_ACTOR_ACTION_PROFILE,
+        actorActionProfileFingerprint:
+            (R5_THROW_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint + 1)
+                >>> 0
+    }), /fingerprint/i);
 });
 
 test('Tower/Enemy Subject × 4 verbs × Tower/Enemy Payload 16개가 immutable plan으로 compile된다', () => {
@@ -201,6 +252,8 @@ test('Tower/Enemy Subject × 4 verbs × Tower/Enemy Payload 16개가 immutable p
                 ];
                 assert.equal(ability.actorActionProfileId, profile.id);
                 assert.strictEqual(ability.actorActionProfile, profile);
+                assert.equal(ability.actorActionProfileFingerprint,
+                    profile.actorActionProfileFingerprint);
                 assert.equal(ability.targetSnapshotPolicy,
                     ACTOR_ACTION_TARGET_SNAPSHOT_POLICY.CAST_START);
                 assert.equal(ability.executionPolicy.atomic, true);
@@ -275,7 +328,36 @@ test('R3 Q/E identity와 cache/command fingerprint replay는 유지되고 verb �
         compiledAbility: throwAbility
     });
     assert.equal(qCommandReplay.fingerprint, qCommand.fingerprint);
+    assert.equal(qCommand.actorActionProfileFingerprint,
+        q.actorActionProfileFingerprint);
     assert.notEqual(throwCommand.fingerprint, qCommand.fingerprint);
+
+    const shootVariant = normalizeActorActionProfile(mutableProfileSource(
+        R5_SHOOT_ACTOR_ACTION_PROFILE,
+        { launchSpeed: 8 }
+    ));
+    const variantCompiler = new SentenceCompiler({
+        actorActionProfilesByActionCode: Object.freeze({
+            ...R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE,
+            [SENTENCE_ACTION_CODE.SHOOT]: shootVariant
+        })
+    });
+    const variantAbility = variantCompiler.compile(
+        R3_TOWER_SHOOTS_ENEMY_SENTENCE
+    );
+    const variantCommand = normalizeAbilityExecutionCommand({
+        ...commandSource,
+        compiledAbility: variantAbility
+    });
+    assert.notEqual(variantAbility.actorActionProfileFingerprint,
+        q.actorActionProfileFingerprint);
+    assert.notEqual(variantCommand.fingerprint, qCommand.fingerprint);
+    assert.throws(() => normalizeAbilityExecutionCommand({
+        ...commandSource,
+        compiledAbility: q,
+        actorActionProfileFingerprint:
+            variantAbility.actorActionProfileFingerprint
+    }), /profile fingerprint/);
 });
 
 test('localized text는 R5 semantic identity와 무관하고 modifier는 계속 구조적으로 거절된다', () => {
@@ -320,7 +402,7 @@ test('localized text는 R5 semantic identity와 무관하고 modifier는 계속 
     }).code, SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER);
 });
 
-test('production loadout은 SHIFT/SPACE R5, Q/E R3, empty PRIMARY compatibility를 고정한다', () => {
+test('R5 candidate loadout은 보존하되 production은 Turn 4 전까지 SHIFT/SPACE를 AbilityRuntime에 넣지 않는다', () => {
     assert.strictEqual(
         R5_SHOWCASE_SENTENCE_LOADOUT[ABILITY_SLOT_ID.SHIFT],
         R5_TOWER_SHOOTS_TOWER_SENTENCE
@@ -345,7 +427,21 @@ test('production loadout은 SHIFT/SPACE R5, Q/E R3, empty PRIMARY compatibility�
         CORRIDOR_EIGHT_MAP_DATA.id
     );
     assert.strictEqual(options.wordSystemOptions.loadout,
-        R5_SHOWCASE_SENTENCE_LOADOUT);
+        R3_SHOWCASE_SENTENCE_LOADOUT);
+    const wordSystem = new WordSystem(options.wordSystemOptions);
+    wordSystem.beginFixedTick(1);
+    for (const slotId of [ABILITY_SLOT_ID.SHIFT, ABILITY_SLOT_ID.SPACE]) {
+        assert.equal(wordSystem.hasCompiledAbility(slotId), false);
+        const result = wordSystem.requestSlotActivation(slotId, {
+            targetFixedTick: 1,
+            aimViewport: { x: 1, y: 1 }
+        });
+        assert.equal(result.code, ABILITY_ACTIVATION_RESULT_CODE.EMPTY_SLOT);
+        assert.equal(result.accepted, false);
+        assert.equal(wordSystem.getSlotView(slotId).cooldown.remainingTicks, 0);
+    }
+    assert.equal(wordSystem.drainActivationRequests().length, 0);
+    wordSystem.destroy();
 });
 
 test('Tower Payload preview는 R4 seam을 사용하되 count/placement가 없으면 exact를 주장하지 않는다', () => {
@@ -390,6 +486,30 @@ test('Tower Payload preview는 R4 seam을 사용하되 count/placement가 없으
     assert.equal(missingCount.rawSubjectCount, 0);
     assert.equal(missingCount.countExact, false);
     assert.equal(missingCount.previewExact, false);
+    assert.equal(missingCount.executionEnabled, false);
+    assert.equal(missingCount.executionDisabledReason,
+        'SUBJECT_COUNT_NOT_EXACT');
+    assert.equal(missingCount.cooldownRemainingTicks, 0);
+    assert.equal(previewCalls, 0);
+
+    const zeroSubjects = new SentenceRuntimeEstimator({
+        getRuntimeState: () => ({
+            livingTowerCount: 1,
+            liveHostileActorCount: 0,
+            hostileSubjectCountExact: true,
+            registryAvailable: 16,
+            bodyAvailable: 16
+        }),
+        previewTowerCreation: () => {
+            previewCalls++;
+            return { executionEnabled: true };
+        }
+    }).estimate(compiledAbility, { cooldown: { remainingTicks: 0 } });
+    assert.equal(zeroSubjects.countExact, true);
+    assert.equal(zeroSubjects.rawSubjectCount, 0);
+    assert.equal(zeroSubjects.executionEnabled, false);
+    assert.equal(zeroSubjects.executionDisabledReason, 'ZERO_SUBJECT');
+    assert.equal(zeroSubjects.cooldownRemainingTicks, 0);
     assert.equal(previewCalls, 0);
 
     const towerPlan = Object.freeze({
