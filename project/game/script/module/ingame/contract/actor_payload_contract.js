@@ -16,6 +16,9 @@ import {
     BASIC_CIRCLE_ENEMY_DATA
 } from 'data/object/enemy/basic_circle_enemy_data.js';
 import {
+    THE_TOWER_DEFINITION_ID
+} from 'data/object/tower/the_tower_data.js';
+import {
     R5_SHOOT_ACTOR_ACTION_PROFILE
 } from 'data/word/r5_actor_action_profile_data.js';
 
@@ -23,7 +26,8 @@ export const ACTOR_PAYLOAD_DEFINITION_ABI_VERSION = 1;
 export const ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION = 1;
 
 export const ACTOR_PAYLOAD_DEFINITION_ID = Object.freeze({
-    R3_BASIC_CIRCLE_ENEMY: 'actor-payload.r3.basic-circle-enemy'
+    R3_BASIC_CIRCLE_ENEMY: 'actor-payload.r3.basic-circle-enemy',
+    R5_THE_TOWER: 'actor-payload.r5.the-tower'
 });
 
 export const ACTOR_PAYLOAD_ROUTE_POLICY = Object.freeze({
@@ -155,6 +159,67 @@ export function createR3EnemyActorPayloadDefinition(overrides = {}) {
 
 export const R3_ENEMY_ACTOR_PAYLOAD_DEFINITION
     = createR3EnemyActorPayloadDefinition();
+
+/** R5 ActorAction이 R4 TowerGroup transaction으로 생성하는 canonical Tower C입니다. */
+export function createR5TowerActorPayloadDefinition(overrides = {}) {
+    requireRecord(overrides, 'Tower actor payload overrides');
+    const definitionId = requireNonEmptyString(
+        overrides.definitionId ?? THE_TOWER_DEFINITION_ID,
+        'towerActorPayload.definitionId'
+    );
+    if (definitionId !== THE_TOWER_DEFINITION_ID) {
+        throw new RangeError('R5 Tower payload는 canonical The Tower만 지원합니다.');
+    }
+    return Object.freeze({
+        abiVersion: ACTOR_PAYLOAD_DEFINITION_ABI_VERSION,
+        id: ACTOR_PAYLOAD_DEFINITION_ID.R5_THE_TOWER,
+        runtimeSupport: WORD_RUNTIME_SUPPORT.R5,
+        payloadCode: ACTOR_PAYLOAD_CODE.TOWER,
+        kindId: 'tower',
+        definitionId,
+        definitionCode: abilityDefinitionCode(definitionId),
+        nounMask: GAMEPLAY_NOUN_MASK.TOWER,
+        teamId: GAMEPLAY_TEAM_ID.PLAYER,
+        allegiancePolicy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER,
+        creationOrigin: 'PLAYER_SENTENCE',
+        creationOriginCode: ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD,
+        lifetimePolicy: 'IMMORTAL_ACTOR',
+        projectile: false,
+        ordinaryTower: true,
+        rewardEligible: false,
+        countsTowardHostile: false,
+        countsTowardSiege: false
+    });
+}
+
+export const R5_TOWER_ACTOR_PAYLOAD_DEFINITION
+    = createR5TowerActorPayloadDefinition();
+
+export function normalizeTowerActorPayloadDefinition(source) {
+    requireRecord(source, 'towerActorPayloadDefinition');
+    if (source.abiVersion !== ACTOR_PAYLOAD_DEFINITION_ABI_VERSION
+        || source.id !== ACTOR_PAYLOAD_DEFINITION_ID.R5_THE_TOWER
+        || source.runtimeSupport !== WORD_RUNTIME_SUPPORT.R5
+        || source.payloadCode !== ACTOR_PAYLOAD_CODE.TOWER
+        || source.kindId !== 'tower'
+        || source.definitionId !== THE_TOWER_DEFINITION_ID
+        || source.definitionCode
+            !== abilityDefinitionCode(THE_TOWER_DEFINITION_ID)
+        || source.nounMask !== GAMEPLAY_NOUN_MASK.TOWER
+        || source.teamId !== GAMEPLAY_TEAM_ID.PLAYER
+        || source.allegiancePolicy
+            !== GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+        || source.creationOriginCode
+            !== ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD
+        || source.projectile !== false
+        || source.ordinaryTower !== true
+        || source.rewardEligible !== false
+        || source.countsTowardHostile !== false
+        || source.countsTowardSiege !== false) {
+        throw new RangeError('R5 Tower actor payload definition contract가 일치하지 않습니다.');
+    }
+    return source;
+}
 
 /** IActorPayloadDefinition의 최소 runtime shape을 fail-closed 검증합니다. */
 export function normalizeActorPayloadDefinition(source) {

@@ -115,7 +115,7 @@ Hostile 256 × Tower 256 and Hostile 1,000 × Tower 256 targeting, primary death
 The runtime-only 1,000-Tower control fixture is not a production creation-cap increase. Manual interactive smoke
 was not executed and is not claimed as PASS.
 
-## R5 — Tower Payload + actor verbs — IN PROGRESS (Turns 1–2/8 complete, 2026-08-19)
+## R5 — Tower Payload + actor verbs — IN PROGRESS (Turns 1–3/8 complete, 2026-08-19)
 
 Turn 1 complete:
 
@@ -143,10 +143,26 @@ Turn 2 deliberately does not publish bodies or Towers, mutate Share/cooldown, ad
 side-plane into the endpoint. Production SHIFT/SPACE remain empty, so unavailable Tower Payload cannot reach
 `AbilityRuntime`. Those are later transaction/integration turns.
 
+Turn 3 complete:
+
+- canonical R5 Tower payload definition plus typed `GPU_SUBJECT_ACTOR_ACTION` coordinator mode;
+- replay identity over exact snapshot token/fingerprint, frozen count, command/profile, payload, tick, SDF, and
+  recovery policy;
+- current-living-share R4 planning after snapshot and all destination Registry/body prelease;
+- TowerCreation ABI v2 placement/profile completion identity and separate seven-storage placement apply before
+  the existing nine-storage HP/Share/Power + `ALIVE`-last chain;
+- at most 256 metadata-only 32-byte child records, with no Subject/position/velocity readback;
+- durable logical/Registry execution, generation, action, profile, and map anchor/lattice recovery metadata;
+- normal `RUNTIME_UNAVAILABLE`, SDF rejection, source/group drift, zero Share, and 257 capacity rollback with
+  exact 0/N Registry/body/ledger mutation.
+
+Turn 3 deliberately does not open the production endpoint capability or SHIFT/SPACE ingress. Turn 4 owns the
+Shoot vertical slice and cooldown/lifecycle connection; Turn 5 owns Throw transit advance.
+
 - The Tower shoots The Tower;
 - Enemies shoot The Tower;
 - actor Shoot/Throw/Emit/Summon semantics;
-- Tower payload token consumption and atomic body/Tower/Share transaction;
+- production Tower payload token/cooldown/lifecycle connection;
 - Throw transit advance and action activation;
 - capacity all-or-nothing.
 

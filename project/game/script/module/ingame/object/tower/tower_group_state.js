@@ -13,6 +13,7 @@ import {
     TOWER_SHARE_SCALE,
     createTowerLogicalId,
     freezeExactTowerHandle,
+    freezeTowerCreationMetadata,
     freezeTowerRecoverySpawnDescriptor,
     normalizeTowerGpuProtocol,
     requireLogicalTowerId,
@@ -103,6 +104,10 @@ function createRecord(source) {
             'powerFixedPoint'
         ),
         recoverySpawnDescriptor: source.recoverySpawnDescriptor ?? null,
+        creationMetadata: freezeTowerCreationMetadata(
+            source.creationMetadata,
+            'towerRecord.creationMetadata'
+        ),
         state: requireTowerGroupRecordState(source.state),
         exactGpuBinding: source.exactGpuBinding ?? null
     });
@@ -446,6 +451,77 @@ export class TowerGroupState {
                 { transactionId: plan.transactionId }
             );
         }
+        const childCreationMetadata = source?.plan
+            ? source.childCreationMetadata
+            : undefined;
+        const childRecoverySpawnDescriptors = source?.plan
+            ? source.childRecoverySpawnDescriptors
+            : undefined;
+        if (childCreationMetadata !== undefined
+            && (!Array.isArray(childCreationMetadata)
+                || childCreationMetadata.length
+                    !== pending.plannedChildren.length)) {
+            this.#pendingCreation = null;
+            return freezeRejection(
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                { transactionId: plan.transactionId }
+            );
+        }
+        if (childRecoverySpawnDescriptors !== undefined
+            && (!Array.isArray(childRecoverySpawnDescriptors)
+                || childRecoverySpawnDescriptors.length
+                    !== pending.plannedChildren.length)) {
+            this.#pendingCreation = null;
+            return freezeRejection(
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                { transactionId: plan.transactionId }
+            );
+        }
+        let committedChildMetadata;
+        let committedRecoveryDescriptors;
+        try {
+            committedChildMetadata = pending.plannedChildren.map(
+                (child, index) => freezeTowerCreationMetadata(
+                    childCreationMetadata?.[index]
+                        ?? child.creationMetadata,
+                    `childCreationMetadata[${index}]`
+                )
+            );
+            committedRecoveryDescriptors = pending.plannedChildren.map(
+                (child, index) => freezeTowerRecoverySpawnDescriptor(
+                    childRecoverySpawnDescriptors?.[index]
+                        ?? child.recoverySpawnDescriptor,
+                    `childRecoverySpawnDescriptors[${index}]`
+                )
+            );
+            committedChildMetadata.forEach((metadata, index) => {
+                if (metadata
+                    && (metadata.recoveryPlacementDescriptor
+                            ?.logicalTowerOrdinal
+                        !== pending.plannedChildren[index]
+                            .logicalTowerOrdinal
+                        || metadata.recoveryPlacementDescriptor
+                            ?.logicalTowerOrdinal
+                            !== committedRecoveryDescriptors[index]
+                                ?.logicalTowerOrdinal)) {
+                    throw new RangeError(
+                        'Tower child metadata/recovery ordinal이 다릅니다.'
+                    );
+                }
+            });
+        } catch (error) {
+            this.#pendingCreation = null;
+            return freezeRejection(
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                {
+                    transactionId: plan.transactionId,
+                    detail: error?.message ?? String(error)
+                }
+            );
+        }
         for (const planned of pending.plannedExisting) {
             const current = this.#records.get(planned.logicalTowerId);
             if (!current || current.state !== TOWER_GROUP_RECORD_STATE.LIVING) {
@@ -462,9 +538,12 @@ export class TowerGroupState {
             this.#records.set(planned.logicalTowerId, planned);
         }
         const created = [];
-        for (const pendingChild of pending.plannedChildren) {
+        for (let index = 0; index < pending.plannedChildren.length; index++) {
+            const pendingChild = pending.plannedChildren[index];
             const child = createRecord({
                 ...pendingChild,
+                recoverySpawnDescriptor: committedRecoveryDescriptors[index],
+                creationMetadata: committedChildMetadata[index],
                 state: TOWER_GROUP_RECORD_STATE.LIVING
             });
             this.#records.set(child.logicalTowerId, child);
@@ -834,6 +913,20 @@ export class TowerGroupState {
             }
             ids.add(record.logicalTowerId);
             ordinals.add(record.logicalTowerOrdinal);
+            if (record.creationMetadata
+                && (record.creationMetadata.recoveryPlacementDescriptor
+                        ?.logicalTowerOrdinal !== record.logicalTowerOrdinal
+                    || record.recoverySpawnDescriptor?.logicalTowerOrdinal
+                        !== record.logicalTowerOrdinal
+                    || record.creationMetadata.recoveryPlacementDescriptor
+                        ?.policyId
+                        !== record.recoverySpawnDescriptor?.policyId
+                    || record.creationMetadata.recoveryPlacementDescriptor
+                        ?.mapLatticeVersion
+                        !== record.recoverySpawnDescriptor
+                            ?.mapLatticeVersion)) {
+                violations.push(`creation-metadata:${record.logicalTowerId}`);
+            }
             if (record.currentHpFixedPoint < 0
                 || record.currentHpFixedPoint > record.maxHpFixedPoint) {
                 violations.push(`hp-bounds:${record.logicalTowerId}`);

@@ -1,6 +1,6 @@
 # 06. GPU Runtime and Transaction Requirements
 
-## R5 Turn 2 GPU placement boundary (2026-08-19)
+## R5 Turns 2–3 GPU placement/Tower transaction boundary (2026-08-19)
 
 ActorActionPlacement ABI v1 is an independent side-plane rather than an extension of Body ABI v8 or the R3
 Enemy materializer. Its program header, lease, aggregate, placement record, transit record, and indirect-dispatch
@@ -24,11 +24,15 @@ generation-qualified placement token; no per-subject record or body array is rea
 SDF batches, one-short capacity, stale device/destination identity, and protocol corruption all fail closed with
 zero body/Tower mutation. `cancel`, `rebind`, and `destroy` revoke pending/in-flight/retained tokens.
 
-This Turn 2 side-plane is intentionally not registered in the endpoint fixed loop and does not replace the R3
-materializer. It commits no body, Tower record, Share, cooldown, or lifecycle event. Turn 3 owns the atomic Tower
-payload transaction that will consume the token; Turn 5 owns Throw transit advance. Production therefore keeps
-the R3 Q/E loadout, leaving SHIFT/SPACE empty until the Turn 4 vertical slice rather than routing unavailable
-Tower Payload into `AbilityRuntime`.
+Turn 3 adds TowerCreation ABI v2 and a typed token consumer without registering it in the production endpoint.
+The existing nine-storage pass still validates/applies R4 HP/Share/Power and publishes `ALIVE` last. A separate
+seven-storage ActorAction pass reads placement output, revalidates aggregate plus every destination rank, writes
+position/velocity and child generation, and produces at most 256 fixed 32-byte metadata commit records. The
+96-byte creation result echoes mode, execution, command, snapshot, placement, and profile fingerprints. CPU
+combines only those metadata records with map-owned recovery descriptors; it never reads placement transforms or
+Subjects. Any SDF/source/destination drift rolls back all Registry/body/ledger preleases. Turn 5 owns Throw
+transit advance. Production keeps R3 Q/E and empty SHIFT/SPACE until Turn 4; absent backend capability returns
+normal `RUNTIME_UNAVAILABLE`, not `PROTOCOL_REJECTED`.
 
 ## Post-R3 implementation status (2026-08-17)
 

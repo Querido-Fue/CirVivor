@@ -1,4 +1,10 @@
-import { ABILITY_ENTITY_METADATA_ABI_VERSION } from '../../contract/ability_execution_contract.js';
+import {
+    ABILITY_CREATION_ORIGIN_CODE,
+    ABILITY_ENTITY_METADATA_ABI_VERSION
+} from '../../contract/ability_execution_contract.js';
+import {
+    GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION
+} from './gpu_actor_action_placement_abi.js';
 import { GPU_CIRCLE_BODY_ABI_VERSION } from './gpu_circle_body_abi.js';
 import {
     GPU_TOWER_GROUP_ABI_VERSION,
@@ -11,7 +17,13 @@ const LITTLE_ENDIAN = true;
 const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
-export const GPU_TOWER_CREATION_ABI_VERSION = 1;
+export const GPU_TOWER_CREATION_ABI_VERSION = 2;
+export const GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION = 1;
+
+export const GPU_TOWER_CREATION_MODE = Object.freeze({
+    CPU_EXPLICIT_DESCRIPTORS: 1,
+    GPU_SUBJECT_ACTOR_ACTION: 2
+});
 
 export const GPU_TOWER_CREATION_RECORD_KIND = Object.freeze({
     EXISTING: 1,
@@ -36,7 +48,9 @@ export const GPU_TOWER_CREATION_ERROR_FLAG = Object.freeze({
     DESTINATION_CHANGED: 1 << 6,
     ABILITY_METADATA_CHANGED: 1 << 7,
     TARGET_FINGERPRINT_INVALID: 1 << 8,
-    PARTIAL_APPLY: 1 << 9
+    PARTIAL_APPLY: 1 << 9,
+    ACTOR_ACTION_PLACEMENT_INVALID: 1 << 10,
+    METADATA_COMMIT_INVALID: 1 << 11
 });
 
 export const GPU_TOWER_CREATION_HARD_FAILURE_MASK = (
@@ -46,17 +60,19 @@ export const GPU_TOWER_CREATION_HARD_FAILURE_MASK = (
     | GPU_TOWER_CREATION_ERROR_FLAG.PROGRAM_INVALID
     | GPU_TOWER_CREATION_ERROR_FLAG.TARGET_FINGERPRINT_INVALID
     | GPU_TOWER_CREATION_ERROR_FLAG.PARTIAL_APPLY
+    | GPU_TOWER_CREATION_ERROR_FLAG.METADATA_COMMIT_INVALID
 );
 
 export const GPU_TOWER_CREATION_STORAGE_PROFILE = Object.freeze({
     validateStorageBuffersPerStage: 9,
     applyStorageBuffersPerStage: 9,
+    actorActionStorageBuffersPerStage: 7,
     maximumStorageBuffersPerStage: 9
 });
 
 export const GPU_TOWER_CREATION_ABI = Object.freeze({
     PROGRAM: Object.freeze({
-        STRIDE: 80,
+        STRIDE: 160,
         ABI_VERSION: 0,
         BODY_ABI_VERSION: 4,
         GROUP_ABI_VERSION: 8,
@@ -77,7 +93,26 @@ export const GPU_TOWER_CREATION_ABI = Object.freeze({
         ABILITY_METADATA_ABI_VERSION: 68,
         ROSTER_CAPACITY: 72,
         RECORD_FINGERPRINT: 76,
-        RESERVED: 76
+        MODE: 80,
+        ACTOR_ACTION_PLACEMENT_ABI_VERSION: 84,
+        EXECUTION_ORDINAL: 88,
+        COMMAND_FINGERPRINT: 92,
+        SNAPSHOT_FINGERPRINT: 96,
+        DESTINATION_FINGERPRINT: 100,
+        PLACEMENT_FINGERPRINT: 104,
+        ACTOR_ACTION_PROFILE_FINGERPRINT: 108,
+        SOURCE_ABILITY_CODE: 112,
+        SOURCE_EXECUTION_FINGERPRINT: 116,
+        ACTION_CODE: 120,
+        PAYLOAD_CODE: 124,
+        CREATION_ORIGIN_CODE: 128,
+        VISIBLE_FROM_EXECUTION_ORDINAL: 132,
+        SNAPSHOT_SOURCE_TICK: 136,
+        METADATA_COMMIT_ABI_VERSION: 140,
+        RESERVED_0: 144,
+        RESERVED_1: 148,
+        RESERVED_2: 152,
+        RESERVED_3: 156
     }),
     RECORD: Object.freeze({
         STRIDE: 64,
@@ -99,7 +134,7 @@ export const GPU_TOWER_CREATION_ABI = Object.freeze({
         ROSTER_RANK: 60
     }),
     RESULT: Object.freeze({
-        STRIDE: 64,
+        STRIDE: 96,
         ABI_VERSION: 0,
         STATUS: 4,
         ERROR_FLAGS: 8,
@@ -115,7 +150,26 @@ export const GPU_TOWER_CREATION_ABI = Object.freeze({
         SOURCE_GROUP_REVISION: 48,
         TARGET_GROUP_REVISION: 52,
         TARGET_ROSTER_FINGERPRINT: 56,
-        RESULT_FINGERPRINT: 60
+        MODE: 60,
+        EXECUTION_ORDINAL: 64,
+        COMMAND_FINGERPRINT: 68,
+        SNAPSHOT_FINGERPRINT: 72,
+        PLACEMENT_FINGERPRINT: 76,
+        ACTOR_ACTION_PROFILE_FINGERPRINT: 80,
+        METADATA_COMMIT_COUNT: 84,
+        METADATA_COMMIT_FINGERPRINT: 88,
+        RESULT_FINGERPRINT: 92
+    }),
+    METADATA_COMMIT: Object.freeze({
+        STRIDE: 32,
+        ABI_VERSION: 0,
+        DESTINATION_RANK: 4,
+        ENTITY_ID: 8,
+        INCARNATION: 12,
+        LOGICAL_ORDINAL: 16,
+        GENERATION: 20,
+        ACTION_CODE: 24,
+        RECORD_FINGERPRINT: 28
     })
 });
 
@@ -168,6 +222,107 @@ function normalizeProtocol(source = {}) {
             source.authoritativeEpoch,
             'Tower creation authoritativeEpoch'
         )
+    });
+}
+
+function normalizeCreationMode(source = {}) {
+    const mode = requireUint32(
+        source.mode ?? GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS,
+        'Tower creation mode'
+    );
+    if (!Object.values(GPU_TOWER_CREATION_MODE).includes(mode)) {
+        throw new RangeError('Tower creation mode가 알려지지 않았습니다.');
+    }
+    const actor = source.actorAction ?? {};
+    if (mode === GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS) {
+        return Object.freeze({
+            mode,
+            actorActionPlacementAbiVersion: 0,
+            executionOrdinal: 0,
+            commandFingerprint: 0,
+            snapshotFingerprint: 0,
+            destinationFingerprint: 0,
+            placementFingerprint: 0,
+            actorActionProfileFingerprint: 0,
+            sourceAbilityCode: 0,
+            sourceExecutionFingerprint: 0,
+            actionCode: 0,
+            payloadCode: 0,
+            creationOriginCode: ABILITY_CREATION_ORIGIN_CODE.NATURAL,
+            visibleFromExecutionOrdinal: 0,
+            snapshotSourceTick: 0,
+            metadataCommitAbiVersion: 0
+        });
+    }
+    const creationOriginCode = requireUint32(
+        actor.creationOriginCode,
+        'Tower creation actorAction.creationOriginCode'
+    );
+    if (creationOriginCode !== ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD) {
+        throw new RangeError('ActorAction Tower는 sentence payload origin이어야 합니다.');
+    }
+    const placementAbiVersion = requirePositiveUint32(
+        actor.placementAbiVersion
+            ?? GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION,
+        'Tower creation actorAction.placementAbiVersion'
+    );
+    if (placementAbiVersion !== GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION) {
+        throw new RangeError('ActorAction placement ABI version이 다릅니다.');
+    }
+    return Object.freeze({
+        mode,
+        actorActionPlacementAbiVersion: placementAbiVersion,
+        executionOrdinal: requirePositiveUint32(
+            actor.executionOrdinal,
+            'Tower creation actorAction.executionOrdinal'
+        ),
+        commandFingerprint: requirePositiveUint32(
+            actor.commandFingerprint,
+            'Tower creation actorAction.commandFingerprint'
+        ),
+        snapshotFingerprint: requirePositiveUint32(
+            actor.snapshotFingerprint,
+            'Tower creation actorAction.snapshotFingerprint'
+        ),
+        destinationFingerprint: requirePositiveUint32(
+            actor.destinationFingerprint,
+            'Tower creation actorAction.destinationFingerprint'
+        ),
+        placementFingerprint: requirePositiveUint32(
+            actor.placementFingerprint,
+            'Tower creation actorAction.placementFingerprint'
+        ),
+        actorActionProfileFingerprint: requirePositiveUint32(
+            actor.actorActionProfileFingerprint,
+            'Tower creation actorAction.actorActionProfileFingerprint'
+        ),
+        sourceAbilityCode: requirePositiveUint32(
+            actor.sourceAbilityCode,
+            'Tower creation actorAction.sourceAbilityCode'
+        ),
+        sourceExecutionFingerprint: requirePositiveUint32(
+            actor.sourceExecutionFingerprint,
+            'Tower creation actorAction.sourceExecutionFingerprint'
+        ),
+        actionCode: requirePositiveUint32(
+            actor.actionCode,
+            'Tower creation actorAction.actionCode'
+        ),
+        payloadCode: requirePositiveUint32(
+            actor.payloadCode,
+            'Tower creation actorAction.payloadCode'
+        ),
+        creationOriginCode,
+        visibleFromExecutionOrdinal: requirePositiveUint32(
+            actor.visibleFromExecutionOrdinal,
+            'Tower creation actorAction.visibleFromExecutionOrdinal'
+        ),
+        snapshotSourceTick: requirePositiveUint32(
+            actor.snapshotSourceTick,
+            'Tower creation actorAction.snapshotSourceTick'
+        ),
+        metadataCommitAbiVersion:
+            GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION
     });
 }
 
@@ -303,7 +458,10 @@ export function createGpuTowerCreationHostStorage(recordCapacity) {
         records: new ArrayBuffer(
             capacity * GPU_TOWER_CREATION_ABI.RECORD.STRIDE
         ),
-        result: new ArrayBuffer(GPU_TOWER_CREATION_ABI.RESULT.STRIDE)
+        result: new ArrayBuffer(GPU_TOWER_CREATION_ABI.RESULT.STRIDE),
+        metadataCommits: new ArrayBuffer(
+            capacity * GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE
+        )
     });
 }
 
@@ -312,6 +470,7 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
         throw new TypeError('Tower creation host storage가 필요합니다.');
     }
     const protocol = normalizeProtocol(source.protocol);
+    const creationMode = normalizeCreationMode(source);
     const sourceGroupRevision = requirePositiveUint32(
         source.sourceGroupRevision,
         'Tower creation sourceGroupRevision'
@@ -423,6 +582,7 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
     const recordFingerprint = computeGpuTowerCreationRecordFingerprint(records);
     const program = Object.freeze({
         protocol,
+        ...creationMode,
         sourceTick: requirePositiveUint32(
             source.sourceTick,
             'Tower creation sourceTick'
@@ -450,6 +610,7 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
     new Uint8Array(storage.program).fill(0);
     new Uint8Array(storage.records).fill(0);
     new Uint8Array(storage.result).fill(0);
+    new Uint8Array(storage.metadataCommits).fill(0);
     const programView = new DataView(storage.program);
     const p = GPU_TOWER_CREATION_ABI.PROGRAM;
     const programWords = [
@@ -473,7 +634,28 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
         [p.ABILITY_METADATA_ABI_VERSION,
             ABILITY_ENTITY_METADATA_ABI_VERSION],
         [p.ROSTER_CAPACITY, rosterCapacity],
-        [p.RECORD_FINGERPRINT, recordFingerprint]
+        [p.RECORD_FINGERPRINT, recordFingerprint],
+        [p.MODE, program.mode],
+        [p.ACTOR_ACTION_PLACEMENT_ABI_VERSION,
+            program.actorActionPlacementAbiVersion],
+        [p.EXECUTION_ORDINAL, program.executionOrdinal],
+        [p.COMMAND_FINGERPRINT, program.commandFingerprint],
+        [p.SNAPSHOT_FINGERPRINT, program.snapshotFingerprint],
+        [p.DESTINATION_FINGERPRINT, program.destinationFingerprint],
+        [p.PLACEMENT_FINGERPRINT, program.placementFingerprint],
+        [p.ACTOR_ACTION_PROFILE_FINGERPRINT,
+            program.actorActionProfileFingerprint],
+        [p.SOURCE_ABILITY_CODE, program.sourceAbilityCode],
+        [p.SOURCE_EXECUTION_FINGERPRINT,
+            program.sourceExecutionFingerprint],
+        [p.ACTION_CODE, program.actionCode],
+        [p.PAYLOAD_CODE, program.payloadCode],
+        [p.CREATION_ORIGIN_CODE, program.creationOriginCode],
+        [p.VISIBLE_FROM_EXECUTION_ORDINAL,
+            program.visibleFromExecutionOrdinal],
+        [p.SNAPSHOT_SOURCE_TICK, program.snapshotSourceTick],
+        [p.METADATA_COMMIT_ABI_VERSION,
+            program.metadataCommitAbiVersion]
     ];
     for (const [offset, value] of programWords) {
         programView.setUint32(offset, value, LITTLE_ENDIAN);
@@ -526,11 +708,102 @@ export function computeGpuTowerCreationResultFingerprint(source = {}) {
         source.createdCount,
         source.sourceGroupRevision,
         source.targetGroupRevision,
-        source.targetRosterFingerprint
+        source.targetRosterFingerprint,
+        source.mode ?? GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS,
+        source.executionOrdinal ?? 0,
+        source.commandFingerprint ?? 0,
+        source.snapshotFingerprint ?? 0,
+        source.placementFingerprint ?? 0,
+        source.actorActionProfileFingerprint ?? 0,
+        source.metadataCommitCount ?? 0,
+        source.metadataCommitFingerprint ?? 0
     ]) {
         hash = hashWord(hash, requireUint32(value, 'Tower creation result word'));
     }
     return nonZeroHash(hash);
+}
+
+export function computeGpuTowerCreationMetadataRecordFingerprint(source = {}) {
+    let hash = hashWord(
+        FNV_OFFSET,
+        GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION
+    );
+    for (const value of [
+        source.destinationRank,
+        source.entityId,
+        source.incarnation,
+        source.logicalTowerOrdinal,
+        source.generation,
+        source.actionCode
+    ]) {
+        hash = hashWord(
+            hash,
+            requireUint32(value, 'Tower creation metadata record word')
+        );
+    }
+    return nonZeroHash(hash);
+}
+
+export function computeGpuTowerCreationMetadataFingerprint(records) {
+    if (!Array.isArray(records)) {
+        throw new TypeError('Tower creation metadata records 배열이 필요합니다.');
+    }
+    if (records.length === 0) return 0;
+    let hash = hashWord(
+        FNV_OFFSET,
+        GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION
+    );
+    hash = hashWord(hash, records.length);
+    for (const record of records) {
+        hash = hashWord(hash, requirePositiveUint32(
+            record.recordFingerprint
+                ?? computeGpuTowerCreationMetadataRecordFingerprint(record),
+            'Tower creation metadata record fingerprint'
+        ));
+    }
+    return nonZeroHash(hash);
+}
+
+export function readGpuTowerCreationMetadataCommits(buffer, count) {
+    if (!(buffer instanceof ArrayBuffer) && !ArrayBuffer.isView(buffer)) {
+        throw new TypeError('Tower creation metadata commit ArrayBuffer가 필요합니다.');
+    }
+    const recordCount = requireUint32(count, 'Tower creation metadata count');
+    const source = buffer instanceof ArrayBuffer
+        ? buffer
+        : buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength);
+    const abi = GPU_TOWER_CREATION_ABI.METADATA_COMMIT;
+    if (source.byteLength < recordCount * abi.STRIDE) {
+        throw new RangeError('Tower creation metadata commit byteLength가 부족합니다.');
+    }
+    const view = new DataView(source);
+    return Object.freeze(Array.from({ length: recordCount }, (_, index) => {
+        const base = index * abi.STRIDE;
+        const record = {
+            abiVersion: view.getUint32(base + abi.ABI_VERSION, LITTLE_ENDIAN),
+            destinationRank: view.getUint32(
+                base + abi.DESTINATION_RANK,
+                LITTLE_ENDIAN
+            ),
+            entityId: view.getUint32(base + abi.ENTITY_ID, LITTLE_ENDIAN),
+            incarnation: view.getUint32(base + abi.INCARNATION, LITTLE_ENDIAN),
+            logicalTowerOrdinal: view.getUint32(
+                base + abi.LOGICAL_ORDINAL,
+                LITTLE_ENDIAN
+            ),
+            generation: view.getUint32(base + abi.GENERATION, LITTLE_ENDIAN),
+            actionCode: view.getUint32(base + abi.ACTION_CODE, LITTLE_ENDIAN),
+            recordFingerprint: view.getUint32(
+                base + abi.RECORD_FINGERPRINT,
+                LITTLE_ENDIAN
+            )
+        };
+        const fingerprintValid = record.abiVersion
+                === GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION
+            && record.recordFingerprint
+                === computeGpuTowerCreationMetadataRecordFingerprint(record);
+        return Object.freeze({ ...record, fingerprintValid });
+    }));
 }
 
 export function readGpuTowerCreationResult(buffer) {
@@ -571,6 +844,32 @@ export function readGpuTowerCreationResult(buffer) {
         ),
         targetRosterFingerprint: view.getUint32(
             r.TARGET_ROSTER_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        mode: view.getUint32(r.MODE, LITTLE_ENDIAN),
+        executionOrdinal: view.getUint32(r.EXECUTION_ORDINAL, LITTLE_ENDIAN),
+        commandFingerprint: view.getUint32(
+            r.COMMAND_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        snapshotFingerprint: view.getUint32(
+            r.SNAPSHOT_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        placementFingerprint: view.getUint32(
+            r.PLACEMENT_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        actorActionProfileFingerprint: view.getUint32(
+            r.ACTOR_ACTION_PROFILE_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        metadataCommitCount: view.getUint32(
+            r.METADATA_COMMIT_COUNT,
+            LITTLE_ENDIAN
+        ),
+        metadataCommitFingerprint: view.getUint32(
+            r.METADATA_COMMIT_FINGERPRINT,
             LITTLE_ENDIAN
         ),
         resultFingerprint: view.getUint32(r.RESULT_FINGERPRINT, LITTLE_ENDIAN)

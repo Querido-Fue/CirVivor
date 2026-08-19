@@ -128,6 +128,25 @@ Static tests must fail if production guides/contracts silently reintroduce:
   run or claimed for this restricted Turn 2 checkpoint. The separate existing R3 Enemy Word actual route also
   passed AbilityExecutionCommand ABI v2 with zero protocol/recovery/uncaptured errors and destroyed teardown.
 
+### R5 Turn 3 Tower payload transaction evidence (2026-08-19)
+
+- `CPU_EXPLICIT_DESCRIPTORS` keeps every R4 creation test. Typed `GPU_SUBJECT_ACTOR_ACTION` requires exact
+  completion/token, command, all-field profile fingerprint, Tower payload, SDF, target tick, and recovery policy.
+  A backend without the explicit capability returns normal `RUNTIME_UNAVAILABLE`, reserves nothing, does not
+  latch recovery, and never reports `PROTOCOL_REJECTED`.
+- TowerCreation ABI v2 program/result are `160/96` bytes; Share records remain 64 bytes. The actor pass has seven
+  storage bindings, the R4 passes remain nine, and encode order is placement validate → all-valid seal → Share/
+  HP/Power apply → placement/metadata apply → metadata seal → child `ALIVE` → roster/result finalize.
+- Tower and Enemy frozen Subject requests cover 1 and N children, mixed child generations, source death after
+  snapshot, current-group HP drift, zero living Share, production 256 exact/257 prelease-free rejection, SDF
+  rejection, same transaction replay, and same ID with altered snapshot token/fingerprint.
+- Successful completion reads only one 96-byte result plus at most 256 fixed 32-byte metadata records. Logical
+  and flat Registry metadata agree on generation/execution/action/profile; map recovery policy, ordinal, anchor,
+  lattice version, and ordinary recovery position persist. No Subject/position/velocity record is read back.
+- Focused cumulative Node `55/55` PASS across TowerGroup, R4 creation, R5 contracts, placement, and Tower payload
+  transaction. Changed production syntax and `git diff --check` pass. Full Node, WASM, render golden, actual
+  WebGPU, and manual gates are deferred to the Turn 4 cumulative checkpoint and are not claimed here.
+
 ### Post-R3 stabilization evidence (2026-08-17)
 
 - Changed JS/MJS syntax: `34/34` PASS; full Node: `1543/1543` PASS, fail 0.

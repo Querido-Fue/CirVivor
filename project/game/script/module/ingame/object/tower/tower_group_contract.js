@@ -10,6 +10,15 @@ export const TOWER_GROUP_RECORD_STATE = Object.freeze({
     DEAD: 'DEAD'
 });
 
+export const TOWER_CREATION_COORDINATOR_MODE = Object.freeze({
+    CPU_EXPLICIT_DESCRIPTORS: 'CPU_EXPLICIT_DESCRIPTORS',
+    GPU_SUBJECT_ACTOR_ACTION: 'GPU_SUBJECT_ACTOR_ACTION'
+});
+
+export const TOWER_RECOVERY_PLACEMENT_POLICY_ID = Object.freeze({
+    MAP_ANCHOR_LATTICE_V1: 'tower-recovery.map-anchor-lattice.v1'
+});
+
 export const TOWER_CREATION_RESULT = Object.freeze({
     COMMITTED: 'COMMITTED',
     REJECTED_CAPACITY: 'REJECTED_CAPACITY',
@@ -234,4 +243,122 @@ export function freezeTowerRecoverySpawnDescriptor(
 ) {
     if (source === undefined || source === null) return null;
     return cloneReadonlyPlainValue(source, label, new Set());
+}
+
+export function normalizeTowerRecoveryPlacementPolicy(
+    source,
+    label = 'recoveryPlacementPolicy'
+) {
+    const policy = freezeTowerRecoverySpawnDescriptor(source, label);
+    if (!policy || policy.policyId
+            !== TOWER_RECOVERY_PLACEMENT_POLICY_ID.MAP_ANCHOR_LATTICE_V1
+        || typeof policy.mapRecoveryAnchorId !== 'string'
+        || policy.mapRecoveryAnchorId.length === 0) {
+        throw new TypeError(`${label}의 map anchor policy가 유효하지 않습니다.`);
+    }
+    const mapLatticeVersion = requirePositiveSafeInteger(
+        policy.mapLatticeVersion,
+        `${label}.mapLatticeVersion`
+    );
+    const x = Number(policy.anchorPosition?.x);
+    const y = Number(policy.anchorPosition?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) {
+        throw new TypeError(`${label}.anchorPosition에는 유한한 x/y가 필요합니다.`);
+    }
+    return Object.freeze({
+        policyId: policy.policyId,
+        mapRecoveryAnchorId: policy.mapRecoveryAnchorId,
+        mapLatticeVersion,
+        anchorPosition: Object.freeze({ x, y })
+    });
+}
+
+export function createTowerRecoveryPlacementDescriptor(
+    policySource,
+    logicalTowerOrdinal
+) {
+    const policy = normalizeTowerRecoveryPlacementPolicy(policySource);
+    return Object.freeze({
+        policyId: policy.policyId,
+        logicalTowerOrdinal: requirePositiveSafeInteger(
+            logicalTowerOrdinal,
+            'recoveryPlacement.logicalTowerOrdinal'
+        ),
+        mapRecoveryAnchorId: policy.mapRecoveryAnchorId,
+        mapLatticeVersion: policy.mapLatticeVersion,
+        anchorPosition: policy.anchorPosition,
+        position: policy.anchorPosition
+    });
+}
+
+export function freezeTowerCreationMetadata(
+    source,
+    label = 'towerCreationMetadata'
+) {
+    if (source === undefined || source === null) return null;
+    const metadata = freezeTowerRecoverySpawnDescriptor(source, label);
+    if (typeof metadata.sourceExecutionId !== 'string'
+        || metadata.sourceExecutionId.length === 0
+        || typeof metadata.actorActionProfileId !== 'string'
+        || metadata.actorActionProfileId.length === 0) {
+        throw new TypeError(`${label}의 execution/profile identity가 필요합니다.`);
+    }
+    const recoverySource = freezeTowerRecoverySpawnDescriptor(
+        metadata.recoveryPlacementDescriptor,
+        `${label}.recoveryPlacementDescriptor`
+    );
+    if (!recoverySource) {
+        throw new TypeError(`${label}.recoveryPlacementDescriptor가 필요합니다.`);
+    }
+    const recoveryPlacementDescriptor = createTowerRecoveryPlacementDescriptor(
+        recoverySource,
+        requirePositiveSafeInteger(
+            recoverySource.logicalTowerOrdinal,
+            `${label}.recoveryPlacementDescriptor.logicalTowerOrdinal`
+        )
+    );
+    if (Number(recoverySource.position?.x)
+            !== recoveryPlacementDescriptor.position.x
+        || Number(recoverySource.position?.y)
+            !== recoveryPlacementDescriptor.position.y) {
+        throw new RangeError(`${label}의 recovery position/anchor가 다릅니다.`);
+    }
+    const normalized = Object.freeze({
+        generation: requireNonNegativeSafeInteger(
+            metadata.generation,
+            `${label}.generation`
+        ),
+        creationOriginCode: requirePositiveSafeInteger(
+            metadata.creationOriginCode,
+            `${label}.creationOriginCode`
+        ),
+        sourceAbilityCode: requirePositiveSafeInteger(
+            metadata.sourceAbilityCode,
+            `${label}.sourceAbilityCode`
+        ),
+        sourceExecutionId: metadata.sourceExecutionId,
+        sourceExecutionFingerprint: requirePositiveSafeInteger(
+            metadata.sourceExecutionFingerprint,
+            `${label}.sourceExecutionFingerprint`
+        ),
+        sourceExecutionOrdinal: requirePositiveSafeInteger(
+            metadata.sourceExecutionOrdinal,
+            `${label}.sourceExecutionOrdinal`
+        ),
+        visibleFromExecutionOrdinal: requirePositiveSafeInteger(
+            metadata.visibleFromExecutionOrdinal,
+            `${label}.visibleFromExecutionOrdinal`
+        ),
+        actorActionCode: requirePositiveSafeInteger(
+            metadata.actorActionCode,
+            `${label}.actorActionCode`
+        ),
+        actorActionProfileId: metadata.actorActionProfileId,
+        actorActionProfileFingerprint: requirePositiveSafeInteger(
+            metadata.actorActionProfileFingerprint,
+            `${label}.actorActionProfileFingerprint`
+        ),
+        recoveryPlacementDescriptor
+    });
+    return normalized;
 }

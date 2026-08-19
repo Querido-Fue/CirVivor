@@ -94,6 +94,18 @@
 > spawn plus landing SDF atomically. Unknown/zero Subject preview is a disabled, cooldown-free normal result.
 > It neither writes bodies/Towers nor participates in the endpoint fixed loop yet. Turn 3 must authenticate and
 > consume that token in one Tower payload transaction; Turn 5 owns transit advance.
+>
+> **2026-08-19 R5 Turn 3 Tower payload transaction complete**
+>
+> `TowerCreationCoordinator` preserves `CPU_EXPLICIT_DESCRIPTORS` and adds typed
+> `GPU_SUBJECT_ACTOR_ACTION`. The new mode binds exact snapshot-token identity, subject count, execution/command,
+> all-field profile fingerprint, payload definition, target tick, SDF, and map recovery policy into replay. It
+> plans against current committed living Share after snapshot, preleases every destination, and owns placement
+> plus Tower-creation token lifetime through terminal commit/rollback. TowerCreation ABI v2 echoes the immutable
+> identity in its completion. A separate seven-storage pass validates placement records, writes transform and
+> generation, and emits bounded metadata-only records before the existing nine-storage HP/Share/Power and
+> `ALIVE`-last publication. Production capability remains closed until Turn 4; unavailable ingress is a normal
+> zero-mutation `RUNTIME_UNAVAILABLE` result.
 
 # 03. GameSystem and Subsystem Contracts
 
@@ -506,8 +518,23 @@ and optional Throw `TransitRecord[]` remain GPU-resident.
 The host accepts only the 96-byte aggregate. A complete batch yields an opaque generation-qualified binding;
 any invalid Subject/destination/SDF/protocol record yields no consumable binding. `cancel`, GPU-world rebind, and
 destroy revoke pending, in-flight, and retained output. No caller may infer body/Tower publication, cooldown,
-Share mutation, or lifecycle success from placement completion alone. The Turn 3 transaction is the first
-allowed consumer and must preserve exact 0/N semantics.
+Share mutation, or lifecycle success from placement completion alone. The completed Turn 3 technical
+transaction is the first allowed consumer and preserves exact 0/N semantics; production ingress stays closed
+until Turn 4.
+
+### R5 Tower payload transaction
+
+The typed coordinator request owns `transactionId`, normalized execution command, exact completion/token,
+frozen Subject count, profile and canonical fingerprint, Tower payload definition, target fixed tick, SDF, and
+map recovery anchor/lattice policy. Same ID replay must match every field including local token identity. Subject
+death after snapshot does not shrink the child count; current living Tower Share/HP remains the dilution source.
+
+TowerCreation ABI v2 uses a 160-byte program, unchanged 64-byte Share record, 96-byte result, and optional
+32-byte-per-child metadata commit plane. Actor validation/apply has seven storage bindings and the R4 creation
+passes remain at nine. CPU receives generation/action/destination identity only, then commits logical and flat
+Registry provenance plus the deterministic recovery descriptor. Position, velocity, transit, and Subject body
+records stay GPU-resident. Replacement consumes `recoverySpawnDescriptor.position`, so an airborne committed
+Tower restarts as an ordinary active Tower rather than resuming transient flight.
 
 ### ShopCoordinator
 

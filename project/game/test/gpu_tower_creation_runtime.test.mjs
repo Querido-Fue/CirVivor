@@ -6,6 +6,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 import {
     GPU_TOWER_CREATION_ABI,
     GPU_TOWER_CREATION_ABI_VERSION,
+    GPU_TOWER_CREATION_MODE,
     GPU_TOWER_CREATION_RECORD_KIND,
     GPU_TOWER_CREATION_STATUS,
     GPU_TOWER_CREATION_STORAGE_PROFILE,
@@ -15,6 +16,7 @@ import {
     writeGpuTowerCreationProgram
 } from '../script/module/ingame/physics/gpu/gpu_tower_creation_abi.js';
 import {
+    GPU_TOWER_CREATION_ACTOR_ACTION_WGSL,
     GPU_TOWER_CREATION_WGSL
 } from '../script/module/ingame/physics/gpu/gpu_tower_creation_shaders.js';
 import {
@@ -950,7 +952,15 @@ function writeCommittedResult(runtime, staged) {
         createdCount: staged.childCount,
         sourceGroupRevision: 1,
         targetGroupRevision: staged.targetGroupRevision,
-        targetRosterFingerprint: staged.targetRosterFingerprint
+        targetRosterFingerprint: staged.targetRosterFingerprint,
+        mode: GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS,
+        executionOrdinal: 0,
+        commandFingerprint: 0,
+        snapshotFingerprint: 0,
+        placementFingerprint: 0,
+        actorActionProfileFingerprint: 0,
+        metadataCommitCount: 0,
+        metadataCommitFingerprint: 0
     };
     const view = new DataView(runtime.buffers.result.data);
     const abi = GPU_TOWER_CREATION_ABI.RESULT;
@@ -970,6 +980,16 @@ function writeCommittedResult(runtime, staged) {
         [abi.SOURCE_GROUP_REVISION, result.sourceGroupRevision],
         [abi.TARGET_GROUP_REVISION, result.targetGroupRevision],
         [abi.TARGET_ROSTER_FINGERPRINT, result.targetRosterFingerprint],
+        [abi.MODE, result.mode],
+        [abi.EXECUTION_ORDINAL, result.executionOrdinal],
+        [abi.COMMAND_FINGERPRINT, result.commandFingerprint],
+        [abi.SNAPSHOT_FINGERPRINT, result.snapshotFingerprint],
+        [abi.PLACEMENT_FINGERPRINT, result.placementFingerprint],
+        [abi.ACTOR_ACTION_PROFILE_FINGERPRINT,
+            result.actorActionProfileFingerprint],
+        [abi.METADATA_COMMIT_COUNT, result.metadataCommitCount],
+        [abi.METADATA_COMMIT_FINGERPRINT,
+            result.metadataCommitFingerprint],
         [abi.RESULT_FINGERPRINT,
             computeGpuTowerCreationResultFingerprint(result)]
     ];
@@ -983,7 +1003,7 @@ async function flushMicrotasks() {
     await Promise.resolve();
 }
 
-test('creation ABI/runtime은 main pass 6단계와 64-byte 결과 ring만 사용한다', async () => {
+test('creation ABI/runtime은 main pass 6단계와 bounded 결과 ring만 사용한다', async () => {
     const restore = installFakeWebGpuGlobals();
     const device = new FakeDevice();
     const resources = gpuResources(device);
@@ -1050,6 +1070,99 @@ test('creation ABI/runtime은 main pass 6단계와 64-byte 결과 ring만 사용
     }
 });
 
+test('ActorAction Tower creation은 placement identity와 metadata pass를 ALIVE 전에 결합한다', () => {
+    const restore = installFakeWebGpuGlobals();
+    const device = new FakeDevice();
+    const resources = gpuResources(device);
+    const runtime = new GpuTowerCreationRuntime({
+        bodyCapacity: 4,
+        recordCapacity: 4,
+        readbackSlotCount: 1
+    });
+    try {
+        runtime.initialize(device, resources, PROTOCOL);
+        const records = creationRecords();
+        const fingerprints = creationRosterFingerprints(records);
+        const placementBuffer = device.createBuffer({
+            label: 'actor-action-placement-output',
+            size: 320,
+            usage: 0
+        });
+        const actorAction = Object.freeze({
+            placementAbiVersion: 1,
+            executionOrdinal: 7,
+            commandFingerprint: 101,
+            snapshotFingerprint: 102,
+            destinationFingerprint: 103,
+            placementFingerprint: 104,
+            actorActionProfileFingerprint: 105,
+            sourceAbilityCode: 106,
+            sourceExecutionFingerprint: 107,
+            actionCode: 1,
+            payloadCode: 2,
+            creationOriginCode: 2,
+            visibleFromExecutionOrdinal: 8,
+            snapshotSourceTick: 11
+        });
+        const staged = runtime.stage({
+            transactionId: 'runtime-actor-action',
+            transactionFingerprint: 54321,
+            sourceTick: 12,
+            sourceGroupRevision: 1,
+            targetGroupRevision: 2,
+            sourceRosterFingerprint: fingerprints.source,
+            targetRosterFingerprint: fingerprints.target,
+            existingCount: 1,
+            childCount: 1,
+            towerDefinitionCode: 777,
+            records,
+            protocol: PROTOCOL,
+            mode: GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION,
+            actorAction,
+            actorActionPlacementBinding: Object.freeze({
+                abiVersion: 1,
+                buffer: placementBuffer,
+                aggregateByteOffset: 0,
+                byteLength: 320,
+                subjectCount: 1,
+                executionOrdinal: actorAction.executionOrdinal,
+                commandFingerprint: actorAction.commandFingerprint,
+                snapshotFingerprint: actorAction.snapshotFingerprint,
+                destinationFingerprint: actorAction.destinationFingerprint,
+                placementFingerprint: actorAction.placementFingerprint,
+                actorActionProfileFingerprint:
+                    actorAction.actorActionProfileFingerprint,
+                snapshotSourceTick: actorAction.snapshotSourceTick
+            })
+        });
+        assert.equal(staged.accepted, true);
+        assert.equal(
+            staged.actorActionProfileFingerprint,
+            actorAction.actorActionProfileFingerprint
+        );
+        const entries = [];
+        runtime.encode({
+            setPipeline(pipeline) { entries.push(pipeline.entryPoint); },
+            setBindGroup() {},
+            dispatchWorkgroups() {}
+        }, 12);
+        assert.deepEqual(entries, [
+            'clear_creation',
+            'validate_creation',
+            'validate_actor_action_placement',
+            'seal_creation',
+            'apply_creation',
+            'apply_actor_action_placement',
+            'seal_actor_action_metadata',
+            'publish_creation_children',
+            'finalize_creation'
+        ]);
+    } finally {
+        runtime.destroy();
+        restore();
+    }
+});
+
 test('pending roster transition command은 성공 target과 거절 source fingerprint를 같은 tick에 인증한다', () => {
     const restore = installFakeWebGpuGlobals();
     const device = new FakeDevice();
@@ -1106,6 +1219,7 @@ test('creation shader/ABI는 <=9 storage, validate-before-apply, child ALIVE-las
     assert.deepEqual(GPU_TOWER_CREATION_STORAGE_PROFILE, {
         validateStorageBuffersPerStage: 9,
         applyStorageBuffersPerStage: 9,
+        actorActionStorageBuffersPerStage: 7,
         maximumStorageBuffersPerStage: 9
     });
     for (const entry of [
@@ -1133,6 +1247,12 @@ test('creation shader/ABI는 <=9 storage, validate-before-apply, child ALIVE-las
     assert.ok(validateIndex >= 0 && applyIndex > validateIndex);
     assert.ok(aliveIndex > applyIndex && finalizeIndex > aliveIndex);
     assert.match(GPU_TOWER_CREATION_WGSL, /BODY_FLAG_ALIVE/);
+    assert.equal(
+        new Set([...GPU_TOWER_CREATION_ACTOR_ACTION_WGSL.matchAll(
+            /@binding\((\d+)\)/g
+        )].map((match) => Number(match[1]))).size,
+        7
+    );
 
     const storage = createGpuTowerCreationHostStorage(2);
     const records = creationRecords();

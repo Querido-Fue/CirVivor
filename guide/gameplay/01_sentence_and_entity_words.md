@@ -1,6 +1,6 @@
 # 01. Sentence Grammar and Entity Words
 
-## R5 Turns 1–2 actor-plan/placement status (2026-08-19)
+## R5 Turns 1–3 actor-plan/placement/Tower transaction status (2026-08-19)
 
 Shoot keeps action code `1`; Throw/Emit/Summon append codes `2/3/4`. Immutable data-owned actor-action profiles
 now define spawn anchor, cast-start target snapshot, placement, launch/duration values, activation, and transit
@@ -13,8 +13,15 @@ The R5 candidate loadout defines SHIFT `The Tower shoots The Tower` and SPACE `E
 production continues to inject only R3 Q/E until the Turn 4 vertical slice; SHIFT/SPACE are empty and cannot
 enter `AbilityRuntime`. Turn 2 resolves frozen Subjects into GPU-resident placement records with cast-start
 target/direction, deterministic Summon stable rank, SDF/finite validation, and Throw landing/duration transit
-initialization. CPU observes only one fixed aggregate and a generation-qualified GPU token. No body/Tower
-publication, Share transaction, transit advance, or end-to-end SHIFT/SPACE execution is implemented or claimed.
+initialization. CPU observes only one fixed aggregate and a generation-qualified GPU token.
+
+Turn 3 consumes that token only through typed `GPU_SUBJECT_ACTOR_ACTION` Tower creation. It freezes the Subject
+count, plans dilution from the current committed living Share/HP, preleases all destination identities/slots,
+authenticates command/snapshot/profile/placement identity on GPU, then commits HP/Share/Power, child transform,
+generation metadata, and `ALIVE` as one 0/N chain. Only 32-byte bounded metadata commit records cross back to CPU;
+Subject and transform records do not. Logical Tower records retain sentence/execution/action provenance and a
+map anchor/lattice recovery descriptor. Transit advance and end-to-end SHIFT/SPACE remain unimplemented; the
+production loadout therefore stays R3 until Turn 4 and unavailable ingress is normal `RUNTIME_UNAVAILABLE`.
 
 ## Post-R3 implementation status (2026-08-17)
 
@@ -31,9 +38,9 @@ parallel materialize. CPU code preleases exact WorldRegistry/body destinations a
 completion; it never reads back the Subject array. A failed validation or one-short capacity check publishes
 zero of N destinations.
 
-R3 materialization still implements only `Shoot + Enemy`. R5 Turn 2 supplies GPU actor target/direction/
-placement evidence for the four verbs, but does not consume it into body or Tower publication. Tower payload
-transaction/Share commit (including `Enemies shoot The Tower`), transit advance, Merge, full modifier grammar,
+R3 materialization still implements only `Shoot + Enemy`. R5 Turn 3 supplies a technical 0/N Tower payload
+transaction for all typed actor-action placement tokens, including `Enemies shoot The Tower`, but does not wire
+it to production input. Transit advance, Merge, full modifier grammar,
 the Shop/editor transaction UI, and save integration remain later milestones.
 
 ## 1. Runtime model

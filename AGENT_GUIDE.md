@@ -31,7 +31,7 @@ Ring no-Tower release keeps stored forward with a null target handle; target-pol
 Core. Its preserved logical origin provenance is future Fireball-Subject preparation and is separate from the
 current R3 Enemy Sentence execution.
 
-Current R5 status (2026-08-19): `R5 Turns 1–2 COMPLETE`; `Turn 3 Tower payload transaction NEXT`.
+Current R5 status (2026-08-19): `R5 Turns 1–3 COMPLETE`; `Turn 4 Shoot vertical slice NEXT`.
 Turn 1 preserves the R3 Q/E compiled identities while appending Throw/Emit/Summon action codes and immutable
 data-owned action profiles. Tower/Enemy Subject × four actor verbs × Tower/Enemy Payload compiles as 16 typed
 plans. Production still injects only the R3 Q/E loadout: SHIFT/SPACE remain empty until the Turn 4 vertical
@@ -46,9 +46,17 @@ shared Aim, while hostile subjects choose the compact nearest-Tower roster, exac
 Throw duration is authoritative, ground velocity is derived from spawn-to-landing distance, and both endpoints
 must pass SDF in the same all-or-nothing batch. Unknown/zero Subject previews return
 `SUBJECT_COUNT_NOT_EXACT`/`ZERO_SUBJECT` with execution disabled and cooldown untouched.
-The side-plane is deliberately not wired into R3 materialization or the endpoint fixed loop yet: it writes no
-body/Tower state, advances no transit, and performs no Tower Share transaction. Turn 3 must consume the retained
-token in one atomic Tower payload transaction. SHIFT/SPACE therefore remain non-end-to-end at this checkpoint.
+Turn 3 adds `CPU_EXPLICIT_DESCRIPTORS` and `GPU_SUBJECT_ACTOR_ACTION` coordinator modes. The latter owns exact
+snapshot-token lifetime, all Registry/body destinations, the retained placement token, the current R4 Share
+plan, and one replay fingerprint over execution/snapshot/profile/payload/tick/recovery semantics. TowerCreation
+ABI v2 authenticates placement/profile identity in its 96-byte result. A separate seven-storage pass validates
+the GPU placement buffer, writes destination position/velocity and child generation metadata, emits only bounded
+32-byte metadata commit records, then hands publication back to the existing nine-storage HP/Share/Power and
+ALIVE-last chain. CPU reads no transform or Subject record. Logical children persist sentence/execution/action
+origin plus a map-owned recovery anchor/lattice descriptor; GPU-world replacement restores even a committed
+transit child as an ordinary active Tower from that descriptor. Production endpoint capability remains gated and
+SHIFT/SPACE stay empty until Turn 4, so unavailable materialization is normal `RUNTIME_UNAVAILABLE` 0-mutation,
+never `PROTOCOL_REJECTED`.
 
 Post-R4 status (2026-08-18): `R4 TowerGroup + Share Ledger COMPLETE`.
 Turns 1–6 completed the CPU TowerGroupState/Share Ledger, GPU roster/control/summary, atomic technical Tower
@@ -99,8 +107,9 @@ full-registry traversal for initialization or explicit audit/recovery. The narro
 `requestTowerCreation({transactionId, childCount, childSpawnDescriptors, requestedFixedTick})` API is separate
 from Sentence cooldown. `TowerCreationCoordinator` serializes one CPU plan and 0/N Registry/body prelease; the
 nine-storage GPU program validates the exact existing/destination set, applies HP/Share/Power and ability metadata
-only after full validation, publishes child ALIVE and the roster revision last, and reads back one fixed 64-byte
-result. The same-tick group command authenticates either the proposed roster on commit or the source roster on
+only after full validation, publishes child ALIVE and the roster revision last, and reads back one fixed 96-byte
+result. R5 actor mode additionally reads at most 256 bounded 32-byte metadata-only commit records; transform and
+Subject records remain GPU-only. The same-tick group command authenticates either the proposed roster on commit or the source roster on
 ordinary rejection. Capacity/source drift is zero-mutation; partial or unauthentic publication requires
 GPU-world recovery. The Wave timer and Overtime Core DOT remain future work. GPU-world replacement preserves words,
 slot cooldown state, and Gold while canceling transient executions and rebuilding GPU-world-scoped owners. Tower

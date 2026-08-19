@@ -10,11 +10,20 @@ import {
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from './gpu_circle_body_abi.js';
 import {
+    GPU_TOWER_CREATION_ABI,
     GPU_TOWER_CREATION_ABI_VERSION,
     GPU_TOWER_CREATION_ERROR_FLAG,
+    GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION,
+    GPU_TOWER_CREATION_MODE,
     GPU_TOWER_CREATION_RECORD_KIND,
     GPU_TOWER_CREATION_STATUS
 } from './gpu_tower_creation_abi.js';
+import {
+    GPU_ACTOR_ACTION_PLACEMENT_ABI,
+    GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION,
+    GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS,
+    GPU_ACTOR_ACTION_PLACEMENT_STATUS
+} from './gpu_actor_action_placement_abi.js';
 import {
     GPU_TOWER_GROUP_ABI_VERSION,
     GPU_TOWER_GROUP_MEMBER_FLAG
@@ -44,12 +53,15 @@ const ERROR_DESTINATION_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.DESTINATI
 const ERROR_ABILITY_METADATA_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.ABILITY_METADATA_CHANGED}u;
 const ERROR_TARGET_FINGERPRINT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.TARGET_FINGERPRINT_INVALID}u;
 const ERROR_PARTIAL_APPLY: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.PARTIAL_APPLY}u;
+const ERROR_ACTOR_ACTION_PLACEMENT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.ACTOR_ACTION_PLACEMENT_INVALID}u;
+const ERROR_METADATA_COMMIT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.METADATA_COMMIT_INVALID}u;
 const HARD_FAILURE_MASK: u32 = ERROR_BODY_ABI_MISMATCH
     | ERROR_GROUP_ABI_MISMATCH
     | ERROR_PROTOCOL_MISMATCH
     | ERROR_PROGRAM_INVALID
     | ERROR_TARGET_FINGERPRINT_INVALID
-    | ERROR_PARTIAL_APPLY;
+    | ERROR_PARTIAL_APPLY
+    | ERROR_METADATA_COMMIT_INVALID;
 const BODY_FLAG_ALIVE: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE}u;
 const PLAYER_TEAM_ID: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
 const PLAYER_DAMAGEABLE_LAYER: u32 = ${GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE}u;
@@ -57,6 +69,11 @@ const MEMBER_FLAGS: u32 = ${GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
     | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING}u;
 const TOWER_NOUN_MASK: u32 = ${GAMEPLAY_NOUN_MASK.TOWER}u;
 const NATURAL_CREATION_ORIGIN: u32 = ${ABILITY_CREATION_ORIGIN_CODE.NATURAL}u;
+const SENTENCE_PAYLOAD_CREATION_ORIGIN: u32 = ${ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD}u;
+const MODE_CPU_EXPLICIT_DESCRIPTORS: u32 = ${GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS}u;
+const MODE_GPU_SUBJECT_ACTOR_ACTION: u32 = ${GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION}u;
+const ACTOR_ACTION_PLACEMENT_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION}u;
+const METADATA_COMMIT_ABI: u32 = ${GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION}u;
 const FNV_OFFSET: u32 = 0x811c9dc5u;
 const FNV_PRIME: u32 = 0x01000193u;
 
@@ -148,6 +165,26 @@ struct TowerCreationProgram {
     ability_metadata_abi_version: u32,
     roster_capacity: u32,
     record_fingerprint: u32,
+    mode: u32,
+    actor_action_placement_abi_version: u32,
+    execution_ordinal: u32,
+    command_fingerprint: u32,
+    snapshot_fingerprint: u32,
+    destination_fingerprint: u32,
+    placement_fingerprint: u32,
+    actor_action_profile_fingerprint: u32,
+    source_ability_code: u32,
+    source_execution_fingerprint: u32,
+    action_code: u32,
+    payload_code: u32,
+    creation_origin_code: u32,
+    visible_from_execution_ordinal: u32,
+    snapshot_source_tick: u32,
+    metadata_commit_abi_version: u32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
+    reserved_3: u32,
 }
 
 struct TowerCreationRecord {
@@ -185,6 +222,14 @@ struct TowerCreationResult {
     source_group_revision: u32,
     target_group_revision: u32,
     target_roster_fingerprint: u32,
+    mode: u32,
+    execution_ordinal: u32,
+    command_fingerprint: u32,
+    snapshot_fingerprint: u32,
+    placement_fingerprint: u32,
+    actor_action_profile_fingerprint: u32,
+    metadata_commit_count: atomic<u32>,
+    metadata_commit_fingerprint: u32,
     result_fingerprint: u32,
 }
 
@@ -327,6 +372,14 @@ fn result_fingerprint(status: u32, error_flags: u32) -> u32 {
     hash = hash_word(hash, result.source_group_revision);
     hash = hash_word(hash, result.target_group_revision);
     hash = hash_word(hash, result.target_roster_fingerprint);
+    hash = hash_word(hash, result.mode);
+    hash = hash_word(hash, result.execution_ordinal);
+    hash = hash_word(hash, result.command_fingerprint);
+    hash = hash_word(hash, result.snapshot_fingerprint);
+    hash = hash_word(hash, result.placement_fingerprint);
+    hash = hash_word(hash, result.actor_action_profile_fingerprint);
+    hash = hash_word(hash, atomicLoad(&result.metadata_commit_count));
+    hash = hash_word(hash, result.metadata_commit_fingerprint);
     return non_zero_hash(hash);
 }
 
@@ -385,6 +438,51 @@ fn validate_program_header() -> u32 {
             != program.source_group_revision + 1u) {
         errors |= ERROR_PROGRAM_INVALID;
     }
+    let cpu_mode = program.mode == MODE_CPU_EXPLICIT_DESCRIPTORS;
+    let actor_mode = program.mode == MODE_GPU_SUBJECT_ACTOR_ACTION;
+    if (!cpu_mode && !actor_mode) {
+        errors |= ERROR_PROGRAM_INVALID;
+    }
+    if (cpu_mode
+        && (program.actor_action_placement_abi_version != 0u
+            || program.execution_ordinal != 0u
+            || program.command_fingerprint != 0u
+            || program.snapshot_fingerprint != 0u
+            || program.destination_fingerprint != 0u
+            || program.placement_fingerprint != 0u
+            || program.actor_action_profile_fingerprint != 0u
+            || program.source_ability_code != 0u
+            || program.source_execution_fingerprint != 0u
+            || program.action_code != 0u
+            || program.payload_code != 0u
+            || program.creation_origin_code != NATURAL_CREATION_ORIGIN
+            || program.visible_from_execution_ordinal != 0u
+            || program.snapshot_source_tick != 0u
+            || program.metadata_commit_abi_version != 0u)) {
+        errors |= ERROR_PROGRAM_INVALID;
+    }
+    if (actor_mode
+        && (program.actor_action_placement_abi_version
+                != ACTOR_ACTION_PLACEMENT_ABI
+            || program.execution_ordinal == 0u
+            || program.command_fingerprint == 0u
+            || program.snapshot_fingerprint == 0u
+            || program.destination_fingerprint == 0u
+            || program.placement_fingerprint == 0u
+            || program.actor_action_profile_fingerprint == 0u
+            || program.source_ability_code == 0u
+            || program.source_execution_fingerprint == 0u
+            || program.action_code == 0u
+            || program.payload_code == 0u
+            || program.creation_origin_code
+                != SENTENCE_PAYLOAD_CREATION_ORIGIN
+            || program.visible_from_execution_ordinal == 0u
+            || program.snapshot_source_tick == 0u
+            || program.snapshot_source_tick > program.source_tick
+            || program.metadata_commit_abi_version
+                != METADATA_COMMIT_ABI)) {
+        errors |= ERROR_PROGRAM_INVALID;
+    }
     let record_fingerprint = compute_record_fingerprint();
     if (record_fingerprint == 0u
         || record_fingerprint != program.record_fingerprint) {
@@ -426,6 +524,15 @@ fn clear_creation() {
     result.source_group_revision = program.source_group_revision;
     result.target_group_revision = program.target_group_revision;
     result.target_roster_fingerprint = program.target_roster_fingerprint;
+    result.mode = program.mode;
+    result.execution_ordinal = program.execution_ordinal;
+    result.command_fingerprint = program.command_fingerprint;
+    result.snapshot_fingerprint = program.snapshot_fingerprint;
+    result.placement_fingerprint = program.placement_fingerprint;
+    result.actor_action_profile_fingerprint
+        = program.actor_action_profile_fingerprint;
+    atomicStore(&result.metadata_commit_count, 0u);
+    result.metadata_commit_fingerprint = 0u;
     result.result_fingerprint = 0u;
 }
 
@@ -572,18 +679,27 @@ fn apply_creation(@builtin(global_invocation_id) invocation: vec3u) {
         ability_metadata.values[record.slot].power_fixed_point
             = record.target_power_fixed_point;
     } else {
+        let actor_mode = program.mode == MODE_GPU_SUBJECT_ACTOR_ACTION;
         ability_metadata.values[record.slot] = AbilityMetadata(
             ABILITY_METADATA_ABI_VERSION,
             TOWER_NOUN_MASK,
             program.tower_definition_code,
             0u,
             0u,
+            select(0u, program.source_ability_code, actor_mode),
+            select(0u, program.source_execution_fingerprint, actor_mode),
+            select(0u, program.execution_ordinal, actor_mode),
             0u,
-            0u,
-            0u,
-            0u,
-            0u,
-            NATURAL_CREATION_ORIGIN,
+            select(
+                0u,
+                program.visible_from_execution_ordinal,
+                actor_mode
+            ),
+            select(
+                NATURAL_CREATION_ORIGIN,
+                program.creation_origin_code,
+                actor_mode
+            ),
             record.target_power_fixed_point
         );
     }
@@ -631,5 +747,323 @@ fn finalize_creation() {
     let status = atomicLoad(&result.status);
     let errors = atomicLoad(&result.error_flags);
     result.result_fingerprint = result_fingerprint(status, errors);
+}
+`;
+
+/**
+ * Placement output을 creation destination rank에 결합하는 별도 <=7-storage pass입니다.
+ * Main 9-binding validation/apply layout에 열 번째 binding을 추가하지 않습니다.
+ */
+export const GPU_TOWER_CREATION_ACTOR_ACTION_WGSL = /* wgsl */`
+const CREATION_ABI: u32 = ${GPU_TOWER_CREATION_ABI_VERSION}u;
+const PLACEMENT_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION}u;
+const METADATA_ABI: u32 = ${ABILITY_ENTITY_METADATA_ABI_VERSION}u;
+const METADATA_COMMIT_ABI: u32 = ${GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION}u;
+const MODE_GPU_SUBJECT_ACTOR_ACTION: u32 = ${GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION}u;
+const STATUS_READY_TO_APPLY: u32 = ${GPU_TOWER_CREATION_STATUS.READY_TO_APPLY}u;
+const STATUS_PROTOCOL_FAILURE: u32 = ${GPU_TOWER_CREATION_STATUS.PROTOCOL_FAILURE}u;
+const PLACEMENT_COMPLETE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE}u;
+const PLACEMENT_RECORD_VALID: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_RECORD_STATUS.VALID}u;
+const ERROR_PLACEMENT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.ACTOR_ACTION_PLACEMENT_INVALID}u;
+const ERROR_METADATA_COMMIT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.METADATA_COMMIT_INVALID}u;
+const FNV_OFFSET: u32 = 0x811c9dc5u;
+const FNV_PRIME: u32 = 0x01000193u;
+
+const PROGRAM_MODE: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.MODE / 4}u;
+const PROGRAM_EXISTING_COUNT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.EXISTING_COUNT / 4}u;
+const PROGRAM_CHILD_COUNT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.CHILD_COUNT / 4}u;
+const PROGRAM_EXECUTION_ORDINAL: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.EXECUTION_ORDINAL / 4}u;
+const PROGRAM_COMMAND_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.COMMAND_FINGERPRINT / 4}u;
+const PROGRAM_SNAPSHOT_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.SNAPSHOT_FINGERPRINT / 4}u;
+const PROGRAM_DESTINATION_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.DESTINATION_FINGERPRINT / 4}u;
+const PROGRAM_PLACEMENT_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.PLACEMENT_FINGERPRINT / 4}u;
+const PROGRAM_PROFILE_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.ACTOR_ACTION_PROFILE_FINGERPRINT / 4}u;
+const PROGRAM_ACTION_CODE: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.ACTION_CODE / 4}u;
+const PROGRAM_PAYLOAD_CODE: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.PAYLOAD_CODE / 4}u;
+
+const RESULT_STATUS: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.STATUS / 4}u;
+const RESULT_ERROR_FLAGS: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.ERROR_FLAGS / 4}u;
+const RESULT_METADATA_COUNT: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.METADATA_COMMIT_COUNT / 4}u;
+const RESULT_METADATA_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.METADATA_COMMIT_FINGERPRINT / 4}u;
+
+const RECORD_WORDS: u32 = ${GPU_TOWER_CREATION_ABI.RECORD.STRIDE / 4}u;
+const RECORD_SLOT: u32 = ${GPU_TOWER_CREATION_ABI.RECORD.SLOT / 4}u;
+const RECORD_ENTITY_ID: u32 = ${GPU_TOWER_CREATION_ABI.RECORD.ENTITY_ID / 4}u;
+const RECORD_INCARNATION: u32 = ${GPU_TOWER_CREATION_ABI.RECORD.INCARNATION / 4}u;
+const RECORD_LOGICAL_ORDINAL: u32 = ${GPU_TOWER_CREATION_ABI.RECORD.LOGICAL_ORDINAL / 4}u;
+
+const AGGREGATE_WORDS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STRIDE / 4}u;
+const AGGREGATE_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.ABI_VERSION / 4}u;
+const AGGREGATE_EXECUTION_ORDINAL: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.EXECUTION_ORDINAL / 4}u;
+const AGGREGATE_STATUS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STATUS / 4}u;
+const AGGREGATE_SUBJECT_COUNT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.SUBJECT_COUNT / 4}u;
+const AGGREGATE_VALID_COUNT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.VALID_COUNT / 4}u;
+const AGGREGATE_COMMAND_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.COMMAND_FINGERPRINT / 4}u;
+const AGGREGATE_SNAPSHOT_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.SNAPSHOT_FINGERPRINT / 4}u;
+const AGGREGATE_DESTINATION_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.DESTINATION_FINGERPRINT / 4}u;
+const AGGREGATE_PLACEMENT_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PLACEMENT_FINGERPRINT / 4}u;
+const AGGREGATE_ERROR_FLAGS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.ERROR_FLAGS / 4}u;
+const AGGREGATE_ACTION_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.ACTION_CODE / 4}u;
+const AGGREGATE_PAYLOAD_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PAYLOAD_CODE / 4}u;
+const AGGREGATE_PROFILE_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PROFILE_FINGERPRINT / 4}u;
+
+const PLACEMENT_WORDS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE / 4}u;
+const PLACEMENT_RECORD_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.ABI_VERSION / 4}u;
+const PLACEMENT_RECORD_STATUS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STATUS / 4}u;
+const PLACEMENT_RECORD_ERROR_FLAGS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.ERROR_FLAGS / 4}u;
+const PLACEMENT_SOURCE_RANK: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.SOURCE_RANK / 4}u;
+const PLACEMENT_DESTINATION_RANK: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.DESTINATION_RANK / 4}u;
+const PLACEMENT_DESTINATION_SLOT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.DESTINATION_SLOT / 4}u;
+const PLACEMENT_DESTINATION_ENTITY_ID: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.DESTINATION_ENTITY_ID / 4}u;
+const PLACEMENT_DESTINATION_INCARNATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.DESTINATION_INCARNATION / 4}u;
+const PLACEMENT_ACTION_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.ACTION_CODE / 4}u;
+const PLACEMENT_PAYLOAD_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.PAYLOAD_CODE / 4}u;
+const PLACEMENT_SPAWN_X: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.SPAWN_X / 4}u;
+const PLACEMENT_SPAWN_Y: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.SPAWN_Y / 4}u;
+const PLACEMENT_VELOCITY_X: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.INITIAL_VELOCITY_X / 4}u;
+const PLACEMENT_VELOCITY_Y: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.INITIAL_VELOCITY_Y / 4}u;
+const PLACEMENT_ACTIVATION_TICK: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.ACTIVATION_TICK / 4}u;
+const PLACEMENT_SOURCE_GENERATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.SOURCE_GENERATION / 4}u;
+const PLACEMENT_CHILD_GENERATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.CHILD_GENERATION / 4}u;
+const PLACEMENT_RECORD_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.PLACEMENT_FINGERPRINT / 4}u;
+
+const METADATA_WORDS: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE / 4}u;
+const METADATA_DESTINATION_RANK: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.DESTINATION_RANK / 4}u;
+const METADATA_ENTITY_ID: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.ENTITY_ID / 4}u;
+const METADATA_INCARNATION: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.INCARNATION / 4}u;
+const METADATA_LOGICAL_ORDINAL: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.LOGICAL_ORDINAL / 4}u;
+const METADATA_GENERATION: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.GENERATION / 4}u;
+const METADATA_ACTION_CODE: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.ACTION_CODE / 4}u;
+const METADATA_RECORD_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.METADATA_COMMIT.RECORD_FINGERPRINT / 4}u;
+
+struct RawU32Buffer { values: array<u32> }
+struct RawAtomicBuffer { values: array<atomic<u32>> }
+struct BodyPhysics {
+    position: vec2f,
+    velocity: vec2f,
+    radius: f32,
+    inverse_mass: f32,
+    physical_meta: u32,
+    interaction_meta: u32,
+}
+struct PhysicsBuffer { values: array<BodyPhysics> }
+struct AbilityMetadata {
+    abi_version: u32,
+    noun_mask: u32,
+    definition_code: u32,
+    owner_entity_id: u32,
+    owner_incarnation: u32,
+    source_ability_code: u32,
+    source_execution_fingerprint: u32,
+    source_execution_ordinal: u32,
+    generation: u32,
+    visible_from_execution_ordinal: u32,
+    creation_origin_code: u32,
+    power_fixed_point: u32,
+}
+struct AbilityMetadataBuffer { values: array<AbilityMetadata> }
+
+@group(0) @binding(0) var<storage, read> actor_program: RawU32Buffer;
+@group(0) @binding(1) var<storage, read> actor_records: RawU32Buffer;
+@group(0) @binding(2) var<storage, read_write> actor_result: RawAtomicBuffer;
+@group(0) @binding(3) var<storage, read> actor_placement: RawU32Buffer;
+@group(0) @binding(4) var<storage, read_write> actor_physics: PhysicsBuffer;
+@group(0) @binding(5) var<storage, read_write> actor_metadata: AbilityMetadataBuffer;
+@group(0) @binding(6) var<storage, read_write> metadata_commits: RawU32Buffer;
+
+fn hash_word(hash: u32, word: u32) -> u32 {
+    return (hash ^ word) * FNV_PRIME;
+}
+
+fn nonzero_hash(hash: u32) -> u32 {
+    return select(hash, 1u, hash == 0u);
+}
+
+fn finite_scalar(value: f32) -> bool {
+    return value == value && abs(value) <= 3.402823466e+38;
+}
+
+fn creation_record_word(rank: u32, field: u32) -> u32 {
+    let index = actor_program.values[PROGRAM_EXISTING_COUNT] + rank;
+    return actor_records.values[index * RECORD_WORDS + field];
+}
+
+fn placement_word(rank: u32, field: u32) -> u32 {
+    return actor_placement.values[AGGREGATE_WORDS + rank * PLACEMENT_WORDS + field];
+}
+
+fn metadata_word(rank: u32, field: u32) -> u32 {
+    return metadata_commits.values[rank * METADATA_WORDS + field];
+}
+
+fn set_metadata_word(rank: u32, field: u32, value: u32) {
+    metadata_commits.values[rank * METADATA_WORDS + field] = value;
+}
+
+fn metadata_record_fingerprint(rank: u32) -> u32 {
+    var hash = hash_word(FNV_OFFSET, METADATA_COMMIT_ABI);
+    var field = METADATA_DESTINATION_RANK;
+    loop {
+        if (field >= METADATA_RECORD_FINGERPRINT) { break; }
+        hash = hash_word(hash, metadata_word(rank, field));
+        field += 1u;
+    }
+    return nonzero_hash(hash);
+}
+
+@compute @workgroup_size(${GPU_TOWER_CREATION_WORKGROUP_SIZE})
+fn validate_actor_action_placement(
+    @builtin(global_invocation_id) invocation: vec3u
+) {
+    let rank = invocation.x;
+    let child_count = actor_program.values[PROGRAM_CHILD_COUNT];
+    if (rank == 0u) {
+        var header_invalid = actor_program.values[PROGRAM_MODE]
+                != MODE_GPU_SUBJECT_ACTOR_ACTION
+            || actor_placement.values[AGGREGATE_ABI] != PLACEMENT_ABI
+            || actor_placement.values[AGGREGATE_STATUS] != PLACEMENT_COMPLETE
+            || actor_placement.values[AGGREGATE_SUBJECT_COUNT] != child_count
+            || actor_placement.values[AGGREGATE_VALID_COUNT] != child_count
+            || actor_placement.values[AGGREGATE_ERROR_FLAGS] != 0u
+            || actor_placement.values[AGGREGATE_EXECUTION_ORDINAL]
+                != actor_program.values[PROGRAM_EXECUTION_ORDINAL]
+            || actor_placement.values[AGGREGATE_COMMAND_FINGERPRINT]
+                != actor_program.values[PROGRAM_COMMAND_FINGERPRINT]
+            || actor_placement.values[AGGREGATE_SNAPSHOT_FINGERPRINT]
+                != actor_program.values[PROGRAM_SNAPSHOT_FINGERPRINT]
+            || actor_placement.values[AGGREGATE_DESTINATION_FINGERPRINT]
+                != actor_program.values[PROGRAM_DESTINATION_FINGERPRINT]
+            || actor_placement.values[AGGREGATE_PLACEMENT_FINGERPRINT]
+                != actor_program.values[PROGRAM_PLACEMENT_FINGERPRINT]
+            || actor_placement.values[AGGREGATE_PROFILE_FINGERPRINT]
+                != actor_program.values[PROGRAM_PROFILE_FINGERPRINT]
+            || actor_placement.values[AGGREGATE_ACTION_CODE]
+                != actor_program.values[PROGRAM_ACTION_CODE]
+            || actor_placement.values[AGGREGATE_PAYLOAD_CODE]
+                != actor_program.values[PROGRAM_PAYLOAD_CODE];
+        if (header_invalid) {
+            atomicOr(
+                &actor_result.values[RESULT_ERROR_FLAGS],
+                ERROR_PLACEMENT_INVALID
+            );
+        }
+    }
+    if (rank >= child_count) { return; }
+    let slot = creation_record_word(rank, RECORD_SLOT);
+    let entity_id = creation_record_word(rank, RECORD_ENTITY_ID);
+    let incarnation = creation_record_word(rank, RECORD_INCARNATION);
+    let spawn_x = bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_X));
+    let spawn_y = bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_Y));
+    let velocity_x = bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_X));
+    let velocity_y = bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_Y));
+    let invalid = placement_word(rank, PLACEMENT_RECORD_ABI) != PLACEMENT_ABI
+        || placement_word(rank, PLACEMENT_RECORD_STATUS)
+            != PLACEMENT_RECORD_VALID
+        || placement_word(rank, PLACEMENT_RECORD_ERROR_FLAGS) != 0u
+        || placement_word(rank, PLACEMENT_SOURCE_RANK) != rank
+        || placement_word(rank, PLACEMENT_DESTINATION_RANK) != rank
+        || placement_word(rank, PLACEMENT_DESTINATION_SLOT) != slot
+        || placement_word(rank, PLACEMENT_DESTINATION_ENTITY_ID) != entity_id
+        || placement_word(rank, PLACEMENT_DESTINATION_INCARNATION)
+            != incarnation
+        || placement_word(rank, PLACEMENT_ACTION_CODE)
+            != actor_program.values[PROGRAM_ACTION_CODE]
+        || placement_word(rank, PLACEMENT_PAYLOAD_CODE)
+            != actor_program.values[PROGRAM_PAYLOAD_CODE]
+        || placement_word(rank, PLACEMENT_ACTIVATION_TICK) == 0u
+        || placement_word(rank, PLACEMENT_CHILD_GENERATION)
+            != placement_word(rank, PLACEMENT_SOURCE_GENERATION) + 1u
+        || placement_word(rank, PLACEMENT_RECORD_FINGERPRINT) == 0u
+        || !finite_scalar(spawn_x) || !finite_scalar(spawn_y)
+        || !finite_scalar(velocity_x) || !finite_scalar(velocity_y);
+    if (invalid) {
+        atomicOr(
+            &actor_result.values[RESULT_ERROR_FLAGS],
+            ERROR_PLACEMENT_INVALID
+        );
+    }
+}
+
+@compute @workgroup_size(${GPU_TOWER_CREATION_WORKGROUP_SIZE})
+fn apply_actor_action_placement(
+    @builtin(global_invocation_id) invocation: vec3u
+) {
+    let rank = invocation.x;
+    let child_count = actor_program.values[PROGRAM_CHILD_COUNT];
+    if (rank >= child_count
+        || atomicLoad(&actor_result.values[RESULT_STATUS])
+            != STATUS_READY_TO_APPLY) {
+        return;
+    }
+    let slot = creation_record_word(rank, RECORD_SLOT);
+    let entity_id = creation_record_word(rank, RECORD_ENTITY_ID);
+    let incarnation = creation_record_word(rank, RECORD_INCARNATION);
+    let logical_ordinal = creation_record_word(rank, RECORD_LOGICAL_ORDINAL);
+    let generation = placement_word(rank, PLACEMENT_CHILD_GENERATION);
+    actor_physics.values[slot].position = vec2f(
+        bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_X)),
+        bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_Y))
+    );
+    actor_physics.values[slot].velocity = vec2f(
+        bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_X)),
+        bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_Y))
+    );
+    actor_metadata.values[slot].generation = generation;
+    set_metadata_word(rank, 0u, METADATA_COMMIT_ABI);
+    set_metadata_word(rank, METADATA_DESTINATION_RANK, rank);
+    set_metadata_word(rank, METADATA_ENTITY_ID, entity_id);
+    set_metadata_word(rank, METADATA_INCARNATION, incarnation);
+    set_metadata_word(rank, METADATA_LOGICAL_ORDINAL, logical_ordinal);
+    set_metadata_word(rank, METADATA_GENERATION, generation);
+    set_metadata_word(
+        rank,
+        METADATA_ACTION_CODE,
+        actor_program.values[PROGRAM_ACTION_CODE]
+    );
+    set_metadata_word(
+        rank,
+        METADATA_RECORD_FINGERPRINT,
+        metadata_record_fingerprint(rank)
+    );
+    atomicAdd(&actor_result.values[RESULT_METADATA_COUNT], 1u);
+}
+
+@compute @workgroup_size(1)
+fn seal_actor_action_metadata() {
+    let child_count = actor_program.values[PROGRAM_CHILD_COUNT];
+    var hash = hash_word(FNV_OFFSET, METADATA_COMMIT_ABI);
+    hash = hash_word(hash, child_count);
+    var invalid = atomicLoad(&actor_result.values[RESULT_METADATA_COUNT])
+        != child_count;
+    var rank = 0u;
+    loop {
+        if (rank >= child_count) { break; }
+        let fingerprint = metadata_word(rank, METADATA_RECORD_FINGERPRINT);
+        if (fingerprint == 0u
+            || fingerprint != metadata_record_fingerprint(rank)) {
+            invalid = true;
+        }
+        hash = hash_word(hash, fingerprint);
+        rank += 1u;
+    }
+    if (invalid) {
+        atomicOr(
+            &actor_result.values[RESULT_ERROR_FLAGS],
+            ERROR_METADATA_COMMIT_INVALID
+        );
+        atomicStore(
+            &actor_result.values[RESULT_STATUS],
+            STATUS_PROTOCOL_FAILURE
+        );
+        atomicStore(
+            &actor_result.values[RESULT_METADATA_FINGERPRINT],
+            0u
+        );
+    } else {
+        atomicStore(
+            &actor_result.values[RESULT_METADATA_FINGERPRINT],
+            nonzero_hash(hash)
+        );
+    }
 }
 `;

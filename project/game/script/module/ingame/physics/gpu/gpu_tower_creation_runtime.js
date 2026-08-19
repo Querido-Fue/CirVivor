@@ -2,13 +2,17 @@ import {
     GPU_TOWER_CREATION_ABI,
     GPU_TOWER_CREATION_ABI_VERSION,
     GPU_TOWER_CREATION_HARD_FAILURE_MASK,
+    GPU_TOWER_CREATION_MODE,
     GPU_TOWER_CREATION_STATUS,
     GPU_TOWER_CREATION_STORAGE_PROFILE,
     createGpuTowerCreationHostStorage,
+    computeGpuTowerCreationMetadataFingerprint,
+    readGpuTowerCreationMetadataCommits,
     readGpuTowerCreationResult,
     writeGpuTowerCreationProgram
 } from './gpu_tower_creation_abi.js';
 import {
+    GPU_TOWER_CREATION_ACTOR_ACTION_WGSL,
     GPU_TOWER_CREATION_WGSL,
     GPU_TOWER_CREATION_WORKGROUP_SIZE
 } from './gpu_tower_creation_shaders.js';
@@ -62,6 +66,35 @@ function sameResources(left, right) {
         && left?.abilityMetadata === right?.abilityMetadata
         && left?.members === right?.members
         && left?.roster === right?.roster;
+}
+
+function normalizeActorActionPlacementBinding(binding, program) {
+    if (program.mode !== GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+        if (binding !== undefined && binding !== null) {
+            throw new RangeError('CPU Tower creation에는 placement binding을 허용하지 않습니다.');
+        }
+        return null;
+    }
+    if (!binding || typeof binding !== 'object' || !binding.buffer) {
+        throw new TypeError('ActorAction Tower creation placement binding이 필요합니다.');
+    }
+    const exact = binding.subjectCount === program.childCount
+        && binding.executionOrdinal === program.executionOrdinal
+        && binding.commandFingerprint === program.commandFingerprint
+        && binding.snapshotFingerprint === program.snapshotFingerprint
+        && binding.destinationFingerprint === program.destinationFingerprint
+        && binding.placementFingerprint === program.placementFingerprint
+        && binding.actorActionProfileFingerprint
+            === program.actorActionProfileFingerprint
+        && binding.snapshotSourceTick === program.snapshotSourceTick
+        && Number.isSafeInteger(binding.aggregateByteOffset)
+        && binding.aggregateByteOffset >= 0
+        && Number.isSafeInteger(binding.byteLength)
+        && binding.byteLength > 0;
+    if (!exact) {
+        throw new RangeError('ActorAction Tower creation placement provenance가 다릅니다.');
+    }
+    return Object.freeze({ ...binding });
 }
 
 function captureFailure(stage, error) {
@@ -128,14 +161,49 @@ function getPipelines(device, stage) {
         layout: pipelineLayout,
         compute: { module, entryPoint }
     });
+    const actorLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-tower-creation-actor-action-layout',
+        entries: Array.from({ length: 7 }, (_, binding) => ({
+            binding,
+            visibility: stage.COMPUTE,
+            buffer: {
+                type: [2, 4, 5, 6].includes(binding)
+                    ? 'storage'
+                    : 'read-only-storage'
+            }
+        }))
+    });
+    const actorModule = device.createShaderModule({
+        label: 'cirvivor-gpu-tower-creation-actor-action-shader',
+        code: GPU_TOWER_CREATION_ACTOR_ACTION_WGSL
+    });
+    const actorPipelineLayout = device.createPipelineLayout({
+        label: 'cirvivor-gpu-tower-creation-actor-action-pipeline-layout',
+        bindGroupLayouts: [actorLayout]
+    });
+    const createActorPipeline = (entryPoint) => device.createComputePipeline({
+        label: `cirvivor-gpu-tower-creation-${entryPoint}`,
+        layout: actorPipelineLayout,
+        compute: { module: actorModule, entryPoint }
+    });
     cached = Object.freeze({
         layout,
+        actorLayout,
         clear: createPipeline('clear_creation'),
         validate: createPipeline('validate_creation'),
         seal: createPipeline('seal_creation'),
         apply: createPipeline('apply_creation'),
         publish: createPipeline('publish_creation_children'),
-        finalize: createPipeline('finalize_creation')
+        finalize: createPipeline('finalize_creation'),
+        validateActorAction: createActorPipeline(
+            'validate_actor_action_placement'
+        ),
+        applyActorAction: createActorPipeline(
+            'apply_actor_action_placement'
+        ),
+        sealActorActionMetadata: createActorPipeline(
+            'seal_actor_action_metadata'
+        )
     });
     PIPELINES_BY_DEVICE.set(device, cached);
     return cached;
@@ -214,8 +282,14 @@ export class GpuTowerCreationRuntime {
         const { usage, stage, mapMode } = requireGpuGlobals();
         const recordBytes = this.recordCapacity
             * GPU_TOWER_CREATION_ABI.RECORD.STRIDE;
+        const metadataCommitBytes = this.recordCapacity
+            * GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE;
+        const readbackBytes = GPU_TOWER_CREATION_ABI.RESULT.STRIDE
+            + metadataCommitBytes;
         const maximumBytes = Math.max(
             recordBytes,
+            metadataCommitBytes,
+            readbackBytes,
             GPU_TOWER_CREATION_ABI.PROGRAM.STRIDE,
             GPU_TOWER_CREATION_ABI.RESULT.STRIDE
         );
@@ -250,6 +324,12 @@ export class GpuTowerCreationRuntime {
                 'cirvivor-gpu-tower-creation-result',
                 GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
                 usage.STORAGE | usage.COPY_SRC | usage.COPY_DST
+            ),
+            metadataCommits: createBuffer(
+                device,
+                'cirvivor-gpu-tower-creation-metadata-commits',
+                metadataCommitBytes,
+                usage.STORAGE | usage.COPY_SRC | usage.COPY_DST
             )
         });
         this.bindGroup = device.createBindGroup({
@@ -274,7 +354,7 @@ export class GpuTowerCreationRuntime {
                 buffer: createBuffer(
                     device,
                     `cirvivor-gpu-tower-creation-readback-${index}`,
-                    GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
+                    readbackBytes,
                     usage.COPY_DST | usage.MAP_READ
                 ),
                 state: 'free',
@@ -330,6 +410,8 @@ export class GpuTowerCreationRuntime {
             });
         }
         let program;
+        let actorActionPlacementBinding = null;
+        let actorBindGroup = null;
         try {
             program = writeGpuTowerCreationProgram(this.host, {
                 ...source,
@@ -339,6 +421,39 @@ export class GpuTowerCreationRuntime {
             });
             if (!sameProtocol(program.protocol, this.protocol)) {
                 throw new Error('Tower creation program protocol이 runtime과 다릅니다.');
+            }
+            actorActionPlacementBinding = normalizeActorActionPlacementBinding(
+                source.actorActionPlacementBinding,
+                program
+            );
+            if (actorActionPlacementBinding) {
+                actorBindGroup = this.device.createBindGroup({
+                    label: 'cirvivor-gpu-tower-creation-actor-action-bind-group',
+                    layout: this.pipelines.actorLayout,
+                    entries: [
+                        { binding: 0, resource: bufferResource(this.buffers.program) },
+                        { binding: 1, resource: bufferResource(this.buffers.records) },
+                        { binding: 2, resource: bufferResource(this.buffers.result) },
+                        {
+                            binding: 3,
+                            resource: {
+                                buffer: actorActionPlacementBinding.buffer,
+                                offset:
+                                    actorActionPlacementBinding.aggregateByteOffset,
+                                size: actorActionPlacementBinding.byteLength
+                            }
+                        },
+                        { binding: 4, resource: bufferResource(this.resources.physics) },
+                        {
+                            binding: 5,
+                            resource: bufferResource(this.resources.abilityMetadata)
+                        },
+                        {
+                            binding: 6,
+                            resource: bufferResource(this.buffers.metadataCommits)
+                        }
+                    ]
+                });
             }
         } catch (error) {
             return Object.freeze({
@@ -366,6 +481,11 @@ export class GpuTowerCreationRuntime {
                 0,
                 this.host.result
             );
+            this.device.queue.writeBuffer(
+                this.buffers.metadataCommits,
+                0,
+                this.host.metadataCommits
+            );
         } catch (error) {
             this.failure = captureFailure('tower-creation-program-upload', error);
             this.state = 'failed';
@@ -386,6 +506,24 @@ export class GpuTowerCreationRuntime {
             sourceGroupRevision: program.sourceGroupRevision,
             targetGroupRevision: program.targetGroupRevision,
             targetRosterFingerprint: program.targetRosterFingerprint,
+            mode: program.mode,
+            executionOrdinal: program.executionOrdinal,
+            commandFingerprint: program.commandFingerprint,
+            snapshotFingerprint: program.snapshotFingerprint,
+            placementFingerprint: program.placementFingerprint,
+            actorActionProfileFingerprint:
+                program.actorActionProfileFingerprint,
+            metadataCommitIdentity: Object.freeze(
+                program.records.slice(program.existingCount).map(
+                    (record, destinationRank) => Object.freeze({
+                        destinationRank,
+                        entityId: record.entityId,
+                        incarnation: record.incarnation,
+                        logicalTowerOrdinal: record.logicalTowerOrdinal,
+                        actionCode: program.actionCode
+                    })
+                )
+            ),
             ...program.protocol,
             resourceLease: this.resourceLease
         });
@@ -396,7 +534,9 @@ export class GpuTowerCreationRuntime {
             state: 'staged',
             envelope,
             slot,
-            program
+            program,
+            actorActionPlacementBinding,
+            actorBindGroup
         };
         this.stagedCount++;
         this.recordCountHighWater = Math.max(
@@ -412,6 +552,13 @@ export class GpuTowerCreationRuntime {
             childCount: envelope.childCount,
             targetGroupRevision: envelope.targetGroupRevision,
             targetRosterFingerprint: envelope.targetRosterFingerprint,
+            mode: envelope.mode,
+            executionOrdinal: envelope.executionOrdinal,
+            commandFingerprint: envelope.commandFingerprint,
+            snapshotFingerprint: envelope.snapshotFingerprint,
+            placementFingerprint: envelope.placementFingerprint,
+            actorActionProfileFingerprint:
+                envelope.actorActionProfileFingerprint,
             recoveryRequired: false
         });
     }
@@ -435,16 +582,42 @@ export class GpuTowerCreationRuntime {
             this.pending.envelope.childCount
                 / GPU_TOWER_CREATION_WORKGROUP_SIZE
         );
-        for (const [pipeline, workgroups] of [
-            [this.pipelines.clear, 1],
-            [this.pipelines.validate, dispatchRecords],
-            [this.pipelines.seal, 1],
-            [this.pipelines.apply, dispatchRecords],
-            [this.pipelines.publish, dispatchChildren],
-            [this.pipelines.finalize, 1]
-        ]) {
+        const stages = [
+            [this.pipelines.clear, 1, this.bindGroup],
+            [this.pipelines.validate, dispatchRecords, this.bindGroup]
+        ];
+        if (this.pending.actorBindGroup) {
+            stages.push([
+                this.pipelines.validateActorAction,
+                dispatchChildren,
+                this.pending.actorBindGroup
+            ]);
+        }
+        stages.push(
+            [this.pipelines.seal, 1, this.bindGroup],
+            [this.pipelines.apply, dispatchRecords, this.bindGroup]
+        );
+        if (this.pending.actorBindGroup) {
+            stages.push(
+                [
+                    this.pipelines.applyActorAction,
+                    dispatchChildren,
+                    this.pending.actorBindGroup
+                ],
+                [
+                    this.pipelines.sealActorActionMetadata,
+                    1,
+                    this.pending.actorBindGroup
+                ]
+            );
+        }
+        stages.push(
+            [this.pipelines.publish, dispatchChildren, this.bindGroup],
+            [this.pipelines.finalize, 1, this.bindGroup]
+        );
+        for (const [pipeline, workgroups, bindGroup] of stages) {
             pass.setPipeline(pipeline);
-            pass.setBindGroup(0, this.bindGroup);
+            pass.setBindGroup(0, bindGroup);
             pass.dispatchWorkgroups(workgroups);
         }
         this.pending.state = 'encoded';
@@ -465,6 +638,17 @@ export class GpuTowerCreationRuntime {
             0,
             GPU_TOWER_CREATION_ABI.RESULT.STRIDE
         );
+        if (this.pending.envelope.mode
+            === GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+            encoder.copyBufferToBuffer(
+                this.buffers.metadataCommits,
+                0,
+                this.pending.slot.buffer,
+                GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
+                this.pending.envelope.childCount
+                    * GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE
+            );
+        }
         this.pending.state = 'copied';
         return true;
     }
@@ -552,6 +736,10 @@ export class GpuTowerCreationRuntime {
             lastCompletedTick: this.lastCompletedTick,
             recordCountHighWater: this.recordCountHighWater,
             resultReadbackBytes: GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
+            metadataCommitRecordBytes:
+                GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE,
+            metadataCommitReadbackBytesMax: this.recordCapacity
+                * GPU_TOWER_CREATION_ABI.METADATA_COMMIT.STRIDE,
             fullBodyReadbackCount: 0,
             storageProfile: GPU_TOWER_CREATION_STORAGE_PROFILE,
             requiresRecovery: this.state === 'failed'
@@ -608,9 +796,49 @@ export class GpuTowerCreationRuntime {
             }
             let completion;
             try {
+                const mapped = slot.buffer.getMappedRange();
                 const result = readGpuTowerCreationResult(
-                    slot.buffer.getMappedRange()
+                    mapped.slice(0, GPU_TOWER_CREATION_ABI.RESULT.STRIDE)
                 );
+                const actorMode = envelope.mode
+                    === GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION;
+                const metadataCommits = actorMode && result.committed
+                    ? readGpuTowerCreationMetadataCommits(
+                        mapped.slice(
+                            GPU_TOWER_CREATION_ABI.RESULT.STRIDE,
+                            GPU_TOWER_CREATION_ABI.RESULT.STRIDE
+                                + envelope.childCount
+                                    * GPU_TOWER_CREATION_ABI
+                                        .METADATA_COMMIT.STRIDE
+                        ),
+                        envelope.childCount
+                    )
+                    : Object.freeze([]);
+                const metadataMatches = actorMode
+                    ? (result.committed
+                        ? (result.metadataCommitCount === envelope.childCount
+                            && metadataCommits.every((record, index) => {
+                                const expected
+                                    = envelope.metadataCommitIdentity[index];
+                                return record.fingerprintValid
+                                    && record.destinationRank
+                                        === expected.destinationRank
+                                    && record.entityId === expected.entityId
+                                    && record.incarnation
+                                        === expected.incarnation
+                                    && record.logicalTowerOrdinal
+                                        === expected.logicalTowerOrdinal
+                                    && record.actionCode
+                                        === expected.actionCode;
+                            })
+                            && result.metadataCommitFingerprint
+                                === computeGpuTowerCreationMetadataFingerprint(
+                                    metadataCommits
+                                ))
+                        : result.metadataCommitCount === 0
+                            && result.metadataCommitFingerprint === 0)
+                    : result.metadataCommitCount === 0
+                        && result.metadataCommitFingerprint === 0;
                 const provenanceMatches = result.abiVersion
                         === GPU_TOWER_CREATION_ABI_VERSION
                     && result.fingerprintValid
@@ -624,7 +852,17 @@ export class GpuTowerCreationRuntime {
                     && result.targetGroupRevision
                         === envelope.targetGroupRevision
                     && result.targetRosterFingerprint
-                        === envelope.targetRosterFingerprint;
+                        === envelope.targetRosterFingerprint
+                    && result.mode === envelope.mode
+                    && result.executionOrdinal === envelope.executionOrdinal
+                    && result.commandFingerprint === envelope.commandFingerprint
+                    && result.snapshotFingerprint
+                        === envelope.snapshotFingerprint
+                    && result.placementFingerprint
+                        === envelope.placementFingerprint
+                    && result.actorActionProfileFingerprint
+                        === envelope.actorActionProfileFingerprint
+                    && metadataMatches;
                 const committedCounts = result.status
                         !== GPU_TOWER_CREATION_STATUS.COMMITTED
                     || (result.validatedCount === envelope.recordCount
@@ -663,6 +901,14 @@ export class GpuTowerCreationRuntime {
                     recoveryRequired: protocolFailure
                         || result.recoveryRequired,
                     evidence: result,
+                    metadataCommits,
+                    mode: envelope.mode,
+                    executionOrdinal: envelope.executionOrdinal,
+                    commandFingerprint: envelope.commandFingerprint,
+                    snapshotFingerprint: envelope.snapshotFingerprint,
+                    placementFingerprint: envelope.placementFingerprint,
+                    actorActionProfileFingerprint:
+                        envelope.actorActionProfileFingerprint,
                     ...this.protocol
                 });
                 if (completion.committed) {

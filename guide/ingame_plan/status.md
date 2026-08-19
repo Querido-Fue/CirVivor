@@ -14,13 +14,15 @@ limit 10; Ring/Cork explicitly report adapter/requested/device `10/9/9`. Manual 
 `automatedResult:false`: the cumulative run was non-interactive and no human visual/pause-resume session was
 executed. Economy, Word, and multi-Tower capabilities remain outside this R2 slice. Progress is `r2 완료.`.
 
-**R4 TowerGroup + Share Ledger and Post-R4 stabilization are complete, and R5 Turns 1–2 are complete as of
-2026-08-19. R5 Turn 3 Tower payload transaction is next.** Turn 1 appends Throw/Emit/Summon to Shoot, freezes
+**R4 TowerGroup + Share Ledger and Post-R4 stabilization are complete, and R5 Turns 1–3 are complete as of
+2026-08-19. R5 Turn 4 Shoot vertical slice is next.** Turn 1 appends Throw/Emit/Summon to Shoot, freezes
 four data-owned action profiles, compiles all 16 Tower/Enemy Subject/verb/Payload plans, and binds canonical
 fixed-Player Tower Payload. The R5 SHIFT/SPACE loadout remains a candidate only: production still injects R3 Q/E
 and leaves SHIFT/SPACE empty until the Turn 4 vertical slice. Profile ABI v2 now fingerprints every semantic
 field through CompiledAbility, command, GPU program, completion, and token. Turn 2 adds independent aggregate-only
-GPU target/direction/placement and Throw-transit initialization without body/Tower/Share mutation. `GameSystem`
+GPU target/direction/placement and Throw-transit initialization. Turn 3 adds the typed placement-token → R4
+Tower creation transaction, TowerCreation ABI v2 completion identity, bounded metadata-only child commit, and
+map-owned recovery descriptors. Production capability and SHIFT/SPACE ingress remain closed until Turn 4. `GameSystem`
 owns canonical CPU-run-domain
 `TowerGroupState`/`TowerShareLedger`, exact logical Tower records, Share/Lost Share, `WordSystem`, five Sentence
 slots/cooldowns, `SentenceSlotController`, and `GoldLedger`. `TowerCombatRoster` is only the primary-Tower
@@ -48,6 +50,13 @@ storage `10/9/9`, profile fingerprint completion binding true, body commit 0, `u
 The existing R3 Enemy Word actual-WebGPU route also passed after AbilityExecutionCommand ABI v2, including
 zero-subject cooldown 0, 256/1,000 fanout, generation boundary, bounty/Core paths, storage 9, protocol/recovery
 0, uncaptured errors 0, and destroyed teardown.
+
+R5 Turn 3 focused cumulative Node passed `55/55`. Technical R5 Tower transactions cover Tower/Enemy frozen
+Subjects, 1/N and mixed generation, subject death after snapshot, zero living Share, group HP drift, exact
+capacity 256/257, SDF rollback, replay/snapshot mismatch, metadata parity, and ordinary recovery descriptors.
+The actor materialization pass uses seven storage bindings and feeds the existing nine-storage creation chain;
+CPU reads only a 96-byte result plus bounded 32-byte metadata records, never Subject/position/velocity records.
+No actual WebGPU/full Node/WASM/golden/manual acceptance is claimed until the Turn 4 cumulative checkpoint.
 
 ## Implemented runtime foundation
 
@@ -596,10 +605,10 @@ zero-subject cooldown 0, 256/1,000 fanout, generation boundary, bounty/Core path
   readback/leaks/protocol/recovery/uncaptured errors all zero; destroyed teardown is orderly. Manual GameScene
   smoke remains `NOT EXECUTED`.
 
-## Post-R5 Turn 2 locked target not yet implemented
+## Post-R5 Turn 3 locked target not yet implemented
 
-- Production SHIFT/SPACE activation and Tower payload token consumption/body+Share commit, including
-  `The Tower shoots The Tower` and `Enemies shoot The Tower`.
+- Production SHIFT/SPACE activation, cooldown/lifecycle publication, and endpoint capability for the completed
+  technical Tower payload transaction, including `The Tower shoots The Tower` and `Enemies shoot The Tower`.
 - Throw transit advance/landing activation after its Turn 2 initialization record.
 - `The Towers merge` and generic actor Merge transaction.
 - hostile attack/actor-verb policies beyond the current Enemy-only Shoot path.
@@ -609,14 +618,14 @@ zero-subject cooldown 0, 256/1,000 fanout, generation boundary, bounty/Core path
 - full five-offer Shop/purchase/reroll/editor UI and preview panels.
 - save/checkpoint schema and continue/migration for later TowerGroup state.
 
-## Post-R5 Turn 2 implementation gap
+## Post-R5 Turn 3 implementation gap
 
 The current GPU world still lacks the remaining gameplay policy and transaction layers required for:
 
 ```text
 definition-level target-policy expansion beyond the locked default team matrix
 hostile attack policies beyond the production Archer/M producers
-Tower/other-noun actor child publication after the existing placement token
+production Tower actor child publication/cooldown after the technical placement-token transaction
 Tower Merge transaction
 full modifier grammar
 Wave timer/Overtime Core DOT/settlement
@@ -626,9 +635,9 @@ Shop/editor UI and save/checkpoint integration
 ## Closed checkpoint boundary
 
 R2 final acceptance, Post-R3 stabilization, R4 Turns 1–6, and Post-R4 stabilization remain historical complete
-checkpoints. R5 Turns 1–2 close on 2026-08-19 at typed actor plans plus an independent aggregate-only GPU
-placement side-plane. This boundary does not enable production SHIFT/SPACE, consume a Tower payload token,
-commit body/Tower/Share state, advance transit, or start Merge, Overtime, full Shop/editor, or save work. Manual
+checkpoints. R5 Turns 1–3 close on 2026-08-19 at typed actor plans, aggregate-only GPU placement, and a technical
+0/N Tower payload transaction with bounded metadata/recovery commit. This boundary does not enable production
+SHIFT/SPACE or cooldown/lifecycle publication, advance transit, or start Merge, Overtime, full Shop/editor, or save work. Manual
 sandbox visual QA remains future evidence and was not substituted by automated hardware acceptance.
 
 ## R1 final acceptance evidence

@@ -1,6 +1,6 @@
 # 02. Team, Ownership, Targeting, and Action Semantics
 
-## R5 Turns 1–2 targeting/placement status (2026-08-19)
+## R5 Turns 1–3 targeting/placement status (2026-08-19)
 
 Tower Payload is a typed `FIXED_PLAYER` payload with canonical Tower definition identity. Enemy Payload remains
 `FIXED_HOSTILE`. Shoot/Throw/Emit/Summon have append-only codes and immutable data profiles; every Tower/Enemy
@@ -10,6 +10,12 @@ Core, then facing, and every zero-distance case falls back target → velocity �
 placement/transit evidence only; R3 Shoot + Enemy remains the only end-to-end materialized actor path. Throw's
 fixed duration is authoritative, its ground velocity is derived from exact spawn-to-landing distance, and source
 spawn plus landing SDF must both validate before the batch can complete.
+
+Turn 3 makes fixed-Player Tower payload placement consumable by the R4 Share transaction without changing team
+or target authority. A frozen Enemy/Tower Subject may die after snapshot without changing child count; current
+living TowerGroup Share/HP still determines whether dilution can commit. Placement and creation validate exact
+destinations and profile/command/snapshot fingerprints before any living child publication. Production input is
+still gated until Turn 4.
 
 ## R3 implementation status (2026-08-16)
 

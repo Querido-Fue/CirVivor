@@ -1,19 +1,36 @@
 import {
     ABILITY_CREATION_ORIGIN_CODE,
+    ABILITY_SUBJECT_SNAPSHOT_STATUS,
     abilityDefinitionCode,
-    createAbilityEntityMetadata
+    createAbilityEntityMetadata,
+    normalizeAbilityExecutionCommand
 } from '../../contract/ability_execution_contract.js';
 import {
+    actorActionProfileFingerprint,
+    normalizeActorActionProfile
+} from '../../contract/actor_action_contract.js';
+import {
+    normalizeTowerActorPayloadDefinition
+} from '../../contract/actor_payload_contract.js';
+import {
+    GPU_TOWER_CREATION_MODE,
     GPU_TOWER_CREATION_STATUS,
     fingerprintGpuTowerCreationTransaction
 } from '../../physics/gpu/gpu_tower_creation_abi.js';
+import {
+    GPU_ACTOR_ACTION_PLACEMENT_STATUS
+} from '../../physics/gpu/gpu_actor_action_placement_abi.js';
 import {
     THE_TOWER_RUNTIME_DATA
 } from 'data/object/tower/the_tower_data.js';
 import {
     TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
+    TOWER_CREATION_COORDINATOR_MODE,
+    createTowerRecoveryPlacementDescriptor,
+    freezeTowerCreationMetadata,
     freezeTowerRecoverySpawnDescriptor,
+    normalizeTowerRecoveryPlacementPolicy,
     requirePositiveSafeInteger,
     requireTransactionId
 } from './tower_group_contract.js';
@@ -60,6 +77,14 @@ function requireFinitePosition(source, label) {
 }
 
 function normalizeRequest(source = {}) {
+    const mode = source.mode
+        ?? TOWER_CREATION_COORDINATOR_MODE.CPU_EXPLICIT_DESCRIPTORS;
+    if (mode === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+        return normalizeGpuSubjectActorActionRequest(source);
+    }
+    if (mode !== TOWER_CREATION_COORDINATOR_MODE.CPU_EXPLICIT_DESCRIPTORS) {
+        throw new RangeError('Tower creation coordinator mode가 알려지지 않았습니다.');
+    }
     const transactionId = requireTransactionId(source.transactionId);
     const childCount = requirePositiveSafeInteger(
         source.childCount,
@@ -85,6 +110,7 @@ function normalizeRequest(source = {}) {
         return frozen;
     });
     return Object.freeze({
+        mode,
         transactionId,
         childCount,
         requestedFixedTick,
@@ -92,9 +118,101 @@ function normalizeRequest(source = {}) {
     });
 }
 
+function normalizeGpuSubjectActorActionRequest(source = {}) {
+    const transactionId = requireTransactionId(source.transactionId);
+    const command = normalizeAbilityExecutionCommand(source.command);
+    const completion = source.subjectCompletion;
+    if (!completion || typeof completion !== 'object'
+        || completion.status !== ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE
+        || completion.executionId !== command.executionId
+        || completion.executionOrdinal !== command.executionOrdinal
+        || completion.commandFingerprint !== command.fingerprint
+        || !Number.isSafeInteger(completion.subjectCount)
+        || completion.subjectCount <= 0
+        || !Number.isSafeInteger(completion.snapshotFingerprint)
+        || completion.snapshotFingerprint <= 0) {
+        throw new RangeError('R5 Tower request snapshot completion이 정확하지 않습니다.');
+    }
+    const childCount = requirePositiveSafeInteger(
+        source.childCount ?? completion.subjectCount,
+        'childCount'
+    );
+    if (childCount !== completion.subjectCount) {
+        throw new RangeError('R5 Tower childCount는 frozen Subject count여야 합니다.');
+    }
+    const requestedFixedTick = requirePositiveTick(
+        source.requestedFixedTick ?? source.targetFixedTick
+            ?? command.targetFixedTick
+    );
+    if (requestedFixedTick !== command.targetFixedTick) {
+        throw new RangeError('R5 Tower target fixed tick이 command와 다릅니다.');
+    }
+    const snapshotToken = source.snapshotToken ?? completion.snapshotToken;
+    if (!snapshotToken || typeof snapshotToken !== 'object'
+        || snapshotToken !== completion.snapshotToken) {
+        throw new TypeError('R5 Tower request에는 exact snapshot token이 필요합니다.');
+    }
+    const actorActionProfile = normalizeActorActionProfile(
+        source.actorActionProfile,
+        'R5 Tower actorActionProfile'
+    );
+    const profileFingerprint = actorActionProfileFingerprint(
+        actorActionProfile
+    );
+    if (profileFingerprint !== command.actorActionProfileFingerprint
+        || (source.actorActionProfileId !== undefined
+            && source.actorActionProfileId !== actorActionProfile.id)
+        || actorActionProfile.actionCode !== command.actionCode) {
+        throw new RangeError('R5 Tower actor action profile identity가 다릅니다.');
+    }
+    const payloadDefinition = normalizeTowerActorPayloadDefinition(
+        source.payloadDefinition
+    );
+    if (payloadDefinition.payloadCode !== command.payloadCode) {
+        throw new RangeError('R5 Tower payload code가 command와 다릅니다.');
+    }
+    const recoveryPlacementPolicy = normalizeTowerRecoveryPlacementPolicy(
+        source.recoveryPlacementPolicy
+    );
+    const sdf = freezeTowerRecoverySpawnDescriptor(source.sdf, 'sdf');
+    if (!sdf || !Number.isSafeInteger(sdf.cols) || sdf.cols <= 0
+        || !Number.isSafeInteger(sdf.rows) || sdf.rows <= 0
+        || !(Number(sdf.worldWidth) > 0)
+        || !(Number(sdf.worldHeight) > 0)) {
+        throw new TypeError('R5 Tower request SDF descriptor가 유효하지 않습니다.');
+    }
+    const coreTarget = source.coreTarget === undefined
+        ? null
+        : freezeTowerRecoverySpawnDescriptor(source.coreTarget, 'coreTarget');
+    return Object.freeze({
+        mode: TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION,
+        transactionId,
+        childCount,
+        requestedFixedTick,
+        executionId: command.executionId,
+        executionOrdinal: command.executionOrdinal,
+        command,
+        subjectCompletion: completion,
+        snapshotToken,
+        snapshotFingerprint: completion.snapshotFingerprint,
+        actorActionProfileId: actorActionProfile.id,
+        actorActionProfile,
+        actorActionProfileFingerprint: profileFingerprint,
+        payloadDefinition,
+        recoveryPlacementPolicy,
+        sdf,
+        coreTarget
+    });
+}
+
 function fingerprintNormalizedRequest(request) {
+    if (request.mode
+        === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+        throw new Error('R5 Tower request fingerprint에는 snapshot token identity가 필요합니다.');
+    }
     return JSON.stringify({
-        version: 'tower-creation-request-v1',
+        version: 'tower-creation-request-v2',
+        mode: request.mode,
         childCount: request.childCount,
         requestedFixedTick: request.requestedFixedTick,
         childSpawnDescriptors: request.childSpawnDescriptors
@@ -157,6 +275,37 @@ export class TowerCreationCoordinator {
         this.towerGroupState = towerGroupState;
         this.registry = options.registry;
         this.backend = options.backend;
+        this.abilitySubjectSnapshotRuntime
+            = options.abilitySubjectSnapshotRuntime ?? null;
+        this.actorActionPlacementRuntime
+            = options.actorActionPlacementRuntime ?? null;
+        if (this.abilitySubjectSnapshotRuntime !== null
+            && (typeof this.abilitySubjectSnapshotRuntime
+                    .getSnapshotGpuBinding !== 'function'
+                || typeof this.abilitySubjectSnapshotRuntime
+                    .releaseSnapshot !== 'function')) {
+            throw new TypeError('Tower creation snapshot runtime contract가 필요합니다.');
+        }
+        if (this.actorActionPlacementRuntime !== null) {
+            for (const method of [
+                'canAccept',
+                'stage',
+                'submitPendingForFixedTick',
+                'drainCompleted',
+                'getPlacementGpuBinding',
+                'releasePlacement',
+                'cancelAll'
+            ]) {
+                if (typeof this.actorActionPlacementRuntime[method]
+                    !== 'function') {
+                    throw new TypeError(
+                        `Tower creation actor placement runtime.${method}가 필요합니다.`
+                    );
+                }
+            }
+        }
+        this.snapshotTokenIds = new WeakMap();
+        this.nextSnapshotTokenId = 1;
         this.historyCapacity = requirePositiveSafeInteger(
             options.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
             'Tower creation historyCapacity'
@@ -202,7 +351,7 @@ export class TowerCreationCoordinator {
             return result;
         }
         this.requestedCount++;
-        const requestFingerprint = fingerprintNormalizedRequest(request);
+        const requestFingerprint = this.#fingerprintRequest(request);
         const existing = this.transactionEntries.get(request.transactionId);
         if (existing) {
             if (existing.requestFingerprint === requestFingerprint) {
@@ -356,6 +505,10 @@ export class TowerCreationCoordinator {
                 TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
                 { transactionId: request.transactionId, sourceTick: tick }
             ));
+        }
+        if (request.mode
+            === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+            return this.#stageGpuSubjectActorAction(request, tick);
         }
 
         const sourceRecords = this.towerGroupState.getTowerRecords()
@@ -637,6 +790,370 @@ export class TowerCreationCoordinator {
         return receipt;
     }
 
+    #stageGpuSubjectActorAction(request, tick) {
+        const supportsR5 = this.abilitySubjectSnapshotRuntime
+            && this.actorActionPlacementRuntime
+            && typeof this.backend.supportsGpuSubjectActorActionTowerCreation
+                === 'function'
+            && this.backend.supportsGpuSubjectActorActionTowerCreation()
+            && this.actorActionPlacementRuntime.canAccept();
+        if (!supportsR5) {
+            this.queued = null;
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                'RUNTIME_UNAVAILABLE',
+                {
+                    transactionId: request.transactionId,
+                    sourceTick: tick,
+                    recoveryRequired: false
+                }
+            ));
+        }
+        const snapshotBinding = this.abilitySubjectSnapshotRuntime
+            .getSnapshotGpuBinding(request.snapshotToken);
+        const exactSnapshot = snapshotBinding
+            && snapshotBinding.subjectCount === request.childCount
+            && snapshotBinding.executionOrdinal === request.executionOrdinal
+            && snapshotBinding.commandFingerprint === request.command.fingerprint
+            && snapshotBinding.snapshotFingerprint
+                === request.snapshotFingerprint
+            && snapshotBinding.sourceTick
+                === request.subjectCompletion.sourceTick;
+        if (!exactSnapshot) {
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+        const sourceRecords = this.towerGroupState.getTowerRecords()
+            .filter((record) => record.alive);
+        const plan = this.towerGroupState.planCreation({
+            transactionId: request.transactionId,
+            childCount: request.childCount
+        });
+        if (plan?.accepted !== true) {
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(Object.freeze({
+                ...plan,
+                transactionId: request.transactionId,
+                sourceTick: tick
+            }));
+        }
+        if (sourceRecords.length === 0
+            || sourceRecords.some((record) => !record.exactGpuBinding)) {
+            this.towerGroupState.rejectCreation(
+                plan,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+        const capacityFailure = this.#preflightCapacity(
+            sourceRecords.length + request.childCount,
+            request.childCount
+        );
+        if (capacityFailure) {
+            this.towerGroupState.rejectCreation(
+                plan,
+                capacityFailure,
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                capacityFailure,
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+
+        const recoveryDescriptors = plan.children.map((child) => (
+            createTowerRecoveryPlacementDescriptor(
+                request.recoveryPlacementPolicy,
+                child.logicalTowerOrdinal
+            )
+        ));
+        const handles = [];
+        try {
+            for (let index = 0; index < request.childCount; index++) {
+                const handle = this.registry.reserveEntity({
+                    kindId: GPU_TOWER_WORLD_KIND_ID,
+                    definitionId: GPU_TOWER_DEFINITION_ID,
+                    createdAtTick: tick
+                });
+                if (!handle) throw new Error('Tower creation registry capacity');
+                handles.push(handle);
+            }
+        } catch (error) {
+            const clean = this.#cancelReservations(handles);
+            this.towerGroupState.rejectCreation(
+                plan,
+                'REGISTRY_CAPACITY',
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            if (!clean) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-registry-reserve-rollback',
+                    error,
+                    { transactionId: request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                'REGISTRY_CAPACITY',
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+        this.reservationHighWater = Math.max(
+            this.reservationHighWater,
+            handles.length
+        );
+
+        const visibleFromExecutionOrdinal = request.executionOrdinal + 1;
+        let spawnIntents;
+        let childAbilityMetadata;
+        try {
+            if (visibleFromExecutionOrdinal >= 0xffffffff) {
+                throw new RangeError('visible execution ordinal이 소진되었습니다.');
+            }
+            spawnIntents = plan.children.map((child, index) => Object.freeze({
+                ...createGpuTowerSpawnIntent({
+                    position: recoveryDescriptors[index].anchorPosition,
+                    currentHpFixedPoint: child.currentHpFixedPoint,
+                    logicalTowerOrdinal: child.logicalTowerOrdinal,
+                    shareUnits: child.shareUnits,
+                    maxHpFixedPoint: child.maxHpFixedPoint,
+                    powerFixedPoint: child.powerFixedPoint,
+                    towerGroupRevision: plan.targetGroupRevision
+                }),
+                logicalTowerId: child.logicalTowerId,
+                recoverySpawnDescriptor: recoveryDescriptors[index]
+            }));
+            childAbilityMetadata = plan.children.map((child) => (
+                createAbilityEntityMetadata({
+                    kindId: GPU_TOWER_WORLD_KIND_ID,
+                    definitionId: GPU_TOWER_DEFINITION_ID,
+                    metadata: {}
+                }, {
+                    sourceAbilityCode: request.command.compiledAbilityCode,
+                    sourceExecutionFingerprint:
+                        request.command.executionIdFingerprint,
+                    sourceExecutionOrdinal: request.executionOrdinal,
+                    generation: 0,
+                    visibleFromExecutionOrdinal,
+                    creationOriginCode:
+                        request.payloadDefinition.creationOriginCode,
+                    powerFixedPoint: child.powerFixedPoint
+                })
+            ));
+        } catch (error) {
+            const clean = this.#cancelReservations(handles);
+            this.towerGroupState.rejectCreation(
+                plan,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                TOWER_CREATION_RESULT.REJECTED_DESCRIPTOR
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            if (!clean) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-r5-descriptor-rollback',
+                    error,
+                    { transactionId: request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_DESCRIPTOR,
+                TOWER_CREATION_REASON.DESCRIPTOR_INVALID,
+                {
+                    transactionId: request.transactionId,
+                    sourceTick: tick,
+                    failure: freezeFailure('tower-creation-r5-intent', error)
+                }
+            ));
+        }
+
+        let prelease;
+        try {
+            prelease = this.backend.preleaseTowerCreationBodies({
+                transactionId: request.transactionId,
+                handles,
+                spawnIntents
+            });
+        } catch (error) {
+            prelease = Object.freeze({
+                accepted: false,
+                reason: 'tower-creation-body-prelease-contract',
+                requiresRecovery: false,
+                failure: freezeFailure('tower-creation-body-prelease', error)
+            });
+        }
+        if (prelease?.accepted !== true) {
+            const clean = this.#cancelReservations(handles);
+            this.towerGroupState.rejectCreation(
+                plan,
+                String(prelease?.reason ?? 'BODY_CAPACITY'),
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            if (!clean || prelease?.requiresRecovery === true) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-body-prelease',
+                    prelease?.failure ?? new Error(prelease?.reason),
+                    { transactionId: request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                String(prelease?.reason ?? 'BODY_CAPACITY'),
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+        const destinationLeases = Object.freeze(handles.map((handle, index) => (
+            Object.freeze({
+                destinationSlot: prelease.slots[index],
+                destinationEntityId: handle.entityId,
+                destinationIncarnation: handle.incarnation,
+                snapshotRank: index,
+                destinationRank: index,
+                baselineFlags: 0
+            })
+        )));
+        const placementStage = this.actorActionPlacementRuntime.stage({
+            transactionId: request.transactionId,
+            command: request.command,
+            subjectCompletion: request.subjectCompletion,
+            snapshotBinding,
+            destinationLeases,
+            actorActionProfile: request.actorActionProfile,
+            targetFixedTick: tick,
+            sdf: request.sdf,
+            coreTarget: request.coreTarget
+        });
+        if (placementStage?.accepted !== true) {
+            const body = this.backend.cancelTowerCreationBodyPrelease(
+                prelease.token,
+                'actor-action-placement-stage-rejected'
+            );
+            const registryClean = this.#cancelReservations(handles);
+            this.towerGroupState.rejectCreation(
+                plan,
+                'ACTOR_ACTION_PLACEMENT_REJECTED',
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            if (!registryClean || body?.requiresRecovery === true) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-placement-stage-rollback',
+                    placementStage,
+                    { transactionId: request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                String(placementStage?.reason
+                    ?? 'ACTOR_ACTION_PLACEMENT_REJECTED'),
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
+        const submission = this.actorActionPlacementRuntime
+            .submitPendingForFixedTick(tick);
+        if (submission?.failure) {
+            const body = this.backend.cancelTowerCreationBodyPrelease(
+                prelease.token,
+                'actor-action-placement-submit-failed'
+            );
+            const registryClean = this.#cancelReservations(handles);
+            this.towerGroupState.rejectCreation(
+                plan,
+                'ACTOR_ACTION_PLACEMENT_SUBMIT_FAILED',
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE
+            );
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            if (!registryClean || body?.requiresRecovery === true) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-placement-submit-rollback',
+                    submission.failure,
+                    { transactionId: request.transactionId }
+                );
+            }
+            return this.#latchProtocolFailure(
+                'tower-creation-placement-submit',
+                submission.failure,
+                { transactionId: request.transactionId }
+            );
+        }
+        const protocol = this.backend.getEventProtocolState();
+        this.pending = Object.freeze({
+            phase: 'actor-action-placement',
+            request,
+            plan,
+            sourceRecords: Object.freeze([...sourceRecords]),
+            handles: Object.freeze([...handles]),
+            spawnIntents: Object.freeze(spawnIntents),
+            recoveryDescriptors: Object.freeze(recoveryDescriptors),
+            childAbilityMetadata: Object.freeze(childAbilityMetadata),
+            preleaseToken: prelease.token,
+            destinationLeases,
+            protocol: Object.freeze({ ...protocol }),
+            placementStage,
+            stageReceipt: Object.freeze({ sourceTick: tick })
+        });
+        this.queued = null;
+        this.stagedCount++;
+        const receipt = Object.freeze({
+            ...placementStage,
+            staged: true,
+            pending: true,
+            phase: 'actor-action-placement',
+            sourceTick: tick,
+            requestFingerprint: this.transactionEntries.get(
+                request.transactionId
+            )?.requestFingerprint ?? null,
+            capacity: this.#getCapacityStatus(0),
+            recoveryRequired: false
+        });
+        this.#setTransactionReceipt(
+            request.transactionId,
+            'placement-pending',
+            receipt
+        );
+        return receipt;
+    }
+
     observeCompletedAtFixedBoundary(proposedFixedTick) {
         const tick = requirePositiveTick(proposedFixedTick, 'proposedFixedTick');
         if (this.destroyed || this.failure) {
@@ -646,6 +1163,9 @@ export class TowerCreationCoordinator {
                 recoveryRequired: true,
                 failure: this.failure
             });
+        }
+        if (this.pending?.phase === 'actor-action-placement') {
+            return this.#observeActorActionPlacement(tick);
         }
         const completions = this.backend
             .drainCompletedTowerCreationTransactions([]);
@@ -697,6 +1217,218 @@ export class TowerCreationCoordinator {
             : this.#rejectPending(completion);
     }
 
+    #observeActorActionPlacement(tick) {
+        const pending = this.pending;
+        const completions = this.actorActionPlacementRuntime
+            .drainCompleted([]);
+        if (!Array.isArray(completions) || completions.length > 1) {
+            return this.#failPendingProtocol(
+                'tower-creation-placement-completion-cardinality',
+                completions
+            );
+        }
+        if (completions.length === 0) {
+            return Object.freeze({
+                pending: true,
+                committed: false,
+                phase: 'actor-action-placement',
+                transactionId: pending.request.transactionId,
+                sourceTick: pending.stageReceipt.sourceTick,
+                recoveryRequired: false
+            });
+        }
+        const completion = completions[0];
+        const exact = completion.transactionId
+                === pending.request.transactionId
+            && completion.executionOrdinal
+                === pending.request.executionOrdinal
+            && completion.commandFingerprint
+                === pending.request.command.fingerprint
+            && completion.snapshotFingerprint
+                === pending.request.snapshotFingerprint
+            && completion.subjectCount === pending.request.childCount
+            && completion.actorActionProfileFingerprint
+                === pending.request.actorActionProfileFingerprint
+            && sameProtocol(completion, pending.protocol);
+        this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+            pending.request.snapshotToken
+        );
+        if (!exact) {
+            return this.#failPendingProtocol(
+                'tower-creation-placement-completion-provenance',
+                completion
+            );
+        }
+        if (completion.status
+                !== GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE
+            || !completion.placementToken) {
+            const body = this.backend.cancelTowerCreationBodyPrelease(
+                pending.preleaseToken,
+                'actor-action-placement-rejected'
+            );
+            const registryClean = this.#cancelReservations(pending.handles);
+            const result = completion.status
+                    === GPU_ACTOR_ACTION_PLACEMENT_STATUS.SDF_REJECTED
+                ? TOWER_CREATION_RESULT.REJECTED_DESCRIPTOR
+                : TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED;
+            this.towerGroupState.rejectCreation(
+                pending.plan,
+                'ACTOR_ACTION_PLACEMENT_REJECTED',
+                result
+            );
+            this.pending = null;
+            if (!registryClean || body?.requiresRecovery === true) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-placement-rejection-rollback',
+                    completion,
+                    { transactionId: pending.request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                result,
+                'ACTOR_ACTION_PLACEMENT_REJECTED',
+                {
+                    transactionId: pending.request.transactionId,
+                    sourceTick: tick,
+                    placementEvidence: completion,
+                    recoveryRequired: false
+                }
+            ));
+        }
+        const placementBinding = this.actorActionPlacementRuntime
+            .getPlacementGpuBinding(completion.placementToken);
+        const exactBinding = placementBinding
+            && placementBinding.subjectCount === pending.request.childCount
+            && placementBinding.executionOrdinal
+                === pending.request.executionOrdinal
+            && placementBinding.commandFingerprint
+                === pending.request.command.fingerprint
+            && placementBinding.snapshotFingerprint
+                === pending.request.snapshotFingerprint
+            && placementBinding.destinationFingerprint
+                === completion.destinationFingerprint
+            && placementBinding.placementFingerprint
+                === completion.placementFingerprint
+            && placementBinding.actorActionProfileFingerprint
+                === pending.request.actorActionProfileFingerprint;
+        if (!exactBinding) {
+            return this.#failPendingProtocol(
+                'tower-creation-placement-binding-provenance',
+                placementBinding
+            );
+        }
+        const requestFingerprint = this.transactionEntries.get(
+            pending.request.transactionId
+        )?.requestFingerprint;
+        const transactionFingerprint = fingerprintGpuTowerCreationTransaction(
+            pending.plan.fingerprint,
+            requestFingerprint,
+            tick,
+            pending.plan.sourceGroupRevision,
+            pending.plan.targetGroupRevision,
+            placementBinding.commandFingerprint,
+            placementBinding.snapshotFingerprint,
+            placementBinding.destinationFingerprint,
+            placementBinding.placementFingerprint,
+            placementBinding.actorActionProfileFingerprint,
+            ...pending.handles.flatMap((handle) => [
+                handle.entityId,
+                handle.incarnation
+            ])
+        );
+        const actorAction = Object.freeze({
+            placementAbiVersion: placementBinding.abiVersion,
+            executionOrdinal: pending.request.executionOrdinal,
+            commandFingerprint: pending.request.command.fingerprint,
+            snapshotFingerprint: pending.request.snapshotFingerprint,
+            destinationFingerprint: placementBinding.destinationFingerprint,
+            placementFingerprint: placementBinding.placementFingerprint,
+            actorActionProfileFingerprint:
+                pending.request.actorActionProfileFingerprint,
+            sourceAbilityCode: pending.request.command.compiledAbilityCode,
+            sourceExecutionFingerprint:
+                pending.request.command.executionIdFingerprint,
+            actionCode: pending.request.command.actionCode,
+            payloadCode: pending.request.command.payloadCode,
+            creationOriginCode:
+                pending.request.payloadDefinition.creationOriginCode,
+            visibleFromExecutionOrdinal:
+                pending.request.executionOrdinal + 1,
+            snapshotSourceTick: pending.request.subjectCompletion.sourceTick
+        });
+        const staged = this.backend.stageTowerCreationTransaction({
+            preleaseToken: pending.preleaseToken,
+            plan: pending.plan,
+            sourceRecords: pending.sourceRecords,
+            childAbilityMetadata: pending.childAbilityMetadata,
+            transactionFingerprint,
+            sourceTick: tick,
+            towerDefinitionCode: pending.request.payloadDefinition
+                .definitionCode,
+            mode: GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION,
+            actorAction,
+            actorActionPlacementBinding: placementBinding
+        });
+        if (staged?.accepted !== true) {
+            this.actorActionPlacementRuntime.releasePlacement(
+                completion.placementToken
+            );
+            const body = this.backend.cancelTowerCreationBodyPrelease(
+                pending.preleaseToken,
+                'tower-creation-r5-stage-rejected'
+            );
+            const registryClean = this.#cancelReservations(pending.handles);
+            const sourceChanged = String(staged?.reason)
+                .includes('source-changed');
+            const result = sourceChanged
+                ? TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
+                : TOWER_CREATION_RESULT.REJECTED_CAPACITY;
+            this.towerGroupState.rejectCreation(
+                pending.plan,
+                String(staged?.reason ?? 'PROGRAM_CAPACITY'),
+                result
+            );
+            this.pending = null;
+            if (!registryClean || body?.requiresRecovery === true
+                || staged?.recoveryRequired === true) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-r5-stage',
+                    staged,
+                    { transactionId: pending.request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                result,
+                String(staged?.reason ?? 'PROGRAM_CAPACITY'),
+                { transactionId: pending.request.transactionId, sourceTick: tick }
+            ));
+        }
+        this.pending = Object.freeze({
+            ...pending,
+            phase: 'tower-creation',
+            placementToken: completion.placementToken,
+            placementBinding,
+            actorAction,
+            transactionFingerprint,
+            stageReceipt: staged
+        });
+        const receipt = Object.freeze({
+            ...staged,
+            staged: true,
+            pending: true,
+            phase: 'tower-creation',
+            requestFingerprint,
+            capacity: this.#getCapacityStatus(0),
+            recoveryRequired: false
+        });
+        this.#setTransactionReceipt(
+            pending.request.transactionId,
+            'pending',
+            receipt
+        );
+        return receipt;
+    }
+
     getStatus() {
         return Object.freeze({
             state: this.destroyed
@@ -711,6 +1443,7 @@ export class TowerCreationCoordinator {
             queuedTransaction: this.queued
                 ? Object.freeze({
                     transactionId: this.queued.transactionId,
+                    mode: this.queued.mode,
                     childCount: this.queued.childCount,
                     requestedFixedTick: this.queued.requestedFixedTick
                 })
@@ -718,6 +1451,8 @@ export class TowerCreationCoordinator {
             pendingTransaction: this.pending
                 ? Object.freeze({
                     transactionId: this.pending.request.transactionId,
+                    mode: this.pending.request.mode,
+                    phase: this.pending.phase ?? 'tower-creation',
                     childCount: this.pending.request.childCount,
                     sourceTick: this.pending.stageReceipt.sourceTick,
                     transactionFingerprint:
@@ -774,7 +1509,24 @@ export class TowerCreationCoordinator {
             });
         }
         const pending = this.pending;
-        const backend = this.backend.cancelAllTowerCreations(reason);
+        let backend;
+        if (pending.phase === 'actor-action-placement') {
+            this.actorActionPlacementRuntime.cancelAll(reason);
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                pending.request.snapshotToken
+            );
+            backend = this.backend.cancelTowerCreationBodyPrelease(
+                pending.preleaseToken,
+                reason
+            );
+        } else {
+            backend = this.backend.cancelAllTowerCreations(reason);
+            if (pending.placementToken) {
+                this.actorActionPlacementRuntime?.releasePlacement(
+                    pending.placementToken
+                );
+            }
+        }
         const registryClean = this.#cancelReservations(pending.handles);
         this.towerGroupState.rejectCreation(
             pending.plan,
@@ -816,6 +1568,42 @@ export class TowerCreationCoordinator {
         this.registry = null;
         this.backend = null;
         this.towerGroupState = null;
+        this.abilitySubjectSnapshotRuntime = null;
+        this.actorActionPlacementRuntime = null;
+    }
+
+    #fingerprintRequest(request) {
+        if (request.mode
+            !== TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+            return fingerprintNormalizedRequest(request);
+        }
+        let snapshotTokenId = this.snapshotTokenIds.get(
+            request.snapshotToken
+        );
+        if (snapshotTokenId === undefined) {
+            snapshotTokenId = this.nextSnapshotTokenId++;
+            this.snapshotTokenIds.set(request.snapshotToken, snapshotTokenId);
+        }
+        return JSON.stringify({
+            version: 'tower-creation-request-v2',
+            mode: request.mode,
+            transactionId: request.transactionId,
+            executionId: request.executionId,
+            executionOrdinal: request.executionOrdinal,
+            commandFingerprint: request.command.fingerprint,
+            snapshotTokenId,
+            snapshotFingerprint: request.snapshotFingerprint,
+            subjectCount: request.childCount,
+            actorActionProfileId: request.actorActionProfileId,
+            actorActionProfileFingerprint:
+                request.actorActionProfileFingerprint,
+            actorActionProfile: request.actorActionProfile,
+            payloadDefinition: request.payloadDefinition,
+            requestedFixedTick: request.requestedFixedTick,
+            recoveryPlacementPolicy: request.recoveryPlacementPolicy,
+            sdf: request.sdf,
+            coreTarget: request.coreTarget
+        });
     }
 
     #preflightCapacity(recordCount, childCount) {
@@ -908,7 +1696,7 @@ export class TowerCreationCoordinator {
 
     #isAuthenticCompletion(completion, proposedTick) {
         const pending = this.pending;
-        return completion
+        const base = completion
             && proposedTick > pending.stageReceipt.sourceTick
             && completion.transactionId === pending.request.transactionId
             && completion.transactionFingerprint
@@ -916,11 +1704,146 @@ export class TowerCreationCoordinator {
             && completion.sourceTick === pending.stageReceipt.sourceTick
             && completion.childCount === pending.request.childCount
             && sameProtocol(completion, pending.protocol);
+        if (!base || pending.request.mode
+            !== TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION) {
+            return base;
+        }
+        return completion.mode
+                === GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION
+            && completion.executionOrdinal === pending.request.executionOrdinal
+            && completion.commandFingerprint
+                === pending.request.command.fingerprint
+            && completion.snapshotFingerprint
+                === pending.request.snapshotFingerprint
+            && completion.placementFingerprint
+                === pending.placementBinding.placementFingerprint
+            && completion.actorActionProfileFingerprint
+                === pending.request.actorActionProfileFingerprint;
     }
 
     #commitPending(completion) {
         const pending = this.pending;
-        const ledger = this.towerGroupState.commitCreation(pending.plan);
+        const actorMode = pending.request.mode
+            === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION;
+        let committedAbilityMetadata = pending.childAbilityMetadata;
+        let childRegistryMetadata = pending.childRegistryMetadata;
+        let childCreationMetadata;
+        if (actorMode) {
+            const commits = completion.metadataCommits;
+            const exactCommits = Array.isArray(commits)
+                && commits.length === pending.handles.length
+                && commits.every((record, index) => (
+                    record.fingerprintValid
+                    && record.destinationRank === index
+                    && record.entityId === pending.handles[index].entityId
+                    && record.incarnation
+                        === pending.handles[index].incarnation
+                    && record.logicalTowerOrdinal
+                        === pending.plan.children[index].logicalTowerOrdinal
+                    && record.actionCode === pending.request.command.actionCode
+                    && record.generation > 0
+                    && record.generation
+                        <= pending.request.command.generationLimit
+                ));
+            if (!exactCommits) {
+                return this.#failPendingProtocol(
+                    'tower-creation-metadata-commit-provenance',
+                    commits
+                );
+            }
+            committedAbilityMetadata = pending.plan.children.map(
+                (child, index) => createAbilityEntityMetadata({
+                    kindId: GPU_TOWER_WORLD_KIND_ID,
+                    definitionId: GPU_TOWER_DEFINITION_ID,
+                    metadata: {}
+                }, {
+                    sourceAbilityCode: pending.request.command
+                        .compiledAbilityCode,
+                    sourceExecutionFingerprint: pending.request.command
+                        .executionIdFingerprint,
+                    sourceExecutionOrdinal: pending.request.executionOrdinal,
+                    generation: commits[index].generation,
+                    visibleFromExecutionOrdinal:
+                        pending.request.executionOrdinal + 1,
+                    creationOriginCode: pending.request.payloadDefinition
+                        .creationOriginCode,
+                    powerFixedPoint: child.powerFixedPoint
+                })
+            );
+            childCreationMetadata = pending.plan.children.map(
+                (child, index) => freezeTowerCreationMetadata({
+                    generation: commits[index].generation,
+                    creationOriginCode: pending.request.payloadDefinition
+                        .creationOriginCode,
+                    sourceAbilityCode: pending.request.command
+                        .compiledAbilityCode,
+                    sourceExecutionId: pending.request.executionId,
+                    sourceExecutionFingerprint: pending.request.command
+                        .executionIdFingerprint,
+                    sourceExecutionOrdinal: pending.request.executionOrdinal,
+                    visibleFromExecutionOrdinal:
+                        pending.request.executionOrdinal + 1,
+                    actorActionCode: pending.request.command.actionCode,
+                    actorActionProfileId:
+                        pending.request.actorActionProfileId,
+                    actorActionProfileFingerprint:
+                        pending.request.actorActionProfileFingerprint,
+                    recoveryPlacementDescriptor:
+                        pending.recoveryDescriptors[index]
+                })
+            );
+            childRegistryMetadata = pending.plan.children.map(
+                (child, index) => Object.freeze({
+                    logicalTowerId: child.logicalTowerId,
+                    logicalTowerOrdinal: child.logicalTowerOrdinal,
+                    shareUnits: child.shareUnits,
+                    currentHpFixedPoint: child.currentHpFixedPoint,
+                    maxHpFixedPoint: child.maxHpFixedPoint,
+                    powerFixedPoint: child.powerFixedPoint,
+                    towerGroupRevision: pending.plan.targetGroupRevision,
+                    abilityGeneration: commits[index].generation,
+                    abilityCreationOriginCode: pending.request.payloadDefinition
+                        .creationOriginCode,
+                    sourceAbilityCode: pending.request.command
+                        .compiledAbilityCode,
+                    sourceExecutionId: pending.request.executionId,
+                    sourceExecutionFingerprint: pending.request.command
+                        .executionIdFingerprint,
+                    sourceExecutionOrdinal: pending.request.executionOrdinal,
+                    visibleFromExecutionOrdinal:
+                        pending.request.executionOrdinal + 1,
+                    actorActionCode: pending.request.command.actionCode,
+                    actorActionProfileId:
+                        pending.request.actorActionProfileId,
+                    actorActionProfileFingerprint:
+                        pending.request.actorActionProfileFingerprint,
+                    recoveryPlacementPolicyId:
+                        pending.recoveryDescriptors[index].policyId,
+                    recoveryLogicalTowerOrdinal:
+                        pending.recoveryDescriptors[index]
+                            .logicalTowerOrdinal,
+                    mapRecoveryAnchorId:
+                        pending.recoveryDescriptors[index]
+                            .mapRecoveryAnchorId,
+                    mapRecoveryLatticeVersion:
+                        pending.recoveryDescriptors[index]
+                            .mapLatticeVersion,
+                    mapRecoveryAnchorX:
+                        pending.recoveryDescriptors[index]
+                            .anchorPosition.x,
+                    mapRecoveryAnchorY:
+                        pending.recoveryDescriptors[index]
+                            .anchorPosition.y
+                })
+            );
+        }
+        const ledger = this.towerGroupState.commitCreation(actorMode
+            ? {
+                plan: pending.plan,
+                childCreationMetadata,
+                childRecoverySpawnDescriptors: pending.recoveryDescriptors
+            }
+            : pending.plan);
         if (ledger?.accepted !== true
             || ledger.created?.length !== pending.handles.length) {
             return this.#failPendingProtocol(
@@ -931,7 +1854,7 @@ export class TowerCreationCoordinator {
         const registry = this.registry.activateReservedBatch(
             pending.handles.map((handle, index) => ({
                 handle,
-                metadata: pending.childRegistryMetadata[index]
+                metadata: childRegistryMetadata[index]
             }))
         );
         if (registry?.accepted !== true
@@ -946,7 +1869,8 @@ export class TowerCreationCoordinator {
             preleaseToken: pending.preleaseToken,
             transactionId: pending.request.transactionId,
             committed: true,
-            recoveryRequired: false
+            recoveryRequired: false,
+            childAbilityMetadata: committedAbilityMetadata
         });
         if (backend?.accepted !== true || backend?.committed !== true) {
             return this.#latchCommittedProtocolFailure(
@@ -970,6 +1894,11 @@ export class TowerCreationCoordinator {
                 completion
             );
         }
+        if (actorMode) {
+            this.actorActionPlacementRuntime.releasePlacement(
+                pending.placementToken
+            );
+        }
         const result = terminalResult(
             TOWER_CREATION_RESULT.COMMITTED,
             null,
@@ -982,6 +1911,14 @@ export class TowerCreationCoordinator {
                 groupRevision: pending.plan.targetGroupRevision,
                 transactionFingerprint: pending.transactionFingerprint,
                 evidence: completion.evidence,
+                metadataCommits: completion.metadataCommits
+                    ?? Object.freeze([]),
+                actorActionProfileFingerprint: actorMode
+                    ? pending.request.actorActionProfileFingerprint
+                    : 0,
+                placementFingerprint: actorMode
+                    ? pending.placementBinding.placementFingerprint
+                    : 0,
                 recoveryRequired: false
             }
         );
@@ -1010,6 +1947,11 @@ export class TowerCreationCoordinator {
             recoveryRequired: false
         });
         const registryClean = this.#cancelReservations(pending.handles);
+        if (pending.placementToken) {
+            this.actorActionPlacementRuntime?.releasePlacement(
+                pending.placementToken
+            );
+        }
         const ledger = this.towerGroupState.rejectCreation(
             pending.plan,
             TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
@@ -1053,15 +1995,40 @@ export class TowerCreationCoordinator {
     #failPendingProtocol(stage, evidence) {
         const pending = this.pending;
         if (pending) {
-            try {
-                this.backend.finalizeTowerCreationTransaction({
-                    preleaseToken: pending.preleaseToken,
-                    transactionId: pending.request.transactionId,
-                    committed: false,
-                    recoveryRequired: true
-                });
-            } catch {
-                // 아래 recovery latch가 session 재구축을 강제합니다.
+            if (pending.phase === 'actor-action-placement') {
+                try {
+                    this.actorActionPlacementRuntime.cancelAll(stage);
+                    if (evidence?.placementToken) {
+                        this.actorActionPlacementRuntime.releasePlacement(
+                            evidence.placementToken
+                        );
+                    }
+                    this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                        pending.request.snapshotToken
+                    );
+                    this.backend.cancelTowerCreationBodyPrelease(
+                        pending.preleaseToken,
+                        stage
+                    );
+                } catch {
+                    // 아래 recovery latch가 session 재구축을 강제합니다.
+                }
+            } else {
+                try {
+                    this.backend.finalizeTowerCreationTransaction({
+                        preleaseToken: pending.preleaseToken,
+                        transactionId: pending.request.transactionId,
+                        committed: false,
+                        recoveryRequired: true
+                    });
+                } catch {
+                    // 아래 recovery latch가 session 재구축을 강제합니다.
+                }
+                if (pending.placementToken) {
+                    this.actorActionPlacementRuntime?.releasePlacement(
+                        pending.placementToken
+                    );
+                }
             }
             this.#cancelReservations(pending.handles);
             try {
@@ -1081,6 +2048,11 @@ export class TowerCreationCoordinator {
 
     #latchCommittedProtocolFailure(stage, evidence, completion) {
         const transactionId = this.pending?.request.transactionId ?? null;
+        if (this.pending?.placementToken) {
+            this.actorActionPlacementRuntime?.releasePlacement(
+                this.pending.placementToken
+            );
+        }
         return this.#latchProtocolFailure(stage, evidence, {
             transactionId,
             sourceTick: completion?.sourceTick ?? null,
