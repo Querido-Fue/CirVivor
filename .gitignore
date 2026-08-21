@@ -1,5 +1,4 @@
 *
-/project/logs/
 
 !.gitignore
 !project/
@@ -9,18 +8,14 @@
 !project/license
 !project/license/**
 !package.json
+!guide/
+!guide/**/
 
+/project/logs/
 project/game/save/
 project/game/script/lib/
 
-# Ignore Markdown documents except README files.
+# Only files named README.md may be versioned as Markdown.
+# AGENT_GUIDE.md and every other Markdown document stay local.
 *.[mM][dD]
-!README.md
-
-# Planning documents stay local even if broader allow rules change later.
-/plan/**/*.md
-
-# Agent documentation is local and intentionally not versioned.
-/AGENT_GUIDE.md
-/guide/
-/delete/
+![Rr][Ee][Aa][Dd][Mm][Ee].[mM][dD]
