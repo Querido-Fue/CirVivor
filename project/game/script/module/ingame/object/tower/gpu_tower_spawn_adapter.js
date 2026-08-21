@@ -96,6 +96,7 @@ export function createGpuTowerSpawnIntent(options) {
         interactionMask: GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY,
         health: currentHp,
+        healthFixedPoint: currentHpFixedPoint,
         currentHpFixedPoint,
         logicalTowerOrdinal: optionalUint32(
             options?.logicalTowerOrdinal,

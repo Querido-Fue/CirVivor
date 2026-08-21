@@ -323,7 +323,7 @@ export const R2_ENEMY_SHOWCASE_STAGE_MANIFEST = Object.freeze([
         waveId: R2_ENEMY_SHOWCASE_WAVE_01_ID,
         mechanics: Object.freeze([
             'sequential-ten-thousand-all-r2-enemies',
-            'arrow-ease-out-expo-charge-recoil',
+            'arrow-acceleration-charge-expo-recoil',
             'rhom-core-priority-fire',
             'penta-boost',
             'hexa-group-merge-to-hx',

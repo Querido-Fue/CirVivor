@@ -99,6 +99,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
+    charge_acceleration: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 struct RouteRuntimeState {

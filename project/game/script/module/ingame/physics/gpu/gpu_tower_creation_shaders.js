@@ -76,6 +76,10 @@ const ERROR_TARGET_FINGERPRINT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.TA
 const ERROR_PARTIAL_APPLY: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.PARTIAL_APPLY}u;
 const ERROR_ACTOR_ACTION_PLACEMENT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.ACTOR_ACTION_PLACEMENT_INVALID}u;
 const ERROR_METADATA_COMMIT_INVALID: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.METADATA_COMMIT_INVALID}u;
+const ERROR_DESTINATION_BODY_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.DESTINATION_BODY_CHANGED}u;
+const ERROR_DESTINATION_ALIVE_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.DESTINATION_ALIVE_CHANGED}u;
+const ERROR_DESTINATION_HEALTH_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.DESTINATION_HEALTH_CHANGED}u;
+const ERROR_DESTINATION_MEMBER_CHANGED: u32 = ${GPU_TOWER_CREATION_ERROR_FLAG.DESTINATION_MEMBER_CHANGED}u;
 const HARD_FAILURE_MASK: u32 = ERROR_BODY_ABI_MISMATCH
     | ERROR_GROUP_ABI_MISMATCH
     | ERROR_PROTOCOL_MISMATCH
@@ -623,17 +627,13 @@ fn validate_creation(@builtin(global_invocation_id) invocation: vec3u) {
                 errors |= ERROR_ABILITY_METADATA_CHANGED;
             }
         } else if (record.kind == RECORD_CHILD) {
-            if (index < program.existing_count
-                || record.source_current_hp_fixed_point != 0u
-                || record.source_share_units != 0u
-                || record.source_max_hp_fixed_point != 0u
-                || record.source_power_fixed_point != 0u
-                || record.source_group_revision != 0u
-                || !exact_body
-                || (atomicLoad(&simulation.flags) & BODY_FLAG_ALIVE) != 0u
-                || bitcast<u32>(atomicLoad(&simulation.health))
-                    != record.target_current_hp_fixed_point
-                || member.entity_id != 0u
+            let destination_body_changed = !exact_body;
+            let destination_alive_changed
+                = (atomicLoad(&simulation.flags) & BODY_FLAG_ALIVE) != 0u;
+            let destination_health_changed
+                = bitcast<u32>(atomicLoad(&simulation.health))
+                    != record.target_current_hp_fixed_point;
+            let destination_member_changed = member.entity_id != 0u
                 || member.incarnation != 0u
                 || member.logical_ordinal != 0u
                 || member.share_units != 0u
@@ -642,8 +642,30 @@ fn validate_creation(@builtin(global_invocation_id) invocation: vec3u) {
                 || member.group_revision != 0u
                 || member.flags != 0u
                 || member.roster_rank != 0u
-                || member.reserved != 0u) {
+                || member.reserved != 0u;
+            if (index < program.existing_count
+                || record.source_current_hp_fixed_point != 0u
+                || record.source_share_units != 0u
+                || record.source_max_hp_fixed_point != 0u
+                || record.source_power_fixed_point != 0u
+                || record.source_group_revision != 0u
+                || destination_body_changed
+                || destination_alive_changed
+                || destination_health_changed
+                || destination_member_changed) {
                 errors |= ERROR_DESTINATION_CHANGED;
+            }
+            if (destination_body_changed) {
+                errors |= ERROR_DESTINATION_BODY_CHANGED;
+            }
+            if (destination_alive_changed) {
+                errors |= ERROR_DESTINATION_ALIVE_CHANGED;
+            }
+            if (destination_health_changed) {
+                errors |= ERROR_DESTINATION_HEALTH_CHANGED;
+            }
+            if (destination_member_changed) {
+                errors |= ERROR_DESTINATION_MEMBER_CHANGED;
             }
             if (!metadata_is_zero(metadata)) {
                 errors |= ERROR_ABILITY_METADATA_CHANGED;
@@ -1395,6 +1417,14 @@ fn apply_actor_action_placement(
 
 @compute @workgroup_size(1)
 fn seal_actor_action_metadata() {
+    if (atomicLoad(&actor_result.values[RESULT_STATUS])
+            != STATUS_READY_TO_APPLY) {
+        atomicStore(
+            &actor_result.values[RESULT_METADATA_FINGERPRINT],
+            0u
+        );
+        return;
+    }
     let child_count = actor_program.values[PROGRAM_CHILD_COUNT];
     var hash = hash_word(FNV_OFFSET, METADATA_COMMIT_ABI);
     hash = hash_word(hash, child_count);

@@ -25,6 +25,64 @@ import {
 export const ACTOR_PAYLOAD_DEFINITION_ABI_VERSION = 1;
 export const ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION = 1;
 
+export const ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION = 1;
+
+export const ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS = Object.freeze({
+    NONE: 0,
+    STATIC_SDF: 1,
+    DYNAMIC_BODY_OVERLAP: 2,
+    STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP: 3
+});
+
+const DIAGONAL = Math.fround(Math.SQRT1_2);
+
+function safePlacementCandidate(
+    id,
+    rotationCos,
+    rotationSin,
+    radiusSumScale,
+    surfaceGapScale,
+    allowDynamicOverlap = false
+) {
+    return Object.freeze({
+        id,
+        rotationCos: Math.fround(rotationCos),
+        rotationSin: Math.fround(rotationSin),
+        radiusSumScale: Math.fround(radiusSumScale),
+        surfaceGapScale: Math.fround(surfaceGapScale),
+        allowDynamicOverlap
+    });
+}
+
+/**
+ * Shoot + Enemy의 bounded GPU safe-placement 순서입니다.
+ * 마지막 source-center 후보만 ordinary solver가 해소할 dynamic overlap을 허용합니다.
+ */
+export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES = Object.freeze([
+    safePlacementCandidate('authored-surface', 1, 0, 1, 1),
+    safePlacementCandidate('surface-left-45', DIAGONAL, DIAGONAL, 1, 1),
+    safePlacementCandidate('surface-right-45', DIAGONAL, -DIAGONAL, 1, 1),
+    safePlacementCandidate('surface-left-90', 0, 1, 1, 1),
+    safePlacementCandidate('surface-right-90', 0, -1, 1, 1),
+    safePlacementCandidate('surface-left-135', -DIAGONAL, DIAGONAL, 1, 1),
+    safePlacementCandidate('surface-right-135', -DIAGONAL, -DIAGONAL, 1, 1),
+    safePlacementCandidate('surface-opposite', -1, 0, 1, 1),
+    safePlacementCandidate('short-authored-half-gap', 1, 0, 1, 0.5),
+    safePlacementCandidate('short-left-45-half-gap',
+        DIAGONAL, DIAGONAL, 1, 0.5),
+    safePlacementCandidate('short-right-45-half-gap',
+        DIAGONAL, -DIAGONAL, 1, 0.5),
+    safePlacementCandidate('short-left-90-zero-gap', 0, 1, 1, 0),
+    safePlacementCandidate('short-right-90-zero-gap', 0, -1, 1, 0),
+    safePlacementCandidate('final-source-local-overlap', 1, 0, 0, 0, true)
+]);
+
+export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER = Object.freeze({
+    abiVersion: ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION,
+    id: 'actor-payload.safe-placement.r3-enemy.v1',
+    candidates: R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+});
+
 export const ACTOR_PAYLOAD_DEFINITION_ID = Object.freeze({
     R3_BASIC_CIRCLE_ENEMY: 'actor-payload.r3.basic-circle-enemy',
     R5_THE_TOWER: 'actor-payload.r5.the-tower'
@@ -60,7 +118,8 @@ export const ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG = Object.freeze({
     SOURCE_RECORD: 1 << 4,
     SDF_PLACEMENT: 1 << 5,
     GENERATION: 1 << 6,
-    STALE_PROTOCOL: 1 << 7
+    STALE_PROTOCOL: 1 << 7,
+    DYNAMIC_BODY_OVERLAP: 1 << 8
 });
 
 const MATERIALIZATION_STATUSES = new Set(
@@ -152,6 +211,8 @@ export function createR3EnemyActorPayloadDefinition(overrides = {}) {
             overrides.surfaceGap ?? R5_SHOOT_ACTOR_ACTION_PROFILE.surfaceGap,
             'actorPayload.surfaceGap'
         ),
+        safePlacementResolver:
+            R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER,
         visibleExecutionOffset: 1,
         aiActivationFixedTickOffset: 1
     });
@@ -241,6 +302,8 @@ export function normalizeActorPayloadDefinition(source) {
         || source.siegeWeightPolicy !== 'DEFINITION_RESOLVED_ORDINARY_ENEMY'
         || source.projectile !== false
         || source.ordinaryEnemy !== true
+        || source.safePlacementResolver
+            !== R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER
         || source.visibleExecutionOffset !== 1
         || source.aiActivationFixedTickOffset !== 1) {
         throw new RangeError('R3 actor payload definition contract가 일치하지 않습니다.');

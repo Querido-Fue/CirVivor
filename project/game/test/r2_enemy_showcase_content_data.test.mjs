@@ -220,7 +220,7 @@ test('showcase placement는 stage-one 전 종류와 후속 capability wave를 �
     assert.deepEqual(mechanicsByWave, [
         [
             'sequential-ten-thousand-all-r2-enemies',
-            'arrow-ease-out-expo-charge-recoil',
+            'arrow-acceleration-charge-expo-recoil',
             'rhom-core-priority-fire',
             'penta-boost',
             'hexa-group-merge-to-hx',

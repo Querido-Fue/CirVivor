@@ -41,8 +41,8 @@ const formationRunnerSource = await readFile(new URL(
     import.meta.url
 ), 'utf8');
 
-test('Formation은 80-byte behavior union과 독립된 versioned ABI/state domain이다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
+test('Formation은 96-byte behavior union과 독립된 versioned ABI/state domain이다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 96);
     assert.deepEqual({ ...GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM }, {
         NONE: 0,
         ARROW_TOWER_CHARGE: 1,

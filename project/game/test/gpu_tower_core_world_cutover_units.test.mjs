@@ -333,6 +333,7 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.equal('contactHandler' in tower, false);
     assert.equal(tower.health, THE_TOWER_COMBAT_DATA.MAX_HEALTH);
     assert.equal(tower.health, 30);
+    assert.equal(tower.healthFixedPoint, tower.currentHpFixedPoint);
     assert.equal(tower.lifetime, GPU_CIRCLE_BODY_LIFETIME.IMMORTAL);
     assert.equal(tower.alive, true);
     assert.equal(tower.countAsKill, false);
@@ -385,6 +386,12 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
         currentHp: 17
     });
     assert.equal(damagedTower.health, 17);
+    const exactFractionalTower = createGpuTowerSpawnIntent({
+        position: authoredPosition,
+        currentHpFixedPoint: 53
+    });
+    assert.equal(exactFractionalTower.health, 0.53);
+    assert.equal(exactFractionalTower.healthFixedPoint, 53);
     const sessionScaledTower = createGpuTowerSpawnIntent({
         position: authoredPosition,
         currentHp: 20_000_000

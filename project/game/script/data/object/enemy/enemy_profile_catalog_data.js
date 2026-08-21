@@ -197,6 +197,7 @@ const ENEMY_PROFILE_CATALOG_SOURCE = Object.freeze({
             charge: Object.freeze({
                 windupTicks: 30,
                 windupRangeTiles: 3,
+                chargeAccelerationTilesPerSecondSquared: 12,
                 chargeSpeedTilesPerSecond: 6,
                 chargeMaxTicks: 60,
                 recoilImpulseTilesPerSecond: 4,

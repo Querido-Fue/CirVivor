@@ -303,6 +303,7 @@ test('모든 production definition은 frozen profile/capability를 해석하고 
     }, {
         windupTicks: 30,
         windupRangeTiles: 3,
+        chargeAccelerationTilesPerSecondSquared: 12,
         chargeSpeedTilesPerSecond: 6,
         chargeMaxTicks: 60,
         recoilImpulseTilesPerSecond: 4,
@@ -738,6 +739,10 @@ test('invalid modifier/profile numbers는 fail-fast하고 intent는 continuous c
         GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE
     );
     assert.equal(arrowIntent.enemyBehaviorState.windupTicks, 30);
+    assert.equal(
+        arrowIntent.enemyBehaviorState.chargeAccelerationTilesPerSecondSquared,
+        12
+    );
     assert.equal(arrowIntent.enemyBehaviorState.chargeMaxTicks, 60);
     assert.equal(arrowIntent.enemyBehaviorState.telegraphRadiusScale, 1);
     assert.equal(

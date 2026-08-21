@@ -202,17 +202,29 @@ test('성능 wave는 10종을 같은 비율로 1 tick 간격에 총 10,000개 �
     director.destroy();
 });
 
-test('성능 map Arrow도 production normalized easeOutExpo λ=10 fixed curve를 사용한다', () => {
+test('성능 map Arrow도 production acceleration/cap과 recoil-only Expo를 사용한다', () => {
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 10\.0;/u
+        /fn enemy_charge_accelerated_velocity\(/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn normalized_bounded_expo_out\(progress: f32\) -> f32/u
+        /charge_acceleration\s*\* max\(params\.dt, 0\.0\)/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn enemy_charge_expo_out_velocity\(/u
+        /enemy_behavior_states\.values\[body_id\]\.charge_speed/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /const ENEMY_RECOIL_EXPO_OUT_LAMBDA: f32 = 10\.0;/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /fn normalized_bounded_recoil_expo_out\(progress: f32\) -> f32/u
+    );
+    assert.doesNotMatch(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /enemy_charge_expo_out_velocity/u
     );
 });

@@ -52,6 +52,7 @@ const BEHAVIOR_PROFILE_KEYS = new Set([
 const CHARGE_PROFILE_KEYS = new Set([
     'windupTicks',
     'windupRangeTiles',
+    'chargeAccelerationTilesPerSecondSquared',
     'chargeSpeedTilesPerSecond',
     'chargeMaxTicks',
     'recoilImpulseTilesPerSecond',
@@ -219,6 +220,10 @@ function normalizeChargeProfile(source, label) {
         windupRangeTiles: requirePositiveFinite(
             charge.windupRangeTiles,
             `${label}.windupRangeTiles`
+        ),
+        chargeAccelerationTilesPerSecondSquared: requirePositiveFinite(
+            charge.chargeAccelerationTilesPerSecondSquared,
+            `${label}.chargeAccelerationTilesPerSecondSquared`
         ),
         chargeSpeedTilesPerSecond: requirePositiveFinite(
             charge.chargeSpeedTilesPerSecond,

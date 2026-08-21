@@ -41,6 +41,7 @@ import {
 } from './gpu_tower_spawn_adapter.js';
 
 const DEFAULT_HISTORY_CAPACITY = 65_536;
+const TOWER_CREATION_TERMINAL_RECEIPT_KIND = 'tower-creation-terminal';
 
 const REQUIRED_BACKEND_METHODS = Object.freeze([
     'canStageTowerCreation',
@@ -245,7 +246,30 @@ function terminalResult(result, reason, source = {}) {
         recoveryRequired: result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
         createdCount: 0,
         handles: Object.freeze([]),
-        ...source
+        ...source,
+        terminal: true,
+        receiptKind: TOWER_CREATION_TERMINAL_RECEIPT_KIND,
+        pending: false,
+        staged: false,
+        phase: null
+    });
+}
+
+function asTerminalReceipt(source) {
+    if (source?.terminal === true
+        && source.receiptKind === TOWER_CREATION_TERMINAL_RECEIPT_KIND
+        && source.pending === false
+        && source.staged === false
+        && source.phase === null) {
+        return source;
+    }
+    return Object.freeze({
+        ...source,
+        terminal: true,
+        receiptKind: TOWER_CREATION_TERMINAL_RECEIPT_KIND,
+        pending: false,
+        staged: false,
+        phase: null
     });
 }
 
@@ -317,6 +341,8 @@ export class TowerCreationCoordinator {
         this.pending = null;
         this.transactionEntries = new Map();
         this.completedTransactionOrder = [];
+        this.actorPayloadTerminalReceipts = [];
+        this.actorPayloadTerminalReceiptHighWater = 0;
         this.lastResult = null;
         this.lastCapacityStatus = null;
         this.failure = null;
@@ -378,6 +404,7 @@ export class TowerCreationCoordinator {
         }
         const entry = {
             transactionId: request.transactionId,
+            mode: request.mode,
             requestFingerprint,
             actorActionProfileFingerprint: request.mode
                 === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION
@@ -1268,6 +1295,19 @@ export class TowerCreationCoordinator {
             : this.#rejectPending(completion);
     }
 
+    /**
+     * Accepted GPU Subject actor-payload transaction의 authentic terminal만
+     * execution/cooldown owner가 exact-once로 가져가는 경계입니다.
+     */
+    drainActorPayloadTerminalReceipts(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('Tower payload terminal receipt 출력은 배열이어야 합니다.');
+        }
+        out.push(...this.actorPayloadTerminalReceipts);
+        this.actorPayloadTerminalReceipts.length = 0;
+        return out;
+    }
+
     #observeActorActionPlacement(tick) {
         const pending = this.pending;
         const completions = this.actorActionPlacementRuntime
@@ -1537,6 +1577,10 @@ export class TowerCreationCoordinator {
             storageProfile: runtime?.storageProfile ?? null,
             historyCount: this.completedTransactionOrder.length,
             historyCapacity: this.historyCapacity,
+            pendingActorPayloadTerminalReceiptCount:
+                this.actorPayloadTerminalReceipts.length,
+            actorPayloadTerminalReceiptHighWater:
+                this.actorPayloadTerminalReceiptHighWater,
             transactionEntryCount: this.transactionEntries.size,
             activeTransactionCount: this.transactionEntries.size
                 - this.completedTransactionOrder.length,
@@ -1638,6 +1682,7 @@ export class TowerCreationCoordinator {
         this.destroyed = true;
         this.queued = null;
         this.pending = null;
+        this.actorPayloadTerminalReceipts.length = 0;
         this.registry = null;
         this.backend = null;
         this.towerGroupState = null;
@@ -2056,6 +2101,10 @@ export class TowerCreationCoordinator {
             requestFingerprint: this.transactionEntries.get(
                 pending.request.transactionId
             )?.requestFingerprint ?? null,
+            actorActionProfileFingerprint:
+                pending.request.actorActionProfileFingerprint ?? 0,
+            placementFingerprint:
+                pending.placementBinding?.placementFingerprint ?? 0,
             capacity: this.#getCapacityStatus(0)
         });
         this.rejectedCount++;
@@ -2174,15 +2223,16 @@ export class TowerCreationCoordinator {
         const entry = transactionId
             ? this.transactionEntries.get(transactionId)
             : null;
+        const terminal = asTerminalReceipt(result);
         const receipt = entry
             ? Object.freeze({
-                ...result,
+                ...terminal,
                 requestFingerprint: entry.requestFingerprint,
                 actorActionProfileFingerprint:
                     entry.actorActionProfileFingerprint,
-                capacity: result.capacity ?? this.#getCapacityStatus(0)
+                capacity: terminal.capacity ?? this.#getCapacityStatus(0)
             })
-            : result;
+            : terminal;
         if (transactionId) this.#completeTransaction(transactionId, receipt);
         this.lastResult = receipt;
         if (receipt?.result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE) {
@@ -2217,11 +2267,27 @@ export class TowerCreationCoordinator {
     #completeTransaction(transactionId, receipt) {
         const entry = this.transactionEntries.get(transactionId);
         if (!entry) return receipt;
+        const publishActorPayloadTerminal = entry.stage !== 'completed'
+            && entry.stage !== 'received'
+            && entry.mode
+                === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION
+            && receipt?.terminal === true
+            && receipt.receiptKind === TOWER_CREATION_TERMINAL_RECEIPT_KIND
+            && receipt.pending === false
+            && receipt.staged === false
+            && receipt.phase === null;
         if (entry.stage !== 'completed') {
             this.completedTransactionOrder.push(transactionId);
         }
         entry.stage = 'completed';
         entry.receipt = receipt;
+        if (publishActorPayloadTerminal) {
+            this.actorPayloadTerminalReceipts.push(receipt);
+            this.actorPayloadTerminalReceiptHighWater = Math.max(
+                this.actorPayloadTerminalReceiptHighWater,
+                this.actorPayloadTerminalReceipts.length
+            );
+        }
         while (this.completedTransactionOrder.length > this.historyCapacity) {
             const retired = this.completedTransactionOrder.shift();
             const retiredEntry = this.transactionEntries.get(retired);

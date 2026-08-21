@@ -49,11 +49,16 @@ const NW_RUNNER_SOURCE = await readFile(new URL(
     './nw_webgpu_capability/runner.js',
     import.meta.url
 ), 'utf8');
+const POST_R5_NW_RUNNER_SOURCE = await readFile(new URL(
+    './nw_webgpu_capability/post_r5_live_bugfix_runner.js',
+    import.meta.url
+), 'utf8');
 
 const CHARGE_CONFIG = Object.freeze({
     programId: GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE,
     windupTicks: 30,
     windupRangeTiles: 3,
+    chargeAccelerationTilesPerSecondSquared: 12,
     chargeSpeedTilesPerSecond: 6,
     chargeMaxTicks: 60,
     recoilImpulseTilesPerSecond: 4,
@@ -85,6 +90,29 @@ function expoOutFixedTickDisplacements({ speed, durationTicks, fixedDelta }) {
     )));
 }
 
+function acceleratedChargeSamples({
+    acceleration,
+    maximumSpeed,
+    durationTicks,
+    fixedDelta
+}) {
+    const accelerationF32 = Math.fround(acceleration);
+    const maximumSpeedF32 = Math.fround(maximumSpeed);
+    const fixedDeltaF32 = Math.fround(fixedDelta);
+    let parallelSpeed = Math.fround(0);
+    return Object.freeze(Array.from({ length: durationTicks }, () => {
+        parallelSpeed = Math.fround(Math.min(
+            Math.max(parallelSpeed, 0)
+                + Math.fround(accelerationF32 * fixedDeltaF32),
+            maximumSpeedF32
+        ));
+        return Object.freeze({
+            parallelSpeed,
+            displacement: Math.fround(parallelSpeed * fixedDeltaF32)
+        });
+    }));
+}
+
 function assertNear(actual, expected, tolerance, label) {
     assert.ok(
         Math.abs(actual - expected) <= tolerance,
@@ -92,15 +120,15 @@ function assertNear(actual, expected, tolerance, label) {
     );
 }
 
-test('Body ABI v8은 기존 charge/atomic offset을 유지하고 capture side-plane을 append한다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 8);
-    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
+test('Body ABI v9은 기존 offset 뒤에 Arrow acceleration tail을 append한다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 9);
+    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 96);
     assert.equal(GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE, 40);
     assert.equal(GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE, 48);
     assert.equal(GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE, 48);
     assert.equal(GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE, 16);
     const storage = createGpuCircleBodyAbiStorage(2);
-    assert.equal(storage.enemyBehaviorStateBuffer.byteLength, 160);
+    assert.equal(storage.enemyBehaviorStateBuffer.byteLength, 192);
     assert.equal(storage.atomicTransformStateBuffer.byteLength, 96);
     assert.equal(storage.projectileCaptureStateBuffer.byteLength, 96);
     assert.equal(storage.projectileCaptureCandidateBuffer.byteLength, 32);
@@ -130,12 +158,32 @@ test('Body ABI v8은 기존 charge/atomic offset을 유지하고 capture side-pl
     assert.equal(state.targetIncarnation, 0);
     assert.equal(state.flags, 0);
     assert.deepEqual({ ...state.chargeDirection }, { x: 0, y: 0 });
+    assert.equal(state.chargeAccelerationTilesPerSecondSquared, 12);
+    assert.equal(state.chargeSpeedTilesPerSecond, 6);
     assert.equal(state.windupTicks, 30);
     assert.equal(state.chargeMaxTicks, 60);
     assert.equal(state.recoilTicks, 12);
     assert.equal(state.recoverTicks, 30);
-
     const stateOffset = GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE;
+    const binaryView = new DataView(storage.enemyBehaviorStateBuffer);
+    assert.equal(
+        binaryView.getFloat32(
+            stateOffset
+                + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_ACCELERATION,
+            true
+        ),
+        12
+    );
+    for (const reservedField of ['RESERVED_0', 'RESERVED_1', 'RESERVED_2']) {
+        assert.equal(
+            binaryView.getUint32(
+                stateOffset
+                    + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE[reservedField],
+                true
+            ),
+            0
+        );
+    }
     const stateView = new DataView(storage.enemyBehaviorStateBuffer);
     stateView.setUint32(
         stateOffset + GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STATE,
@@ -241,7 +289,7 @@ test('Arrow SDF 가시성은 route ownership/WINDUP/terrain CHARGE 회복을 분
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /state == ENEMY_BEHAVIOR_STATE_CHARGE[\s\S]*?let charge_velocity = enemy_charge_expo_out_velocity\([\s\S]*?let charge_segment_end = physics\.values\[body_id\]\.position[\s\S]*?charge_velocity \* max\(params\.dt, 0\.0\)[\s\S]*?enemy_charge_segment_is_visible\([\s\S]*?charge_segment_end[\s\S]*?ENEMY_BEHAVIOR_STATE_RECOVER/u
+        /state == ENEMY_BEHAVIOR_STATE_CHARGE[\s\S]*?let charge_velocity = enemy_charge_accelerated_velocity\([\s\S]*?body_id[\s\S]*?charge_direction[\s\S]*?let charge_segment_end = physics\.values\[body_id\]\.position[\s\S]*?charge_velocity \* max\(params\.dt, 0\.0\)[\s\S]*?enemy_charge_segment_is_visible\([\s\S]*?charge_segment_end[\s\S]*?ENEMY_BEHAVIOR_STATE_RECOVER/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
@@ -268,12 +316,13 @@ test('Arrow SDF 가시성은 route ownership/WINDUP/terrain CHARGE 회복을 분
     );
 });
 
-test('Arrow charge/recoil λ=10 Expo-out은 exact samples, endpoint, SDF/Tower no-skip을 고정한다', () => {
+test('Arrow CHARGE는 data-owned acceleration/cap이고 recoil만 λ=10 Expo-out이다', () => {
     assert.equal(normalizedBoundedExpoOut(0), 0);
     assert.equal(normalizedBoundedExpoOut(1), 1);
     const fixedDelta = 1 / 60;
-    const charge = expoOutFixedTickDisplacements({
-        speed: CHARGE_CONFIG.chargeSpeedTilesPerSecond,
+    const charge = acceleratedChargeSamples({
+        acceleration: CHARGE_CONFIG.chargeAccelerationTilesPerSecondSquared,
+        maximumSpeed: CHARGE_CONFIG.chargeSpeedTilesPerSecond,
         durationTicks: CHARGE_CONFIG.chargeMaxTicks,
         fixedDelta
     });
@@ -282,45 +331,69 @@ test('Arrow charge/recoil λ=10 Expo-out은 exact samples, endpoint, SDF/Tower n
         durationTicks: CHARGE_CONFIG.recoilTicks - 1,
         fixedDelta
     });
-    const exactSamples = Object.freeze({
-        charge: Object.freeze({
-            k0: 0.6552475813741501,
-            k1: 0.5837592303107873,
-            middle: 0.02047648691794235,
-            last: 0.0007182524827524794
-        }),
-        recoil: Object.freeze({
-            k0: 0.34315337792597783,
-            k1: 0.18273622373564335,
-            middle: 0.014695017792215683,
-            last: 0.0006292916281888402
-        })
+    const exactChargeSamples = Object.freeze({
+        k0: Object.freeze({ speed: 0.20000001788139343,
+            displacement: 0.0033333338797092438 }),
+        k1: Object.freeze({ speed: 0.40000003576278687,
+            displacement: 0.0066666677594184875 }),
+        middle: Object.freeze({ speed: 6,
+            displacement: 0.10000000894069672 }),
+        end: Object.freeze({ speed: 6,
+            displacement: 0.10000000894069672 })
     });
-    for (const [label, displacements] of Object.entries({ charge, recoil })) {
-        const expected = exactSamples[label];
-        assertNear(displacements[0], expected.k0, 0.000000000001, `${label} k0`);
-        assertNear(displacements[1], expected.k1, 0.000000000001, `${label} k1`);
+    for (const [label, index] of Object.entries({
+        k0: 0,
+        k1: 1,
+        middle: 30,
+        end: 59
+    })) {
         assertNear(
-            displacements[Math.floor(displacements.length / 2)],
-            expected.middle,
+            charge[index].parallelSpeed,
+            exactChargeSamples[label].speed,
             0.000000000001,
-            `${label} middle`
+            `charge ${label} speed`
         );
         assertNear(
-            displacements.at(-1),
-            expected.last,
+            charge[index].displacement,
+            exactChargeSamples[label].displacement,
             0.000000000001,
-            `${label} last`
+            `charge ${label} displacement`
         );
     }
     assertNear(
-        charge.reduce((sum, displacement) => sum + displacement, 0),
-        CHARGE_CONFIG.chargeSpeedTilesPerSecond
-            * CHARGE_CONFIG.chargeMaxTicks
-            * fixedDelta,
+        charge.reduce((sum, sample) => sum + sample.displacement, 0),
+        4.550000344403088,
         0.000000001,
-        'charge normalized endpoint'
+        'charge deterministic 60 Hz distance'
     );
+    assert.ok(charge[0].displacement < charge[30].displacement);
+    for (let index = 1; index < charge.length; index++) {
+        assert.ok(
+            charge[index].parallelSpeed >= charge[index - 1].parallelSpeed,
+            `charge speed must be monotonic at ${index}`
+        );
+        assert.ok(
+            charge[index].parallelSpeed
+                <= CHARGE_CONFIG.chargeSpeedTilesPerSecond,
+            `charge speed must respect cap at ${index}`
+        );
+    }
+    for (const direction of [
+        Object.freeze({ x: 1, y: 0 }),
+        Object.freeze({ x: 0, y: -1 }),
+        Object.freeze({ x: Math.SQRT1_2, y: Math.SQRT1_2 })
+    ]) {
+        const velocity = {
+            x: direction.x * charge[15].parallelSpeed,
+            y: direction.y * charge[15].parallelSpeed
+        };
+        assertNear(
+            Math.hypot(velocity.x, velocity.y),
+            charge[15].parallelSpeed,
+            0.000001,
+            'cardinal/diagonal locked direction speed'
+        );
+    }
     assertNear(
         recoil.reduce((sum, displacement) => sum + displacement, 0),
         CHARGE_CONFIG.recoilImpulseTilesPerSecond
@@ -329,23 +402,42 @@ test('Arrow charge/recoil λ=10 Expo-out은 exact samples, endpoint, SDF/Tower n
         0.000000001,
         'recoil normalized endpoint'
     );
-    for (const [label, displacements] of Object.entries({ charge, recoil })) {
-        assert.ok(displacements[0] > displacements.at(-1), `${label} first > last`);
-        for (let index = 1; index < displacements.length; index++) {
-            assert.ok(
-                displacements[index - 1] >= displacements[index],
-                `${label} Expo-out displacement must be monotonic at ${index}`
-            );
-        }
+    const exactRecoilSamples = Object.freeze({
+        k0: 0.34315337792597783,
+        k1: 0.18273622373564335,
+        middle: 0.014695017792215683,
+        end: 0.0006292916281888402
+    });
+    for (const [label, index] of Object.entries({
+        k0: 0,
+        k1: 1,
+        middle: 5,
+        end: 10
+    })) {
+        assertNear(
+            recoil[index],
+            exactRecoilSamples[label],
+            0.000000000001,
+            `recoil ${label}`
+        );
     }
-    const maximumRelativeTowerStep = charge[0]
+    for (let index = 1; index < recoil.length; index++) {
+        assert.ok(
+            recoil[index - 1] >= recoil[index],
+            `recoil Expo-out displacement must be monotonic at ${index}`
+        );
+    }
+    const maximumChargeDisplacement = Math.max(
+        ...charge.map((sample) => sample.displacement)
+    );
+    const maximumRelativeTowerStep = maximumChargeDisplacement
         + (THE_TOWER_DATA.MAX_LINEAR_SPEED_TILES_PER_SECOND * fixedDelta);
     const towerInteractionInterval = 2 * (
         MAIN_GPU_ENEMY_COLLISION_RADIUS_TILES + THE_TOWER_DATA.RADIUS_TILES
     );
     assert.ok(
         maximumRelativeTowerStep < towerInteractionInterval,
-        `λ=10 first step must not skip the full Arrow/Tower overlap interval: ${JSON.stringify({
+        `acceleration/cap step must not skip the full Arrow/Tower overlap interval: ${JSON.stringify({
             maximumRelativeTowerStep,
             towerInteractionInterval
         })}`
@@ -356,49 +448,46 @@ test('Arrow charge/recoil λ=10 Expo-out은 exact samples, endpoint, SDF/Tower n
     );
     const minimumSdfMarchStepTiles = (1 / 8) * 0.25;
     assert.ok(
-        Math.ceil(charge[0] / minimumSdfMarchStepTiles) < 48,
-        `λ=10 first segment must fit the bounded production SDF marcher: ${charge[0]}`
+        Math.ceil(maximumChargeDisplacement / minimumSdfMarchStepTiles) < 48,
+        `maximum charge segment must fit the bounded production SDF marcher: ${maximumChargeDisplacement}`
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 10\.0;[\s\S]*?fn normalized_bounded_expo_out[\s\S]*?exp2\(-ENEMY_CHARGE_EXPO_OUT_LAMBDA \* bounded_progress\)/u
+        /const ENEMY_RECOIL_EXPO_OUT_LAMBDA: f32 = 10\.0;[\s\S]*?fn normalized_bounded_recoil_expo_out[\s\S]*?exp2\(-ENEMY_RECOIL_EXPO_OUT_LAMBDA \* bounded_progress\)/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn enemy_charge_expo_out_velocity[\s\S]*?normalized_bounded_expo_out\(end_progress\)[\s\S]*?normalized_bounded_expo_out\(start_progress\)/u
+        /fn enemy_recoil_expo_out_velocity[\s\S]*?normalized_bounded_recoil_expo_out\(end_progress\)[\s\S]*?normalized_bounded_recoil_expo_out\(start_progress\)/u
     );
     assert.match(
-        NW_RUNNER_SOURCE,
-        /const ARROW_EXPO_OUT_LAMBDA_F32 = Math\.fround\(10\);[\s\S]*?async function runProductionEnemyArrowExpoOracleHardwareSmoke/u
+        GPU_COLLISION_COMPUTE_WGSL,
+        /fn enemy_charge_accelerated_velocity\([\s\S]*?max\(dot\(current_velocity, locked_direction\), 0\.0\)[\s\S]*?charge_acceleration[\s\S]*?max\(params\.dt, 0\.0\)[\s\S]*?enemy_behavior_states\.values\[body_id\]\.charge_speed/u
+    );
+    const chargeStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'if (state == ENEMY_BEHAVIOR_STATE_CHARGE)'
+    );
+    const recoilStart = GPU_COLLISION_COMPUTE_WGSL.indexOf(
+        'if (state == ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL)',
+        chargeStart
+    );
+    const chargeBlock = GPU_COLLISION_COMPUTE_WGSL.slice(
+        chargeStart,
+        recoilStart
+    );
+    assert.match(chargeBlock, /enemy_charge_accelerated_velocity/u);
+    assert.doesNotMatch(chargeBlock, /enemy_recoil_expo_out_velocity/u);
+    assert.doesNotMatch(chargeBlock, /target_position/u);
+    assert.match(
+        POST_R5_NW_RUNNER_SOURCE,
+        /async function runArrowR2Fixture[\s\S]*?chargeAccelerationTilesPerSecondSquared,[\s\S]*?12, 0\.000001[\s\S]*?chargeSpeedTilesPerSecond,[\s\S]*?6, 0\.000001/u
     );
     assert.match(
-        NW_RUNNER_SOURCE,
-        /sampleIndexes = Object\.freeze\(\{ k0: 0, k1: 1, middle: 30, end: 59 \}\)[\s\S]*?Math\.abs\(totalProjectedDistance - 6\) <= 0\.005[\s\S]*?minimumTowerClearance > 2[\s\S]*?noSkippedElapsedTicks: true/u
+        POST_R5_NW_RUNNER_SOURCE,
+        /sample\.speed > 0 && sample\.speed <= 6\.0001[\s\S]*?near\(chargeSamples\[0\]\.speed, 12 \/ 60[\s\S]*?chargeSamples\[0\]\.displacement[\s\S]*?< chargeSamples\[Math\.floor\(chargeSamples\.length \/ 2\)\]\.displacement/u
     );
     assert.match(
-        NW_RUNNER_SOURCE,
-        /for \(let tick = 31; tick <= 90; tick\+\+\)[\s\S]*?arrow-expo-oracle:tower-evade:\$\{tick\}[\s\S]*?towerClearance: towerSeparation - overlapDistance/u
-    );
-    assert.match(
-        NW_RUNNER_SOURCE,
-        /expectedRecoilMiddle = expectedArrowExpoOutSpeedF32\(4, 11, 5\)[\s\S]*?expectedRecoilEnd = expectedArrowExpoOutSpeedF32\(4, 11, 10\)[\s\S]*?Arrow recoil normalized total endpoint/u
-    );
-    const deterministicContactGeometry = NW_RUNNER_SOURCE.indexOf(
-        'const arrowPosition = Object.freeze({ x: 5.6, y: 8 });'
-    );
-    const tick37Prime = NW_RUNNER_SOURCE.indexOf(
-        "'arrow-charge:window-maximum-projectile'",
-        deterministicContactGeometry
-    );
-    const tick37Submit = NW_RUNNER_SOURCE.indexOf(
-        "let latest = await submitTick(37, 'Arrow charge Tower stop')",
-        tick37Prime
-    );
-    assert.ok(
-        deterministicContactGeometry >= 0
-            && tick37Prime > deterministicContactGeometry
-            && tick37Submit > tick37Prime,
-        'λ=10 first contact candidate must be primed before tick 37 GPU submit'
+        POST_R5_NW_RUNNER_SOURCE,
+        /chargeSamples\.length === 1 && !movedTower[\s\S]*?behavior\.chargeDirection\.x, lockedDirection\.x[\s\S]*?behavior\.chargeDirection\.y, lockedDirection\.y/u
     );
 });
 
@@ -475,7 +564,7 @@ test('source-local Tower query는 tracked pose와 독립이고 single-submit pas
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn apply_enemy_charge_recoil[\s\S]*?enemy_charge_expo_out_velocity\([\s\S]*?-enemy_behavior_states\.values\[body_id\]\.charge_direction[\s\S]*?recoil_impulse/u
+        /fn apply_enemy_charge_recoil[\s\S]*?enemy_recoil_expo_out_velocity\([\s\S]*?-enemy_behavior_states\.values\[body_id\]\.charge_direction[\s\S]*?recoil_impulse/u
     );
 
     const advance = SIMULATION_SOURCE.indexOf("'advance_enemy_charge'");

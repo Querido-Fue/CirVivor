@@ -166,7 +166,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
      * 분리하며 program 0인 slot은 전체 zero record를 유지합니다.
      */
     ENEMY_BEHAVIOR_STATE: Object.freeze({
-        STRIDE: 80,
+        STRIDE: 96,
         PROGRAM_ID: 0,
         STATE: 4,
         STATE_ENTERED_FIXED_TICK: 8,
@@ -186,7 +186,11 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         RECOVER_TICKS: 64,
         TELEGRAPH_STYLE_CODE: 68,
         TELEGRAPH_COLOR_RGBA8: 72,
-        TELEGRAPH_RADIUS_SCALE: 76
+        TELEGRAPH_RADIUS_SCALE: 76,
+        CHARGE_ACCELERATION: 80,
+        RESERVED_0: 84,
+        RESERVED_1: 88,
+        RESERVED_2: 92
     }),
     /**
      * presentation 전용 32-byte storage layout입니다. 물리/시뮬레이션 ABI와
@@ -224,7 +228,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 8;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 9;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -460,7 +464,7 @@ export const GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG = Object.freeze({
 });
 
 /**
- * 80-byte behavior side-plane의 program 3 overlay입니다. 기존 Arrow/program 2
+ * 96-byte behavior side-plane의 program 3 overlay입니다. 기존 Arrow/program 2
  * byte를 이동하지 않으며 facing +32/+36은 orbit/render/defense의 단일 권위입니다.
  */
 export const GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI = Object.freeze({
@@ -496,7 +500,7 @@ export const GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI = Object.freeze({
 });
 
 /**
- * 80-byte side-plane의 program 2 전용 명명입니다. 기존 Arrow layout을 이동하지
+ * 96-byte side-plane의 program 2 전용 명명입니다. 기존 Arrow layout을 이동하지
  * 않고 동일 byte를 program-discriminated storage로 사용합니다.
  */
 export const GPU_CIRCLE_SELECTED_TARGET_PROJECTILE_STATE_ABI = Object.freeze({
@@ -2490,6 +2494,7 @@ const ENEMY_BEHAVIOR_INPUT_KEYS = new Set([
     'totalFacetCount',
     'windupTicks',
     'windupRangeTiles',
+    'chargeAccelerationTilesPerSecondSquared',
     'chargeSpeedTilesPerSecond',
     'chargeMaxTicks',
     'recoilImpulseTilesPerSecond',
@@ -2739,6 +2744,7 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
         'programId',
         'windupTicks',
         'windupRangeTiles',
+        'chargeAccelerationTilesPerSecondSquared',
         'chargeSpeedTilesPerSecond',
         'chargeMaxTicks',
         'recoilImpulseTilesPerSecond',
@@ -2771,6 +2777,19 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
     );
     if (view.getFloat32(offset + abi.WINDUP_RANGE, LITTLE_ENDIAN) <= 0) {
         throw new RangeError('enemyBehaviorState.windupRangeTiles는 양수여야 합니다.');
+    }
+    view.setFloat32(
+        offset + abi.CHARGE_ACCELERATION,
+        requireNonNegativeFloat32(
+            source.chargeAccelerationTilesPerSecondSquared,
+            'enemyBehaviorState.chargeAccelerationTilesPerSecondSquared'
+        ),
+        LITTLE_ENDIAN
+    );
+    if (view.getFloat32(offset + abi.CHARGE_ACCELERATION, LITTLE_ENDIAN) <= 0) {
+        throw new RangeError(
+            'enemyBehaviorState.chargeAccelerationTilesPerSecondSquared는 양수여야 합니다.'
+        );
     }
     view.setFloat32(
         offset + abi.CHARGE_SPEED,
@@ -2984,6 +3003,10 @@ export function readGpuCircleEnemyBehaviorState(storage, index) {
             y: view.getFloat32(offset + abi.CHARGE_DIRECTION_Y, LITTLE_ENDIAN)
         },
         windupRangeTiles: view.getFloat32(offset + abi.WINDUP_RANGE, LITTLE_ENDIAN),
+        chargeAccelerationTilesPerSecondSquared: view.getFloat32(
+            offset + abi.CHARGE_ACCELERATION,
+            LITTLE_ENDIAN
+        ),
         chargeSpeedTilesPerSecond: view.getFloat32(
             offset + abi.CHARGE_SPEED,
             LITTLE_ENDIAN

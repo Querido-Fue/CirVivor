@@ -55,9 +55,9 @@ function sourceSlice(source, startMarker, endMarker) {
     return source.slice(start, end);
 }
 
-test('program3 raw SEEK 80-byte overlay와 O data는 facing/slot/reduction exact ABI를 공유한다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
-    assert.equal(GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.STRIDE, 80);
+test('program3 raw SEEK 96-byte overlay와 O data는 facing/slot/reduction exact ABI를 공유한다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 96);
+    assert.equal(GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.STRIDE, 96);
     assert.equal(GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.FACING_X, 32);
     assert.equal(GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.FACING_Y, 36);
     assert.equal(GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI.ORBIT_RADIUS_TILES, 40);

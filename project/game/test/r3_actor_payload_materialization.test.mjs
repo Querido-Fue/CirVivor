@@ -5,14 +5,23 @@ import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const {
+    ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG,
     ACTOR_PAYLOAD_MATERIALIZATION_STATUS,
+    ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS,
+    R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES,
     R3_ENEMY_ACTOR_PAYLOAD_DEFINITION
 } = await loadGameModule('ingame/contract/actor_payload_contract.js');
 const {
-    GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI
+    GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI,
+    GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION,
+    GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY,
+    readGpuActorPayloadMaterializationAggregate
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_actor_payload_materialization_abi.js'
 );
+const {
+    GPU_CIRCLE_BODY_ABI_VERSION
+} = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT,
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL
@@ -163,8 +172,85 @@ test('Enemy actor payload definition은 persistent ordinary Hostile C다', () =>
     assert.equal(definition.projectile, false);
     assert.equal(definition.ordinaryEnemy, true);
     assert.equal(definition.rewardEligible, true);
+    assert.equal(definition.safePlacementResolver.candidates,
+        R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES);
     assert.equal(definition.visibleExecutionOffset, 1);
     assert.equal(definition.aiActivationFixedTickOffset, 1);
+});
+
+test('Enemy Shoot safe-placement 후보표는 immutable bounded 순서와 final overlap만 허용한다', () => {
+    const candidates = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES;
+    assert.equal(Object.isFrozen(candidates), true);
+    assert.deepEqual(candidates.map((candidate) => candidate.id), [
+        'authored-surface',
+        'surface-left-45',
+        'surface-right-45',
+        'surface-left-90',
+        'surface-right-90',
+        'surface-left-135',
+        'surface-right-135',
+        'surface-opposite',
+        'short-authored-half-gap',
+        'short-left-45-half-gap',
+        'short-right-45-half-gap',
+        'short-left-90-zero-gap',
+        'short-right-90-zero-gap',
+        'final-source-local-overlap'
+    ]);
+    assert.equal(candidates.length, 14);
+    assert.equal(candidates.filter(
+        (candidate) => candidate.allowDynamicOverlap
+    ).length, 1);
+    assert.equal(candidates.at(-1).allowDynamicOverlap, true);
+    assert.equal(candidates.at(-1).radiusSumScale, 0);
+    assert.equal(candidates.at(-1).surfaceGapScale, 0);
+});
+
+test('safe-placement WGSL은 static SDF, ordinary overlap, bounded fallback과 방향 일치를 고정한다', () => {
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /SAFE_PLACEMENT_CANDIDATE_COUNT: u32 =\s*14u/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /candidate_index < SAFE_PLACEMENT_CANDIDATE_COUNT/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /!valid_spawn_point\(position, destination_radius\)[\s\S]*continue/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP\[candidate_index\][\s\S]*overlaps_dynamic_body/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /selected_direction = direction/);
+    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /velocity = direction[\s\S]*bitcast<f32>\(header\(/);
+    assert.doesNotMatch(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+        /random|rand\(/i);
+});
+
+test('placement reject aggregate는 NO_VALID_PLACEMENT용 bounded rank/count/class를 decode한다', () => {
+    const abi = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI;
+    const buffer = new ArrayBuffer(abi.AGGREGATE.STRIDE);
+    const view = new DataView(buffer);
+    view.setUint32(abi.AGGREGATE.ABI_VERSION,
+        GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION, true);
+    view.setUint32(abi.AGGREGATE.BODY_ABI_VERSION,
+        GPU_CIRCLE_BODY_ABI_VERSION, true);
+    view.setUint32(abi.AGGREGATE.STATUS,
+        ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED, true);
+    view.setUint32(abi.AGGREGATE.SUBJECT_COUNT, 735, true);
+    view.setUint32(abi.AGGREGATE.ERROR_FLAGS,
+        ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SDF_PLACEMENT
+            | ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP,
+        true);
+    const telemetry = 734
+        | (14 << GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY
+            .ATTEMPTED_CANDIDATE_COUNT_SHIFT)
+        | (ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
+            .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP
+            << GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.FAILURE_CLASS_SHIFT);
+    view.setUint32(abi.AGGREGATE.PLACEMENT_TELEMETRY, telemetry, true);
+    const aggregate = readGpuActorPayloadMaterializationAggregate(buffer);
+    assert.equal(aggregate.firstFailingRank, 734);
+    assert.equal(aggregate.attemptedCandidateCount, 14);
+    assert.equal(aggregate.placementFailureClass,
+        ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
+            .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP);
 });
 
 test('snapshot/lease/materialization ABI는 rank i 대응과 aggregate-only readback을 고정한다', () => {
@@ -265,6 +351,10 @@ test('IActorPayloadMaterializer는 committed aggregate에서만 cooldown 자격�
         state: 'COMMITTED',
         committed: true,
         generatedCount: ready.completion.subjectCount,
+        firstFallbackRank: 1,
+        firstFailingRank: null,
+        attemptedCandidateCount: 2,
+        placementFailureClass: 0,
         requiresRecovery: false
     });
     const observed = materializer.observeCompleted(10);
@@ -272,6 +362,49 @@ test('IActorPayloadMaterializer는 committed aggregate에서만 cooldown 자격�
     assert.equal(ability.completed.length, 1);
     assert.equal(ability.completed[0].options.generatedCount, 2);
     assert.equal(ability.rejected.length, 0);
+    assert.deepEqual(materializer.getStatus().history.at(-1).placement, {
+        firstFallbackRank: 1,
+        firstFailingRank: null,
+        attemptedCandidateCount: 2,
+        failureClass: 0
+    });
+});
+
+test('placement reject history는 bounded NO_VALID_PLACEMENT telemetry를 보존한다', () => {
+    const ready = readyRecord(77, 735);
+    const ability = new FakeAbilityRuntime([ready]);
+    const endpoint = new FakeEndpoint();
+    const materializer = new ActorPayloadMaterializer({
+        abilityRuntime: ability,
+        endpoint
+    });
+    materializer.stageReadyForFixedTick({ targetFixedTick: 80 });
+    const reason = Object.freeze({
+        code: 'NO_VALID_PLACEMENT',
+        firstFailingRank: 734,
+        attemptedCandidateCount: 14,
+        failureClass: 'STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP'
+    });
+    endpoint.completed.push({
+        transactionId: endpoint.requests[0].transactionId,
+        executionOrdinal: ready.command.executionOrdinal,
+        commandFingerprint: ready.command.fingerprint,
+        snapshotFingerprint: ready.completion.snapshotFingerprint,
+        subjectCount: ready.completion.subjectCount,
+        materializationTargetTick: 80,
+        status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED,
+        state: 'REJECTED_PLACEMENT',
+        committed: false,
+        generatedCount: 0,
+        reason,
+        requiresRecovery: false
+    });
+    materializer.observeCompleted(81);
+    const status = materializer.getStatus();
+    assert.equal(status.recoveryRequired, false);
+    assert.equal(ability.completed.length, 0);
+    assert.equal(ability.rejected.length, 1);
+    assert.equal(status.history.at(-1).reason, reason);
 });
 
 test('capacity one-short는 reservation/spawn/cooldown 0으로 즉시 거절한다', () => {

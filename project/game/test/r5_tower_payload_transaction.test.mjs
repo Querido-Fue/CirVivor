@@ -550,6 +550,14 @@ test('production capability가 없으면 R5 ingress는 정상 RUNTIME_UNAVAILABL
     assert.equal(fixture.registry.getStatus().reservedCount, 0);
     assert.equal(fixture.state.getTowerRecords().length, 1);
     assert.equal(fixture.backend.preleases.size, 0);
+    const terminalReceipts = [];
+    coordinator.drainActorPayloadTerminalReceipts(terminalReceipts);
+    assert.equal(terminalReceipts.length, 1);
+    assert.strictEqual(terminalReceipts[0], result);
+    assert.equal(terminalReceipts[0].terminal, true);
+    assert.equal(terminalReceipts[0].receiptKind,
+        'tower-creation-terminal');
+    assert.equal(coordinator.drainActorPayloadTerminalReceipts([]).length, 0);
 });
 
 test('Tower/Enemy frozen Subjects의 1/N payload는 mixed generation metadata와 recovery descriptor를 0/N commit한다', () => {
@@ -562,6 +570,10 @@ test('Tower/Enemy frozen Subjects의 1/N payload는 mixed generation metadata와
                 : 'transaction.r5.tower-source'
         });
         runToCreationStage(fixture);
+        assert.equal(
+            fixture.coordinator.drainActorPayloadTerminalReceipts([]).length,
+            0
+        );
         const generations = enemySources ? [1, 4, 9] : [2];
         fixture.backend.completeCommitted(generations);
         const committed = fixture.coordinator.observeCompletedAtFixedBoundary(
@@ -612,6 +624,15 @@ test('Tower/Enemy frozen Subjects의 1/N payload는 mixed generation metadata와
             generations
         );
         assert.equal(fixture.state.auditInvariants().valid, true);
+        const terminalReceipts = [];
+        fixture.coordinator.drainActorPayloadTerminalReceipts(
+            terminalReceipts
+        );
+        assert.deepEqual(terminalReceipts, [committed]);
+        assert.equal(
+            fixture.coordinator.drainActorPayloadTerminalReceipts([]).length,
+            0
+        );
     }
 });
 
@@ -645,6 +666,15 @@ test('source snapshot 이후 source 생사와 무관하게 frozen count를 유�
     assert.equal(fixture.registry.getStatus().activeCount, 1);
     assert.equal(fixture.state.getTowerRecords().length, 1);
     assert.equal(fixture.placementRuntime.releaseCount, 1);
+    assert.equal(
+        rejected.actorActionProfileFingerprint,
+        fixture.command.actorActionProfileFingerprint
+    );
+    assert.equal(
+        rejected.placementFingerprint,
+        fixture.backend.lastStage.actorActionPlacementBinding
+            .placementFingerprint
+    );
 });
 
 test('snapshot 뒤 Tower Subject가 죽어도 다른 living Share 기준으로 frozen child count를 계획한다', () => {

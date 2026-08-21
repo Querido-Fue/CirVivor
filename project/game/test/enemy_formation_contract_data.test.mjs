@@ -807,7 +807,7 @@ test('public raw/private transform ingress와 natural H registry facts는 분리
     }), /uint32/);
 });
 
-test('C/T/A/M/P, render shape, 80-byte exclusive behavior union은 Formation과 독립이다', () => {
+test('C/T/A/M/P, render shape, 96-byte exclusive behavior union은 Formation과 독립이다', () => {
     for (const definition of Object.values(INGAME_ENEMY_DEFINITION_BY_ID)) {
         assert.equal(
             Object.prototype.hasOwnProperty.call(definition, 'spawnPolicy'),
@@ -839,7 +839,7 @@ test('C/T/A/M/P, render shape, 80-byte exclusive behavior union은 Formation과 
         SELECTED_TARGET_PROJECTILE: 2,
         OCTAGON_TOWER_ORBIT: 3
     });
-    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 80);
+    assert.equal(GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE, 96);
     assert.equal(GPU_FORMATION_RUNTIME_ABI_VERSION, 1);
     assert.equal(GPU_EFFECT_RUNTIME_ABI_VERSION, 1);
     assert.notStrictEqual(

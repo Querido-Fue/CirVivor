@@ -1200,7 +1200,7 @@ async function runGeneratedEnemyCoreImpactScenario(device) {
         });
         const towerCommandId = requestSpawn(
             harness,
-            createGpuTowerSpawnIntent({ position: { x: 26.5, y: 12 } }),
+            createGpuTowerSpawnIntent({ position: { x: 24.5, y: 12 } }),
             1,
             'core-impact-tower'
         );
@@ -1236,50 +1236,79 @@ async function runGeneratedEnemyCoreImpactScenario(device) {
             === ABILITY_CREATION_ORIGIN_CODE.SENTENCE_PAYLOAD,
         `Core impact generated provenance 누락: ${JSON.stringify(generatedView)}`);
 
-        const boundary3 = await openGenericBoundary(device, harness.endpoint, 3);
-        coreDirector.observeCompletedEvents(boundary3, registry);
-        const coreStage3 = coreDirector.stageForFixedTick({
-            endpoint: harness.endpoint,
-            targetFixedTick: 3
-        });
-        assert(coreStage3.recoveryRequired !== true,
-            `Core impact T3 stage 실패: ${JSON.stringify(coreStage3)}`);
-        const lifecycle3 = harness.endpoint.commitAtFixedBoundary(3);
-        coreDirector.observeFixedCommit(lifecycle3, 3);
-        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 3),
-            'Core impact T3 fixed submit 실패');
-        await device.queue.onSubmittedWorkDone();
-
-        const impactEvents = await openGenericBoundary(
-            device,
-            harness.endpoint,
-            4
-        );
-        const coreObservation = coreDirector.observeCompletedEvents(
-            impactEvents,
-            registry
-        );
-        const stagedClaims = bountyDirector.observeCompletedEvents(
-            impactEvents,
-            registry
-        );
-        const coreStage4 = coreDirector.stageForFixedTick({
-            endpoint: harness.endpoint,
-            targetFixedTick: 4
-        });
-        assert(coreStage4.recoveryRequired !== true,
-            `Core impact T4 stage 실패: ${JSON.stringify(coreStage4)}`);
-        const lifecycle4 = harness.endpoint.commitAtFixedBoundary(4);
-        const coreCommit = coreDirector.observeFixedCommit(lifecycle4, 4);
-        const payout = bountyDirector.observeLifecycle(lifecycle4, 4);
-        const impactFact = coreObservation.facts?.find((fact) => (
-            fact.type === CORE_IMPACT_FACT_TYPE.IMPACT
-                && sameHandle(fact.enemyHandle, generatedHandle)
-        ));
-        const coreImpact = lifecycle4.despawned.find((entry) => (
-            sameHandle(entry.handle, generatedHandle)
-        ));
+        let impactTick = null;
+        let coreObservation = null;
+        let coreStage = null;
+        let coreCommit = null;
+        let lifecycle = null;
+        let stagedClaims = null;
+        let payout = null;
+        let impactFact = null;
+        let coreImpact = null;
+        for (let fixedTick = 3; fixedTick <= 32; fixedTick++) {
+            const completed = await openGenericBoundary(
+                device,
+                harness.endpoint,
+                fixedTick
+            );
+            const observation = coreDirector.observeCompletedEvents(
+                completed,
+                registry
+            );
+            const claims = bountyDirector.observeCompletedEvents(
+                completed,
+                registry
+            );
+            const stage = coreDirector.stageForFixedTick({
+                endpoint: harness.endpoint,
+                targetFixedTick: fixedTick
+            });
+            assert(stage.recoveryRequired !== true,
+                `Core impact T${fixedTick} stage 실패: ${JSON.stringify(stage)}`);
+            const fixedLifecycle = harness.endpoint.commitAtFixedBoundary(
+                fixedTick
+            );
+            const commitObservation = coreDirector.observeFixedCommit(
+                fixedLifecycle,
+                fixedTick
+            );
+            const fixedPayout = bountyDirector.observeLifecycle(
+                fixedLifecycle,
+                fixedTick
+            );
+            const observedImpactFact = observation.facts?.find((fact) => (
+                fact.type === CORE_IMPACT_FACT_TYPE.IMPACT
+                    && sameHandle(fact.enemyHandle, generatedHandle)
+            ));
+            const observedCoreImpact = fixedLifecycle.despawned.find((entry) => (
+                sameHandle(entry.handle, generatedHandle)
+            ));
+            assert(harness.endpoint.fixedUpdate(FIXED_DELTA, fixedTick),
+                `Core impact T${fixedTick} fixed submit 실패`);
+            await device.queue.onSubmittedWorkDone();
+            if (observedImpactFact || observedCoreImpact) {
+                impactTick = fixedTick;
+                coreObservation = observation;
+                coreStage = stage;
+                coreCommit = commitObservation;
+                lifecycle = fixedLifecycle;
+                stagedClaims = claims;
+                payout = fixedPayout;
+                impactFact = observedImpactFact;
+                coreImpact = observedCoreImpact;
+                break;
+            }
+            assert(observation.recoveryRequired !== true
+                && commitObservation.recoveryRequired !== true
+                && claims.stagedClaimCount === 0
+                && fixedPayout.payoutAmount === 0,
+            `Core impact bounded wait 실패: tick=${fixedTick}, result=${JSON.stringify({ observation, stage, commitObservation, claims, fixedPayout })}`);
+        }
+        const stalledBodies = impactTick === null
+            ? await readBodies(harness)
+            : null;
         assert(impactFact
+            && impactTick !== null
             && impactFact.bountyEligible === false
             && coreImpact?.disposition
                 === ENEMY_LIFECYCLE_DISPOSITION_ID.CORE_IMPACT
@@ -1289,17 +1318,19 @@ async function runGeneratedEnemyCoreImpactScenario(device) {
             && goldLedger.getBalance() === 0
             && coreIntegrity.getCurrentIntegrity() === 99,
         `generated Enemy Core impact 불일치: ${JSON.stringify({
+            impactTick,
             coreObservation,
-            coreStage4,
+            coreStage,
             coreCommit,
-            lifecycle4,
+            lifecycle,
             stagedClaims,
             payout,
+            stalledGeneratedBody: stalledBodies
+                ? findBody(stalledBodies, generatedHandle)
+                : null,
+            stalledBodies,
             integrity: coreIntegrity.getCurrentIntegrity()
         })}`);
-        assert(harness.endpoint.fixedUpdate(FIXED_DELTA, 4),
-            'Core impact cleanup fixed submit 실패');
-        await device.queue.onSubmittedWorkDone();
         const postCleanupBodies = await readBodies(harness);
         assert(!findBody(postCleanupBodies, generatedHandle)
             && registry.getActiveCount('enemy') === 0,
@@ -1310,6 +1341,7 @@ async function runGeneratedEnemyCoreImpactScenario(device) {
         return Object.freeze({
             generatedCount: cast.outcome.generatedCount,
             sentenceProvenance: true,
+            impactFixedTick: impactTick,
             disposition: coreImpact.disposition,
             bountyEligible: coreImpact.bountyEligible,
             payoutAmount: payout.payoutAmount,

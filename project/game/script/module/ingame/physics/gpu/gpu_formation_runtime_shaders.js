@@ -380,6 +380,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
+    charge_acceleration: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 struct BodyControlState {
@@ -2230,6 +2234,10 @@ fn clear_enemy_behavior(slot: u32) {
     enemy_behavior_states.values[slot].telegraph_style_code = 0u;
     enemy_behavior_states.values[slot].telegraph_color_rgba8 = 0u;
     enemy_behavior_states.values[slot].telegraph_radius_scale = 0.0;
+    enemy_behavior_states.values[slot].charge_acceleration = 0.0;
+    enemy_behavior_states.values[slot].reserved_0 = 0u;
+    enemy_behavior_states.values[slot].reserved_1 = 0u;
+    enemy_behavior_states.values[slot].reserved_2 = 0u;
 }
 
 fn clear_body_control(slot: u32) {

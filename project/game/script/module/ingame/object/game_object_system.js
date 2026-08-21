@@ -828,13 +828,32 @@ export class GameObjectSystem {
         if (this.pendingEnemyFixedTick === 0 && this.towerCreationCoordinator) {
             const creationObservation = this.towerCreationCoordinator
                 .observeCompletedAtFixedBoundary(proposedFixedTick);
+            const towerPayloadTerminalReceipts = [];
+            this.towerCreationCoordinator
+                .drainActorPayloadTerminalReceipts(
+                    towerPayloadTerminalReceipts
+                );
+            let towerPayloadObservation = null;
+            for (const terminalReceipt of towerPayloadTerminalReceipts) {
+                towerPayloadObservation = this.actorPayloadMaterializer
+                    ?.observeTowerCreationCompletion(
+                        terminalReceipt,
+                        proposedFixedTick
+                    ) ?? null;
+                if (towerPayloadObservation?.recoveryRequired === true) {
+                    break;
+                }
+            }
             const actorCreationReadyForSubmit
                 = creationObservation?.pending === true
                     && creationObservation.phase === 'tower-creation'
                     && creationObservation.staged === true;
-            if (creationObservation?.recoveryRequired === true) {
+            if (creationObservation?.recoveryRequired === true
+                || towerPayloadObservation?.recoveryRequired === true) {
                 return this.#pauseForGpuRecovery(
-                    'tower-creation-completion',
+                    towerPayloadObservation?.recoveryRequired === true
+                        ? 'tower-payload-completion'
+                        : 'tower-creation-completion',
                     proposedFixedTick
                 );
             }
@@ -847,17 +866,6 @@ export class GameObjectSystem {
                     );
                 }
                 return false;
-            }
-            const towerPayloadObservation = this.actorPayloadMaterializer
-                ?.observeTowerCreationCompletion(
-                    creationObservation,
-                    proposedFixedTick
-                ) ?? null;
-            if (towerPayloadObservation?.recoveryRequired === true) {
-                return this.#pauseForGpuRecovery(
-                    'tower-payload-completion',
-                    proposedFixedTick
-                );
             }
         }
         const gpuState = this.enemySimulationEndpoint.getRuntimeState();
@@ -1302,18 +1310,6 @@ export class GameObjectSystem {
                 if (towerCreationStage?.recoveryRequired === true) {
                     return this.#pauseForGpuRecovery(
                         'tower-creation-stage',
-                        proposedFixedTick
-                    );
-                }
-                const towerPayloadStageObservation
-                    = this.actorPayloadMaterializer
-                        ?.observeTowerCreationCompletion(
-                            towerCreationStage,
-                            proposedFixedTick
-                        ) ?? null;
-                if (towerPayloadStageObservation?.recoveryRequired === true) {
-                    return this.#pauseForGpuRecovery(
-                        'tower-payload-stage-completion',
                         proposedFixedTick
                     );
                 }

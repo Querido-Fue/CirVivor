@@ -2,6 +2,8 @@ import {
     ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG,
     ACTOR_PAYLOAD_MATERIALIZATION_STATUS,
     ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION,
+    ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS,
+    R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES,
     normalizeActorPayloadDefinition
 } from '../../contract/actor_payload_contract.js';
 import {
@@ -21,6 +23,7 @@ import {
 import {
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI,
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION,
+    GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY,
     createGpuActorPayloadLeaseStorage,
     readGpuActorPayloadMaterializationAggregate,
     writeGpuActorPayloadDestinationLease,
@@ -67,6 +70,29 @@ const ACTOR_ACTION_PLACEMENT_ACTION_CODES = new Set([
     SENTENCE_ACTION_CODE.EMIT,
     SENTENCE_ACTION_CODE.SUMMON
 ]);
+
+function wgslFloat32(value) {
+    return Math.fround(value).toPrecision(9);
+}
+
+const SAFE_PLACEMENT_CANDIDATE_COUNT
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES.length;
+const SAFE_PLACEMENT_ROTATION_COS_WGSL
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+        .map((candidate) => wgslFloat32(candidate.rotationCos)).join(', ');
+const SAFE_PLACEMENT_ROTATION_SIN_WGSL
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+        .map((candidate) => wgslFloat32(candidate.rotationSin)).join(', ');
+const SAFE_PLACEMENT_RADIUS_SUM_SCALE_WGSL
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+        .map((candidate) => wgslFloat32(candidate.radiusSumScale)).join(', ');
+const SAFE_PLACEMENT_SURFACE_GAP_SCALE_WGSL
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+        .map((candidate) => wgslFloat32(candidate.surfaceGapScale)).join(', ');
+const SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP_WGSL
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+        .map((candidate) => candidate.allowDynamicOverlap ? '1u' : '0u')
+        .join(', ');
 
 const HEADER_WORD_COUNT
     = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE / 4;
@@ -196,6 +222,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
+    charge_acceleration: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 struct RawReadBuffer { values: array<u32> }
@@ -267,6 +297,41 @@ const ERROR_GENERATION: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.GENERATION}u;
 const ERROR_STALE_PROTOCOL: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.STALE_PROTOCOL}u;
+const ERROR_DYNAMIC_BODY_OVERLAP: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP}u;
+const PLACEMENT_FAILURE_NONE: u32 =
+    ${ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE}u;
+const PLACEMENT_FAILURE_STATIC_SDF: u32 =
+    ${ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.STATIC_SDF}u;
+const PLACEMENT_FAILURE_DYNAMIC_BODY_OVERLAP: u32 =
+    ${ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.DYNAMIC_BODY_OVERLAP}u;
+const PLACEMENT_FAILURE_STATIC_AND_DYNAMIC: u32 =
+    ${ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
+        .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP}u;
+const PLACEMENT_RANK_NONE: u32 =
+    ${GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.RANK_NONE}u;
+const SAFE_PLACEMENT_CANDIDATE_COUNT: u32 =
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}u;
+const SAFE_PLACEMENT_ROTATION_COS = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_ROTATION_COS_WGSL}
+);
+const SAFE_PLACEMENT_ROTATION_SIN = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_ROTATION_SIN_WGSL}
+);
+const SAFE_PLACEMENT_RADIUS_SUM_SCALE = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_RADIUS_SUM_SCALE_WGSL}
+);
+const SAFE_PLACEMENT_SURFACE_GAP_SCALE = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_SURFACE_GAP_SCALE_WGSL}
+);
+const SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP = array<u32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP_WGSL}
+);
 
 fn header(field: u32) -> u32 {
     return leases.values[field];
@@ -447,10 +512,23 @@ fn valid_spawn_point(position: vec2f, radius: f32) -> bool {
     return sample_sdf(position) >= radius;
 }
 
-fn candidate_position(
+fn safe_placement_direction(
+    authored_direction: vec2f,
+    candidate_index: u32
+) -> vec2f {
+    let cosine = SAFE_PLACEMENT_ROTATION_COS[candidate_index];
+    let sine = SAFE_PLACEMENT_ROTATION_SIN[candidate_index];
+    return normalized_or_fallback(vec2f(
+        authored_direction.x * cosine - authored_direction.y * sine,
+        authored_direction.x * sine + authored_direction.y * cosine
+    ), authored_direction);
+}
+
+fn safe_placement_candidate_position(
     rank: u32,
     destination_slot: u32,
-    direction: vec2f
+    direction: vec2f,
+    candidate_index: u32
 ) -> vec2f {
     let source_radius = bitcast<f32>(
         snapshot_word(rank, ${S.RADIUS}u)
@@ -458,8 +536,42 @@ fn candidate_position(
     let destination_radius = physics.values[destination_slot].radius;
     let surface_gap = bitcast<f32>(header(${H.SURFACE_GAP}u));
     return source_position(rank)
-        + direction
-            * (source_radius + destination_radius + surface_gap);
+        + direction * (
+            (source_radius + destination_radius)
+                * SAFE_PLACEMENT_RADIUS_SUM_SCALE[candidate_index]
+            + surface_gap
+                * SAFE_PLACEMENT_SURFACE_GAP_SCALE[candidate_index]
+        );
+}
+
+fn overlaps_dynamic_body(position: vec2f, radius: f32) -> bool {
+    let body_capacity = min(
+        arrayLength(&physics.values),
+        arrayLength(&simulations.values)
+    );
+    for (var slot = 0u; slot < body_capacity; slot += 1u) {
+        let other_radius = physics.values[slot].radius;
+        if (!is_alive(slot) || !(other_radius > 0.0)) {
+            continue;
+        }
+        let delta = physics.values[slot].position - position;
+        let minimum_distance = radius + other_radius;
+        if (dot(delta, delta) + 0.000001
+            < minimum_distance * minimum_distance) {
+            return true;
+        }
+    }
+    return false;
+}
+
+fn pack_placement_telemetry(
+    rank: u32,
+    attempted_candidate_count: u32,
+    failure_class: u32
+) -> u32 {
+    return (rank & 0xffffu)
+        | ((attempted_candidate_count & 0xffu) << 16u)
+        | ((failure_class & 0xffu) << 24u);
 }
 
 fn reject(status: u32, errors: u32) {
@@ -486,6 +598,11 @@ fn initialize_actor_payload() {
     store_aggregate(15u,
         header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u));
     store_aggregate(16u, header(${H.PLACEMENT_FINGERPRINT}u));
+    store_aggregate(17u, pack_placement_telemetry(
+        PLACEMENT_RANK_NONE,
+        0u,
+        PLACEMENT_FAILURE_NONE
+    ));
 
     if (header(${H.ABI_VERSION}u) != MATERIALIZER_ABI) {
         reject(STATUS_PROTOCOL_REJECTED, ERROR_LEASE_ABI);
@@ -575,23 +692,87 @@ fn validate_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
         }
     }
 
+    var chosen_candidate_index = INVALID;
+    var attempted_candidate_count = 0u;
+    var placement_failure_class = PLACEMENT_FAILURE_NONE;
     if (errors == 0u) {
         let destination_radius = physics.values[destination_slot].radius;
-        let direction = vec2f(
+        let authored_direction = normalized_or_fallback(vec2f(
             bitcast<f32>(validation_word(rank, ${V.DIRECTION_X}u)),
             bitcast<f32>(validation_word(rank, ${V.DIRECTION_Y}u))
-        );
-        let position = candidate_position(rank, destination_slot, direction);
-        if (!(destination_radius > 0.0)
-            || !valid_spawn_point(position, destination_radius)) {
-            errors = errors | ERROR_SDF_PLACEMENT;
+        ), source_facing(rank));
+        var selected_position = source_position(rank);
+        var selected_direction = authored_direction;
+        var saw_static_sdf_rejection = false;
+        var saw_dynamic_overlap_rejection = false;
+        if (destination_radius > 0.0) {
+            for (var candidate_index = 0u;
+                candidate_index < SAFE_PLACEMENT_CANDIDATE_COUNT;
+                candidate_index += 1u) {
+                attempted_candidate_count += 1u;
+                let direction = safe_placement_direction(
+                    authored_direction,
+                    candidate_index
+                );
+                let position = safe_placement_candidate_position(
+                    rank,
+                    destination_slot,
+                    direction,
+                    candidate_index
+                );
+                if (!valid_spawn_point(position, destination_radius)) {
+                    saw_static_sdf_rejection = true;
+                    continue;
+                }
+                if (SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP[candidate_index]
+                        == 0u
+                    && overlaps_dynamic_body(position, destination_radius)) {
+                    saw_dynamic_overlap_rejection = true;
+                    continue;
+                }
+                chosen_candidate_index = candidate_index;
+                selected_position = position;
+                selected_direction = direction;
+                break;
+            }
         } else {
-            store_validation(rank, ${V.POSITION_X}u, bitcast<u32>(position.x));
-            store_validation(rank, ${V.POSITION_Y}u, bitcast<u32>(position.y));
-            store_validation(rank, ${V.DIRECTION_X}u, bitcast<u32>(direction.x));
-            store_validation(rank, ${V.DIRECTION_Y}u, bitcast<u32>(direction.y));
+            saw_static_sdf_rejection = true;
+        }
+        if (chosen_candidate_index == INVALID) {
+            errors = errors | ERROR_SDF_PLACEMENT;
+            if (saw_dynamic_overlap_rejection) {
+                errors = errors | ERROR_DYNAMIC_BODY_OVERLAP;
+            }
+            placement_failure_class = select(
+                select(
+                    PLACEMENT_FAILURE_NONE,
+                    PLACEMENT_FAILURE_STATIC_SDF,
+                    saw_static_sdf_rejection
+                ),
+                select(
+                    PLACEMENT_FAILURE_DYNAMIC_BODY_OVERLAP,
+                    PLACEMENT_FAILURE_STATIC_AND_DYNAMIC,
+                    saw_static_sdf_rejection
+                ),
+                saw_dynamic_overlap_rejection
+            );
+        } else {
+            store_validation(rank, ${V.POSITION_X}u,
+                bitcast<u32>(selected_position.x));
+            store_validation(rank, ${V.POSITION_Y}u,
+                bitcast<u32>(selected_position.y));
+            store_validation(rank, ${V.DIRECTION_X}u,
+                bitcast<u32>(selected_direction.x));
+            store_validation(rank, ${V.DIRECTION_Y}u,
+                bitcast<u32>(selected_direction.y));
         }
     }
+    store_validation(rank, ${V.CHOSEN_CANDIDATE_INDEX}u,
+        chosen_candidate_index);
+    store_validation(rank, ${V.ATTEMPTED_CANDIDATE_COUNT}u,
+        attempted_candidate_count);
+    store_validation(rank, ${V.PLACEMENT_FAILURE_CLASS}u,
+        placement_failure_class);
     store_validation(rank, ${V.ERROR_FLAGS}u, errors);
 }
 
@@ -602,12 +783,40 @@ fn aggregate_actor_payload_validation() {
     }
     let subject_count = header(${H.SUBJECT_COUNT}u);
     var errors = 0u;
+    var first_placement_rank = PLACEMENT_RANK_NONE;
+    var placement_attempted_candidate_count = 0u;
+    var placement_failure_class = PLACEMENT_FAILURE_NONE;
     var destination_fingerprint = hash_word(
         FNV_OFFSET,
         header(${H.COMMAND_FINGERPRINT}u)
     );
     for (var rank = 0u; rank < subject_count; rank++) {
-        errors = errors | validation_word(rank, ${V.ERROR_FLAGS}u);
+        let rank_errors = validation_word(rank, ${V.ERROR_FLAGS}u);
+        let rank_attempted_candidate_count = validation_word(
+            rank,
+            ${V.ATTEMPTED_CANDIDATE_COUNT}u
+        );
+        errors = errors | rank_errors;
+        if ((rank_errors
+                & (ERROR_SDF_PLACEMENT | ERROR_DYNAMIC_BODY_OVERLAP)) != 0u
+            && placement_failure_class == PLACEMENT_FAILURE_NONE) {
+            first_placement_rank = rank;
+            placement_attempted_candidate_count
+                = rank_attempted_candidate_count;
+            placement_failure_class = validation_word(
+                rank,
+                ${V.PLACEMENT_FAILURE_CLASS}u
+            );
+        } else if (rank_errors == 0u) {
+            placement_attempted_candidate_count = max(
+                placement_attempted_candidate_count,
+                rank_attempted_candidate_count
+            );
+            if (first_placement_rank == PLACEMENT_RANK_NONE
+                && validation_word(rank, ${V.CHOSEN_CANDIDATE_INDEX}u) > 0u) {
+                first_placement_rank = rank;
+            }
+        }
         let destination_slot = lease_word(rank, ${R.DESTINATION_SLOT}u);
         let destination_entity_id = lease_word(
             rank,
@@ -632,9 +841,15 @@ fn aggregate_actor_payload_validation() {
     }
     store_aggregate(13u, destination_fingerprint);
     store_aggregate(14u, errors);
+    store_aggregate(17u, pack_placement_telemetry(
+        first_placement_rank,
+        placement_attempted_candidate_count,
+        placement_failure_class
+    ));
     if (errors == 0u) {
         store_aggregate(8u, STATUS_COMPLETE);
-    } else if ((errors & ~ERROR_SDF_PLACEMENT) == 0u) {
+    } else if ((errors
+        & ~(ERROR_SDF_PLACEMENT | ERROR_DYNAMIC_BODY_OVERLAP)) == 0u) {
         store_aggregate(8u, STATUS_SDF_REJECTED);
     } else {
         store_aggregate(8u, STATUS_PROTOCOL_REJECTED);
@@ -1283,6 +1498,8 @@ fn initialize_actor_action_enemy_payload() {
         actor_header(${H.ACTOR_ACTION_PROFILE_FINGERPRINT}u));
     actor_store_aggregate(16u,
         actor_header(${H.PLACEMENT_FINGERPRINT}u));
+    actor_store_aggregate(17u,
+        ${GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.RANK_NONE}u);
     let count = actor_header(${H.SUBJECT_COUNT}u);
     let placement_exact = actor_placement.values[${AA.ABI_VERSION}u]
             == ACTOR_PLACEMENT_ABI
@@ -1868,12 +2085,39 @@ function normalizeActorActionPlacementBinding(binding, command, completion) {
     return Object.freeze({ ...binding });
 }
 
+function placementFailureClassName(value) {
+    switch (value) {
+    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.STATIC_SDF:
+        return 'STATIC_SDF';
+    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.DYNAMIC_BODY_OVERLAP:
+        return 'DYNAMIC_BODY_OVERLAP';
+    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
+        .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP:
+        return 'STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP';
+    default:
+        return 'NONE';
+    }
+}
+
 function freezeCompletion(entry, aggregate, extra = {}) {
+    const placementReason = aggregate.status
+            === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
+        ? Object.freeze({
+            code: 'NO_VALID_PLACEMENT',
+            firstFailingRank: aggregate.firstFailingRank ?? null,
+            attemptedCandidateCount:
+                aggregate.attemptedCandidateCount ?? 0,
+            failureClass: placementFailureClassName(
+                aggregate.placementFailureClass
+            )
+        })
+        : null;
     return Object.freeze({
         abiVersion: GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION,
         materializerAbiVersion: ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION,
         transactionId: entry.transactionId,
         ...aggregate,
+        ...(placementReason ? { reason: placementReason } : {}),
         ...extra
     });
 }
@@ -2457,6 +2701,9 @@ export class GpuActorPayloadMaterializationRuntime {
             towerTargetQueryStorageBindingCount: 8,
             towerTargetPolicy:
                 'source-local-distance-share-identity-then-core-then-facing',
+            safePlacementPolicy:
+                'authored-rotated-shortened-final-local-overlap',
+            safePlacementCandidateCount: SAFE_PLACEMENT_CANDIDATE_COUNT,
             targetReadbackPolicy: 'none',
             pendingCount: this.pending.length,
             inFlightCount: this.inFlight.size,

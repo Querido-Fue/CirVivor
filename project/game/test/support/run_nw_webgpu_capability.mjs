@@ -511,6 +511,56 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.storageMaximum <= 9
             && fixture.recoveryRequired === false
             && fixture.destroyedTeardown === true;
+    } else if (fixtureStage === 'post-r5-live-bugfix') {
+        fixture = result?.postR5LiveBugfix;
+        const safeCases = fixture?.safePlacement?.cases ?? [];
+        const actualCasts = fixture?.actualR2?.abilityCasts ?? [];
+        const healthy = (health) => health?.restartCountDelta === 0
+            && health.sessionGenerationDelta === 0
+            && health.recoveryRequired === false
+            && health.materializerRecoveryRequired === false
+            && health.towerProtocolFailureCount === 0
+            && health.registryReservedCount === 0
+            && health.pendingCommandCount === 0
+            && health.materializerInFlightCount === 0
+            && health.storageMaximum <= 9;
+        scenarioValid = fixture?.scenario
+                === 'post-r5-live-bugfix-production-ordering'
+            && safeCases.map(({ subjectCount }) => subjectCount).join(',')
+                === '100,256,735'
+            && safeCases.every((entry) => (
+                entry.generatedCount === entry.subjectCount
+                && entry.exactDoubling === true
+                && entry.cooldownConsumed === true
+            ))
+            && fixture.safePlacement.edgeCases?.length === 5
+            && fixture.safePlacement.perSubjectCpuCommandCount === 0
+            && healthy(fixture.safePlacement.health)
+            && fixture?.impossiblePlacement?.generatedCount === 0
+            && fixture.impossiblePlacement.cooldownConsumed === false
+            && fixture.impossiblePlacement.reason?.code
+                === 'NO_VALID_PLACEMENT'
+            && fixture.impossiblePlacement.reason.attemptedCandidateCount
+                === 14
+            && healthy(fixture.impossiblePlacement.health)
+            && fixture?.actualR2?.mapId === 'r2_enemy_showcase_01'
+            && actualCasts.filter(({ slotId }) => slotId === 'E').length === 2
+            && actualCasts.filter(({ slotId }) => slotId === 'SHIFT').length
+                === 3
+            && actualCasts.filter(({ slotId }) => slotId === 'SPACE').length
+                === 1
+            && actualCasts.every((cast) => cast.generatedCount > 0
+                && cast.cooldownConsumed === true)
+            && fixture.actualR2.stageReceiptEvidence?.length >= 4
+            && fixture?.actualArrow?.mapId === 'r2_enemy_showcase_01'
+            && fixture.actualArrow.chargeSamples?.length >= 4
+            && fixture.actualArrow.recoilSamples?.length >= 2
+            && fixture.actualArrow.contactEventCount === 1
+            && fixture.actualArrow.sawRecover === true
+            && fixture.actualArrow.targetMovedAfterLock === true
+            && fixture.actualR2.towerShare?.invariantViolationCount === 0
+            && healthy(fixture.actualR2.health)
+            && healthy(fixture.actualArrow.health);
     } else if (fixtureStage === 'actor-action-placement') {
         fixture = result?.actorActionPlacement;
         const actions = fixture?.actions;
@@ -2333,7 +2383,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             coexistence?.collisionStorageProfile ?? {}
         ).filter((value) => Number.isFinite(value));
         const coexistenceValid = coexistence?.activeEnemyCount === 5
-            && coexistence.bodyAbiVersion === 8
+            && coexistence.bodyAbiVersion === 9
             && Object.entries(expectedDefinitions).every(([name, definition]) => (
                 registryByName.get(name)?.kindId === 'enemy'
                 && registryByName.get(name)?.definitionId === definition
@@ -2619,7 +2669,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 && cycle.tuple.captureAuthoritativeEpoch
                     === mixedChurn.cycleTuple.captureAuthoritativeEpoch
             ))
-            && fixture?.coexistence?.bodyAbiVersion === 8
+            && fixture?.coexistence?.bodyAbiVersion === 9
             && fixture.coexistence.mainHarnessCapacity === 20
             && fixture.coexistence.peakActiveCount === 13
             && fixture.coexistence.peakCapacityHeadroom === 7
@@ -2665,6 +2715,7 @@ function assertFixtureStageResult(result) {
         fixtureStage === 'enemy-arrow-charge'
         || fixtureStage === 'actor-action-placement'
         || fixtureStage === 'r5-actor-verbs'
+        || fixtureStage === 'post-r5-live-bugfix'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
         || fixtureStage === 'enemy-rhom-priority'
@@ -2777,6 +2828,8 @@ async function prepareHarnessApp(
         ? 'tower_group_target_query_runner.js'
         : fixtureStage === 'r5-actor-verbs'
             ? 'r5_actor_verbs_bootstrap.js'
+        : fixtureStage === 'post-r5-live-bugfix'
+            ? 'post_r5_live_bugfix_runner.js'
         : fixtureStage === 'actor-action-placement'
             ? 'actor_action_placement_runner.js'
         : fixtureStage === 'enemy-pentagon-effect'
@@ -2806,17 +2859,24 @@ async function prepareHarnessApp(
     }
     const productionDirectory = path.join(appDirectory, 'production');
     await fs.mkdir(productionDirectory, { recursive: true });
-    for (const relativePath of PRODUCTION_SCRIPT_MODULE_FILES) {
-        const destinationPath = path.join(
-            productionDirectory,
-            'script',
-            ...relativePath.split('/')
+    if (fixtureStage === 'post-r5-live-bugfix') {
+        await linkRuntimeDirectory(
+            gameScriptDirectory,
+            path.join(productionDirectory, 'script')
         );
-        await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-        await linkRuntimeFile(
-            path.join(gameScriptDirectory, ...relativePath.split('/')),
-            destinationPath
-        );
+    } else {
+        for (const relativePath of PRODUCTION_SCRIPT_MODULE_FILES) {
+            const destinationPath = path.join(
+                productionDirectory,
+                'script',
+                ...relativePath.split('/')
+            );
+            await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+            await linkRuntimeFile(
+                path.join(gameScriptDirectory, ...relativePath.split('/')),
+                destinationPath
+            );
+        }
     }
     const packageJson = JSON.parse(
         await fs.readFile(path.join(harnessDirectory, 'package.json'), 'utf8')
@@ -2888,6 +2948,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'enemy_cork_route_closure_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'post_r5_live_bugfix_runner.js'
             )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))

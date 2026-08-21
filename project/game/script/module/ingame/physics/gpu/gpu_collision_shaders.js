@@ -167,7 +167,7 @@ const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 // Arrow의 Tower direct ownership은 다음 fixed tick 전에 SDF route clearance를
 // 통과해야 합니다. 이 상한은 자료/ABI가 아니라 shader-local deterministic budget입니다.
 const ENEMY_CHARGE_VISIBILITY_MAX_STEPS: u32 = 48u;
-const ENEMY_CHARGE_EXPO_OUT_LAMBDA: f32 = 10.0;
+const ENEMY_RECOIL_EXPO_OUT_LAMBDA: f32 = 10.0;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
 const BODY_LAYER_TERRAIN: u32 = ${GPU_CIRCLE_BODY_LAYER.TERRAIN}u;
@@ -261,7 +261,7 @@ const TOWER_TARGET_QUERY_FLAG_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.VALID}u
 const TOWER_TARGET_QUERY_FLAG_SOURCE_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.SOURCE_VALID}u;
 const TOWER_TARGET_QUERY_FLAG_ROSTER_CHANGED: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.ROSTER_CHANGED}u;
 // Arrow program-local latch. It intentionally stays out of the public behavior
-// flag enum/host input: the 80-byte side-plane layout is unchanged and this bit
+// flag enum/host input: this private bit is not part of the 96-byte host vocabulary
 // only distinguishes the first direct->route handoff from later route ticks.
 const ENEMY_BEHAVIOR_FLAG_ARROW_ROUTE_FALLBACK: u32 = 128u;
 const ENEMY_ORBIT_COORDINATE_SYSTEM_RING_SLOTS: u32 = ${FORMATION_COORDINATE_SYSTEM_CODE.RING_SLOTS}u;
@@ -411,6 +411,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
+    charge_acceleration: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
@@ -2326,7 +2330,7 @@ fn enter_enemy_charge_route_fallback(body_id: u32) {
     );
 }
 
-fn normalized_bounded_expo_out(progress: f32) -> f32 {
+fn normalized_bounded_recoil_expo_out(progress: f32) -> f32 {
     let bounded_progress = clamp(progress, 0.0, 1.0);
     if (bounded_progress <= 0.0) {
         return 0.0;
@@ -2334,12 +2338,12 @@ fn normalized_bounded_expo_out(progress: f32) -> f32 {
     if (bounded_progress >= 1.0) {
         return 1.0;
     }
-    let denominator = 1.0 - exp2(-ENEMY_CHARGE_EXPO_OUT_LAMBDA);
-    return (1.0 - exp2(-ENEMY_CHARGE_EXPO_OUT_LAMBDA * bounded_progress))
+    let denominator = 1.0 - exp2(-ENEMY_RECOIL_EXPO_OUT_LAMBDA);
+    return (1.0 - exp2(-ENEMY_RECOIL_EXPO_OUT_LAMBDA * bounded_progress))
         / denominator;
 }
 
-fn enemy_charge_expo_out_velocity(
+fn enemy_recoil_expo_out_velocity(
     direction: vec2f,
     speed: f32,
     duration_ticks: u32,
@@ -2360,9 +2364,24 @@ fn enemy_charge_expo_out_velocity(
     let displacement = max(speed, 0.0)
         * duration
         * max(params.dt, 0.0)
-        * (normalized_bounded_expo_out(end_progress)
-            - normalized_bounded_expo_out(start_progress));
+        * (normalized_bounded_recoil_expo_out(end_progress)
+            - normalized_bounded_recoil_expo_out(start_progress));
     return direction * displacement * max(params.inverse_dt, 0.0);
+}
+
+fn enemy_charge_accelerated_velocity(
+    body_id: u32,
+    locked_direction: vec2f
+) -> vec2f {
+    let current_velocity = physics.values[body_id].velocity;
+    let parallel_speed = clamp(
+        max(dot(current_velocity, locked_direction), 0.0)
+            + enemy_behavior_states.values[body_id].charge_acceleration
+                * max(params.dt, 0.0),
+        0.0,
+        enemy_behavior_states.values[body_id].charge_speed
+    );
+    return locked_direction * parallel_speed;
 }
 
 fn enemy_charge_recoil_motion_ticks(body_id: u32) -> u32 {
@@ -2435,7 +2454,11 @@ fn octagon_orbit_config_is_valid(body_id: u32) -> bool {
         && total_facet_count == ENEMY_ORBIT_SLOT_CAPACITY
         && enemy_behavior_states.values[body_id].charge_speed == 0.0
         && enemy_behavior_states.values[body_id].recoil_impulse == 0.0
-        && enemy_behavior_states.values[body_id].telegraph_radius_scale == 0.0;
+        && enemy_behavior_states.values[body_id].telegraph_radius_scale == 0.0
+        && enemy_behavior_states.values[body_id].charge_acceleration == 0.0
+        && enemy_behavior_states.values[body_id].reserved_0 == 0u
+        && enemy_behavior_states.values[body_id].reserved_1 == 0u
+        && enemy_behavior_states.values[body_id].reserved_2 == 0u;
 }
 
 fn rotate_octagon_orbit_radial(radial: vec2f, angle: f32) -> vec2f {
@@ -2722,11 +2745,9 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
                 params.fixed_tick
                     + enemy_behavior_states.values[body_id].charge_max_ticks
         );
-        physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
-            direction,
-            enemy_behavior_states.values[body_id].charge_speed,
-            enemy_behavior_states.values[body_id].charge_max_ticks,
-            0u
+        physics.values[body_id].velocity = enemy_charge_accelerated_velocity(
+            body_id,
+            direction
         );
         return;
     }
@@ -2744,14 +2765,9 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             return;
         }
         let charge_direction = enemy_behavior_states.values[body_id].charge_direction;
-        let charge_speed = enemy_behavior_states.values[body_id].charge_speed;
-        let charge_elapsed_ticks = params.fixed_tick
-            - enemy_behavior_states.values[body_id].state_entered_fixed_tick;
-        let charge_velocity = enemy_charge_expo_out_velocity(
-            charge_direction,
-            charge_speed,
-            enemy_behavior_states.values[body_id].charge_max_ticks,
-            charge_elapsed_ticks
+        let charge_velocity = enemy_charge_accelerated_velocity(
+            body_id,
+            charge_direction
         );
         let charge_segment_end = physics.values[body_id].position
             + charge_velocity * max(params.dt, 0.0);
@@ -2795,7 +2811,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             let recoil_elapsed_ticks = params.fixed_tick
                 - enemy_behavior_states.values[body_id].state_entered_fixed_tick
                 - 1u;
-            physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
+            physics.values[body_id].velocity = enemy_recoil_expo_out_velocity(
                 -enemy_behavior_states.values[body_id].charge_direction,
                 enemy_behavior_states.values[body_id].recoil_impulse,
                 enemy_charge_recoil_motion_ticks(body_id),
@@ -5576,7 +5592,7 @@ fn apply_enemy_charge_recoil(@builtin(global_invocation_id) global_id: vec3u) {
     // solver/rebuild/final velocity 뒤에 첫 Expo-out finite difference만 기록합니다.
     // 다음 fixed tick의 CONTACT_RECOIL branch가 같은 첫 segment를 실제 motion으로
     // 적용하므로 contact tick에 solver를 두 번 움직이지 않습니다.
-    physics.values[body_id].velocity = enemy_charge_expo_out_velocity(
+    physics.values[body_id].velocity = enemy_recoil_expo_out_velocity(
         -enemy_behavior_states.values[body_id].charge_direction,
         enemy_behavior_states.values[body_id].recoil_impulse,
         enemy_charge_recoil_motion_ticks(body_id),
@@ -5773,6 +5789,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
+    charge_acceleration: f32,
+    reserved_0: u32,
+    reserved_1: u32,
+    reserved_2: u32,
 }
 
 struct EffectSummary {

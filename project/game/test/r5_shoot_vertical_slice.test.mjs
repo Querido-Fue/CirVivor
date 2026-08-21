@@ -156,7 +156,11 @@ class FakeTowerCreationCoordinator {
             ))
             : []);
         return Object.freeze({
+            terminal: true,
+            receiptKind: 'tower-creation-terminal',
             pending: false,
+            staged: false,
+            phase: null,
             committed,
             result,
             reason: options.reason ?? null,
@@ -308,6 +312,77 @@ test('Tower Shoot는 1→2, 다음 execution 2→4를 frozen count로 만들고 
     destroyHarness(harness);
 });
 
+test('Tower stage/pending receipt는 terminal settlement가 아니며 authentic terminal만 exact-once 처리한다', () => {
+    const harness = createHarness();
+    stageShoot(harness, ABILITY_SLOT_ID.SHIFT, 1, 1);
+    const request = harness.coordinator.requests[0];
+    const stageReceipt = Object.freeze({
+        accepted: true,
+        staged: true,
+        pending: true,
+        phase: 'tower-creation',
+        transactionId: request.transactionId,
+        requestFingerprint:
+            harness.coordinator.requestFingerprintByTransaction.get(
+                request.transactionId
+            ),
+        actorActionProfileFingerprint:
+            request.command.actorActionProfileFingerprint,
+        recoveryRequired: false
+    });
+    const stageObservation = harness.materializer
+        .observeTowerCreationCompletion(stageReceipt, 2);
+    assert.equal(stageObservation.observedCount, 0);
+    assert.equal(harness.materializer.getStatus().inFlightCount, 1);
+    assert.equal(harness.endpoint.snapshotTokens.size, 1);
+    assert.equal(harness.wordSystem.getSlotView(ABILITY_SLOT_ID.SHIFT)
+        .cooldown.nextEligibleFixedTick, 0);
+    assert.equal(harness.materializer.requiresRecovery(), false);
+
+    const nullishResultObservation = harness.materializer
+        .observeTowerCreationCompletion(Object.freeze({
+            ...stageReceipt,
+            staged: false,
+            pending: false,
+            phase: null,
+            result: undefined
+        }), 2);
+    assert.equal(nullishResultObservation.observedCount, 0);
+    assert.equal(harness.materializer.getStatus().inFlightCount, 1);
+
+    const terminal = harness.coordinator.complete(request);
+    for (const field of ['pending', 'staged', 'phase']) {
+        const { [field]: omitted, ...missingShape } = terminal;
+        assert.notEqual(omitted, undefined);
+        const missingShapeObservation = harness.materializer
+            .observeTowerCreationCompletion(
+                Object.freeze(missingShape),
+                3
+            );
+        assert.equal(missingShapeObservation.observedCount, 0);
+        assert.equal(harness.materializer.getStatus().inFlightCount, 1);
+        assert.equal(harness.materializer.requiresRecovery(), false);
+    }
+    const committed = harness.materializer.observeTowerCreationCompletion(
+        terminal,
+        3
+    );
+    assert.equal(committed.observedCount, 1);
+    assert.equal(committed.committedCount, 1);
+    assert.equal(harness.materializer.getStatus().inFlightCount, 0);
+    assert.equal(harness.endpoint.snapshotTokens.size, 0);
+    assert.equal(harness.wordSystem.getStatusView().lastExecutionOutcome
+        .cooldownConsumed, true);
+
+    const replay = harness.materializer.observeTowerCreationCompletion(
+        terminal,
+        4
+    );
+    assert.equal(replay.observedCount, 0);
+    assert.equal(harness.materializer.getStatus().totalTowerCommitted, 1);
+    destroyHarness(harness);
+});
+
 test('Enemies Shoot Tower는 frozen Enemy 10명을 Tower child 10명으로 전달한다', () => {
     const harness = createHarness();
     const staged = stageShoot(harness, ABILITY_SLOT_ID.SPACE, 5, 10);
@@ -421,6 +496,10 @@ test('Tower COMMITTED identity/count shape 위조는 cooldown 없이 protocol re
         .cooldownConsumed, false);
     assert.equal(harness.abilityRuntime.getStatus().lastExecutionState.state,
         ABILITY_EXECUTION_STATE.FAILED_PROTOCOL);
+    assert.equal(harness.materializer.getStatus().failure.stage,
+        'tower-payload-terminal-shape');
+    assert.equal(harness.materializer.getStatus().failure.mismatchField,
+        'createdCount');
     destroyHarness(harness);
 });
 
@@ -445,5 +524,9 @@ test('Tower completion profile fingerprint 변조는 publication 성공처럼 �
     assert.equal(harness.materializer.getStatus().totalTowerCommitted, 0);
     assert.equal(harness.abilityRuntime.getStatus().lastExecutionState.state,
         ABILITY_EXECUTION_STATE.FAILED_PROTOCOL);
+    assert.equal(harness.materializer.getStatus().failure.stage,
+        'tower-payload-terminal-authentication');
+    assert.equal(harness.materializer.getStatus().failure.mismatchField,
+        'actorActionProfileFingerprint');
     destroyHarness(harness);
 });

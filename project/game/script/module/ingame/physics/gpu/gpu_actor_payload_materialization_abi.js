@@ -1,4 +1,6 @@
 import {
+    ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG,
+    ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS,
     ACTOR_PAYLOAD_MATERIALIZATION_STATUS,
     hasOnlyKnownActorPayloadErrorFlags,
     isKnownActorPayloadMaterializationStatus
@@ -9,8 +11,20 @@ import {
 } from './gpu_ability_subject_snapshot_abi.js';
 
 const LITTLE_ENDIAN = true;
+const KNOWN_PLACEMENT_FAILURE_CLASSES = new Set(
+    Object.values(ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS)
+);
 
-export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 3;
+export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 4;
+
+export const GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY = Object.freeze({
+    RANK_MASK: 0xffff,
+    RANK_NONE: 0xffff,
+    ATTEMPTED_CANDIDATE_COUNT_SHIFT: 16,
+    ATTEMPTED_CANDIDATE_COUNT_MASK: 0xff,
+    FAILURE_CLASS_SHIFT: 24,
+    FAILURE_CLASS_MASK: 0xff
+});
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
     LEASE_HEADER: Object.freeze({
@@ -90,7 +104,7 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         ERROR_FLAGS: 56,
         ACTOR_ACTION_PROFILE_FINGERPRINT: 60,
         PLACEMENT_FINGERPRINT: 64,
-        RESERVED: 68
+        PLACEMENT_TELEMETRY: 68
     }),
     VALIDATION_RECORD: Object.freeze({
         STRIDE: 32,
@@ -99,9 +113,9 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         POSITION_Y: 8,
         DIRECTION_X: 12,
         DIRECTION_Y: 16,
-        RESERVED_0: 20,
-        RESERVED_1: 24,
-        RESERVED_2: 28
+        CHOSEN_CANDIDATE_INDEX: 20,
+        ATTEMPTED_CANDIDATE_COUNT: 24,
+        PLACEMENT_FAILURE_CLASS: 28
     })
 });
 
@@ -258,6 +272,22 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         throw new RangeError('actor payload aggregate readback이 짧습니다.');
     }
     const view = new DataView(buffer);
+    const placementTelemetry = view.getUint32(
+        a.PLACEMENT_TELEMETRY,
+        LITTLE_ENDIAN
+    );
+    const placementRank = placementTelemetry
+        & GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.RANK_MASK;
+    const attemptedCandidateCount = (
+        placementTelemetry
+        >>> GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY
+            .ATTEMPTED_CANDIDATE_COUNT_SHIFT
+    ) & GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY
+        .ATTEMPTED_CANDIDATE_COUNT_MASK;
+    const placementFailureClass = (
+        placementTelemetry
+        >>> GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.FAILURE_CLASS_SHIFT
+    ) & GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.FAILURE_CLASS_MASK;
     const result = Object.freeze({
         abiVersion: view.getUint32(a.ABI_VERSION, LITTLE_ENDIAN),
         bodyAbiVersion: view.getUint32(a.BODY_ABI_VERSION, LITTLE_ENDIAN),
@@ -302,20 +332,52 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         placementFingerprint: view.getUint32(
             a.PLACEMENT_FINGERPRINT,
             LITTLE_ENDIAN
-        )
+        ),
+        placementTelemetry,
+        firstFailingRank: placementFailureClass === 0
+            || placementRank
+                === GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.RANK_NONE
+            ? null
+            : placementRank,
+        firstFallbackRank: placementFailureClass !== 0
+            || placementRank
+                === GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY.RANK_NONE
+            ? null
+            : placementRank,
+        attemptedCandidateCount,
+        placementFailureClass
     });
     if (result.abiVersion
             !== GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION
         || result.bodyAbiVersion !== GPU_CIRCLE_BODY_ABI_VERSION
         || !isKnownActorPayloadMaterializationStatus(result.status)
-        || !hasOnlyKnownActorPayloadErrorFlags(result.errorFlags)) {
+        || !hasOnlyKnownActorPayloadErrorFlags(result.errorFlags)
+        || !KNOWN_PLACEMENT_FAILURE_CLASSES.has(
+            result.placementFailureClass
+        )) {
         throw new RangeError('actor payload aggregate ABI/status가 잘못됐습니다.');
     }
     if (result.status === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE
         && (result.subjectCount <= 0
             || result.materializedCount !== result.subjectCount
-            || result.errorFlags !== 0)) {
+            || result.errorFlags !== 0
+            || result.placementFailureClass
+                !== ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE
+            || result.firstFailingRank !== null)) {
         throw new RangeError('complete actor payload aggregate가 일관되지 않습니다.');
+    }
+    if (result.status === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
+        && (result.subjectCount <= 0
+            || result.materializedCount !== 0
+            || result.firstFailingRank === null
+            || result.firstFailingRank >= result.subjectCount
+            || result.attemptedCandidateCount <= 0
+            || result.placementFailureClass
+                === ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE
+            || (result.errorFlags
+                & ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SDF_PLACEMENT)
+                === 0)) {
+        throw new RangeError('placement reject actor payload aggregate가 일관되지 않습니다.');
     }
     return result;
 }

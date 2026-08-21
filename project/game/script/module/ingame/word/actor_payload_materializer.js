@@ -17,6 +17,10 @@ import {
 } from './word_system.js';
 
 const MAX_MATERIALIZATION_HISTORY = 128;
+const TOWER_CREATION_TERMINAL_RECEIPT_KIND = 'tower-creation-terminal';
+const TOWER_CREATION_TERMINAL_RESULTS = new Set(
+    Object.values(TOWER_CREATION_RESULT)
+);
 const MATERIALIZATION_KIND = Object.freeze({
     ENEMY: 'ENEMY',
     TOWER: 'TOWER'
@@ -77,8 +81,56 @@ function freezeHistory(source) {
         targetFixedTick: source.targetFixedTick,
         completedFixedTick: source.completedFixedTick,
         payloadCode: source.payloadCode ?? null,
-        reason: source.reason ?? null
+        reason: source.reason ?? null,
+        placement: source.placement ?? null
     });
+}
+
+function freezePlacementTelemetry(completion) {
+    if (!Number.isSafeInteger(completion?.attemptedCandidateCount)) {
+        return null;
+    }
+    return Object.freeze({
+        firstFallbackRank: completion.firstFallbackRank ?? null,
+        firstFailingRank: completion.firstFailingRank ?? null,
+        attemptedCandidateCount: completion.attemptedCandidateCount,
+        failureClass: completion.placementFailureClass ?? 0
+    });
+}
+
+function isExplicitTowerCreationTerminalReceipt(source) {
+    return source?.terminal === true
+        && source.receiptKind === TOWER_CREATION_TERMINAL_RECEIPT_KIND
+        && source.pending === false
+        && source.staged === false
+        && source.phase === null
+        && source.result != null
+        && TOWER_CREATION_TERMINAL_RESULTS.has(source.result);
+}
+
+function findTowerReceiptMismatchField(completion, record) {
+    if (completion.transactionId !== record.transactionId) {
+        return 'transactionId';
+    }
+    if (record.requestFingerprint !== null
+        && completion.requestFingerprint !== record.requestFingerprint) {
+        return 'requestFingerprint';
+    }
+    if (completion.actorActionProfileFingerprint
+        !== record.ready.command.actorActionProfileFingerprint) {
+        return 'actorActionProfileFingerprint';
+    }
+    return 'unknown';
+}
+
+function findCommittedShapeMismatchField(completion, expectedCount) {
+    if (completion.committed !== true) return 'committed';
+    if (completion.createdCount !== expectedCount) return 'createdCount';
+    if (!Array.isArray(completion.handles)) return 'handles';
+    if (completion.handles.length !== completion.createdCount) {
+        return 'handles.length';
+    }
+    return 'unknown';
 }
 
 /**
@@ -305,8 +357,8 @@ export class ActorPayloadMaterializer {
             committedHandles: Object.freeze([]),
             recoveryRequired: this.requiresRecovery()
         });
-        if (this.destroyed || !completion?.transactionId
-            || completion.pending === true || completion.result === null) {
+        if (this.destroyed
+            || !isExplicitTowerCreationTerminalReceipt(completion)) {
             return empty;
         }
         const record = this.inFlight.get(completion.transactionId);
@@ -326,7 +378,12 @@ export class ActorPayloadMaterializer {
             this.recoveryRequired = true;
             this.failure = Object.freeze({
                 code: 'tower-payload-completion-mismatch',
-                message: 'Tower payload completion이 execution과 다릅니다.'
+                message: 'Tower payload completion이 execution과 다릅니다.',
+                stage: 'tower-payload-terminal-authentication',
+                mismatchField: findTowerReceiptMismatchField(
+                    completion,
+                    record
+                )
             });
             this.#settleTowerRejected(
                 record,
@@ -397,7 +454,12 @@ export class ActorPayloadMaterializer {
             this.recoveryRequired = true;
             this.failure = Object.freeze({
                 code: 'tower-payload-committed-shape',
-                message: 'Tower payload COMMITTED receipt의 count/handle shape가 다릅니다.'
+                message: 'Tower payload COMMITTED receipt의 count/handle shape가 다릅니다.',
+                stage: 'tower-payload-terminal-shape',
+                mismatchField: findCommittedShapeMismatchField(
+                    completion,
+                    ready.completion.subjectCount
+                )
             });
             this.#settleTowerRejected(
                 record,
@@ -421,7 +483,15 @@ export class ActorPayloadMaterializer {
             this.recoveryRequired = true;
             this.failure = Object.freeze({
                 code: 'tower-payload-protocol-rejected',
-                message: 'Tower payload transaction protocol이 거절됐습니다.'
+                message: 'Tower payload transaction protocol이 거절됐습니다.',
+                stage: String(
+                    completion.failure?.stage
+                        ?? completion.reason
+                        ?? 'tower-payload-terminal-protocol'
+                ).slice(0, 96),
+                mismatchField: String(
+                    completion.failure?.mismatchField ?? 'protocol'
+                ).slice(0, 96)
             });
         } else if (completion.reason === 'RUNTIME_UNAVAILABLE') {
             code = ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE;
@@ -911,7 +981,8 @@ export class ActorPayloadMaterializer {
                 completion.materializationTargetTick
                     ?? completion.sourceTick ?? fixedTick,
             payloadCode: record.ready.command.payloadCode,
-            reason: completion.reason ?? null
+            reason: completion.reason ?? null,
+            placement: freezePlacementTelemetry(completion)
         });
         this.history.push(entry);
         while (this.history.length > MAX_MATERIALIZATION_HISTORY) {
