@@ -15,7 +15,10 @@ project/game/script/lib/
 
 # Ignore Markdown documents except README files.
 *.[mM][dD]
-![Rr][Ee][Aa][Dd][Mm][Ee].[mM][dD]
+!README.md
+
+# Planning documents stay local even if broader allow rules change later.
+/plan/**/*.md
 
 # Agent documentation is local and intentionally not versioned.
 /AGENT_GUIDE.md
