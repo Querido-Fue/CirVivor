@@ -19,10 +19,12 @@ import {
     writeGpuActorActionProgramHeader
 } from './gpu_actor_action_placement_abi.js';
 import {
+    GPU_ACTOR_ACTION_ADMISSION_STORAGE_BINDING_COUNT,
     GPU_ACTOR_ACTION_DISPATCH_STORAGE_BINDING_COUNT,
     GPU_ACTOR_ACTION_DISPATCH_WGSL,
     GPU_ACTOR_ACTION_PLACEMENT_STORAGE_BINDING_COUNT,
-    GPU_ACTOR_ACTION_PLACEMENT_WGSL
+    GPU_ACTOR_ACTION_PLACEMENT_WGSL,
+    GPU_ACTOR_ACTION_SPAWN_ADMISSION_WGSL
 } from './gpu_actor_action_placement_shaders.js';
 import { GPU_CIRCLE_BODY_ABI } from './gpu_circle_body_abi.js';
 import { GPU_TOWER_GROUP_ABI } from './gpu_tower_group_abi.js';
@@ -115,7 +117,10 @@ function sameResources(left, right) {
         'abilityMetadata',
         'towerMembers',
         'towerRoster',
-        'sdf'
+        'sdf',
+        'params',
+        'gridCounts',
+        'gridBodies'
     ].every((key) => left[key] === right[key]);
 }
 
@@ -159,6 +164,29 @@ function createPipelines(device, stage) {
             })
         )
     });
+    const admissionLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-action-admission-layout',
+        entries: Array.from(
+            { length: GPU_ACTOR_ACTION_ADMISSION_STORAGE_BINDING_COUNT },
+            (_, binding) => ({
+                binding,
+                visibility: stage.COMPUTE,
+                buffer: {
+                    type: binding === 5 || binding === 6
+                        ? 'storage'
+                        : 'read-only-storage'
+                }
+            })
+        )
+    });
+    const admissionParamsLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-action-admission-params-layout',
+        entries: [{
+            binding: 0,
+            visibility: stage.COMPUTE,
+            buffer: { type: 'uniform' }
+        }]
+    });
     const dispatchModule = device.createShaderModule({
         label: 'cirvivor-gpu-actor-action-dispatch-wgsl',
         code: GPU_ACTOR_ACTION_DISPATCH_WGSL
@@ -166,6 +194,10 @@ function createPipelines(device, stage) {
     const placementModule = device.createShaderModule({
         label: 'cirvivor-gpu-actor-action-placement-wgsl',
         code: GPU_ACTOR_ACTION_PLACEMENT_WGSL
+    });
+    const admissionModule = device.createShaderModule({
+        label: 'cirvivor-gpu-actor-action-admission-wgsl',
+        code: GPU_ACTOR_ACTION_SPAWN_ADMISSION_WGSL
     });
     const dispatchPipelineLayout = device.createPipelineLayout({
         label: 'cirvivor-gpu-actor-action-dispatch-pipeline-layout',
@@ -183,6 +215,8 @@ function createPipelines(device, stage) {
     const result = Object.freeze({
         dispatchLayout,
         placementLayout,
+        admissionLayout,
+        admissionParamsLayout,
         prepareDispatch: device.createComputePipeline({
             label: 'cirvivor-gpu-actor-action-prepare-dispatch',
             layout: dispatchPipelineLayout,
@@ -199,6 +233,17 @@ function createPipelines(device, stage) {
             'cirvivor-gpu-actor-action-resolve',
             'resolve_actor_action_placement'
         ),
+        admission: device.createComputePipeline({
+            label: 'cirvivor-gpu-actor-action-admission',
+            layout: device.createPipelineLayout({
+                label: 'cirvivor-gpu-actor-action-admission-pipeline-layout',
+                bindGroupLayouts: [admissionLayout, admissionParamsLayout]
+            }),
+            compute: {
+                module: admissionModule,
+                entryPoint: 'admit_actor_action_spawns'
+            }
+        }),
         validate: pipeline(
             'cirvivor-gpu-actor-action-validate',
             'validate_actor_action_placement'
@@ -428,7 +473,10 @@ export class GpuActorActionPlacementRuntime {
             'abilityMetadata',
             'towerMembers',
             'towerRoster',
-            'sdf'
+            'sdf',
+            'params',
+            'gridCounts',
+            'gridBodies'
         ]) {
             if (!resources?.[key]) {
                 throw new TypeError(`ActorActionPlacement ${key} buffer가 없습니다.`);
@@ -764,17 +812,43 @@ export class GpuActorActionPlacementRuntime {
                         { binding: 8, resource: { buffer: entry.outputBuffer } }
                     ]
                 });
+                const admissionBindGroup = this.device.createBindGroup({
+                    label: `cirvivor-gpu-actor-action-admission-bind-${entry.transactionId}`,
+                    layout: this.pipelines.admissionLayout,
+                    entries: [
+                        { binding: 0, resource: { buffer: this.resources.snapshot } },
+                        { binding: 1, resource: { buffer: entry.programBuffer } },
+                        { binding: 2, resource: { buffer: this.resources.physics } },
+                        { binding: 3, resource: { buffer: this.resources.simulation } },
+                        { binding: 4, resource: { buffer: this.resources.sdf } },
+                        { binding: 5, resource: { buffer: entry.outputBuffer } },
+                        { binding: 6, resource: { buffer: this.resources.gridCounts } },
+                        { binding: 7, resource: { buffer: this.resources.gridBodies } }
+                    ]
+                });
+                const admissionParamsBindGroup = this.device.createBindGroup({
+                    label: `cirvivor-gpu-actor-action-admission-params-bind-${entry.transactionId}`,
+                    layout: this.pipelines.admissionParamsLayout,
+                    entries: [{
+                        binding: 0,
+                        resource: { buffer: this.resources.params }
+                    }]
+                });
                 const dispatch = (
                     pipeline,
                     label,
                     bindGroup,
-                    indirect = false
+                    indirect = false,
+                    secondaryBindGroup = null
                 ) => {
                     const pass = encoder.beginComputePass({
                         label: `cirvivor-gpu-actor-action-${label}-pass`
                     });
                     pass.setPipeline(pipeline);
                     pass.setBindGroup(0, bindGroup);
+                    if (secondaryBindGroup) {
+                        pass.setBindGroup(1, secondaryBindGroup);
+                    }
                     if (indirect) {
                         pass.dispatchWorkgroupsIndirect(entry.dispatchBuffer, 0);
                     } else {
@@ -798,6 +872,13 @@ export class GpuActorActionPlacementRuntime {
                     'resolve',
                     placementBindGroup,
                     true
+                );
+                dispatch(
+                    this.pipelines.admission,
+                    'spawn-admission',
+                    admissionBindGroup,
+                    false,
+                    admissionParamsBindGroup
                 );
                 dispatch(
                     this.pipelines.validate,
@@ -984,6 +1065,10 @@ export class GpuActorActionPlacementRuntime {
                 this.retainedPlacementHighWater,
             storageBindingCount:
                 GPU_ACTOR_ACTION_PLACEMENT_STORAGE_BINDING_COUNT,
+            admissionStorageBindingCount:
+                GPU_ACTOR_ACTION_ADMISSION_STORAGE_BINDING_COUNT,
+            admissionPolicy:
+                'payload-local-candidates/shared-grid-verdict/stable-rank-claim',
             dispatchStorageBindingCount:
                 GPU_ACTOR_ACTION_DISPATCH_STORAGE_BINDING_COUNT,
             aggregateReadbackByteSize: this.aggregateReadbackByteSize,

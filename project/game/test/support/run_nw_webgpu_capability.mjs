@@ -129,7 +129,9 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_circle_body_abi.js',
     'module/ingame/physics/gpu/gpu_circle_body_simulation.js',
     'module/ingame/physics/gpu/gpu_route_flow_field_generator.js',
+    'module/ingame/physics/gpu/gpu_collision_grid_contract.js',
     'module/ingame/physics/gpu/gpu_collision_shaders.js',
+    'module/ingame/physics/gpu/gpu_spawn_admission_shaders.js',
     'module/ingame/physics/gpu/gpu_crowd_density_runtime.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_abi.js',
     'module/ingame/physics/gpu/gpu_effect_runtime_shaders.js',
@@ -517,9 +519,13 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         const actualCasts = fixture?.actualR2?.abilityCasts ?? [];
         const healthy = (health) => health?.restartCountDelta === 0
             && health.sessionGenerationDelta === 0
+            && health.gridOverflowCount === 0
             && health.recoveryRequired === false
+            && health.recoveryCauseStage === null
             && health.materializerRecoveryRequired === false
             && health.towerProtocolFailureCount === 0
+            && health.projectileCaptureRecoveryRequired === false
+            && health.projectileCaptureFailure === null
             && health.registryReservedCount === 0
             && health.pendingCommandCount === 0
             && health.materializerInFlightCount === 0
@@ -539,24 +545,71 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture?.impossiblePlacement?.generatedCount === 0
             && fixture.impossiblePlacement.cooldownConsumed === false
             && fixture.impossiblePlacement.reason?.code
-                === 'NO_VALID_PLACEMENT'
+                === 'NO_VALID_GLOBAL_PLACEMENT'
             && fixture.impossiblePlacement.reason.attemptedCandidateCount
-                === 14
+                === 142
+            && fixture.impossiblePlacement.reason.candidateRound === 8
             && healthy(fixture.impossiblePlacement.health)
             && fixture?.actualR2?.mapId === 'r2_enemy_showcase_01'
-            && actualCasts.filter(({ slotId }) => slotId === 'E').length === 2
+            && actualCasts.filter(({ slotId }) => slotId === 'E').length === 4
             && actualCasts.filter(({ slotId }) => slotId === 'SHIFT').length
                 === 3
             && actualCasts.filter(({ slotId }) => slotId === 'SPACE').length
-                === 1
+                === 2
             && actualCasts.every((cast) => cast.generatedCount > 0
                 && cast.cooldownConsumed === true)
-            && fixture.actualR2.stageReceiptEvidence?.length >= 4
+            && fixture.actualR2.stageReceiptEvidence?.length >= 5
+            && fixture.actualR2.towerCountBeforeReplacement === 76
+            && fixture.actualR2.postReplacementTowerCount === 156
+            && fixture.actualR2.replacement?.sessionGenerationDelta === 1
+            && fixture.actualR2.replacement.deviceGenerationDelta === 0
+            && fixture.actualR2.replacement.probation?.state === 'PASSED'
+            && fixture.actualR2.recoveryGrid?.towerCount === 76
+            && fixture.actualR2.recoveryGrid.distinctPositionCount === 76
+            && fixture.actualR2.recoveryGrid.gridOverflowCount === 0
+            && fixture.actualR2.finalGrid?.towerCount === 156
+            && fixture.actualR2.finalGrid.gridOverflowCount === 0
+            && fixture.actualR2.longRun?.advancedTickCount === 300
+            && fixture?.tower256Recovery?.casts?.length === 8
+            && fixture.tower256Recovery.casts.at(-1)?.towerCount === 256
+            && fixture.tower256Recovery.replacement?.deviceGenerationDelta === 0
+            && fixture.tower256Recovery.replacement.probation?.state === 'PASSED'
+            && fixture.tower256Recovery.recoveryGrid?.towerCount === 256
+            && fixture.tower256Recovery.recoveryGrid.distinctPositionCount
+                === 256
+            && fixture.tower256Recovery.recoveryGrid.gridOverflowCount === 0
+            && fixture.tower256Recovery.finalGrid?.gridOverflowCount === 0
+            && fixture.tower256Recovery.longRun?.advancedTickCount === 180
+            && fixture.tower256Recovery.towerShare
+                ?.invariantViolationCount === 0
+            && healthy(fixture.tower256Recovery.health)
             && fixture?.actualArrow?.mapId === 'r2_enemy_showcase_01'
             && fixture.actualArrow.chargeSamples?.length >= 4
+            && fixture.actualArrow.chargeSpeedTilesPerSecond === 6
+            && fixture.actualArrow.accelerationAccumulationMaximum <= 0.0001
             && fixture.actualArrow.recoilSamples?.length >= 2
             && fixture.actualArrow.contactEventCount === 1
+            && fixture.actualArrow.damageEventCount === 1
+            && fixture.actualArrow.impactEvidence?.normalSpeed < 0
+            && fixture.actualArrow.impactEvidence.error <= 0.005
+            && fixture.actualArrow.impactEvidence
+                .appliedAfterOrdinaryReconstruction === true
+            && Math.hypot(
+                fixture.actualArrow.exactOnceEvidence?.arrowCustomDelta?.x
+                    ?? Infinity,
+                fixture.actualArrow.exactOnceEvidence?.arrowCustomDelta?.y
+                    ?? Infinity
+            ) <= 0.0001
+            && Math.hypot(
+                fixture.actualArrow.exactOnceEvidence?.towerCustomDelta?.x
+                    ?? Infinity,
+                fixture.actualArrow.exactOnceEvidence?.towerCustomDelta?.y
+                    ?? Infinity
+            ) <= 0.0001
+            && fixture.actualArrow.exactOnceEvidence.duplicateEvent === false
+            && fixture.actualArrow.recoilDamping?.scriptedExpoOverwrite === false
             && fixture.actualArrow.sawRecover === true
+            && fixture.actualArrow.sawRearm === true
             && fixture.actualArrow.targetMovedAfterLock === true
             && fixture.actualR2.towerShare?.invariantViolationCount === 0
             && healthy(fixture.actualR2.health)
@@ -608,9 +661,52 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && contracts.dispatchStorageBindingCount === 2;
     } else if (fixtureStage === 'enemy-arrow-charge') {
         fixture = result?.productionEnemyArrowCharge;
+        const charge = fixture?.motion?.charge;
+        const impact = fixture?.motion?.impact;
+        const recoilDamping = fixture?.motion?.recoilDamping;
+        const impactDeltaError = Math.max(
+            Math.abs(
+                (impact?.actualArrowVelocityDelta?.x ?? Infinity)
+                    - (impact?.expectedArrowVelocityDelta?.x ?? 0)
+            ),
+            Math.abs(
+                (impact?.actualArrowVelocityDelta?.y ?? Infinity)
+                    - (impact?.expectedArrowVelocityDelta?.y ?? 0)
+            ),
+            Math.abs(
+                (impact?.actualTowerVelocityDelta?.x ?? Infinity)
+                    - (impact?.expectedTowerVelocityDelta?.x ?? 0)
+            ),
+            Math.abs(
+                (impact?.actualTowerVelocityDelta?.y ?? Infinity)
+                    - (impact?.expectedTowerVelocityDelta?.y ?? 0)
+            )
+        );
         scenarioValid = fixture?.states?.trackedPoseIndependent?.entered === 1
             && fixture.states.trackedPoseIndependent.expires === 31
             && fixture.states?.fallback?.entered === 3
+            && charge?.authoredSpeed === 6
+            && charge.accelerationAccumulation <= 0.0001
+            && charge.fullOracle?.authoredSpeed === 6
+            && charge.fullOracle.accelerationAccumulation <= 0.0001
+            && impact?.normalSpeed < 0
+            && Math.abs(Math.hypot(
+                impact?.normal?.x ?? 0,
+                impact?.normal?.y ?? 0
+            ) - 1) <= 0.00001
+            && impact.arrowInverseMass > impact.towerInverseMass
+            && impact.restitution === 0.55
+            && impact.tangentialRetention === 0.85
+            && impactDeltaError <= 0.002
+            && impact.appliedAfterOrdinaryReconstruction === true
+            && impact.exactOnce === true
+            && Math.hypot(
+                impact.postContactCustomDelta?.x ?? Infinity,
+                impact.postContactCustomDelta?.y ?? Infinity
+            ) <= 0.0001
+            && recoilDamping?.authored === 0.9
+            && recoilDamping.scriptedExpoOverwrite === false
+            && fixture.maximumDamageWindow?.arrowAppliedFixedPoint === 0
             && fixture.targetingPorts?.gameplayTarget?.abiVersion === 1
             && fixture.targetingPorts.gameplayTarget.recordByteSize === 16
             && fixture.targetingPorts.gameplayTarget.storageBuffersPerStage === 8

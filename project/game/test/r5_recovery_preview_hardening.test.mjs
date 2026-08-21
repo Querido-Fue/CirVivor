@@ -430,7 +430,9 @@ test('recovery Tower spawn intent는 durable generation/provenance를 복원하�
         recoveryPlacementDescriptor
     });
     const intent = createGpuTowerSpawnIntent({
-        position: recoveryPlacementDescriptor.position,
+        // Authored map anchor와 deterministic recovery resolver가 선택한
+        // 실제 body 위치는 서로 다른 권위입니다.
+        position: { x: 9.75, y: 6.25 },
         logicalTowerOrdinal: 2,
         shareUnits: 500_000_000,
         creationMetadata
@@ -455,7 +457,9 @@ test('recovery Tower spawn intent는 durable generation/provenance를 복원하�
     assert.equal(intent.mapRecoveryAnchorId,
         'map:r5-recovery:tower-spawn');
     assert.equal(intent.mapRecoveryLatticeVersion, 3);
-    assert.deepEqual(intent.position, { x: 8.5, y: 6.25 });
+    assert.equal(intent.mapRecoveryAnchorX, 8.5);
+    assert.equal(intent.mapRecoveryAnchorY, 6.25);
+    assert.deepEqual(intent.position, { x: 9.75, y: 6.25 });
     assert.deepEqual(intent.velocity, { x: 0, y: 0 });
     assert.equal('actorTransitPhase' in intent, false);
     assert.equal('travelDurationFixedTicks' in intent, false);
@@ -469,6 +473,8 @@ test('recovery Tower spawn intent는 durable generation/provenance를 복원하�
     assert.equal(registryMetadata.sourceExecutionFingerprint, 0x1234abcd);
     assert.equal(registryMetadata.actorActionProfileFingerprint,
         R5_THROW_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint);
+    assert.equal(registryMetadata.mapRecoveryAnchorX, 8.5);
+    assert.equal(registryMetadata.mapRecoveryAnchorY, 6.25);
     assert.equal(abilityMetadata.generation, 7);
     assert.equal(abilityMetadata.sourceAbilityCode, 731);
     assert.equal(abilityMetadata.sourceExecutionFingerprint, 0x1234abcd);
@@ -480,6 +486,10 @@ test('recovery Tower spawn intent는 durable generation/provenance를 복원하�
     }), /모두 함께 제공/);
     assert.throws(() => createGpuRegistryMetadata({
         ...normalizedIntent,
-        mapRecoveryAnchorX: normalizedIntent.mapRecoveryAnchorX + 0.25
-    }), /ordinal\/visibility\/anchor/);
+        mapRecoveryAnchorX: Number.POSITIVE_INFINITY
+    }), /ordinal\/visibility\/position/);
+    assert.throws(() => createGpuRegistryMetadata({
+        ...normalizedIntent,
+        recoveryLogicalTowerOrdinal: 3
+    }), /ordinal\/visibility\/position/);
 });

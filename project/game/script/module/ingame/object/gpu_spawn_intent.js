@@ -1874,14 +1874,16 @@ function copyOptionalTowerRecoveryAbilityMetadata(intent) {
     );
     const mapRecoveryAnchorX = Number(intent.mapRecoveryAnchorX);
     const mapRecoveryAnchorY = Number(intent.mapRecoveryAnchorY);
+    const resolvedRecoveryPositionX = Number(intent.position?.x);
+    const resolvedRecoveryPositionY = Number(intent.position?.y);
     if (logicalTowerOrdinal !== recoveryLogicalTowerOrdinal
         || visibleFromExecutionOrdinal !== sourceExecutionOrdinal + 1
         || !Number.isFinite(mapRecoveryAnchorX)
         || !Number.isFinite(mapRecoveryAnchorY)
-        || mapRecoveryAnchorX !== Number(intent.position?.x)
-        || mapRecoveryAnchorY !== Number(intent.position?.y)) {
+        || !Number.isFinite(resolvedRecoveryPositionX)
+        || !Number.isFinite(resolvedRecoveryPositionY)) {
         throw new RangeError(
-            'Tower recovery ordinal/visibility/anchor provenance가 다릅니다.'
+            'Tower recovery ordinal/visibility/position provenance가 다릅니다.'
         );
     }
     return {

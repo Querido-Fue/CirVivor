@@ -154,6 +154,26 @@ function fingerprintLivingRecords(records) {
     return hash.toString(16).padStart(8, '0');
 }
 
+function fingerprintLivingStructure(records) {
+    let hash = 0x811c9dc5;
+    for (const record of records) {
+        const binding = record.exactGpuBinding;
+        hash = hashText(hash, [
+            record.logicalTowerId,
+            record.logicalTowerOrdinal,
+            record.shareUnits,
+            record.maxHpFixedPoint,
+            record.powerFixedPoint,
+            binding?.entityId ?? 0,
+            binding?.incarnation ?? 0,
+            binding?.sessionGeneration ?? 0,
+            binding?.deviceGeneration ?? 0,
+            binding?.authoritativeEpoch ?? 0
+        ].join(':'));
+    }
+    return hash.toString(16).padStart(8, '0');
+}
+
 function freezeRejection(result, reason, extra = {}) {
     return Object.freeze({
         accepted: false,
@@ -255,6 +275,46 @@ export class TowerGroupState {
 
     planCreation(source = {}) {
         return this.#createCreationPlan(source, true);
+    }
+
+    /**
+     * GPU placement readback 동안 발생한 non-lethal HP 변화만 최신 상태로
+     * 재계획합니다. Membership/share/exact binding이 변했으면 0/N transaction을
+     * source-changed로 종료합니다.
+     */
+    refreshPendingCreation(source = {}) {
+        this.#assertUsable();
+        const pending = this.#pendingCreation;
+        const plan = source.plan ?? source;
+        if (!pending || plan !== pending.plan) {
+            return freezeRejection(
+                TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED
+            );
+        }
+        const livingRecords = this.#getLivingRecords();
+        if (this.groupRevision !== plan.sourceGroupRevision
+            || fingerprintLivingStructure(livingRecords)
+                !== plan.sourceStructureFingerprint) {
+            this.#pendingCreation = null;
+            return freezeRejection(
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                { transactionId: plan.transactionId }
+            );
+        }
+        if (this.stateRevision === plan.sourceStateRevision
+            && fingerprintLivingRecords(livingRecords)
+                === plan.sourceFingerprint) {
+            return plan;
+        }
+        this.#pendingCreation = null;
+        return this.#createCreationPlan({
+            transactionId: plan.transactionId,
+            childCount: plan.childCount,
+            childRecoverySpawnDescriptors:
+                source.childRecoverySpawnDescriptors
+        }, true);
     }
 
     /** Future preview가 runtime과 같은 shared arithmetic/reason을 소비하는 pure seam입니다. */
@@ -393,12 +453,16 @@ export class TowerGroupState {
             });
         });
         const sourceFingerprint = fingerprintLivingRecords(livingRecords);
+        const sourceStructureFingerprint = fingerprintLivingStructure(
+            livingRecords
+        );
         const fingerprint = [
             'tower-creation-v1',
             transactionId,
             this.groupRevision,
             this.stateRevision,
             sourceFingerprint,
+            sourceStructureFingerprint,
             childCount
         ].join(':');
         const plan = Object.freeze({
@@ -411,6 +475,7 @@ export class TowerGroupState {
             sourceStateRevision: this.stateRevision,
             targetGroupRevision: this.groupRevision + 1,
             sourceFingerprint,
+            sourceStructureFingerprint,
             fingerprint,
             livingShareUnits: arithmetic.livingShareUnits,
             lostShareUnits: arithmetic.lostShareUnits,

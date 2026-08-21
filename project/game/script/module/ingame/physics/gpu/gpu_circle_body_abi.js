@@ -179,7 +179,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         CHARGE_DIRECTION_Y: 36,
         WINDUP_RANGE: 40,
         CHARGE_SPEED: 44,
-        RECOIL_IMPULSE: 48,
+        IMPACT_RESTITUTION: 48,
         WINDUP_TICKS: 52,
         CHARGE_MAX_TICKS: 56,
         RECOIL_TICKS: 60,
@@ -187,10 +187,36 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
         TELEGRAPH_STYLE_CODE: 68,
         TELEGRAPH_COLOR_RGBA8: 72,
         TELEGRAPH_RADIUS_SCALE: 76,
-        CHARGE_ACCELERATION: 80,
-        RESERVED_0: 84,
-        RESERVED_1: 88,
-        RESERVED_2: 92
+        DEPRECATED_CHARGE_ACCELERATION: 80,
+        IMPACT_TANGENTIAL_RETENTION: 84,
+        RECOIL_DAMPING: 88,
+        RECOIL_SLEEP_THRESHOLD: 92
+    }),
+    /**
+     * Arrow/Tower contact의 pre-marker evidence와 post-reconstruction impulse를
+     * 보존하는 transient per-body plane입니다. Host mirror 권위가 아니며 매 fixed
+     * tick GPU clear에서만 초기화됩니다.
+     */
+    ENEMY_CHARGE_IMPACT_STATE: Object.freeze({
+        STRIDE: 72,
+        SELECTED_CONTACT_INDEX: 0,
+        STATUS: 4,
+        CAPTURED_FIXED_TICK: 8,
+        ARROW_SLOT: 12,
+        TOWER_SLOT: 16,
+        ARROW_ENTITY_ID: 20,
+        ARROW_INCARNATION: 24,
+        TOWER_ENTITY_ID: 28,
+        TOWER_INCARNATION: 32,
+        ALIGNMENT_PADDING: 36,
+        CONTACT_NORMAL_X: 40,
+        CONTACT_NORMAL_Y: 44,
+        PRE_IMPACT_RELATIVE_VELOCITY_X: 48,
+        PRE_IMPACT_RELATIVE_VELOCITY_Y: 52,
+        ARROW_INVERSE_MASS: 56,
+        TOWER_INVERSE_MASS: 60,
+        VELOCITY_DELTA_X_FIXED_POINT: 64,
+        VELOCITY_DELTA_Y_FIXED_POINT: 68
     }),
     /**
      * presentation 전용 32-byte storage layout입니다. 물리/시뮬레이션 ABI와
@@ -228,7 +254,7 @@ export const GPU_CIRCLE_BODY_ABI = Object.freeze({
 });
 
 /** Host buffer header와 모든 WGSL module이 공유하는 session 단위 ABI version입니다. */
-export const GPU_CIRCLE_BODY_ABI_VERSION = 9;
+export const GPU_CIRCLE_BODY_ABI_VERSION = 10;
 
 /**
  * GPU circle body presentation의 분석형 silhouette 코드입니다.
@@ -453,6 +479,13 @@ export const GPU_CIRCLE_ENEMY_BEHAVIOR_STATE = Object.freeze({
     ORBIT_TOWER: 7
 });
 
+/** transient Arrow impact evidence의 append-only 상태 vocabulary입니다. */
+export const GPU_CIRCLE_ENEMY_CHARGE_IMPACT_STATUS = Object.freeze({
+    EMPTY: 0,
+    CAPTURED: 1,
+    RESOLVED: 2
+});
+
 export const GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG = Object.freeze({
     TARGET_VALID: 1 << 0,
     TELEGRAPH_PENDING: 1 << 1,
@@ -484,7 +517,8 @@ export const GPU_CIRCLE_OCTAGON_ORBIT_STATE_ABI = Object.freeze({
     FACING_Y: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_DIRECTION_Y,
     ORBIT_RADIUS_TILES: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_RANGE,
     RESERVED_FLOAT_0: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_SPEED,
-    RESERVED_FLOAT_1: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_IMPULSE,
+    RESERVED_FLOAT_1:
+        GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.IMPACT_RESTITUTION,
     COORDINATE_SYSTEM_CODE: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.WINDUP_TICKS,
     ORBIT_SLOT_INDEX: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.CHARGE_MAX_TICKS,
     ORBIT_SLOT_CAPACITY: GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.RECOIL_TICKS,
@@ -2494,10 +2528,12 @@ const ENEMY_BEHAVIOR_INPUT_KEYS = new Set([
     'totalFacetCount',
     'windupTicks',
     'windupRangeTiles',
-    'chargeAccelerationTilesPerSecondSquared',
     'chargeSpeedTilesPerSecond',
     'chargeMaxTicks',
-    'recoilImpulseTilesPerSecond',
+    'impactRestitution',
+    'impactTangentialRetention',
+    'recoilDamping',
+    'recoilSleepThresholdTilesPerSecond',
     'recoilTicks',
     'recoverTicks',
     'telegraphStyleCode',
@@ -2744,10 +2780,12 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
         'programId',
         'windupTicks',
         'windupRangeTiles',
-        'chargeAccelerationTilesPerSecondSquared',
         'chargeSpeedTilesPerSecond',
         'chargeMaxTicks',
-        'recoilImpulseTilesPerSecond',
+        'impactRestitution',
+        'impactTangentialRetention',
+        'recoilDamping',
+        'recoilSleepThresholdTilesPerSecond',
         'recoilTicks',
         'recoverTicks',
         'telegraphStyleCode',
@@ -2779,19 +2817,6 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
         throw new RangeError('enemyBehaviorState.windupRangeTiles는 양수여야 합니다.');
     }
     view.setFloat32(
-        offset + abi.CHARGE_ACCELERATION,
-        requireNonNegativeFloat32(
-            source.chargeAccelerationTilesPerSecondSquared,
-            'enemyBehaviorState.chargeAccelerationTilesPerSecondSquared'
-        ),
-        LITTLE_ENDIAN
-    );
-    if (view.getFloat32(offset + abi.CHARGE_ACCELERATION, LITTLE_ENDIAN) <= 0) {
-        throw new RangeError(
-            'enemyBehaviorState.chargeAccelerationTilesPerSecondSquared는 양수여야 합니다.'
-        );
-    }
-    view.setFloat32(
         offset + abi.CHARGE_SPEED,
         requireNonNegativeFloat32(
             source.chargeSpeedTilesPerSecond,
@@ -2803,16 +2828,44 @@ export function writeGpuCircleEnemyBehaviorState(storage, index, source = {}) {
         throw new RangeError('enemyBehaviorState.chargeSpeedTilesPerSecond는 양수여야 합니다.');
     }
     view.setFloat32(
-        offset + abi.RECOIL_IMPULSE,
+        offset + abi.IMPACT_RESTITUTION,
         requireNonNegativeFloat32(
-            source.recoilImpulseTilesPerSecond,
-            'enemyBehaviorState.recoilImpulseTilesPerSecond'
+            source.impactRestitution,
+            'enemyBehaviorState.impactRestitution'
         ),
         LITTLE_ENDIAN
     );
-    if (view.getFloat32(offset + abi.RECOIL_IMPULSE, LITTLE_ENDIAN) <= 0) {
-        throw new RangeError('enemyBehaviorState.recoilImpulseTilesPerSecond는 양수여야 합니다.');
+    if (view.getFloat32(offset + abi.IMPACT_RESTITUTION, LITTLE_ENDIAN) > 1) {
+        throw new RangeError('enemyBehaviorState.impactRestitution은 0~1 범위여야 합니다.');
     }
+    for (const [field, key] of [
+        [abi.IMPACT_TANGENTIAL_RETENTION, 'impactTangentialRetention'],
+        [abi.RECOIL_DAMPING, 'recoilDamping']
+    ]) {
+        view.setFloat32(
+            offset + field,
+            requireNonNegativeFloat32(source[key], `enemyBehaviorState.${key}`),
+            LITTLE_ENDIAN
+        );
+        if (view.getFloat32(offset + field, LITTLE_ENDIAN) > 1) {
+            throw new RangeError(`enemyBehaviorState.${key}은(는) 0~1 범위여야 합니다.`);
+        }
+    }
+    view.setFloat32(
+        offset + abi.RECOIL_SLEEP_THRESHOLD,
+        requireNonNegativeFloat32(
+            source.recoilSleepThresholdTilesPerSecond,
+            'enemyBehaviorState.recoilSleepThresholdTilesPerSecond'
+        ),
+        LITTLE_ENDIAN
+    );
+    // ABI v9의 acceleration byte는 v10에서 의도적으로 deprecated zero입니다.
+    // 새 물리 계수를 이 byte에 재사용하지 않아 stale writer를 즉시 식별합니다.
+    view.setFloat32(
+        offset + abi.DEPRECATED_CHARGE_ACCELERATION,
+        0,
+        LITTLE_ENDIAN
+    );
     view.setUint32(
         offset + abi.WINDUP_TICKS,
         requirePositiveUint32(source.windupTicks, 'enemyBehaviorState.windupTicks'),
@@ -2976,6 +3029,15 @@ export function readGpuCircleEnemyBehaviorState(storage, index) {
             ) & orbitAbi.FACET_COUNT_MASK
         };
     }
+    if (programId === GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE
+        && view.getFloat32(
+            offset + abi.DEPRECATED_CHARGE_ACCELERATION,
+            LITTLE_ENDIAN
+        ) !== 0) {
+        throw new RangeError(
+            'enemyBehaviorState.deprecatedChargeAcceleration은 exact zero여야 합니다.'
+        );
+    }
     const packedColor = view.getUint32(
         offset + abi.TELEGRAPH_COLOR_RGBA8,
         LITTLE_ENDIAN
@@ -3003,16 +3065,24 @@ export function readGpuCircleEnemyBehaviorState(storage, index) {
             y: view.getFloat32(offset + abi.CHARGE_DIRECTION_Y, LITTLE_ENDIAN)
         },
         windupRangeTiles: view.getFloat32(offset + abi.WINDUP_RANGE, LITTLE_ENDIAN),
-        chargeAccelerationTilesPerSecondSquared: view.getFloat32(
-            offset + abi.CHARGE_ACCELERATION,
-            LITTLE_ENDIAN
-        ),
         chargeSpeedTilesPerSecond: view.getFloat32(
             offset + abi.CHARGE_SPEED,
             LITTLE_ENDIAN
         ),
-        recoilImpulseTilesPerSecond: view.getFloat32(
-            offset + abi.RECOIL_IMPULSE,
+        impactRestitution: view.getFloat32(
+            offset + abi.IMPACT_RESTITUTION,
+            LITTLE_ENDIAN
+        ),
+        impactTangentialRetention: view.getFloat32(
+            offset + abi.IMPACT_TANGENTIAL_RETENTION,
+            LITTLE_ENDIAN
+        ),
+        recoilDamping: view.getFloat32(
+            offset + abi.RECOIL_DAMPING,
+            LITTLE_ENDIAN
+        ),
+        recoilSleepThresholdTilesPerSecond: view.getFloat32(
+            offset + abi.RECOIL_SLEEP_THRESHOLD,
             LITTLE_ENDIAN
         ),
         windupTicks: view.getUint32(offset + abi.WINDUP_TICKS, LITTLE_ENDIAN),

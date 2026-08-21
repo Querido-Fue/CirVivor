@@ -25,13 +25,26 @@ import {
 export const ACTOR_PAYLOAD_DEFINITION_ABI_VERSION = 1;
 export const ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION = 1;
 
-export const ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION = 1;
+export const ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION = 2;
 
 export const ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS = Object.freeze({
     NONE: 0,
     STATIC_SDF: 1,
+    EXISTING_BODY: 2,
     DYNAMIC_BODY_OVERLAP: 2,
-    STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP: 3
+    STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP: 3,
+    SIBLING_BODY: 4,
+    STATIC_SDF_AND_SIBLING_BODY: 5,
+    EXISTING_AND_SIBLING_BODY: 6,
+    STATIC_EXISTING_AND_SIBLING_BODY: 7,
+    GRID_CELL_CAPACITY: 8,
+    STATIC_SDF_AND_GRID_CELL_CAPACITY: 9,
+    EXISTING_BODY_AND_GRID_CELL_CAPACITY: 10,
+    STATIC_EXISTING_AND_GRID_CELL_CAPACITY: 11,
+    SIBLING_BODY_AND_GRID_CELL_CAPACITY: 12,
+    STATIC_SIBLING_AND_GRID_CELL_CAPACITY: 13,
+    EXISTING_SIBLING_AND_GRID_CELL_CAPACITY: 14,
+    ALL_ADMISSION_REJECTIONS: 15
 });
 
 const DIAGONAL = Math.fround(Math.SQRT1_2);
@@ -56,7 +69,8 @@ function safePlacementCandidate(
 
 /**
  * Shoot + Enemy의 bounded GPU safe-placement 순서입니다.
- * 마지막 source-center 후보만 ordinary solver가 해소할 dynamic overlap을 허용합니다.
+ * 이 14개는 authored local policy이며 이후 resolver-owned expanding ring이
+ * 이어집니다. 어떤 후보도 existing-body overlap을 예외처리하지 않습니다.
  */
 export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES = Object.freeze([
     safePlacementCandidate('authored-surface', 1, 0, 1, 1),
@@ -74,13 +88,16 @@ export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES = Object.freeze([
         DIAGONAL, -DIAGONAL, 1, 0.5),
     safePlacementCandidate('short-left-90-zero-gap', 0, 1, 1, 0),
     safePlacementCandidate('short-right-90-zero-gap', 0, -1, 1, 0),
-    safePlacementCandidate('final-source-local-overlap', 1, 0, 0, 0, true)
+    safePlacementCandidate('final-source-local-probe', 1, 0, 0, 0)
 ]);
 
 export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER = Object.freeze({
     abiVersion: ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION,
-    id: 'actor-payload.safe-placement.r3-enemy.v1',
-    candidates: R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
+    id: 'actor-payload.safe-placement.r3-enemy.v2',
+    candidates: R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES,
+    expandingRingCount: 8,
+    expandingRingSlotCount: 16,
+    expandingRingStepRadiusScale: 2.25
 });
 
 export const ACTOR_PAYLOAD_DEFINITION_ID = Object.freeze({
@@ -119,7 +136,10 @@ export const ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG = Object.freeze({
     SDF_PLACEMENT: 1 << 5,
     GENERATION: 1 << 6,
     STALE_PROTOCOL: 1 << 7,
-    DYNAMIC_BODY_OVERLAP: 1 << 8
+    DYNAMIC_BODY_OVERLAP: 1 << 8,
+    SIBLING_BODY_OVERLAP: 1 << 9,
+    GRID_CELL_CAPACITY: 1 << 10,
+    NO_VALID_GLOBAL_PLACEMENT: 1 << 11
 });
 
 const MATERIALIZATION_STATUSES = new Set(

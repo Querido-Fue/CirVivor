@@ -33,6 +33,65 @@ export const ACTOR_ACTION_PLACEMENT_POLICY = Object.freeze({
     TARGET_LATTICE_ATOMIC_SDF: 'TARGET_LATTICE_ATOMIC_SDF'
 });
 
+function freezeSpawnDirectionSequence(source) {
+    return Object.freeze(source.map(([x, y]) => Object.freeze({
+        x: Math.fround(x),
+        y: Math.fround(y)
+    })));
+}
+
+export const ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY = Object.freeze({
+    abiVersion: 1,
+    id: 'actor-action.tower-payload-candidates.v1',
+    targetLatticeRounds: 32,
+    sourceRadialRounds: 32,
+    sourceRadialStepRadiusScale: Math.fround(2),
+    radialDirections: freezeSpawnDirectionSequence([
+        [1, 0],
+        [0.923879504, 0.382683426],
+        [0.707106769, 0.707106769],
+        [0.382683426, 0.923879504],
+        [0, 1],
+        [-0.382683426, 0.923879504],
+        [-0.707106769, 0.707106769],
+        [-0.923879504, 0.382683426],
+        [-1, 0],
+        [-0.923879504, -0.382683426],
+        [-0.707106769, -0.707106769],
+        [-0.382683426, -0.923879504],
+        [0, -1],
+        [0.382683426, -0.923879504],
+        [0.707106769, -0.707106769],
+        [0.923879504, -0.382683426]
+    ])
+});
+
+export const ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY = Object.freeze({
+    abiVersion: 1,
+    id: 'actor-action.enemy-payload-candidates.v1',
+    targetLatticeRounds: 16,
+    sourceRadialRounds: 8,
+    sourceRadialStepRadiusScale: Math.fround(2.25),
+    radialDirections: freezeSpawnDirectionSequence([
+        [1, 0],
+        [0.923879504, 0.382683426],
+        [0.707106769, 0.707106769],
+        [0.382683426, 0.923879504],
+        [0, 1],
+        [-0.382683426, 0.923879504],
+        [-0.707106769, 0.707106769],
+        [-0.923879504, 0.382683426],
+        [-1, 0],
+        [-0.923879504, -0.382683426],
+        [-0.707106769, -0.707106769],
+        [-0.382683426, -0.923879504],
+        [0, -1],
+        [0.382683426, -0.923879504],
+        [0.707106769, -0.707106769],
+        [0.923879504, -0.382683426]
+    ])
+});
+
 export const ACTOR_ACTION_TRANSIT_POLICY = Object.freeze({
     NONE: 'NONE',
     AIRBORNE_GROUND_PATH: 'AIRBORNE_GROUND_PATH'

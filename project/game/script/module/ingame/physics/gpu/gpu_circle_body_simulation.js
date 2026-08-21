@@ -379,9 +379,12 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'build_tick_start_grid',
     'build_grid',
     'clear_contact_state',
+    'clear_enemy_charge_impact_states',
     'emit_enemy_charge_telegraphs',
     'generate_body_contacts',
     'generate_world_contacts',
+    'select_enemy_charge_impact_contacts',
+    'materialize_enemy_charge_impact_evidence',
     'classify_directional_defense_contacts',
     'clear_atomic_transform_first_hit_candidates',
     'select_atomic_transform_first_hit_source',
@@ -390,6 +393,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'commit_atomic_transform_first_hits',
     'finalize_atomic_transform_first_hits',
     'shield_atomic_transform_first_hit_contacts',
+    'shield_unselected_enemy_charge_contacts',
     'handle_contacts',
     'preflight_core_damage_requests',
     'finalize_core_damage_request_preflight',
@@ -407,7 +411,7 @@ const COMPUTE_ENTRY_POINTS = Object.freeze([
     'rebuild_velocities',
     'finalize_velocities',
     'finalize_controlled_motion',
-    'apply_enemy_charge_recoil',
+    'apply_enemy_charge_impact_impulses',
     'pack_tracked_pose'
 ]);
 const COMPUTE_PIPELINE_PROFILE = Object.freeze({
@@ -421,6 +425,7 @@ const COMPUTE_PIPELINE_PROFILE = Object.freeze({
     FIXED_CONTROL: 'fixed-control',
     SOURCE_RESOLVE: 'source-resolve',
     ENEMY_BEHAVIOR: 'enemy-behavior',
+    ENEMY_CHARGE_IMPACT: 'enemy-charge-impact',
     DIRECTIONAL_DEFENSE_CLASSIFIER: 'directional-defense-classifier',
     ATOMIC_TRANSFORM_FIRST_HIT: 'atomic-transform-first-hit',
     TRACKED_POSE: 'tracked-pose'
@@ -441,9 +446,15 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     build_tick_start_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     build_grid: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     clear_contact_state: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
+    clear_enemy_charge_impact_states:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
     emit_enemy_charge_telegraphs: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
     generate_body_contacts: COMPUTE_PIPELINE_PROFILE.BODY_CONTACTS,
     generate_world_contacts: COMPUTE_PIPELINE_PROFILE.WORLD_CONTACTS,
+    select_enemy_charge_impact_contacts:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
+    materialize_enemy_charge_impact_evidence:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
     classify_directional_defense_contacts:
         COMPUTE_PIPELINE_PROFILE.DIRECTIONAL_DEFENSE_CLASSIFIER,
     clear_atomic_transform_first_hit_candidates:
@@ -460,6 +471,8 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
         COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
     shield_atomic_transform_first_hit_contacts:
         COMPUTE_PIPELINE_PROFILE.ATOMIC_TRANSFORM_FIRST_HIT,
+    shield_unselected_enemy_charge_contacts:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
     handle_contacts: COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING,
     preflight_core_damage_requests:
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
@@ -469,7 +482,8 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
         COMPUTE_PIPELINE_PROFILE.CORE_DAMAGE_REQUEST,
     resolve_direct_core_damage_requests:
         COMPUTE_PIPELINE_PROFILE.DIRECT_CORE_DAMAGE_REQUEST,
-    resolve_enemy_charge_contacts: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
+    resolve_enemy_charge_contacts:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
     preflight_maximum_damage_window: COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
     finalize_maximum_damage_window_preflight:
         COMPUTE_PIPELINE_PROFILE.MAXIMUM_DAMAGE_WINDOW,
@@ -482,7 +496,8 @@ const COMPUTE_PIPELINE_PROFILE_BY_ENTRY_POINT = Object.freeze({
     rebuild_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     finalize_velocities: COMPUTE_PIPELINE_PROFILE.PHYSICS,
     finalize_controlled_motion: COMPUTE_PIPELINE_PROFILE.FIXED_CONTROL,
-    apply_enemy_charge_recoil: COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR,
+    apply_enemy_charge_impact_impulses:
+        COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT,
     pack_tracked_pose: COMPUTE_PIPELINE_PROFILE.TRACKED_POSE
 });
 const REQUIRED_COMPUTE_STORAGE_BUFFERS_PER_STAGE = 9;
@@ -7919,6 +7934,11 @@ export class GpuCircleBodySimulation {
             if (!terminalFinalSubmit) {
                 this.#setComputeProfile(
                     pass,
+                    COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT
+                );
+                this.#dispatchBodies(pass, 'clear_enemy_charge_impact_states');
+                this.#setComputeProfile(
+                    pass,
                     COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR
                 );
                 this.#dispatchBodies(pass, 'emit_enemy_charge_telegraphs');
@@ -7938,6 +7958,21 @@ export class GpuCircleBodySimulation {
                 pass.setPipeline(this.pipelines.updateContactIndirectArgs);
                 pass.setBindGroup(0, this.bindGroups.indirect);
                 pass.dispatchWorkgroups(1);
+                // 어떤 contact protocol도 normal을 marker로 바꾸기 전에 exact
+                // Arrow/Tower identity 하나를 고르고 raw normal/relative velocity를
+                // transient impact plane에 materialize합니다.
+                this.#setComputeProfile(
+                    pass,
+                    COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT
+                );
+                pass.setPipeline(
+                    this.pipelines.compute.select_enemy_charge_impact_contacts
+                );
+                this.#dispatchContacts(pass);
+                this.#dispatchBodies(
+                    pass,
+                    'materialize_enemy_charge_impact_evidence'
+                );
                 if (needsProjectileCaptureReadback
                     && this.projectileCaptureRetryState === null) {
                     for (const entryPoint of [
@@ -8019,13 +8054,21 @@ export class GpuCircleBodySimulation {
                 }
                 this.#setComputeProfile(
                     pass,
+                    COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT
+                );
+                pass.setPipeline(
+                    this.pipelines.compute.shield_unselected_enemy_charge_contacts
+                );
+                this.#dispatchContacts(pass);
+                this.#setComputeProfile(
+                    pass,
                     COMPUTE_PIPELINE_PROFILE.CONTACT_HANDLING
                 );
                 pass.setPipeline(this.pipelines.compute.handle_contacts);
                 this.#dispatchContacts(pass);
                 this.#setComputeProfile(
                     pass,
-                    COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR
+                    COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT
                 );
                 pass.setPipeline(
                     this.pipelines.compute.resolve_enemy_charge_contacts
@@ -8177,9 +8220,12 @@ export class GpuCircleBodySimulation {
             if (!terminalFinalSubmit) {
                 this.#setComputeProfile(
                     pass,
-                    COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR
+                    COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT
                 );
-                this.#dispatchBodies(pass, 'apply_enemy_charge_recoil');
+                this.#dispatchBodies(
+                    pass,
+                    'apply_enemy_charge_impact_impulses'
+                );
             }
             if (needsProjectileCaptureReadback) {
                 this.#setProjectileCaptureEntry(
@@ -9680,6 +9726,16 @@ export class GpuCircleBodySimulation {
                     }),
                     stateStride:
                         GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+                    impact: Object.freeze({
+                        stateStride:
+                            GPU_CIRCLE_BODY_ABI.ENEMY_CHARGE_IMPACT_STATE.STRIDE,
+                        deterministicClaim: 'minimum-exact-contact-index',
+                        evidenceCapture:
+                            'pre-marker-normal-and-relative-velocity',
+                        impulseApplication:
+                            'post-reconstruction-atomic-exchange-exact-once',
+                        storageBuffersPerStage: 9
+                    }),
                     // Arrow Tower charge는 route authority를 끊기 전에 terrain SDF
                     // 가시성을 확인한다. bodies 5 + SDF 1 + events 3 = negotiated 9.
                     storageBuffersPerStage: 9
@@ -14321,6 +14377,7 @@ export class GpuCircleBodySimulation {
             this.capacity * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE.STRIDE,
             this.capacity * GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE,
+            this.capacity * GPU_CIRCLE_BODY_ABI.ENEMY_CHARGE_IMPACT_STATE.STRIDE,
             this.contactCapacity * CONTACT_RECORD_BYTE_SIZE,
             this.eventCapacity * APPLIED_EVENT_BYTE_SIZE,
             this.deathEventCapacity * DEATH_EVENT_BYTE_SIZE,
@@ -14506,6 +14563,13 @@ export class GpuCircleBodySimulation {
                 device,
                 'cirvivor-gpu-circle-enemy-behavior-states',
                 GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
+                storageUsage
+            ),
+            enemyChargeImpacts: createBuffer(
+                device,
+                'cirvivor-gpu-circle-enemy-charge-impacts',
+                GPU_CIRCLE_BODY_ABI.ENEMY_CHARGE_IMPACT_STATE.STRIDE
+                    * this.capacity,
                 storageUsage
             ),
             effectSummaries: createBuffer(
@@ -15080,6 +15144,17 @@ export class GpuCircleBodySimulation {
                 storageLayoutEntry(13, 'read-only-storage')
             ]
         });
+        const computeEnemyChargeImpactBodiesLayout = device.createBindGroupLayout({
+            label: 'cirvivor-gpu-circle-compute-enemy-charge-impact-bodies-layout',
+            entries: [
+                storageLayoutEntry(0),
+                storageLayoutEntry(1),
+                storageLayoutEntry(2),
+                storageLayoutEntry(11),
+                storageLayoutEntry(13, 'read-only-storage'),
+                storageLayoutEntry(16)
+            ]
+        });
         const computeDirectionalDefenseBodiesLayout = device.createBindGroupLayout({
             label: 'cirvivor-gpu-circle-compute-directional-defense-bodies-layout',
             entries: [
@@ -15280,6 +15355,12 @@ export class GpuCircleBodySimulation {
             [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                 computeEnemyBehaviorBodiesLayout,
                 computeWorldSdfLayout,
+                computeParamsLayout,
+                computeEnemyBehaviorEventsLayout
+            ],
+            [COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT]: [
+                computeEnemyChargeImpactBodiesLayout,
+                computeEmptyLayout,
                 computeParamsLayout,
                 computeEnemyBehaviorEventsLayout
             ],
@@ -16155,6 +16236,21 @@ export class GpuCircleBodySimulation {
                 }
             ]
         });
+        const computeEnemyChargeImpactBodies = device.createBindGroup({
+            label: 'cirvivor-gpu-circle-compute-enemy-charge-impact-bodies',
+            layout: computeEnemyChargeImpactBodiesLayout,
+            entries: [
+                { binding: 0, resource: resource(this.buffers.counts) },
+                { binding: 1, resource: resource(this.buffers.physics) },
+                { binding: 2, resource: resource(this.buffers.simulation) },
+                { binding: 11, resource: resource(this.buffers.enemyBehaviorStates) },
+                {
+                    binding: 13,
+                    resource: resource(this.buffers.towerTargetQueryResults)
+                },
+                { binding: 16, resource: resource(this.buffers.enemyChargeImpacts) }
+            ]
+        });
         const computeDirectionalDefenseBodies = device.createBindGroup({
             label: 'cirvivor-gpu-circle-compute-directional-defense-bodies',
             layout: computeDirectionalDefenseBodiesLayout,
@@ -16438,6 +16534,12 @@ export class GpuCircleBodySimulation {
                 [COMPUTE_PIPELINE_PROFILE.ENEMY_BEHAVIOR]: [
                     computeEnemyBehaviorBodies,
                     computeWorldSdf,
+                    computeParams,
+                    computeEnemyBehaviorEvents
+                ],
+                [COMPUTE_PIPELINE_PROFILE.ENEMY_CHARGE_IMPACT]: [
+                    computeEnemyChargeImpactBodies,
+                    computeEmpty,
                     computeParams,
                     computeEnemyBehaviorEvents
                 ],

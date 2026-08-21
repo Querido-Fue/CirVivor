@@ -4,6 +4,7 @@ import {
     ACTOR_PAYLOAD_MATERIALIZER_ABI_VERSION,
     ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS,
     R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES,
+    R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER,
     normalizeActorPayloadDefinition
 } from '../../contract/actor_payload_contract.js';
 import {
@@ -54,6 +55,11 @@ import {
     GPU_TOWER_GROUP_INVALID_COMPONENT,
     GPU_TOWER_GROUP_MEMBER_FLAG
 } from './gpu_tower_group_abi.js';
+import {
+    GPU_SPAWN_ADMISSION_GRID_TYPES_WGSL,
+    GPU_SPAWN_ADMISSION_SHARED_WGSL,
+    GPU_SPAWN_ADMISSION_STORAGE_BINDING_COUNT
+} from './gpu_spawn_admission_shaders.js';
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT = 9;
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_DEFAULT_COMMAND_CAPACITY = 4;
@@ -89,10 +95,28 @@ const SAFE_PLACEMENT_RADIUS_SUM_SCALE_WGSL
 const SAFE_PLACEMENT_SURFACE_GAP_SCALE_WGSL
     = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
         .map((candidate) => wgslFloat32(candidate.surfaceGapScale)).join(', ');
-const SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP_WGSL
-    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES
-        .map((candidate) => candidate.allowDynamicOverlap ? '1u' : '0u')
-        .join(', ');
+const EXPANDING_RING_COUNT
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER.expandingRingCount;
+const EXPANDING_RING_SLOT_COUNT
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER.expandingRingSlotCount;
+const EXPANDING_RING_STEP_RADIUS_SCALE
+    = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER
+        .expandingRingStepRadiusScale;
+const EXPANDING_DIRECTION_COS_WGSL = Array.from(
+    { length: EXPANDING_RING_SLOT_COUNT },
+    (_, index) => wgslFloat32(Math.cos(
+        (index * Math.PI * 2) / EXPANDING_RING_SLOT_COUNT
+    ))
+).join(', ');
+const EXPANDING_DIRECTION_SIN_WGSL = Array.from(
+    { length: EXPANDING_RING_SLOT_COUNT },
+    (_, index) => wgslFloat32(Math.sin(
+        (index * Math.PI * 2) / EXPANDING_RING_SLOT_COUNT
+    ))
+).join(', ');
+const SAFE_PLACEMENT_TOTAL_CANDIDATE_COUNT
+    = SAFE_PLACEMENT_CANDIDATE_COUNT
+        + EXPANDING_RING_COUNT * EXPANDING_RING_SLOT_COUNT;
 
 const HEADER_WORD_COUNT
     = GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE / 4;
@@ -299,6 +323,12 @@ const ERROR_STALE_PROTOCOL: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.STALE_PROTOCOL}u;
 const ERROR_DYNAMIC_BODY_OVERLAP: u32 =
     ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP}u;
+const ERROR_SIBLING_BODY_OVERLAP: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SIBLING_BODY_OVERLAP}u;
+const ERROR_GRID_CELL_CAPACITY: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.GRID_CELL_CAPACITY}u;
+const ERROR_NO_VALID_GLOBAL_PLACEMENT: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.NO_VALID_GLOBAL_PLACEMENT}u;
 const PLACEMENT_FAILURE_NONE: u32 =
     ${ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE}u;
 const PLACEMENT_FAILURE_STATIC_SDF: u32 =
@@ -328,11 +358,6 @@ const SAFE_PLACEMENT_SURFACE_GAP_SCALE = array<f32,
     ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
     ${SAFE_PLACEMENT_SURFACE_GAP_SCALE_WGSL}
 );
-const SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP = array<u32,
-    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
-    ${SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP_WGSL}
-);
-
 fn header(field: u32) -> u32 {
     return leases.values[field];
 }
@@ -544,26 +569,6 @@ fn safe_placement_candidate_position(
         );
 }
 
-fn overlaps_dynamic_body(position: vec2f, radius: f32) -> bool {
-    let body_capacity = min(
-        arrayLength(&physics.values),
-        arrayLength(&simulations.values)
-    );
-    for (var slot = 0u; slot < body_capacity; slot += 1u) {
-        let other_radius = physics.values[slot].radius;
-        if (!is_alive(slot) || !(other_radius > 0.0)) {
-            continue;
-        }
-        let delta = physics.values[slot].position - position;
-        let minimum_distance = radius + other_radius;
-        if (dot(delta, delta) + 0.000001
-            < minimum_distance * minimum_distance) {
-            return true;
-        }
-    }
-    return false;
-}
-
 fn pack_placement_telemetry(
     rank: u32,
     attempted_candidate_count: u32,
@@ -692,80 +697,26 @@ fn validate_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
         }
     }
 
-    var chosen_candidate_index = INVALID;
-    var attempted_candidate_count = 0u;
-    var placement_failure_class = PLACEMENT_FAILURE_NONE;
+    let chosen_candidate_index = INVALID;
+    let attempted_candidate_count = 0u;
+    let placement_failure_class = PLACEMENT_FAILURE_NONE;
     if (errors == 0u) {
         let destination_radius = physics.values[destination_slot].radius;
         let authored_direction = normalized_or_fallback(vec2f(
             bitcast<f32>(validation_word(rank, ${V.DIRECTION_X}u)),
             bitcast<f32>(validation_word(rank, ${V.DIRECTION_Y}u))
         ), source_facing(rank));
-        var selected_position = source_position(rank);
-        var selected_direction = authored_direction;
-        var saw_static_sdf_rejection = false;
-        var saw_dynamic_overlap_rejection = false;
-        if (destination_radius > 0.0) {
-            for (var candidate_index = 0u;
-                candidate_index < SAFE_PLACEMENT_CANDIDATE_COUNT;
-                candidate_index += 1u) {
-                attempted_candidate_count += 1u;
-                let direction = safe_placement_direction(
-                    authored_direction,
-                    candidate_index
-                );
-                let position = safe_placement_candidate_position(
-                    rank,
-                    destination_slot,
-                    direction,
-                    candidate_index
-                );
-                if (!valid_spawn_point(position, destination_radius)) {
-                    saw_static_sdf_rejection = true;
-                    continue;
-                }
-                if (SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP[candidate_index]
-                        == 0u
-                    && overlaps_dynamic_body(position, destination_radius)) {
-                    saw_dynamic_overlap_rejection = true;
-                    continue;
-                }
-                chosen_candidate_index = candidate_index;
-                selected_position = position;
-                selected_direction = direction;
-                break;
-            }
-        } else {
-            saw_static_sdf_rejection = true;
-        }
-        if (chosen_candidate_index == INVALID) {
+        if (!(destination_radius > 0.0)) {
             errors = errors | ERROR_SDF_PLACEMENT;
-            if (saw_dynamic_overlap_rejection) {
-                errors = errors | ERROR_DYNAMIC_BODY_OVERLAP;
-            }
-            placement_failure_class = select(
-                select(
-                    PLACEMENT_FAILURE_NONE,
-                    PLACEMENT_FAILURE_STATIC_SDF,
-                    saw_static_sdf_rejection
-                ),
-                select(
-                    PLACEMENT_FAILURE_DYNAMIC_BODY_OVERLAP,
-                    PLACEMENT_FAILURE_STATIC_AND_DYNAMIC,
-                    saw_static_sdf_rejection
-                ),
-                saw_dynamic_overlap_rejection
-            );
-        } else {
-            store_validation(rank, ${V.POSITION_X}u,
-                bitcast<u32>(selected_position.x));
-            store_validation(rank, ${V.POSITION_Y}u,
-                bitcast<u32>(selected_position.y));
-            store_validation(rank, ${V.DIRECTION_X}u,
-                bitcast<u32>(selected_direction.x));
-            store_validation(rank, ${V.DIRECTION_Y}u,
-                bitcast<u32>(selected_direction.y));
         }
+        store_validation(rank, ${V.POSITION_X}u,
+            bitcast<u32>(source_position(rank).x));
+        store_validation(rank, ${V.POSITION_Y}u,
+            bitcast<u32>(source_position(rank).y));
+        store_validation(rank, ${V.DIRECTION_X}u,
+            bitcast<u32>(authored_direction.x));
+        store_validation(rank, ${V.DIRECTION_Y}u,
+            bitcast<u32>(authored_direction.y));
     }
     store_validation(rank, ${V.CHOSEN_CANDIDATE_INDEX}u,
         chosen_candidate_index);
@@ -849,7 +800,11 @@ fn aggregate_actor_payload_validation() {
     if (errors == 0u) {
         store_aggregate(8u, STATUS_COMPLETE);
     } else if ((errors
-        & ~(ERROR_SDF_PLACEMENT | ERROR_DYNAMIC_BODY_OVERLAP)) == 0u) {
+        & ~(ERROR_SDF_PLACEMENT
+            | ERROR_DYNAMIC_BODY_OVERLAP
+            | ERROR_SIBLING_BODY_OVERLAP
+            | ERROR_GRID_CELL_CAPACITY
+            | ERROR_NO_VALID_GLOBAL_PLACEMENT)) == 0u) {
         store_aggregate(8u, STATUS_SDF_REJECTED);
     } else {
         store_aggregate(8u, STATUS_PROTOCOL_REJECTED);
@@ -944,6 +899,353 @@ fn materialize_actor_payload(@builtin(global_invocation_id) invocation: vec3u) {
         baseline_flags | CONTROLLED_FLAG | EXTERNAL_MOTION_FLAG
     );
     atomicAdd(&aggregate.values[10u], 1u);
+}
+`;
+
+export const GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL = /* wgsl */`
+struct BodyPhysics {
+    position: vec2f,
+    velocity: vec2f,
+    radius: f32,
+    inverse_mass: f32,
+    physical_meta: u32,
+    interaction_meta: u32,
+}
+
+struct BodySimulation {
+    lifetime: f32,
+    health: i32,
+    gameplay_meta: u32,
+    flags: u32,
+    flow_field_index: u32,
+    flow_speed: f32,
+    entity_id: u32,
+    incarnation: u32,
+}
+
+struct RawReadBuffer { values: array<u32> }
+struct RawAtomicBuffer { values: array<atomic<u32>> }
+struct PhysicsBuffer { values: array<BodyPhysics> }
+struct SimulationBuffer { values: array<BodySimulation> }
+struct SdfBuffer { values: array<f32> }
+${GPU_SPAWN_ADMISSION_GRID_TYPES_WGSL}
+
+@group(0) @binding(0) var<storage, read> admission_snapshots: RawReadBuffer;
+@group(0) @binding(1) var<storage, read> admission_leases: RawReadBuffer;
+@group(0) @binding(2) var<storage, read> admission_physics: PhysicsBuffer;
+@group(0) @binding(3) var<storage, read> admission_simulations: SimulationBuffer;
+@group(0) @binding(4) var<storage, read> admission_sdf: SdfBuffer;
+@group(0) @binding(5) var<storage, read_write> admission_output: RawAtomicBuffer;
+@group(0) @binding(6) var<storage, read_write> admission_grid_counts: AtomicGridCounts;
+@group(0) @binding(7) var<storage, read> admission_grid_bodies: GridBodyBuffer;
+@group(1) @binding(0) var<uniform> params: SimulationParams;
+
+const SPAWN_ADMISSION_ALIVE_FLAG: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
+const ADMISSION_INVALID: u32 = 0xffffffffu;
+const ADMISSION_AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
+const ADMISSION_VALIDATION_WORDS: u32 = ${VALIDATION_WORD_COUNT}u;
+const ADMISSION_HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
+const ADMISSION_LEASE_WORDS: u32 = ${LEASE_WORD_COUNT}u;
+const ADMISSION_SNAPSHOT_WORDS: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const LOCAL_CANDIDATE_COUNT: u32 = ${SAFE_PLACEMENT_CANDIDATE_COUNT}u;
+const EXPANDING_SLOT_COUNT: u32 = ${EXPANDING_RING_SLOT_COUNT}u;
+const TOTAL_CANDIDATE_COUNT: u32 =
+    ${SAFE_PLACEMENT_TOTAL_CANDIDATE_COUNT}u;
+const ADMISSION_ERROR_SDF: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SDF_PLACEMENT}u;
+const ADMISSION_ERROR_EXISTING: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP}u;
+const ADMISSION_ERROR_SIBLING: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SIBLING_BODY_OVERLAP}u;
+const ADMISSION_ERROR_CELL: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.GRID_CELL_CAPACITY}u;
+const ADMISSION_ERROR_GLOBAL: u32 =
+    ${ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.NO_VALID_GLOBAL_PLACEMENT}u;
+
+const LOCAL_ROTATION_COS = array<f32, ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_ROTATION_COS_WGSL}
+);
+const LOCAL_ROTATION_SIN = array<f32, ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_ROTATION_SIN_WGSL}
+);
+const LOCAL_RADIUS_SUM_SCALE = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_RADIUS_SUM_SCALE_WGSL}
+);
+const LOCAL_SURFACE_GAP_SCALE = array<f32,
+    ${SAFE_PLACEMENT_CANDIDATE_COUNT}>(
+    ${SAFE_PLACEMENT_SURFACE_GAP_SCALE_WGSL}
+);
+const EXPANDING_DIRECTION_COS = array<f32, ${EXPANDING_RING_SLOT_COUNT}>(
+    ${EXPANDING_DIRECTION_COS_WGSL}
+);
+const EXPANDING_DIRECTION_SIN = array<f32, ${EXPANDING_RING_SLOT_COUNT}>(
+    ${EXPANDING_DIRECTION_SIN_WGSL}
+);
+
+struct EnemyPayloadCandidate {
+    position: vec2f,
+    direction: vec2f,
+}
+
+fn admission_header(field: u32) -> u32 {
+    return admission_leases.values[field];
+}
+
+fn admission_lease_word(rank: u32, field: u32) -> u32 {
+    return admission_leases.values[
+        ADMISSION_HEADER_WORDS + rank * ADMISSION_LEASE_WORDS + field
+    ];
+}
+
+fn admission_snapshot_word(rank: u32, field: u32) -> u32 {
+    return admission_snapshots.values[
+        admission_header(${H.SNAPSHOT_WORD_OFFSET}u)
+            + rank * ADMISSION_SNAPSHOT_WORDS + field
+    ];
+}
+
+fn admission_validation_index(rank: u32, field: u32) -> u32 {
+    return ADMISSION_AGGREGATE_WORDS
+        + rank * ADMISSION_VALIDATION_WORDS + field;
+}
+
+fn admission_validation_word(rank: u32, field: u32) -> u32 {
+    return atomicLoad(&admission_output.values[
+        admission_validation_index(rank, field)
+    ]);
+}
+
+fn admission_store_validation(rank: u32, field: u32, value: u32) {
+    atomicStore(&admission_output.values[
+        admission_validation_index(rank, field)
+    ], value);
+}
+
+fn admission_normalized(value: vec2f) -> vec2f {
+    let length_squared = dot(value, value);
+    return select(vec2f(1.0, 0.0), value * inverseSqrt(length_squared),
+        length_squared > 0.000000000001);
+}
+
+fn admission_read_sdf(column: i32, row: i32) -> f32 {
+    let columns = i32(admission_header(${H.SDF_COLS}u));
+    let rows = i32(admission_header(${H.SDF_ROWS}u));
+    let x = clamp(column, 0, columns - 1);
+    let y = clamp(row, 0, rows - 1);
+    return admission_sdf.values[u32(y * columns + x)];
+}
+
+fn admission_sample_sdf(position: vec2f) -> f32 {
+    let width = bitcast<f32>(admission_header(${H.WORLD_WIDTH}u));
+    let height = bitcast<f32>(admission_header(${H.WORLD_HEIGHT}u));
+    let columns = f32(admission_header(${H.SDF_COLS}u));
+    let rows = f32(admission_header(${H.SDF_ROWS}u));
+    let uv = clamp(position / vec2f(width, height), vec2f(0.0), vec2f(1.0));
+    let coordinate = uv * vec2f(columns, rows) - vec2f(0.5);
+    let base = vec2i(floor(coordinate));
+    let fraction = fract(coordinate);
+    let top = mix(
+        admission_read_sdf(base.x, base.y),
+        admission_read_sdf(base.x + 1, base.y),
+        fraction.x
+    );
+    let bottom = mix(
+        admission_read_sdf(base.x, base.y + 1),
+        admission_read_sdf(base.x + 1, base.y + 1),
+        fraction.x
+    );
+    return mix(top, bottom, fraction.y);
+}
+
+fn admission_static_valid(position: vec2f, radius: f32) -> bool {
+    let width = bitcast<f32>(admission_header(${H.WORLD_WIDTH}u));
+    let height = bitcast<f32>(admission_header(${H.WORLD_HEIGHT}u));
+    if (!(position.x >= radius && position.y >= radius
+        && position.x <= width - radius
+        && position.y <= height - radius)) {
+        return false;
+    }
+    return admission_header(${H.SDF_ENABLED}u) == 0u
+        || admission_sample_sdf(position) >= radius;
+}
+
+fn spawn_admission_claim_is_committed(rank: u32) -> bool {
+    return admission_validation_word(
+            rank,
+            ${V.CHOSEN_CANDIDATE_INDEX}u
+        ) != ADMISSION_INVALID
+        && admission_validation_word(rank, ${V.ERROR_FLAGS}u) == 0u;
+}
+
+fn spawn_admission_claim_position(rank: u32) -> vec2f {
+    return vec2f(
+        bitcast<f32>(admission_validation_word(rank, ${V.POSITION_X}u)),
+        bitcast<f32>(admission_validation_word(rank, ${V.POSITION_Y}u))
+    );
+}
+
+fn spawn_admission_claim_radius(rank: u32) -> f32 {
+    let slot = admission_lease_word(rank, ${R.DESTINATION_SLOT}u);
+    return admission_physics.values[slot].radius;
+}
+
+${GPU_SPAWN_ADMISSION_SHARED_WGSL}
+
+fn enemy_payload_candidate(
+    rank: u32,
+    candidate_index: u32,
+    destination_radius: f32,
+    authored_direction: vec2f
+) -> EnemyPayloadCandidate {
+    let source_position = vec2f(
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+    );
+    let source_radius = bitcast<f32>(
+        admission_snapshot_word(rank, ${S.RADIUS}u)
+    );
+    let surface_gap = bitcast<f32>(
+        admission_header(${H.SURFACE_GAP}u)
+    );
+    if (candidate_index < LOCAL_CANDIDATE_COUNT) {
+        let cosine = LOCAL_ROTATION_COS[candidate_index];
+        let sine = LOCAL_ROTATION_SIN[candidate_index];
+        let direction = admission_normalized(vec2f(
+            authored_direction.x * cosine - authored_direction.y * sine,
+            authored_direction.x * sine + authored_direction.y * cosine
+        ));
+        let distance = (source_radius + destination_radius)
+                * LOCAL_RADIUS_SUM_SCALE[candidate_index]
+            + surface_gap * LOCAL_SURFACE_GAP_SCALE[candidate_index];
+        return EnemyPayloadCandidate(
+            source_position + direction * distance,
+            direction
+        );
+    }
+    let expanded = candidate_index - LOCAL_CANDIDATE_COUNT;
+    let ring = expanded / EXPANDING_SLOT_COUNT + 1u;
+    let slot = expanded % EXPANDING_SLOT_COUNT;
+    let cosine = EXPANDING_DIRECTION_COS[slot];
+    let sine = EXPANDING_DIRECTION_SIN[slot];
+    let direction = admission_normalized(vec2f(
+        authored_direction.x * cosine - authored_direction.y * sine,
+        authored_direction.x * sine + authored_direction.y * cosine
+    ));
+    let base_distance = source_radius + destination_radius + surface_gap;
+    let ring_step = max(
+        destination_radius * ${wgslFloat32(EXPANDING_RING_STEP_RADIUS_SCALE)},
+        destination_radius + surface_gap
+    );
+    return EnemyPayloadCandidate(
+        source_position + direction
+            * (base_distance + f32(ring) * ring_step),
+        direction
+    );
+}
+
+@compute @workgroup_size(1)
+fn admit_actor_payload_spawns() {
+    if (atomicLoad(&admission_output.values[8u])
+            != ${ACTOR_PAYLOAD_MATERIALIZATION_STATUS.PENDING}u) {
+        return;
+    }
+    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    for (var rank = 0u; rank < subject_count; rank += 1u) {
+        var errors = admission_validation_word(rank, ${V.ERROR_FLAGS}u);
+        if (errors != 0u) {
+            continue;
+        }
+        let destination_slot = admission_lease_word(
+            rank,
+            ${R.DESTINATION_SLOT}u
+        );
+        let destination_radius = admission_physics.values[
+            destination_slot
+        ].radius;
+        let authored_direction = admission_normalized(vec2f(
+            bitcast<f32>(admission_validation_word(rank, ${V.DIRECTION_X}u)),
+            bitcast<f32>(admission_validation_word(rank, ${V.DIRECTION_Y}u))
+        ));
+        var chosen = ADMISSION_INVALID;
+        var attempted = 0u;
+        var rejection_class = 0u;
+        var selected = EnemyPayloadCandidate(vec2f(0.0), authored_direction);
+        for (var candidate_index = 0u;
+            candidate_index < TOTAL_CANDIDATE_COUNT;
+            candidate_index += 1u) {
+            attempted += 1u;
+            let candidate = enemy_payload_candidate(
+                rank,
+                candidate_index,
+                destination_radius,
+                authored_direction
+            );
+            let verdict = spawn_admission_claim(
+                admission_static_valid(candidate.position, destination_radius),
+                candidate.position,
+                destination_radius,
+                destination_slot,
+                rank
+            );
+            rejection_class |= verdict.rejection_class;
+            if (verdict.accepted != 0u) {
+                chosen = candidate_index;
+                selected = candidate;
+                break;
+            }
+        }
+        if (chosen == ADMISSION_INVALID) {
+            errors |= ADMISSION_ERROR_SDF | ADMISSION_ERROR_GLOBAL;
+            if ((rejection_class & 2u) != 0u) {
+                errors |= ADMISSION_ERROR_EXISTING;
+            }
+            if ((rejection_class & 4u) != 0u) {
+                errors |= ADMISSION_ERROR_SIBLING;
+            }
+            if ((rejection_class & 8u) != 0u) {
+                errors |= ADMISSION_ERROR_CELL;
+            }
+        } else {
+            admission_store_validation(
+                rank,
+                ${V.POSITION_X}u,
+                bitcast<u32>(selected.position.x)
+            );
+            admission_store_validation(
+                rank,
+                ${V.POSITION_Y}u,
+                bitcast<u32>(selected.position.y)
+            );
+            admission_store_validation(
+                rank,
+                ${V.DIRECTION_X}u,
+                bitcast<u32>(selected.direction.x)
+            );
+            admission_store_validation(
+                rank,
+                ${V.DIRECTION_Y}u,
+                bitcast<u32>(selected.direction.y)
+            );
+            rejection_class = 0u;
+        }
+        admission_store_validation(
+            rank,
+            ${V.CHOSEN_CANDIDATE_INDEX}u,
+            chosen
+        );
+        admission_store_validation(
+            rank,
+            ${V.ATTEMPTED_CANDIDATE_COUNT}u,
+            attempted
+        );
+        admission_store_validation(
+            rank,
+            ${V.PLACEMENT_FAILURE_CLASS}u,
+            rejection_class
+        );
+        admission_store_validation(rank, ${V.ERROR_FLAGS}u, errors);
+    }
 }
 `;
 
@@ -1949,6 +2251,33 @@ function getPipelines(device, stage) {
         label: 'cirvivor-gpu-actor-payload-materialization-shader',
         code: GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL
     });
+    const admissionLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-payload-admission-layout',
+        entries: Array.from(
+            { length: GPU_SPAWN_ADMISSION_STORAGE_BINDING_COUNT },
+            (_, binding) => ({
+                binding,
+                visibility: stage.COMPUTE,
+                buffer: {
+                    type: binding === 5 || binding === 6
+                        ? 'storage'
+                        : 'read-only-storage'
+                }
+            })
+        )
+    });
+    const admissionParamsLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-actor-payload-admission-params-layout',
+        entries: [{
+            binding: 0,
+            visibility: stage.COMPUTE,
+            buffer: { type: 'uniform' }
+        }]
+    });
+    const admissionModule = device.createShaderModule({
+        label: 'cirvivor-gpu-actor-payload-admission-shader',
+        code: GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL
+    });
     const queryLayout = device.createBindGroupLayout({
         label: 'cirvivor-gpu-actor-payload-tower-target-query-layout',
         entries: Array.from({ length: 8 }, (_, binding) => ({
@@ -1999,6 +2328,8 @@ function getPipelines(device, stage) {
     );
     cached = Object.freeze({
         layout,
+        admissionLayout,
+        admissionParamsLayout,
         queryLayout,
         actorActionLayout,
         query: device.createComputePipeline({
@@ -2020,6 +2351,17 @@ function getPipelines(device, stage) {
             'validate_actor_payload',
             'cirvivor-gpu-actor-payload-validate-pipeline'
         ),
+        admission: device.createComputePipeline({
+            label: 'cirvivor-gpu-actor-payload-admission-pipeline',
+            layout: device.createPipelineLayout({
+                label: 'cirvivor-gpu-actor-payload-admission-pipeline-layout',
+                bindGroupLayouts: [admissionLayout, admissionParamsLayout]
+            }),
+            compute: {
+                module: admissionModule,
+                entryPoint: 'admit_actor_payload_spawns'
+            }
+        }),
         aggregate: createPipeline(
             'aggregate_actor_payload_validation',
             'cirvivor-gpu-actor-payload-aggregate-pipeline'
@@ -2053,6 +2395,9 @@ function sameResources(left, right) {
         && left?.routeRuntimeStates === right?.routeRuntimeStates
         && left?.enemyBehaviorStates === right?.enemyBehaviorStates
         && left?.sdf === right?.sdf
+        && left?.params === right?.params
+        && left?.gridCounts === right?.gridCounts
+        && left?.gridBodies === right?.gridBodies
         && left?.towerMembers === right?.towerMembers
         && left?.towerRoster === right?.towerRoster
         && left?.actorTransit === right?.actorTransit;
@@ -2086,27 +2431,33 @@ function normalizeActorActionPlacementBinding(binding, command, completion) {
 }
 
 function placementFailureClassName(value) {
-    switch (value) {
-    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.STATIC_SDF:
-        return 'STATIC_SDF';
-    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.DYNAMIC_BODY_OVERLAP:
-        return 'DYNAMIC_BODY_OVERLAP';
-    case ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
-        .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP:
-        return 'STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP';
-    default:
+    if (value === ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE) {
         return 'NONE';
     }
+    const names = [];
+    if ((value & 1) !== 0) names.push('STATIC_SDF');
+    if ((value & 2) !== 0) names.push('EXISTING_BODY');
+    if ((value & 4) !== 0) names.push('SIBLING_BODY');
+    if ((value & 8) !== 0) names.push('GRID_CELL_CAPACITY');
+    return names.join('_AND_');
 }
 
 function freezeCompletion(entry, aggregate, extra = {}) {
     const placementReason = aggregate.status
             === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
         ? Object.freeze({
-            code: 'NO_VALID_PLACEMENT',
+            code: 'NO_VALID_GLOBAL_PLACEMENT',
             firstFailingRank: aggregate.firstFailingRank ?? null,
             attemptedCandidateCount:
                 aggregate.attemptedCandidateCount ?? 0,
+            candidateRound: aggregate.attemptedCandidateCount
+                    <= SAFE_PLACEMENT_CANDIDATE_COUNT
+                ? 0
+                : Math.ceil(
+                    (aggregate.attemptedCandidateCount
+                        - SAFE_PLACEMENT_CANDIDATE_COUNT)
+                    / EXPANDING_RING_SLOT_COUNT
+                ),
             failureClass: placementFailureClassName(
                 aggregate.placementFailureClass
             )
@@ -2185,6 +2536,9 @@ export class GpuActorPayloadMaterializationRuntime {
             'routeRuntimeStates',
             'enemyBehaviorStates',
             'sdf',
+            'params',
+            'gridCounts',
+            'gridBodies',
             'towerMembers',
             'towerRoster',
             'actorTransit'
@@ -2494,6 +2848,33 @@ export class GpuActorPayloadMaterializationRuntime {
                         { binding: 7, resource: { buffer: entry.aggregateBuffer } }
                     ]
                 });
+                const admissionBindGroup = entry.actorActionPlacementBinding
+                    ? null
+                    : this.device.createBindGroup({
+                    label: `cirvivor-gpu-actor-payload-admission-bind-${entry.transactionId}`,
+                    layout: this.pipeline.admissionLayout,
+                    entries: [
+                        { binding: 0, resource: { buffer: this.resources.snapshot } },
+                        { binding: 1, resource: { buffer: entry.leaseBuffer } },
+                        { binding: 2, resource: { buffer: this.resources.physics } },
+                        { binding: 3, resource: { buffer: this.resources.simulation } },
+                        { binding: 4, resource: { buffer: this.resources.sdf } },
+                        { binding: 5, resource: { buffer: entry.aggregateBuffer } },
+                        { binding: 6, resource: { buffer: this.resources.gridCounts } },
+                        { binding: 7, resource: { buffer: this.resources.gridBodies } }
+                    ]
+                });
+                const admissionParamsBindGroup
+                    = entry.actorActionPlacementBinding
+                        ? null
+                        : this.device.createBindGroup({
+                        label: `cirvivor-gpu-actor-payload-admission-params-bind-${entry.transactionId}`,
+                        layout: this.pipeline.admissionParamsLayout,
+                        entries: [{
+                            binding: 0,
+                            resource: { buffer: this.resources.params }
+                        }]
+                    });
                 const actorActionBindGroup = entry.actorActionPlacementBinding
                     ? this.device.createBindGroup({
                         label: `cirvivor-gpu-actor-action-enemy-bind-${entry.transactionId}`,
@@ -2523,13 +2904,17 @@ export class GpuActorPayloadMaterializationRuntime {
                     pipeline,
                     workgroupCount,
                     phase,
-                    activeBindGroup = bindGroup
+                    activeBindGroup = bindGroup,
+                    secondaryBindGroup = null
                 ) => {
                     const pass = encoder.beginComputePass({
                         label: `cirvivor-gpu-actor-payload-${phase}-pass`
                     });
                     pass.setPipeline(pipeline);
                     pass.setBindGroup(0, activeBindGroup);
+                    if (secondaryBindGroup) {
+                        pass.setBindGroup(1, secondaryBindGroup);
+                    }
                     pass.dispatchWorkgroups(workgroupCount);
                     pass.end();
                 };
@@ -2574,6 +2959,13 @@ export class GpuActorPayloadMaterializationRuntime {
                         this.pipeline.validate,
                         parallelWorkgroupCount,
                         'validate'
+                    );
+                    dispatch(
+                        this.pipeline.admission,
+                        1,
+                        'spawn-admission',
+                        admissionBindGroup,
+                        admissionParamsBindGroup
                     );
                     dispatch(this.pipeline.aggregate, 1, 'aggregate');
                     dispatch(
@@ -2702,8 +3094,14 @@ export class GpuActorPayloadMaterializationRuntime {
             towerTargetPolicy:
                 'source-local-distance-share-identity-then-core-then-facing',
             safePlacementPolicy:
-                'authored-rotated-shortened-final-local-overlap',
-            safePlacementCandidateCount: SAFE_PLACEMENT_CANDIDATE_COUNT,
+                'enemy-local-14-then-bounded-expanding-rings/shared-grid-admission',
+            safePlacementCandidateCount:
+                SAFE_PLACEMENT_TOTAL_CANDIDATE_COUNT,
+            safePlacementLocalCandidateCount:
+                SAFE_PLACEMENT_CANDIDATE_COUNT,
+            safePlacementExpandingRingCount: EXPANDING_RING_COUNT,
+            spawnAdmissionStorageBindingCount:
+                GPU_SPAWN_ADMISSION_STORAGE_BINDING_COUNT,
             targetReadbackPolicy: 'none',
             pendingCount: this.pending.length,
             inFlightCount: this.inFlight.size,

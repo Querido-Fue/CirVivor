@@ -1803,6 +1803,14 @@ test('target-entity SpawnProgram은 private exact slot을 pack하고 target ABA�
         assert.equal(status.fixedPrimitives.enemyBehavior.storageBuffersPerStage, 9);
         assert.equal(status.fixedPrimitives.storageProfile.enemyBehavior, 9);
         assert.equal(
+            status.fixedPrimitives.enemyBehavior.impact.storageBuffersPerStage,
+            9
+        );
+        assert.equal(
+            status.fixedPrimitives.enemyBehavior.impact.stateStride,
+            GPU_CIRCLE_BODY_ABI.ENEMY_CHARGE_IMPACT_STATE.STRIDE
+        );
+        assert.equal(
             status.fixedPrimitives.enemyBehavior.octagonTowerOrbitProgramId,
             GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT
         );
@@ -2802,6 +2810,16 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             Array.from(computeEnemyBehaviorEventsLayout.entries, (entry) => entry.binding),
             [0, 1, 2]
         );
+        const computeEnemyChargeImpactBodiesLayout = device.bindGroupLayouts.get(
+            'cirvivor-gpu-circle-compute-enemy-charge-impact-bodies-layout'
+        );
+        assert.deepEqual(
+            Array.from(
+                computeEnemyChargeImpactBodiesLayout.entries,
+                (entry) => entry.binding
+            ),
+            [0, 1, 2, 11, 13, 16]
+        );
         const computeDirectionalDefenseBodiesLayout = device.bindGroupLayouts.get(
             'cirvivor-gpu-circle-compute-directional-defense-bodies-layout'
         );
@@ -2840,6 +2858,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'fixed-control',
             'source-resolve',
             'enemy-behavior',
+            'enemy-charge-impact',
             'directional-defense-classifier',
             'tracked-pose'
         ].map((profile) => {
@@ -2860,6 +2879,7 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
             'fixed-control': 6,
             'source-resolve': 9,
             'enemy-behavior': 9,
+            'enemy-charge-impact': 9,
             'directional-defense-classifier': 8,
             'tracked-pose': 6
         });
@@ -2887,16 +2907,20 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
         const contactStart = operations.findIndex(({ entryPoint }) => (
             entryPoint === 'clear_contact_state'
         ));
-        const contactOperations = operations.slice(contactStart, contactStart + 16);
+        const contactOperations = operations.slice(contactStart, contactStart + 20);
         assert.deepEqual(
             contactOperations.map((operation) => operation.entryPoint),
             [
                 'clear_contact_state',
+                'clear_enemy_charge_impact_states',
                 'emit_enemy_charge_telegraphs',
                 'generate_body_contacts',
                 'generate_world_contacts',
                 'update_contact_indirect_args',
+                'select_enemy_charge_impact_contacts',
+                'materialize_enemy_charge_impact_evidence',
                 'classify_directional_defense_contacts',
+                'shield_unselected_enemy_charge_contacts',
                 'handle_contacts',
                 'resolve_enemy_charge_contacts',
                 'preflight_core_damage_requests',
@@ -2909,34 +2933,41 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'mark_dead'
             ]
         );
-        for (const index of [0, 4, 10, 11]) {
+        for (const index of [0, 5, 14, 15]) {
             assert.equal(contactOperations[index].mode, 'direct');
             assert.equal(contactOperations[index].workgroups, 1);
         }
-        for (const index of [1, 2, 3, 5, 6, 7, 8, 9, 12, 13, 14, 15]) {
+        for (const index of [
+            1, 2, 3, 4, 6, 7, 8, 9, 10, 11,
+            12, 13, 16, 17, 18, 19
+        ]) {
             assert.equal(contactOperations[index].mode, 'indirect');
         }
-        for (const index of [5, 6, 7, 8, 12, 13]) {
+        for (const index of [6, 8, 9, 10, 11, 12, 16, 17]) {
             assert.equal(
                 contactOperations[index].indirectOffset,
                 12,
                 `${contactOperations[index].entryPoint}는 실제 contact_count command를 사용합니다.`
             );
         }
-        for (const index of [1, 2, 3, 9, 14, 15]) {
+        for (const index of [1, 2, 3, 4, 7, 13, 18, 19]) {
             assert.equal(contactOperations[index].indirectOffset, 0);
         }
         assert.deepEqual(
             contactOperations.map(({ pipelineLayout }) => pipelineLayout),
             [
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-charge-impact-pipeline-layout',
                 'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
                 'cirvivor-gpu-circle-compute-body-contacts-pipeline-layout',
                 'cirvivor-gpu-circle-compute-world-contacts-pipeline-layout',
                 'cirvivor-gpu-circle-indirect-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-charge-impact-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-charge-impact-pipeline-layout',
                 'cirvivor-gpu-circle-compute-directional-defense-classifier-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-charge-impact-pipeline-layout',
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout',
-                'cirvivor-gpu-circle-compute-enemy-behavior-pipeline-layout',
+                'cirvivor-gpu-circle-compute-enemy-charge-impact-pipeline-layout',
                 'cirvivor-gpu-circle-compute-core-damage-request-pipeline-layout',
                 'cirvivor-gpu-circle-compute-maximum-damage-window-pipeline-layout',
                 'cirvivor-gpu-circle-compute-core-damage-request-pipeline-layout',
@@ -2947,70 +2978,76 @@ test('mixed contact pass와 event ring은 확정 binding, dispatch, 순서 water
                 'cirvivor-gpu-circle-compute-contact-handling-pipeline-layout'
             ]
         );
-        assert.deepEqual(contactOperations[2].bindGroups, [
+        assert.deepEqual(contactOperations[3].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-with-handlers',
             'cirvivor-gpu-circle-compute-world-grid',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(contactOperations[3].bindGroups, [
+        assert.deepEqual(contactOperations[4].bindGroups, [
             'cirvivor-gpu-circle-compute-bodies-base',
             'cirvivor-gpu-circle-compute-world-sdf',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-contact-events'
         ]);
-        assert.deepEqual(contactOperations[4].bindGroups, [
+        assert.deepEqual(contactOperations[5].bindGroups, [
             'cirvivor-gpu-circle-indirect'
         ]);
-        assert.deepEqual(contactOperations[5].bindGroups, [
+        const impactBindGroups = [
+            'cirvivor-gpu-circle-compute-enemy-charge-impact-bodies',
+            'cirvivor-gpu-circle-compute-empty',
+            'cirvivor-gpu-circle-compute-params',
+            'cirvivor-gpu-circle-compute-enemy-behavior-events'
+        ];
+        for (const index of [1, 6, 7, 9, 11]) {
+            assert.deepEqual(contactOperations[index].bindGroups, impactBindGroups);
+        }
+        assert.deepEqual(contactOperations[8].bindGroups, [
             'cirvivor-gpu-circle-compute-directional-defense-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-directional-defense-events'
         ]);
-        assert.deepEqual(contactOperations[6].bindGroups, [
+        assert.deepEqual(contactOperations[10].bindGroups, [
             'cirvivor-gpu-circle-compute-contact-handling-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-all-events'
         ]);
-        assert.deepEqual(contactOperations[7].bindGroups, [
-            'cirvivor-gpu-circle-compute-enemy-behavior-bodies',
-            'cirvivor-gpu-circle-compute-world-sdf',
-            'cirvivor-gpu-circle-compute-params',
-            'cirvivor-gpu-circle-compute-enemy-behavior-events'
-        ]);
-        assert.deepEqual(contactOperations[8].bindGroups, [
+        assert.deepEqual(contactOperations[12].bindGroups, [
             'cirvivor-gpu-circle-compute-core-damage-request-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
-        assert.deepEqual(contactOperations[9].bindGroups, [
+        assert.deepEqual(contactOperations[13].bindGroups, [
             'cirvivor-gpu-circle-compute-maximum-damage-window-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
         assert.deepEqual(
-            contactOperations[10].bindGroups,
-            contactOperations[8].bindGroups
+            contactOperations[14].bindGroups,
+            contactOperations[12].bindGroups
         );
         assert.deepEqual(
-            contactOperations[11].bindGroups,
-            contactOperations[9].bindGroups
+            contactOperations[15].bindGroups,
+            contactOperations[13].bindGroups
         );
         assert.deepEqual(
-            contactOperations[12].bindGroups,
-            contactOperations[8].bindGroups
+            contactOperations[16].bindGroups,
+            contactOperations[12].bindGroups
         );
-        assert.deepEqual(contactOperations[13].bindGroups, [
+        assert.deepEqual(contactOperations[17].bindGroups, [
             'cirvivor-gpu-circle-compute-direct-core-damage-request-bodies',
             'cirvivor-gpu-circle-compute-empty',
             'cirvivor-gpu-circle-compute-params',
             'cirvivor-gpu-circle-compute-maximum-damage-window-events'
         ]);
-        assert.deepEqual(contactOperations[14].bindGroups, contactOperations[9].bindGroups);
+        assert.deepEqual(
+            contactOperations[18].bindGroups,
+            contactOperations[13].bindGroups
+        );
         assert.equal(
             operations.filter((operation) => operation.entryPoint === 'solve_body_body').length,
             6

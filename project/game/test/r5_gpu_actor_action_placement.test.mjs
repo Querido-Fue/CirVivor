@@ -197,7 +197,10 @@ function createStageFixture(subjectCount = 2) {
                 + towerMemberCapacity * GPU_TOWER_GROUP_ABI.ROSTER_SLOT.STRIDE,
             'tower-roster'
         ),
-        sdf: fakeBuffer(4, 'sdf')
+        sdf: fakeBuffer(4, 'sdf'),
+        params: fakeBuffer(4224, 'params'),
+        gridCounts: fakeBuffer(4, 'grid-counts'),
+        gridBodies: fakeBuffer(32, 'grid-bodies')
     });
     const destinationLeases = Object.freeze(Array.from(
         { length: subjectCount },
@@ -329,7 +332,10 @@ test('program header와 destination lease는 reserved zero 및 stable rank finge
     ));
     const view = new DataView(storage);
     const h = GPU_ACTOR_ACTION_PLACEMENT_ABI.PROGRAM_HEADER;
-    assert.equal(view.getUint32(h.ABI_VERSION, LITTLE_ENDIAN), 1);
+    assert.equal(
+        view.getUint32(h.ABI_VERSION, LITTLE_ENDIAN),
+        GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION
+    );
     assert.equal(view.getUint32(h.DESTINATION_FINGERPRINT, LITTLE_ENDIAN),
         destinationFingerprint);
     assert.equal(view.getUint32(h.PROFILE_FINGERPRINT, LITTLE_ENDIAN),
@@ -543,6 +549,11 @@ test('runtime stage는 exact snapshot/lease와 capacity를 검증하고 aggregat
 
         const status = runtime.getStatus();
         assert.equal(status.storageBindingCount, 9);
+        assert.equal(status.admissionStorageBindingCount, 8);
+        assert.equal(
+            status.admissionPolicy,
+            'payload-local-candidates/shared-grid-verdict/stable-rank-claim'
+        );
         assert.equal(status.dispatchStorageBindingCount, 2);
         assert.equal(status.aggregateReadbackByteSize, 96);
         assert.equal(status.perSubjectCpuCommandCount, 0);

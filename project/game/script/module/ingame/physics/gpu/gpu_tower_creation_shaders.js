@@ -630,9 +630,6 @@ fn validate_creation(@builtin(global_invocation_id) invocation: vec3u) {
             let destination_body_changed = !exact_body;
             let destination_alive_changed
                 = (atomicLoad(&simulation.flags) & BODY_FLAG_ALIVE) != 0u;
-            let destination_health_changed
-                = bitcast<u32>(atomicLoad(&simulation.health))
-                    != record.target_current_hp_fixed_point;
             let destination_member_changed = member.entity_id != 0u
                 || member.incarnation != 0u
                 || member.logical_ordinal != 0u
@@ -651,7 +648,6 @@ fn validate_creation(@builtin(global_invocation_id) invocation: vec3u) {
                 || record.source_group_revision != 0u
                 || destination_body_changed
                 || destination_alive_changed
-                || destination_health_changed
                 || destination_member_changed) {
                 errors |= ERROR_DESTINATION_CHANGED;
             }
@@ -660,9 +656,6 @@ fn validate_creation(@builtin(global_invocation_id) invocation: vec3u) {
             }
             if (destination_alive_changed) {
                 errors |= ERROR_DESTINATION_ALIVE_CHANGED;
-            }
-            if (destination_health_changed) {
-                errors |= ERROR_DESTINATION_HEALTH_CHANGED;
             }
             if (destination_member_changed) {
                 errors |= ERROR_DESTINATION_MEMBER_CHANGED;

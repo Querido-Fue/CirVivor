@@ -70,7 +70,11 @@ test('Tower 물리 반지름은 유지하고 피해 접촉 반경에만 1% skin�
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn body_interaction_radius\(body: GridBody\) -> f32 \{[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?body\.radius \* PLAYER_DAMAGEABLE_INTERACTION_RADIUS_SCALE;/u
+        /fn body_interaction_radius_values\(radius: f32, interaction_meta: u32\) -> f32 \{[\s\S]*?BODY_LAYER_PLAYER_DAMAGEABLE[\s\S]*?radius \* PLAYER_DAMAGEABLE_INTERACTION_RADIUS_SCALE;/u
+    );
+    assert.match(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /fn body_interaction_radius\(body: GridBody\) -> f32 \{[\s\S]*?body_interaction_radius_values\(body\.radius, body\.interaction_meta\);/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,

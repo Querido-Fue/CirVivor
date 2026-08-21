@@ -944,6 +944,16 @@ function towerTotals(towerGroupState) {
     });
 }
 
+function drainExactTowerTerminalReceipt(harness, expected, label) {
+    const receipts = harness.coordinator.drainActorPayloadTerminalReceipts([]);
+    assert(receipts.length === 1 && receipts[0] === expected,
+        `${label} terminal receipt exact-once drain 실패: ${JSON.stringify({
+            receipts,
+            expected
+        })}`);
+    return receipts[0];
+}
+
 async function executeShoot(harness, slotId, fixedTick, options = {}) {
     const { device, endpoint, backend } = harness;
     await openGenericBoundary(device, endpoint, fixedTick);
@@ -1007,8 +1017,13 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
     const coordinatorStage = harness.coordinator
         .stageForFixedTick(fixedTick + 1);
     if (coordinatorStage.pending !== true) {
-        const rejected = harness.materializer.observeTowerCreationCompletion(
+        const terminalReceipt = drainExactTowerTerminalReceipt(
+            harness,
             coordinatorStage,
+            'Tower placement stage rejection'
+        );
+        const rejected = harness.materializer.observeTowerCreationCompletion(
+            terminalReceipt,
             fixedTick + 1
         );
         return Object.freeze({
@@ -1018,7 +1033,7 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
             payloadStage,
             coordinatorStage,
             towerRequest,
-            towerReceipt: coordinatorStage,
+            towerReceipt: terminalReceipt,
             materializerObservation: rejected,
             outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
             nextFixedTick: fixedTick + 2,
@@ -1042,8 +1057,44 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
         `actor placement ${fixedTick + 1}`
     );
 
-    const creationStage = harness.coordinator
+    await openGenericBoundary(device, endpoint, fixedTick + 2);
+    const placementReady = harness.coordinator
         .observeCompletedAtFixedBoundary(fixedTick + 2);
+    if (placementReady.pending !== true) {
+        const terminalReceipt = drainExactTowerTerminalReceipt(
+            harness,
+            placementReady,
+            'Tower placement completion rejection'
+        );
+        const rejected = harness.materializer.observeTowerCreationCompletion(
+            terminalReceipt,
+            fixedTick + 2
+        );
+        return Object.freeze({
+            activation,
+            lifecycle,
+            abilityObservation,
+            payloadStage,
+            coordinatorStage,
+            placementReady,
+            towerRequest,
+            towerReceipt: terminalReceipt,
+            materializerObservation: rejected,
+            outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
+            nextFixedTick: fixedTick + 3,
+            storageMaximum: storageMaximum(harness)
+        });
+    }
+    assert(placementReady.phase === 'actor-action-placement-ready'
+        && placementReady.readyForCreationStage === true
+        && placementReady.terminal !== true
+        && harness.coordinator
+            .drainActorPayloadTerminalReceipts([]).length === 0,
+    `placement-ready progress receipt mismatch: ${JSON.stringify(
+        placementReady
+    )}`);
+    const creationStage = harness.coordinator
+        .stageReadyActorActionPlacementAtFixedBoundary(fixedTick + 2);
     const creationStageDiagnostic = creationStage.pending === true
         && creationStage.phase === 'tower-creation'
         && creationStage.staged === true
@@ -1056,7 +1107,6 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
         creationStage,
         creationStageDiagnostic
     })}`);
-    await openGenericBoundary(device, endpoint, fixedTick + 2);
     const creationLifecycle = endpoint.commitAtFixedBoundary(fixedTick + 2);
     assert(creationLifecycle.recoveryRequired !== true,
         `creation lifecycle failed: ${JSON.stringify(creationLifecycle)}`);
@@ -1078,8 +1128,13 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
         .observeCompletedAtFixedBoundary(fixedTick + 3);
     assert(towerReceipt.result === TOWER_CREATION_RESULT.COMMITTED,
         `Tower creation did not commit: ${JSON.stringify(towerReceipt)}`);
+    const drainedTowerReceipt = drainExactTowerTerminalReceipt(
+        harness,
+        towerReceipt,
+        'Tower creation completion'
+    );
     const materializerObservation = harness.materializer
-        .observeTowerCreationCompletion(towerReceipt, fixedTick + 3);
+        .observeTowerCreationCompletion(drainedTowerReceipt, fixedTick + 3);
     assert(materializerObservation.committedCount === 1
         && materializerObservation.recoveryRequired !== true,
     `Tower payload settlement failed: ${JSON.stringify({
@@ -1092,9 +1147,10 @@ async function executeShoot(harness, slotId, fixedTick, options = {}) {
         abilityObservation,
         payloadStage,
         coordinatorStage,
+        placementReady,
         creationStage,
         towerRequest,
-        towerReceipt,
+        towerReceipt: drainedTowerReceipt,
         materializerObservation,
         outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
         nextFixedTick: fixedTick + 4,

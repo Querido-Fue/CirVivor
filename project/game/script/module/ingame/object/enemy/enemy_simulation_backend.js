@@ -6,6 +6,9 @@ import {
     createGpuSignedDistanceField
 } from '../../physics/gpu/gpu_signed_distance_field.js';
 import {
+    createGpuCollisionGridDescriptor
+} from '../../physics/gpu/gpu_collision_grid_contract.js';
+import {
     createRouteFlowFieldAtlas
 } from '../../navigation/route_flow_field_atlas.js';
 import {
@@ -2781,6 +2784,24 @@ export class EnemySimulationBackend {
         return this.signedDistanceField;
     }
 
+    /**
+     * Recovery/SpawnAdmission이 production collision-grid builder와 동일한
+     * mapping/classification/footprint parameter를 사용하게 하는 snapshot입니다.
+     */
+    getSpawnAdmissionGridDescriptor() {
+        const simulation = this.simulation;
+        if (!simulation) {
+            return null;
+        }
+        return createGpuCollisionGridDescriptor({
+            worldSize: simulation.worldSize,
+            gridCellSize: simulation.gridCellSize,
+            gridCellCount: simulation.gridCellCount,
+            maxBodiesPerCell: simulation.maxBodiesPerCell,
+            maximumBodyRadius: simulation.maximumBodyRadius
+        });
+    }
+
     /** @returns {object|null} 기존 JS/WASM 방향 plane으로 만든 route-stage atlas입니다. */
     getFlowFieldAtlas() {
         return this.flowFieldAtlas;
@@ -3229,6 +3250,9 @@ export class EnemySimulationBackend {
                     enemyBehaviorStates:
                         simulation.buffers.enemyBehaviorStates,
                     sdf: simulation.buffers.sdf,
+                    params: simulation.buffers.computeParams,
+                    gridCounts: simulation.buffers.gridCounts,
+                    gridBodies: simulation.buffers.gridBodies,
                     towerMembers: groupResources.members,
                     towerRoster: groupResources.roster
                 },
@@ -3273,7 +3297,10 @@ export class EnemySimulationBackend {
                     abilityMetadata,
                     towerMembers: groupResources.members,
                     towerRoster: groupResources.roster,
-                    sdf: simulation.buffers.sdf
+                    sdf: simulation.buffers.sdf,
+                    params: simulation.buffers.computeParams,
+                    gridCounts: simulation.buffers.gridCounts,
+                    gridBodies: simulation.buffers.gridBodies
                 },
                 {
                     sessionGeneration: this.sessionGeneration,

@@ -51,7 +51,13 @@ export class GameScene extends BaseScene {
     fixedUpdate() {
         const advanced = this.gameSystem.fixedUpdate();
         if (advanced) {
-            this.recoveryRestartGeneration = null;
+            const probation = this.gameSystem.getGpuRecoveryStatus?.()
+                ?.probation ?? null;
+            if (probation === null
+                || probation.state === 'IDLE'
+                || probation.state === 'PASSED') {
+                this.recoveryRestartGeneration = null;
+            }
             return true;
         }
         if (this.enemyRecoveryEnabled

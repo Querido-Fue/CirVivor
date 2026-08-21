@@ -524,6 +524,72 @@ test('current HP 0.01은 shared preview/planner에서 거절하고 0.02는 0.01�
     allowState.rejectCreation(allowPlan, 'test-cleanup');
 });
 
+test('placement 대기 중 non-lethal damage는 fresh plan으로 재계획하고 membership drift는 0/N reject한다', () => {
+    const damaged = new TowerGroupState();
+    const damagedHandle = Object.freeze({ entityId: 370, incarnation: 1 });
+    damaged.bindGpuBody(
+        PRIMARY_TOWER_LOGICAL_ID,
+        damagedHandle,
+        PROTOCOL
+    );
+    const original = damaged.planCreation({
+        transactionId: 'refresh-after-placement-damage',
+        childCount: 1
+    });
+    assert.deepEqual(
+        [...original.existing, ...original.children].map(
+            (record) => record.currentHpFixedPoint
+        ),
+        [1500, 1500]
+    );
+    damaged.commitCompletedEvents({
+        events: [damageEvent(
+            damagedHandle,
+            2,
+            1000,
+            'damage-during-placement-readback'
+        )]
+    });
+    const refreshed = damaged.refreshPendingCreation({ plan: original });
+    assert.equal(refreshed.accepted, true);
+    assert.notStrictEqual(refreshed, original);
+    assert.deepEqual(
+        [...refreshed.existing, ...refreshed.children].map(
+            (record) => record.currentHpFixedPoint
+        ),
+        [1000, 1000]
+    );
+    assert.equal(damaged.commitCreation(refreshed).createdCount, 1);
+    assert.equal(damaged.auditInvariants().valid, true);
+
+    const drifted = new TowerGroupState();
+    const driftedHandle = Object.freeze({ entityId: 371, incarnation: 1 });
+    drifted.bindGpuBody(
+        PRIMARY_TOWER_LOGICAL_ID,
+        driftedHandle,
+        PROTOCOL
+    );
+    const driftedPlan = drifted.planCreation({
+        transactionId: 'refresh-after-placement-death',
+        childCount: 1
+    });
+    drifted.commitCompletedEvents({
+        events: [deathEvent(
+            driftedHandle,
+            3,
+            'death-during-placement-readback'
+        )]
+    });
+    const rejected = drifted.refreshPendingCreation({ plan: driftedPlan });
+    assert.equal(
+        rejected.result,
+        TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
+    );
+    assert.equal(drifted.getStatus().pendingCreation, null);
+    assert.equal(drifted.getTowerRecords().length, 1);
+    assert.equal(drifted.auditInvariants().valid, true);
+});
+
 test('동일 exact GPU binding 재확인은 state revision과 pending creation을 바꾸지 않는다', () => {
     const state = new TowerGroupState();
     const handle = Object.freeze({ entityId: 401, incarnation: 2 });

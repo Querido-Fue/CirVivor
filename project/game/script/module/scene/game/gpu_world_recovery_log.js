@@ -40,6 +40,64 @@ function safeRead(read) {
     }
 }
 
+function findDirectGridFailure(endpoint, object) {
+    const gpu = endpoint?.backend?.gpu ?? endpoint?.gpu ?? null;
+    const overflow = gpu?.overflow ?? null;
+    const failure = gpu?.failure ?? null;
+    const small = Number(overflow?.lastSmallCount) || 0;
+    const big = Number(overflow?.lastBigCount) || 0;
+    const gridFailure = failure?.stage === 'grid-overflow'
+        || ((gpu?.state === 'overflow-degraded'
+                || endpoint?.state === 'gpu-overflow-degraded')
+            && (small > 0 || big > 0));
+    if (!gridFailure) {
+        return null;
+    }
+    const failureFingerprint = [
+        gpu?.sessionGeneration ?? endpoint?.sessionGeneration ?? 'unknown-session',
+        gpu?.deviceGeneration ?? 'unknown-device',
+        overflow?.lastTick ?? 'unknown-tick',
+        small,
+        big,
+        Number(overflow?.totalSmallCount) || 0,
+        Number(overflow?.totalBigCount) || 0
+    ].join(':');
+    return Object.freeze({
+        stage: 'grid-overflow',
+        failureFingerprint,
+        failure,
+        initialCellOverflow: Object.freeze({
+            small,
+            big,
+            capacity: Number(gpu?.maxBodiesPerCell) || null,
+            sampleSubmittedTick:
+                Number(overflow?.lastSampleSubmittedTick) || 0,
+            sampleCompletedTick:
+                Number(overflow?.lastSampleCompletedTick) || 0
+        }),
+        recoveryProbationState:
+            object?.gpuRecovery?.probation?.state ?? null
+    });
+}
+
+function findProjectileCaptureOwnedFailure(status) {
+    if (!status || typeof status !== 'object') {
+        return null;
+    }
+    const ownsProtocolFailure = (Number(status.runtimeStatus) || 0) !== 0
+        || (Number(status.errorFlags) || 0) !== 0
+        || status.capacityRejected === true
+        || status.retryableCapacityRejected === true
+        || (Number(status.capacityRejectionFlags) || 0) !== 0;
+    const failure = status.failure;
+    const failureIdentity = typeof failure === 'object' && failure !== null
+        ? `${failure.stage ?? ''}:${failure.name ?? ''}`.toLowerCase()
+        : '';
+    const ownsNamedFailure = failureIdentity.includes('projectile-capture')
+        || failureIdentity.includes('projectilecapture');
+    return ownsProtocolFailure || ownsNamedFailure ? status : null;
+}
+
 /**
  * 첫 fail-closed domain을 안정적인 우선순위로 분류합니다.
  * @param {object} snapshot - 교체 전 GPU/object 진단입니다.
@@ -48,6 +106,13 @@ function safeRead(read) {
 export function findGpuWorldRecoveryCause(snapshot) {
     const endpoint = snapshot?.endpoint ?? {};
     const object = snapshot?.object ?? {};
+    const directGridFailure = findDirectGridFailure(endpoint, object);
+    if (directGridFailure) {
+        return {
+            domain: 'endpoint.gpu.grid',
+            detail: directGridFailure
+        };
+    }
     const candidates = [
         ['endpoint.events', endpoint.events?.protocolFailure],
         ['endpoint.lifecycle', endpoint.lifecycle?.recoveryRequired === true
@@ -63,8 +128,7 @@ export function findGpuWorldRecoveryCause(snapshot) {
             endpoint.atomicTransformCommands?.recoveryRequired === true
                 ? endpoint.atomicTransformCommands : null],
         ['endpoint.projectileCapture',
-            endpoint.projectileCapture?.requiresRecovery === true
-                ? endpoint.projectileCapture : null],
+            findProjectileCaptureOwnedFailure(endpoint.projectileCapture)],
         ['endpoint.abilitySubjectSnapshots',
             endpoint.abilitySubjectSnapshots?.requiresRecovery === true
                 ? endpoint.abilitySubjectSnapshots : null],

@@ -446,7 +446,11 @@ async function executeCast(harness, slotId, fixedTick, options = {}) {
     assert(payloadStage !== null,
         `payload stage 결과 누락: fixedTick=${fixedTick + 1}`);
     assert(payloadStage.recoveryRequired !== true,
-        `payload stage recovery: ${JSON.stringify(payloadStage)}`);
+        `payload stage recovery: ${JSON.stringify({
+            payloadStage,
+            materializer: materializer.getStatus(),
+            endpoint: endpoint.getActorPayloadMaterializationStatus()
+        })}`);
     assert(payloadStage.stagedCount > 0 || payloadStage.rejectedCount > 0,
         `payload stage retry timeout: ${JSON.stringify(payloadStage)}`);
     if (payloadStage.stagedCount === 0) {
@@ -679,7 +683,26 @@ function collectStressReceipt(harness, cast) {
 }
 
 async function runFanoutScenario(device, subjectCount) {
-    const harness = createHarness(device, subjectCount * 2);
+    const harness = createHarness(device, subjectCount * 2, {
+        columns: 128,
+        rows: 128,
+        entryX: 16,
+        entryY: 32,
+        entryColumn: 16,
+        entryRow: 32,
+        coreX: 120,
+        coreY: 64,
+        coreColumn: 120,
+        coreRow: 64,
+        enemyFixtureLayout: Object.freeze({
+            columnCount: 40,
+            rowCount: 25,
+            startX: 0,
+            startY: 0,
+            spacingX: 2.4,
+            spacingY: 2.4
+        })
+    });
     try {
         requestEnemyBatch(
             harness,

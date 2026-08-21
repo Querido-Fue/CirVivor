@@ -283,6 +283,7 @@ export class TowerCreationCoordinator {
         if (!towerGroupState
             || typeof towerGroupState.planCreation !== 'function'
             || typeof towerGroupState.previewCreation !== 'function'
+            || typeof towerGroupState.refreshPendingCreation !== 'function'
             || typeof towerGroupState.commitCreation !== 'function'
             || typeof towerGroupState.rejectCreation !== 'function'
             || typeof towerGroupState.bindGpuBody !== 'function'
@@ -1341,15 +1342,15 @@ export class TowerCreationCoordinator {
             && completion.actorActionProfileFingerprint
                 === pending.request.actorActionProfileFingerprint
             && sameProtocol(completion, pending.protocol);
-        this.abilitySubjectSnapshotRuntime.releaseSnapshot(
-            pending.request.snapshotToken
-        );
         if (!exact) {
             return this.#failPendingProtocol(
                 'tower-creation-placement-completion-provenance',
                 completion
             );
         }
+        this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+            pending.request.snapshotToken
+        );
         if (completion.status
                 !== GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE
             || !completion.placementToken) {
@@ -1405,18 +1406,152 @@ export class TowerCreationCoordinator {
         if (!exactBinding) {
             return this.#failPendingProtocol(
                 'tower-creation-placement-binding-provenance',
-                placementBinding
+                Object.freeze({
+                    completion,
+                    placementBinding,
+                    placementToken: completion.placementToken
+                })
             );
         }
+        this.pending = Object.freeze({
+            ...pending,
+            phase: 'actor-action-placement-ready',
+            placementToken: completion.placementToken,
+            placementBinding
+        });
+        const receipt = Object.freeze({
+            accepted: true,
+            staged: false,
+            pending: true,
+            readyForCreationStage: true,
+            phase: 'actor-action-placement-ready',
+            transactionId: pending.request.transactionId,
+            sourceTick: tick,
+            requestFingerprint: this.transactionEntries.get(
+                pending.request.transactionId
+            )?.requestFingerprint ?? null,
+            capacity: this.#getCapacityStatus(0),
+            recoveryRequired: false
+        });
+        this.#setTransactionReceipt(
+            pending.request.transactionId,
+            'placement-ready',
+            receipt
+        );
+        return receipt;
+    }
+
+    /**
+     * Placement readback 뒤 같은 fixed boundary의 completed damage를 먼저 반영한
+     * 후 fresh Tower plan으로 creation program을 stage합니다.
+     */
+    stageReadyActorActionPlacementAtFixedBoundary(proposedFixedTick) {
+        const tick = requirePositiveTick(proposedFixedTick, 'proposedFixedTick');
+        if (this.destroyed || this.failure) {
+            return Object.freeze({
+                accepted: false,
+                staged: false,
+                recoveryRequired: true,
+                failure: this.failure
+            });
+        }
+        if (this.pending?.phase !== 'actor-action-placement-ready') {
+            return Object.freeze({
+                accepted: true,
+                staged: false,
+                pending: this.pending !== null,
+                recoveryRequired: false
+            });
+        }
+        const pending = this.pending;
+        const plan = this.towerGroupState.refreshPendingCreation({
+            plan: pending.plan,
+            childRecoverySpawnDescriptors: pending.recoveryDescriptors
+        });
+        if (plan?.accepted !== true) {
+            this.actorActionPlacementRuntime.releasePlacement(
+                pending.placementToken
+            );
+            const body = this.backend.cancelTowerCreationBodyPrelease(
+                pending.preleaseToken,
+                'tower-creation-source-refresh-rejected'
+            );
+            const registryClean = this.#cancelReservations(pending.handles);
+            this.pending = null;
+            if (!registryClean || body?.requiresRecovery === true
+                || plan?.result === TOWER_CREATION_RESULT.PROTOCOL_FAILURE) {
+                return this.#latchProtocolFailure(
+                    'tower-creation-source-refresh',
+                    plan,
+                    { transactionId: pending.request.transactionId }
+                );
+            }
+            return this.#publishTerminal(terminalResult(
+                plan?.result ?? TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                plan?.reason ?? TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                {
+                    transactionId: pending.request.transactionId,
+                    sourceTick: tick,
+                    recoveryRequired: false
+                }
+            ));
+        }
+        const sourceRecords = this.towerGroupState.getTowerRecords()
+            .filter((record) => record.alive);
+        const exactPlan = sourceRecords.length === plan.existing.length
+            && plan.children.length === pending.handles.length
+            && plan.children.every((child, index) => (
+                child.logicalTowerOrdinal
+                    === pending.recoveryDescriptors[index]
+                        .logicalTowerOrdinal
+            ));
+        if (!exactPlan) {
+            return this.#failPendingProtocol(
+                'tower-creation-source-refresh-provenance',
+                plan
+            );
+        }
+        const visibleFromExecutionOrdinal = pending.request.executionOrdinal + 1;
+        const spawnIntents = plan.children.map((child, index) => Object.freeze({
+            ...createGpuTowerSpawnIntent({
+                position: pending.recoveryDescriptors[index].anchorPosition,
+                currentHpFixedPoint: child.currentHpFixedPoint,
+                logicalTowerOrdinal: child.logicalTowerOrdinal,
+                shareUnits: child.shareUnits,
+                maxHpFixedPoint: child.maxHpFixedPoint,
+                powerFixedPoint: child.powerFixedPoint,
+                towerGroupRevision: plan.targetGroupRevision
+            }),
+            logicalTowerId: child.logicalTowerId,
+            recoverySpawnDescriptor: pending.recoveryDescriptors[index]
+        }));
+        const childAbilityMetadata = plan.children.map((child) => (
+            createAbilityEntityMetadata({
+                kindId: GPU_TOWER_WORLD_KIND_ID,
+                definitionId: GPU_TOWER_DEFINITION_ID,
+                metadata: {}
+            }, {
+                sourceAbilityCode: pending.request.command.compiledAbilityCode,
+                sourceExecutionFingerprint:
+                    pending.request.command.executionIdFingerprint,
+                sourceExecutionOrdinal: pending.request.executionOrdinal,
+                generation: 0,
+                visibleFromExecutionOrdinal,
+                creationOriginCode:
+                    pending.request.payloadDefinition.creationOriginCode,
+                powerFixedPoint: child.powerFixedPoint
+            })
+        ));
+        const placementBinding = pending.placementBinding;
         const requestFingerprint = this.transactionEntries.get(
             pending.request.transactionId
         )?.requestFingerprint;
         const transactionFingerprint = fingerprintGpuTowerCreationTransaction(
-            pending.plan.fingerprint,
+            plan.fingerprint,
             requestFingerprint,
             tick,
-            pending.plan.sourceGroupRevision,
-            pending.plan.targetGroupRevision,
+            plan.sourceGroupRevision,
+            plan.targetGroupRevision,
             placementBinding.commandFingerprint,
             placementBinding.snapshotFingerprint,
             placementBinding.destinationFingerprint,
@@ -1442,19 +1577,17 @@ export class TowerCreationCoordinator {
             actionCode: pending.request.command.actionCode,
             payloadCode: pending.request.command.payloadCode,
             travelDurationFixedTicks:
-                pending.request.actorActionProfile
-                    .travelDurationFixedTicks,
+                pending.request.actorActionProfile.travelDurationFixedTicks,
             creationOriginCode:
                 pending.request.payloadDefinition.creationOriginCode,
-            visibleFromExecutionOrdinal:
-                pending.request.executionOrdinal + 1,
+            visibleFromExecutionOrdinal,
             snapshotSourceTick: pending.request.subjectCompletion.sourceTick
         });
         const staged = this.backend.stageTowerCreationTransaction({
             preleaseToken: pending.preleaseToken,
-            plan: pending.plan,
-            sourceRecords: pending.sourceRecords,
-            childAbilityMetadata: pending.childAbilityMetadata,
+            plan,
+            sourceRecords,
+            childAbilityMetadata,
             transactionFingerprint,
             sourceTick: tick,
             towerDefinitionCode: pending.request.payloadDefinition
@@ -1465,7 +1598,7 @@ export class TowerCreationCoordinator {
         });
         if (staged?.accepted !== true) {
             this.actorActionPlacementRuntime.releasePlacement(
-                completion.placementToken
+                pending.placementToken
             );
             const body = this.backend.cancelTowerCreationBodyPrelease(
                 pending.preleaseToken,
@@ -1478,7 +1611,7 @@ export class TowerCreationCoordinator {
                 ? TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
                 : TOWER_CREATION_RESULT.REJECTED_CAPACITY;
             this.towerGroupState.rejectCreation(
-                pending.plan,
+                plan,
                 String(staged?.reason ?? 'PROGRAM_CAPACITY'),
                 result
             );
@@ -1504,8 +1637,10 @@ export class TowerCreationCoordinator {
         this.pending = Object.freeze({
             ...pending,
             phase: 'tower-creation',
-            placementToken: completion.placementToken,
-            placementBinding,
+            plan,
+            sourceRecords: Object.freeze([...sourceRecords]),
+            spawnIntents: Object.freeze(spawnIntents),
+            childAbilityMetadata: Object.freeze(childAbilityMetadata),
             actorAction,
             transactionFingerprint,
             stageReceipt: staged
@@ -1627,11 +1762,19 @@ export class TowerCreationCoordinator {
         }
         const pending = this.pending;
         let backend;
-        if (pending.phase === 'actor-action-placement') {
+        if (pending.phase === 'actor-action-placement'
+            || pending.phase === 'actor-action-placement-ready') {
             this.actorActionPlacementRuntime.cancelAll(reason);
-            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
-                pending.request.snapshotToken
-            );
+            if (pending.placementToken) {
+                this.actorActionPlacementRuntime.releasePlacement(
+                    pending.placementToken
+                );
+            }
+            if (pending.phase === 'actor-action-placement') {
+                this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                    pending.request.snapshotToken
+                );
+            }
             backend = this.backend.cancelTowerCreationBodyPrelease(
                 pending.preleaseToken,
                 reason
@@ -2117,17 +2260,27 @@ export class TowerCreationCoordinator {
     #failPendingProtocol(stage, evidence) {
         const pending = this.pending;
         if (pending) {
-            if (pending.phase === 'actor-action-placement') {
+            if (pending.phase === 'actor-action-placement'
+                || pending.phase === 'actor-action-placement-ready') {
                 try {
                     this.actorActionPlacementRuntime.cancelAll(stage);
-                    if (evidence?.placementToken) {
+                    const retainedPlacementToken = pending.placementToken ?? null;
+                    if (retainedPlacementToken) {
+                        this.actorActionPlacementRuntime.releasePlacement(
+                            retainedPlacementToken
+                        );
+                    }
+                    if (evidence?.placementToken
+                        && evidence.placementToken !== retainedPlacementToken) {
                         this.actorActionPlacementRuntime.releasePlacement(
                             evidence.placementToken
                         );
                     }
-                    this.abilitySubjectSnapshotRuntime.releaseSnapshot(
-                        pending.request.snapshotToken
-                    );
+                    if (pending.phase === 'actor-action-placement') {
+                        this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                            pending.request.snapshotToken
+                        );
+                    }
                     this.backend.cancelTowerCreationBodyPrelease(
                         pending.preleaseToken,
                         stage

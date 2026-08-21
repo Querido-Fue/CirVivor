@@ -52,10 +52,12 @@ const BEHAVIOR_PROFILE_KEYS = new Set([
 const CHARGE_PROFILE_KEYS = new Set([
     'windupTicks',
     'windupRangeTiles',
-    'chargeAccelerationTilesPerSecondSquared',
     'chargeSpeedTilesPerSecond',
     'chargeMaxTicks',
-    'recoilImpulseTilesPerSecond',
+    'impactRestitution',
+    'impactTangentialRetention',
+    'recoilDamping',
+    'recoilSleepThresholdTilesPerSecond',
     'recoilTicks',
     'recoverTicks',
     'telegraphStyleCode',
@@ -119,6 +121,14 @@ function requireNonNegativeFinite(value, label) {
     const number = requireFinite(value, label);
     if (number < 0) {
         throw new RangeError(`${label}은 0 이상의 유한 숫자여야 합니다.`);
+    }
+    return number;
+}
+
+function requireUnitInterval(value, label) {
+    const number = requireNonNegativeFinite(value, label);
+    if (number > 1) {
+        throw new RangeError(`${label}은 0~1 범위여야 합니다.`);
     }
     return number;
 }
@@ -221,10 +231,6 @@ function normalizeChargeProfile(source, label) {
             charge.windupRangeTiles,
             `${label}.windupRangeTiles`
         ),
-        chargeAccelerationTilesPerSecondSquared: requirePositiveFinite(
-            charge.chargeAccelerationTilesPerSecondSquared,
-            `${label}.chargeAccelerationTilesPerSecondSquared`
-        ),
         chargeSpeedTilesPerSecond: requirePositiveFinite(
             charge.chargeSpeedTilesPerSecond,
             `${label}.chargeSpeedTilesPerSecond`
@@ -233,9 +239,21 @@ function normalizeChargeProfile(source, label) {
             charge.chargeMaxTicks,
             `${label}.chargeMaxTicks`
         ),
-        recoilImpulseTilesPerSecond: requirePositiveFinite(
-            charge.recoilImpulseTilesPerSecond,
-            `${label}.recoilImpulseTilesPerSecond`
+        impactRestitution: requireUnitInterval(
+            charge.impactRestitution,
+            `${label}.impactRestitution`
+        ),
+        impactTangentialRetention: requireUnitInterval(
+            charge.impactTangentialRetention,
+            `${label}.impactTangentialRetention`
+        ),
+        recoilDamping: requireUnitInterval(
+            charge.recoilDamping,
+            `${label}.recoilDamping`
+        ),
+        recoilSleepThresholdTilesPerSecond: requireNonNegativeFinite(
+            charge.recoilSleepThresholdTilesPerSecond,
+            `${label}.recoilSleepThresholdTilesPerSecond`
         ),
         recoilTicks: requirePositiveSafeInteger(
             charge.recoilTicks,

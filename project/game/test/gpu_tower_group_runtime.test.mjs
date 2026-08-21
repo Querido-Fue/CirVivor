@@ -517,6 +517,64 @@ test('group facade 하나가 move와 primary Aim을 소비하고 tick당 backend
     });
 });
 
+test('pending Tower creation의 source roster는 stateRevision 변화에도 같은 tick control을 허용한다', () => {
+    let stateRevision = 2;
+    const state = {
+        getStatus: () => ({ groupRevision: 3, stateRevision }),
+        getTowerRecords: () => [Object.freeze({
+            logicalTowerId: 'the-tower',
+            logicalTowerOrdinal: 1,
+            shareUnits: 1_000_000_000,
+            maxHpFixedPoint: 10_000,
+            powerFixedPoint: 1_000,
+            alive: true,
+            exactGpuBinding: Object.freeze({
+                entityId: 7,
+                incarnation: 2,
+                ...PROTOCOL
+            })
+        })]
+    };
+    let synchronizeCount = 0;
+    const stageCalls = [];
+    let runtimeStatus = {
+        state: 'ready',
+        groupRevision: 3,
+        deviceGeneration: PROTOCOL.deviceGeneration,
+        authoritativeEpoch: PROTOCOL.authoritativeEpoch,
+        pendingRosterTransition: null
+    };
+    const backend = {
+        synchronizeTowerGroupRoster(source) {
+            synchronizeCount++;
+            return Object.freeze({ accepted: true, roster: source });
+        },
+        getTowerGroupRuntimeStatus: () => runtimeStatus,
+        stageTowerGroupCommand(source) {
+            stageCalls.push(source);
+            return Object.freeze({ accepted: true, commandId: source.commandId });
+        }
+    };
+    const facade = new GpuTowerGroupFacade({ towerGroupState: state });
+    facade.bindGpuBody({ entityId: 7, incarnation: 2 }, 3);
+    assert.equal(facade.synchronizeGpuRoster(backend, true).accepted, true);
+    assert.equal(synchronizeCount, 1);
+
+    stateRevision++;
+    runtimeStatus = {
+        ...runtimeStatus,
+        pendingRosterTransition: Object.freeze({
+            sourceGroupRevision: 3,
+            targetGroupRevision: 4,
+            targetRosterFingerprint: 123
+        })
+    };
+    const receipt = facade.stageControlForFixedTick(backend, 8);
+    assert.equal(receipt.accepted, true);
+    assert.equal(synchronizeCount, 1);
+    assert.equal(stageCalls.length, 1);
+});
+
 test('TowerGroup shader/통합 경계는 독립 ABI, <=9 storage, body readback 금지를 보존한다', () => {
     assert.deepEqual(GPU_TOWER_GROUP_STORAGE_PROFILE, {
         controlStorageBuffersPerStage: 7,

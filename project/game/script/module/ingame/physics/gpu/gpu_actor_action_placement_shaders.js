@@ -1,5 +1,7 @@
 import {
-    ACTOR_ACTION_PROFILE_ABI_VERSION
+    ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY,
+    ACTOR_ACTION_PROFILE_ABI_VERSION,
+    ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY
 } from '../../contract/actor_action_contract.js';
 import {
     ACTOR_PAYLOAD_CODE,
@@ -40,10 +42,17 @@ import {
     GPU_TOWER_GROUP_ABI_VERSION,
     GPU_TOWER_GROUP_MEMBER_FLAG
 } from './gpu_tower_group_abi.js';
+import {
+    GPU_SPAWN_ADMISSION_GRID_TYPES_WGSL,
+    GPU_SPAWN_ADMISSION_SHARED_WGSL,
+    GPU_SPAWN_ADMISSION_STORAGE_BINDING_COUNT
+} from './gpu_spawn_admission_shaders.js';
 
 export const GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE = 64;
 export const GPU_ACTOR_ACTION_PLACEMENT_STORAGE_BINDING_COUNT = 9;
 export const GPU_ACTOR_ACTION_DISPATCH_STORAGE_BINDING_COUNT = 2;
+export const GPU_ACTOR_ACTION_ADMISSION_STORAGE_BINDING_COUNT
+    = GPU_SPAWN_ADMISSION_STORAGE_BINDING_COUNT;
 
 const H = Object.freeze(Object.fromEntries(
     Object.entries(GPU_ACTOR_ACTION_PLACEMENT_ABI.PROGRAM_HEADER)
@@ -88,6 +97,24 @@ const TRANSIT_WORD_COUNT
     = GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE / 4;
 const SNAPSHOT_WORD_COUNT
     = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE / 4;
+
+function wgslFloat32(value) {
+    return Math.fround(value).toPrecision(9);
+}
+
+function wgslDirectionSequence(policy) {
+    return policy.radialDirections.map(({ x, y }) => (
+        `vec2f(${wgslFloat32(x)}, ${wgslFloat32(y)})`
+    )).join(',\n    ');
+}
+
+function candidateCapacity(policy) {
+    return Math.max(
+        1,
+        policy.targetLatticeRounds,
+        policy.sourceRadialRounds * policy.radialDirections.length
+    );
+}
 
 export const GPU_ACTOR_ACTION_DISPATCH_WGSL = /* wgsl */`
 struct RawReadBuffer { values: array<u32> }
@@ -270,6 +297,14 @@ const ERROR_SDF: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.SDF_PLACEMENT}u;
 const ERROR_GENERATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.GENERATION}u;
 const ERROR_ROSTER: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.TOWER_ROSTER}u;
 const ERROR_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.FINGERPRINT}u;
+const ERROR_EXISTING_BODY: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.EXISTING_BODY_OVERLAP}u;
+const ERROR_SIBLING_BODY: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.SIBLING_BODY_OVERLAP}u;
+const ERROR_GRID_CELL_CAPACITY: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.GRID_CELL_CAPACITY}u;
+const ERROR_NO_VALID_GLOBAL_PLACEMENT: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.NO_VALID_GLOBAL_PLACEMENT}u;
 
 fn header(field: u32) -> u32 {
     return program.values[field];
@@ -958,6 +993,9 @@ fn resolve_actor_action_placement(
         bitcast<u32>(destination_radius));
     store_placement(rank, ${P.DIRECTION_X}u, bitcast<u32>(direction.x));
     store_placement(rank, ${P.DIRECTION_Y}u, bitcast<u32>(direction.y));
+    store_placement(rank, ${P.RESERVED_0}u, INVALID);
+    store_placement(rank, ${P.RESERVED_1}u, 0u);
+    store_placement(rank, ${P.RESERVED_2}u, 0u);
 
     let transit_phase = select(
         TRANSIT_PHASE_PENDING,
@@ -1060,7 +1098,7 @@ fn validate_actor_action_placement(
         header(${H.COMMAND_FINGERPRINT}u)
     );
     for (var field = ${P.SOURCE_RANK}u;
-        field <= ${P.DIRECTION_Y}u;
+        field <= ${P.RESERVED_2}u;
         field += 1u) {
         if (field == ${P.PLACEMENT_FINGERPRINT}u) { continue; }
         fingerprint = hash_word(fingerprint, placement_word(rank, field));
@@ -1142,10 +1180,553 @@ fn aggregate_actor_action_placement() {
     store_aggregate(${A.ERROR_FLAGS}u, errors);
     if (errors == 0u && valid_count == subject_count) {
         store_aggregate(${A.STATUS}u, STATUS_COMPLETE);
-    } else if ((errors & ~ERROR_SDF) == 0u) {
+    } else if ((errors
+        & ~(ERROR_SDF
+            | ERROR_EXISTING_BODY
+            | ERROR_SIBLING_BODY
+            | ERROR_GRID_CELL_CAPACITY
+            | ERROR_NO_VALID_GLOBAL_PLACEMENT)) == 0u) {
         store_aggregate(${A.STATUS}u, STATUS_SDF_REJECTED);
     } else {
         store_aggregate(${A.STATUS}u, STATUS_PROTOCOL_REJECTED);
+    }
+}
+`;
+
+export const GPU_ACTOR_ACTION_SPAWN_ADMISSION_WGSL = /* wgsl */`
+struct BodyPhysics {
+    position: vec2f,
+    velocity: vec2f,
+    radius: f32,
+    inverse_mass: f32,
+    physical_meta: u32,
+    interaction_meta: u32,
+}
+
+struct BodySimulation {
+    lifetime: f32,
+    health: i32,
+    gameplay_meta: u32,
+    flags: u32,
+    flow_field_index: u32,
+    flow_speed: f32,
+    entity_id: u32,
+    incarnation: u32,
+}
+
+struct RawReadBuffer { values: array<u32> }
+struct RawAtomicBuffer { values: array<atomic<u32>> }
+struct PhysicsBuffer { values: array<BodyPhysics> }
+struct SimulationBuffer { values: array<BodySimulation> }
+struct SdfBuffer { values: array<f32> }
+${GPU_SPAWN_ADMISSION_GRID_TYPES_WGSL}
+
+@group(0) @binding(0) var<storage, read> admission_snapshots: RawReadBuffer;
+@group(0) @binding(1) var<storage, read> admission_program: RawReadBuffer;
+@group(0) @binding(2) var<storage, read> admission_physics: PhysicsBuffer;
+@group(0) @binding(3) var<storage, read> admission_simulations: SimulationBuffer;
+@group(0) @binding(4) var<storage, read> admission_sdf: SdfBuffer;
+@group(0) @binding(5) var<storage, read_write> admission_output: RawAtomicBuffer;
+@group(0) @binding(6) var<storage, read_write> admission_grid_counts: AtomicGridCounts;
+@group(0) @binding(7) var<storage, read> admission_grid_bodies: GridBodyBuffer;
+@group(1) @binding(0) var<uniform> params: SimulationParams;
+
+const SPAWN_ADMISSION_ALIVE_FLAG: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
+const ADMISSION_INVALID: u32 = 0xffffffffu;
+const ADMISSION_HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
+const ADMISSION_AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
+const ADMISSION_PLACEMENT_WORDS: u32 = ${PLACEMENT_WORD_COUNT}u;
+const ADMISSION_TRANSIT_WORDS: u32 = ${TRANSIT_WORD_COUNT}u;
+const ADMISSION_SNAPSHOT_WORDS: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const ADMISSION_STATUS_PENDING: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_STATUS.PENDING}u;
+const ADMISSION_TOWER_PAYLOAD: u32 = ${ACTOR_PAYLOAD_CODE.TOWER}u;
+const ADMISSION_PLACE_SOURCE: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_POLICY_CODE.SOURCE_SURFACE_ATOMIC_SDF}u;
+const ADMISSION_PLACE_TARGET_LATTICE: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_POLICY_CODE.TARGET_LATTICE_ATOMIC_SDF}u;
+const ADMISSION_PLACE_SOURCE_AND_LANDING: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_POLICY_CODE.SOURCE_AND_LANDING_ATOMIC_SDF}u;
+const ADMISSION_TRANSIT_AIRBORNE: u32 =
+    ${GPU_ACTOR_ACTION_TRANSIT_CODE.AIRBORNE_GROUND_PATH}u;
+const ADMISSION_ERROR_SDF: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.SDF_PLACEMENT}u;
+const ADMISSION_ERROR_EXISTING: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.EXISTING_BODY_OVERLAP}u;
+const ADMISSION_ERROR_SIBLING: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.SIBLING_BODY_OVERLAP}u;
+const ADMISSION_ERROR_CELL: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.GRID_CELL_CAPACITY}u;
+const ADMISSION_ERROR_GLOBAL: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_ERROR_FLAG.NO_VALID_GLOBAL_PLACEMENT}u;
+const TOWER_TARGET_LATTICE_ROUNDS: u32 =
+    ${ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY.targetLatticeRounds}u;
+const TOWER_SOURCE_RADIAL_ROUNDS: u32 =
+    ${ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY.sourceRadialRounds}u;
+const TOWER_RADIAL_SLOT_COUNT: u32 =
+    ${ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY.radialDirections.length}u;
+const TOWER_CANDIDATE_CAPACITY: u32 =
+    ${candidateCapacity(ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY)}u;
+const TOWER_RADIAL_DIRECTIONS = array<vec2f,
+    ${ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY.radialDirections.length}>(
+    ${wgslDirectionSequence(ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY)}
+);
+const ENEMY_TARGET_LATTICE_ROUNDS: u32 =
+    ${ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY.targetLatticeRounds}u;
+const ENEMY_SOURCE_RADIAL_ROUNDS: u32 =
+    ${ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY.sourceRadialRounds}u;
+const ENEMY_RADIAL_SLOT_COUNT: u32 =
+    ${ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY.radialDirections.length}u;
+const ENEMY_CANDIDATE_CAPACITY: u32 =
+    ${candidateCapacity(ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY)}u;
+const ENEMY_RADIAL_DIRECTIONS = array<vec2f,
+    ${ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY.radialDirections.length}>(
+    ${wgslDirectionSequence(ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY)}
+);
+
+struct ActorActionCandidate {
+    valid: u32,
+    position: vec2f,
+    direction: vec2f,
+}
+
+fn admission_header(field: u32) -> u32 {
+    return admission_program.values[field];
+}
+
+fn admission_snapshot_word(rank: u32, field: u32) -> u32 {
+    return admission_snapshots.values[
+        admission_header(${H.SNAPSHOT_WORD_OFFSET}u)
+            + rank * ADMISSION_SNAPSHOT_WORDS + field
+    ];
+}
+
+fn admission_placement_index(rank: u32, field: u32) -> u32 {
+    return admission_header(${H.PLACEMENT_WORD_OFFSET}u)
+        + rank * ADMISSION_PLACEMENT_WORDS + field;
+}
+
+fn admission_placement_word(rank: u32, field: u32) -> u32 {
+    return atomicLoad(&admission_output.values[
+        admission_placement_index(rank, field)
+    ]);
+}
+
+fn admission_store_placement(rank: u32, field: u32, value: u32) {
+    atomicStore(&admission_output.values[
+        admission_placement_index(rank, field)
+    ], value);
+}
+
+fn admission_transit_index(rank: u32, field: u32) -> u32 {
+    return admission_header(${H.TRANSIT_WORD_OFFSET}u)
+        + rank * ADMISSION_TRANSIT_WORDS + field;
+}
+
+fn admission_store_transit(rank: u32, field: u32, value: u32) {
+    atomicStore(&admission_output.values[
+        admission_transit_index(rank, field)
+    ], value);
+}
+
+fn admission_finite(value: f32) -> bool {
+    return value == value && value - value == 0.0;
+}
+
+fn admission_normalized(value: vec2f) -> vec2f {
+    let length_squared = dot(value, value);
+    return select(vec2f(1.0, 0.0), value * inverseSqrt(length_squared),
+        length_squared > 0.000000000001);
+}
+
+fn admission_read_sdf(column: i32, row: i32) -> f32 {
+    let columns = i32(admission_header(${H.SDF_COLS}u));
+    let rows = i32(admission_header(${H.SDF_ROWS}u));
+    return admission_sdf.values[u32(
+        clamp(row, 0, rows - 1) * columns
+            + clamp(column, 0, columns - 1)
+    )];
+}
+
+fn admission_sample_sdf(position: vec2f) -> f32 {
+    let width = bitcast<f32>(admission_header(${H.WORLD_WIDTH}u));
+    let height = bitcast<f32>(admission_header(${H.WORLD_HEIGHT}u));
+    let columns = f32(admission_header(${H.SDF_COLS}u));
+    let rows = f32(admission_header(${H.SDF_ROWS}u));
+    let coordinate = clamp(
+        position / vec2f(width, height),
+        vec2f(0.0),
+        vec2f(1.0)
+    ) * vec2f(columns, rows) - vec2f(0.5);
+    let base = vec2i(floor(coordinate));
+    let fraction = fract(coordinate);
+    let top = mix(
+        admission_read_sdf(base.x, base.y),
+        admission_read_sdf(base.x + 1, base.y),
+        fraction.x
+    );
+    let bottom = mix(
+        admission_read_sdf(base.x, base.y + 1),
+        admission_read_sdf(base.x + 1, base.y + 1),
+        fraction.x
+    );
+    return mix(top, bottom, fraction.y);
+}
+
+fn admission_static_valid(position: vec2f, radius: f32) -> bool {
+    let width = bitcast<f32>(admission_header(${H.WORLD_WIDTH}u));
+    let height = bitcast<f32>(admission_header(${H.WORLD_HEIGHT}u));
+    if (!all(position == position)
+        || !(radius > 0.0)
+        || position.x < radius
+        || position.y < radius
+        || position.x > width - radius
+        || position.y > height - radius) {
+        return false;
+    }
+    return admission_header(${H.SDF_ENABLED}u) == 0u
+        || admission_sample_sdf(position) >= radius;
+}
+
+fn admission_lattice_offset(rank: u32) -> vec2i {
+    if (rank == 0u) { return vec2i(0, 0); }
+    var ring = 1u;
+    loop {
+        let width = ring * 2u + 1u;
+        if (width * width > rank) { break; }
+        ring += 1u;
+    }
+    let side = ring * 2u;
+    let width = ring * 2u + 1u;
+    let maximum = width * width - 1u;
+    let offset = maximum - rank;
+    if (offset < side) {
+        return vec2i(i32(ring - offset), -i32(ring));
+    }
+    if (offset < side * 2u) {
+        return vec2i(-i32(ring), -i32(ring) + i32(offset - side));
+    }
+    if (offset < side * 3u) {
+        return vec2i(-i32(ring) + i32(offset - side * 2u), i32(ring));
+    }
+    return vec2i(i32(ring), i32(ring) - i32(offset - side * 3u));
+}
+
+fn spawn_admission_claim_is_committed(rank: u32) -> bool {
+    return admission_placement_word(rank, ${P.RESERVED_0}u)
+            != ADMISSION_INVALID
+        && admission_placement_word(rank, ${P.ERROR_FLAGS}u) == 0u;
+}
+
+fn spawn_admission_claim_position(rank: u32) -> vec2f {
+    return vec2f(
+        bitcast<f32>(admission_placement_word(rank, ${P.SPAWN_X}u)),
+        bitcast<f32>(admission_placement_word(rank, ${P.SPAWN_Y}u))
+    );
+}
+
+fn spawn_admission_claim_radius(rank: u32) -> f32 {
+    return bitcast<f32>(admission_placement_word(
+        rank,
+        ${P.DESTINATION_RADIUS}u
+    ));
+}
+
+${GPU_SPAWN_ADMISSION_SHARED_WGSL}
+
+fn tower_source_radial_candidate(
+    rank: u32,
+    candidate_index: u32
+) -> ActorActionCandidate {
+    let source_position = vec2f(
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+    );
+    let authored_direction = vec2f(
+        bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_X}u)),
+        bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_Y}u))
+    );
+    let local = TOWER_RADIAL_DIRECTIONS[
+        candidate_index % TOWER_RADIAL_SLOT_COUNT
+    ];
+    let direction = admission_normalized(vec2f(
+        authored_direction.x * local.x - authored_direction.y * local.y,
+        authored_direction.x * local.y + authored_direction.y * local.x
+    ));
+    let ring = candidate_index / TOWER_RADIAL_SLOT_COUNT;
+    let source_radius = bitcast<f32>(admission_placement_word(
+        rank,
+        ${P.SOURCE_RADIUS}u
+    ));
+    let destination_radius = spawn_admission_claim_radius(rank);
+    let surface_gap = bitcast<f32>(admission_header(${H.SURFACE_GAP}u));
+    let distance = source_radius + destination_radius + surface_gap
+        + f32(ring) * max(
+            destination_radius
+                * ${wgslFloat32(
+                    ACTOR_ACTION_TOWER_PAYLOAD_CANDIDATE_POLICY
+                        .sourceRadialStepRadiusScale
+                )},
+            destination_radius + surface_gap
+        );
+    return ActorActionCandidate(
+        1u,
+        source_position + direction * distance,
+        direction
+    );
+}
+
+fn enemy_source_radial_candidate(
+    rank: u32,
+    candidate_index: u32
+) -> ActorActionCandidate {
+    let source_position = vec2f(
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
+        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+    );
+    let authored_direction = vec2f(
+        bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_X}u)),
+        bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_Y}u))
+    );
+    let local = ENEMY_RADIAL_DIRECTIONS[
+        candidate_index % ENEMY_RADIAL_SLOT_COUNT
+    ];
+    let direction = admission_normalized(vec2f(
+        authored_direction.x * local.x - authored_direction.y * local.y,
+        authored_direction.x * local.y + authored_direction.y * local.x
+    ));
+    let ring = candidate_index / ENEMY_RADIAL_SLOT_COUNT;
+    let source_radius = bitcast<f32>(admission_placement_word(
+        rank,
+        ${P.SOURCE_RADIUS}u
+    ));
+    let destination_radius = spawn_admission_claim_radius(rank);
+    let surface_gap = bitcast<f32>(admission_header(${H.SURFACE_GAP}u));
+    let distance = source_radius + destination_radius + surface_gap
+        + f32(ring) * max(
+            destination_radius
+                * ${wgslFloat32(
+                    ACTOR_ACTION_ENEMY_PAYLOAD_CANDIDATE_POLICY
+                        .sourceRadialStepRadiusScale
+                )},
+            destination_radius + surface_gap
+        );
+    return ActorActionCandidate(
+        1u,
+        source_position + direction * distance,
+        direction
+    );
+}
+
+fn tower_payload_candidate(
+    rank: u32,
+    candidate_index: u32
+) -> ActorActionCandidate {
+    let placement = admission_header(${H.PLACEMENT_POLICY_CODE}u);
+    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    if (placement == ADMISSION_PLACE_TARGET_LATTICE
+        && candidate_index < TOWER_TARGET_LATTICE_ROUNDS) {
+        let target_position = vec2f(
+            bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
+            bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
+        );
+        let source = vec2f(
+            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
+            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+        );
+        let lattice = admission_lattice_offset(
+            rank + candidate_index * subject_count
+        );
+        let position = target_position + vec2f(lattice)
+            * bitcast<f32>(admission_header(${H.SUMMON_LATTICE_SPACING}u));
+        return ActorActionCandidate(
+            1u,
+            position,
+            admission_normalized(position - source)
+        );
+    }
+    if (placement == ADMISSION_PLACE_SOURCE
+        && candidate_index
+            < TOWER_SOURCE_RADIAL_ROUNDS * TOWER_RADIAL_SLOT_COUNT) {
+        return tower_source_radial_candidate(rank, candidate_index);
+    }
+    if (placement == ADMISSION_PLACE_SOURCE_AND_LANDING
+        && candidate_index
+            < TOWER_SOURCE_RADIAL_ROUNDS * TOWER_RADIAL_SLOT_COUNT) {
+        return tower_source_radial_candidate(rank, candidate_index);
+    }
+    return ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
+}
+
+fn enemy_payload_candidate(
+    rank: u32,
+    candidate_index: u32
+) -> ActorActionCandidate {
+    let placement = admission_header(${H.PLACEMENT_POLICY_CODE}u);
+    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    if (placement == ADMISSION_PLACE_TARGET_LATTICE
+        && candidate_index < ENEMY_TARGET_LATTICE_ROUNDS) {
+        let target_position = vec2f(
+            bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
+            bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
+        );
+        let source = vec2f(
+            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
+            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+        );
+        let lattice = admission_lattice_offset(
+            rank + candidate_index * subject_count
+        );
+        let position = target_position + vec2f(lattice)
+            * bitcast<f32>(admission_header(${H.SUMMON_LATTICE_SPACING}u));
+        return ActorActionCandidate(
+            1u,
+            position,
+            admission_normalized(position - source)
+        );
+    }
+    if (placement == ADMISSION_PLACE_SOURCE
+        && candidate_index
+            < ENEMY_SOURCE_RADIAL_ROUNDS * ENEMY_RADIAL_SLOT_COUNT) {
+        return enemy_source_radial_candidate(rank, candidate_index);
+    }
+    if (placement == ADMISSION_PLACE_SOURCE_AND_LANDING
+        && candidate_index
+            < ENEMY_SOURCE_RADIAL_ROUNDS * ENEMY_RADIAL_SLOT_COUNT) {
+        return enemy_source_radial_candidate(rank, candidate_index);
+    }
+    return ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
+}
+
+@compute @workgroup_size(1)
+fn admit_actor_action_spawns() {
+    if (atomicLoad(&admission_output.values[${A.STATUS}u])
+            != ADMISSION_STATUS_PENDING) {
+        return;
+    }
+    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    let tower_payload = admission_header(${H.PAYLOAD_CODE}u)
+        == ADMISSION_TOWER_PAYLOAD;
+    for (var rank = 0u; rank < subject_count; rank += 1u) {
+        var errors = admission_placement_word(rank, ${P.ERROR_FLAGS}u);
+        if (errors != 0u) {
+            continue;
+        }
+        let destination_slot = admission_placement_word(
+            rank,
+            ${P.DESTINATION_SLOT}u
+        );
+        let radius = spawn_admission_claim_radius(rank);
+        var chosen = ADMISSION_INVALID;
+        var attempted = 0u;
+        var rejection_class = 0u;
+        var selected = ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
+        let candidate_capacity = select(
+            ENEMY_CANDIDATE_CAPACITY,
+            TOWER_CANDIDATE_CAPACITY,
+            tower_payload
+        );
+        for (var candidate_index = 0u;
+            candidate_index < candidate_capacity;
+            candidate_index += 1u) {
+            var candidate = enemy_payload_candidate(rank, candidate_index);
+            if (tower_payload) {
+                candidate = tower_payload_candidate(rank, candidate_index);
+            }
+            if (candidate.valid == 0u) {
+                break;
+            }
+            attempted += 1u;
+            let verdict = spawn_admission_claim(
+                admission_static_valid(candidate.position, radius),
+                candidate.position,
+                radius,
+                destination_slot,
+                rank
+            );
+            rejection_class |= verdict.rejection_class;
+            if (verdict.accepted != 0u) {
+                chosen = candidate_index;
+                selected = candidate;
+                break;
+            }
+        }
+        if (chosen == ADMISSION_INVALID) {
+            errors |= ADMISSION_ERROR_SDF | ADMISSION_ERROR_GLOBAL;
+            if ((rejection_class & 2u) != 0u) {
+                errors |= ADMISSION_ERROR_EXISTING;
+            }
+            if ((rejection_class & 4u) != 0u) {
+                errors |= ADMISSION_ERROR_SIBLING;
+            }
+            if ((rejection_class & 8u) != 0u) {
+                errors |= ADMISSION_ERROR_CELL;
+            }
+        } else {
+            admission_store_placement(
+                rank,
+                ${P.SPAWN_X}u,
+                bitcast<u32>(selected.position.x)
+            );
+            admission_store_placement(
+                rank,
+                ${P.SPAWN_Y}u,
+                bitcast<u32>(selected.position.y)
+            );
+            admission_store_placement(
+                rank,
+                ${P.DIRECTION_X}u,
+                bitcast<u32>(selected.direction.x)
+            );
+            admission_store_placement(
+                rank,
+                ${P.DIRECTION_Y}u,
+                bitcast<u32>(selected.direction.y)
+            );
+            var velocity = selected.direction
+                * bitcast<f32>(admission_header(${H.LAUNCH_SPEED}u));
+            if (admission_header(${H.TRANSIT_CODE}u)
+                    == ADMISSION_TRANSIT_AIRBORNE) {
+                let landing = vec2f(
+                    bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
+                    bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
+                );
+                velocity = (landing - selected.position)
+                    * (f32(admission_header(${H.FIXED_HZ}u))
+                        / f32(admission_header(
+                            ${H.TRAVEL_DURATION_FIXED_TICKS}u
+                        )));
+            }
+            admission_store_placement(
+                rank,
+                ${P.INITIAL_VELOCITY_X}u,
+                bitcast<u32>(velocity.x)
+            );
+            admission_store_placement(
+                rank,
+                ${P.INITIAL_VELOCITY_Y}u,
+                bitcast<u32>(velocity.y)
+            );
+            admission_store_transit(
+                rank,
+                ${T.VELOCITY_X}u,
+                bitcast<u32>(velocity.x)
+            );
+            admission_store_transit(
+                rank,
+                ${T.VELOCITY_Y}u,
+                bitcast<u32>(velocity.y)
+            );
+            rejection_class = 0u;
+        }
+        admission_store_placement(rank, ${P.RESERVED_0}u, chosen);
+        admission_store_placement(rank, ${P.RESERVED_1}u, attempted);
+        admission_store_placement(
+            rank,
+            ${P.RESERVED_2}u,
+            rejection_class
+        );
+        admission_store_placement(rank, ${P.ERROR_FLAGS}u, errors);
     }
 }
 `;

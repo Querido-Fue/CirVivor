@@ -72,6 +72,9 @@ import {
     BASIC_TRIANGLE_ENEMY_DATA
 } from './production/script/data/object/enemy/basic_circle_enemy_data.js';
 import {
+    ENEMY_BEHAVIOR_PROFILE_BY_ID
+} from './production/script/data/object/enemy/enemy_profile_catalog_data.js';
+import {
     ENEMY_NORMALIZED_RENDER_GEOMETRY
 } from './production/script/data/object/enemy/enemy_shape_geometry_data.js';
 import {
@@ -407,8 +410,12 @@ async function runProductionShaderSmoke(device, format) {
         'clear_grid',
         'build_grid',
         'clear_contact_state',
+        'clear_enemy_charge_impact_states',
         'generate_body_contacts',
         'generate_world_contacts',
+        'select_enemy_charge_impact_contacts',
+        'materialize_enemy_charge_impact_evidence',
+        'shield_unselected_enemy_charge_contacts',
         'handle_contacts',
         'emit_enemy_charge_telegraphs',
         'resolve_enemy_charge_contacts',
@@ -427,7 +434,7 @@ async function runProductionShaderSmoke(device, format) {
         'rebuild_velocities',
         'finalize_velocities',
         'finalize_controlled_motion',
-        'apply_enemy_charge_recoil',
+        'apply_enemy_charge_impact_impulses',
         'pack_tracked_pose'
     ];
     await Promise.all(computeEntryPoints.map((entryPoint) => (
@@ -9276,77 +9283,85 @@ async function runProductionEnemyArrowWallVisibilityHardwareSmoke(device) {
     }
 }
 
-const ARROW_EXPO_OUT_LAMBDA_F32 = Math.fround(10);
-const ARROW_CHARGE_ACCELERATION_F32 = Math.fround(12);
-const ARROW_CHARGE_MAX_SPEED_F32 = Math.fround(6);
+const ARROW_CHARGE_CONFIG = ENEMY_BEHAVIOR_PROFILE_BY_ID[
+    BASIC_ARROW_ENEMY_DATA.behaviorProfileId
+].charge;
+const ARROW_CHARGE_SPEED_F32 = Math.fround(
+    ARROW_CHARGE_CONFIG.chargeSpeedTilesPerSecond
+);
+const ARROW_IMPACT_FIXED_POINT_SCALE = 65536;
 
-function normalizedArrowExpoOutF32(progress) {
-    const boundedProgress = Math.min(Math.max(Math.fround(progress), 0), 1);
-    if (boundedProgress <= 0) return 0;
-    if (boundedProgress >= 1) return 1;
-    const denominator = Math.fround(
-        1 - Math.fround(2 ** Math.fround(-ARROW_EXPO_OUT_LAMBDA_F32))
+function resolveArrowImpactHardwareOracle({
+    arrowVelocity,
+    towerVelocity,
+    towerToArrowNormal,
+    arrowInverseMass,
+    towerInverseMass,
+    restitution,
+    tangentialRetention,
+    sleepThreshold
+}) {
+    const normalLength = Math.hypot(
+        towerToArrowNormal.x,
+        towerToArrowNormal.y
     );
-    return Math.fround(
-        Math.fround(
-            1 - Math.fround(2 ** Math.fround(
-                -ARROW_EXPO_OUT_LAMBDA_F32 * boundedProgress
-            ))
-        ) / denominator
-    );
-}
-
-function expectedArrowExpoOutSpeedF32(
-    speed,
-    durationTicks,
-    elapsedTicks,
-    fixedDelta = 1 / 60
-) {
-    const multiplyF32 = (left, right) => Math.fround(
-        Math.fround(left) * Math.fround(right)
-    );
-    const duration = Math.fround(Math.max(durationTicks, 1));
-    const elapsed = Math.min(Math.max(elapsedTicks, 0), durationTicks);
-    const nextElapsed = Math.min(elapsed + 1, durationTicks);
-    const normalizedDelta = Math.fround(
-        normalizedArrowExpoOutF32(Math.fround(nextElapsed / duration))
-        - normalizedArrowExpoOutF32(Math.fround(elapsed / duration))
-    );
-    return multiplyF32(
-        multiplyF32(
-            multiplyF32(
-                multiplyF32(speed, duration),
-                fixedDelta
-            ),
-            normalizedDelta
-        ),
-        1 / fixedDelta
-    );
-}
-
-function expectedArrowAcceleratedSpeedF32(
-    elapsedTicks,
-    fixedDelta = 1 / 60
-) {
-    const accelerationStep = Math.fround(
-        ARROW_CHARGE_ACCELERATION_F32 * Math.fround(fixedDelta)
-    );
-    let speed = Math.fround(0);
-    for (let tick = 0; tick <= elapsedTicks; tick++) {
-        speed = Math.fround(Math.min(
-            Math.fround(speed + accelerationStep),
-            ARROW_CHARGE_MAX_SPEED_F32
-        ));
+    assert(normalLength > 0, 'Arrow impact oracle normal은 non-zero여야 합니다.');
+    const normal = Object.freeze({
+        x: towerToArrowNormal.x / normalLength,
+        y: towerToArrowNormal.y / normalLength
+    });
+    const relativeVelocity = Object.freeze({
+        x: arrowVelocity.x - towerVelocity.x,
+        y: arrowVelocity.y - towerVelocity.y
+    });
+    const normalSpeed = (relativeVelocity.x * normal.x)
+        + (relativeVelocity.y * normal.y);
+    const inverseMassSum = arrowInverseMass + towerInverseMass;
+    let impulse = { x: 0, y: 0 };
+    if (inverseMassSum > 0 && normalSpeed < -sleepThreshold) {
+        const tangentVelocity = {
+            x: relativeVelocity.x - (normalSpeed * normal.x),
+            y: relativeVelocity.y - (normalSpeed * normal.y)
+        };
+        const normalImpulseMagnitude = -(1 + restitution)
+            * normalSpeed / inverseMassSum;
+        impulse = {
+            x: (normal.x * normalImpulseMagnitude)
+                + ((tangentialRetention - 1)
+                    * tangentVelocity.x / inverseMassSum),
+            y: (normal.y * normalImpulseMagnitude)
+                + ((tangentialRetention - 1)
+                    * tangentVelocity.y / inverseMassSum)
+        };
     }
-    return speed;
+    const quantizeDelta = (value) => (
+        Math.round(value * ARROW_IMPACT_FIXED_POINT_SCALE)
+            / ARROW_IMPACT_FIXED_POINT_SCALE
+    );
+    const arrowVelocityDelta = Object.freeze({
+        x: quantizeDelta(impulse.x * arrowInverseMass),
+        y: quantizeDelta(impulse.y * arrowInverseMass)
+    });
+    const towerVelocityDelta = Object.freeze({
+        x: quantizeDelta(-impulse.x * towerInverseMass),
+        y: quantizeDelta(-impulse.y * towerInverseMass)
+    });
+    return Object.freeze({
+        normal,
+        relativeVelocity,
+        normalSpeed,
+        impulse: Object.freeze(impulse),
+        arrowVelocityDelta,
+        towerVelocityDelta
+    });
 }
 
 /**
- * 실제 GPU에서 contact 없는 Arrow CHARGE 전 구간을 끝까지 실행합니다. velocity뿐
- * 아니라 적분된 position을 함께 읽어 k0/k1/mid/end, 총 endpoint, tick no-skip,
- * physical radius/telegraph scale 불변을 독립적으로 고정합니다.
+ * 실제 GPU에서 contact 없는 Arrow CHARGE 전 구간을 끝까지 실행합니다. WINDUP
+ * 종료 시 authored speed가 한 번 부여되고 이후 60 tick 동안 누적 가속/재주입 없이
+ * 유지되는지 position/velocity readback으로 독립 고정합니다.
  */
-async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
+async function runProductionEnemyArrowDirectSpeedOracleHardwareSmoke(device) {
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPhase3PlatformPort(device)
@@ -9370,7 +9385,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
     const findBody = (bodies, handle, label) => findPhase5Body(
         bodies,
         handle,
-        `Arrow acceleration oracle ${label}`
+            `Arrow direct-speed oracle ${label}`
     );
     const submitTick = async (tick, label, { alreadyCommitted = false } = {}) => {
         if (!alreadyCommitted) {
@@ -9409,24 +9424,24 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
             body.radius,
             BASIC_ARROW_ENEMY_DATA.collisionRadiusTiles,
             0.000001,
-            `Arrow acceleration oracle tick ${tick} physical radius`
+                    `Arrow direct-speed oracle tick ${tick} physical radius`
         );
         assert(
             behavior?.telegraphRadiusScale === 1,
-            `Arrow acceleration oracle tick ${tick} telegraphRadiusScale 불변 실패: ${JSON.stringify(sample)}`
+            `Arrow direct-speed oracle tick ${tick} telegraphRadiusScale 불변 실패: ${JSON.stringify(sample)}`
         );
     };
 
     try {
         assert(
             endpoint.init(navigationSource) === false,
-            'Arrow acceleration oracle endpoint는 첫 spawn 전 deferred여야 합니다.'
+            'Arrow direct-speed oracle endpoint는 첫 spawn 전 deferred여야 합니다.'
         );
         const requests = [
             endpoint.requestSpawn(
                 createGpuTowerSpawnIntent({ position: towerPosition }),
                 1,
-                'arrow-expo-oracle:initial-tower'
+                'arrow-direct-speed-oracle:initial-tower'
             ),
             endpoint.requestSpawn(
                 Object.freeze({
@@ -9434,38 +9449,38 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                         definition: BASIC_ARROW_ENEMY_DATA,
                         route: navigationSource.route,
                         spawnSequence: 0,
-                        waveId: 'nw-arrow-expo-oracle',
+                        waveId: 'nw-arrow-direct-speed-oracle',
                         policyId: 'hardware-fixture'
                     }),
                     position: arrowPosition
                 }),
                 1,
-                'arrow-expo-oracle:initial-arrow'
+                'arrow-direct-speed-oracle:initial-arrow'
             )
         ];
         assert(
             requests.every(({ accepted }) => accepted),
-            `Arrow acceleration oracle 초기 spawn 요청 실패: ${JSON.stringify(requests)}`
+            `Arrow direct-speed oracle 초기 spawn 요청 실패: ${JSON.stringify(requests)}`
         );
         const initialCommit = endpoint.commitAtFixedBoundary(1);
         const handles = new Map(
             initialCommit.spawned.map(({ commandId, handle }) => [commandId, handle])
         );
-        towerHandle = handles.get('arrow-expo-oracle:initial-tower');
-        arrowHandle = handles.get('arrow-expo-oracle:initial-arrow');
+        towerHandle = handles.get('arrow-direct-speed-oracle:initial-tower');
+        arrowHandle = handles.get('arrow-direct-speed-oracle:initial-arrow');
         assert(
             initialCommit.state === 'committed'
                 && initialCommit.spawned.length === 2
                 && towerHandle
                 && arrowHandle,
-            `Arrow acceleration oracle 초기 commit 실패: ${JSON.stringify(initialCommit)}`
+            `Arrow direct-speed oracle 초기 commit 실패: ${JSON.stringify(initialCommit)}`
         );
         assert(
             endpoint.configureTowerGameplayTarget(towerHandle).accepted,
-            'Arrow acceleration oracle exact Tower gameplay target 구성 실패'
+            'Arrow direct-speed oracle exact Tower gameplay target 구성 실패'
         );
 
-        const tickOne = await submitTick(1, 'Arrow acceleration oracle WINDUP tick 1', {
+        const tickOne = await submitTick(1, 'Arrow direct-speed oracle WINDUP tick 1', {
             alreadyCommitted: true
         });
         let towerBody = findBody(tickOne.bodies, towerHandle, 'tick 1 Tower');
@@ -9477,7 +9492,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP
                 && arrowBody.enemyBehaviorState.stateEnteredFixedTick === 1
                 && arrowBody.enemyBehaviorState.stateExpiresAtFixedTick === 31,
-            `Arrow acceleration oracle 첫 WINDUP 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+            `Arrow direct-speed oracle 첫 WINDUP 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
         );
 
         let beforeCharge = tickOne;
@@ -9486,21 +9501,21 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 handle: towerHandle,
                 moveIntentX: 1,
                 moveIntentY: 0
-            }, tick, `arrow-expo-oracle:tower-clear-charge-lane:${tick}`);
+            }, tick, `arrow-direct-speed-oracle:tower-clear-charge-lane:${tick}`);
             assert(
                 moveTower.accepted,
-                `Arrow acceleration oracle tick ${tick} Tower 이동 요청 실패: ${JSON.stringify(moveTower)}`
+                `Arrow direct-speed oracle tick ${tick} Tower 이동 요청 실패: ${JSON.stringify(moveTower)}`
             );
             beforeCharge = await submitTick(
                 tick,
-                `Arrow acceleration oracle WINDUP boundary ${tick}`
+                `Arrow direct-speed oracle WINDUP boundary ${tick}`
             );
             arrowBody = findBody(beforeCharge.bodies, arrowHandle, `WINDUP ${tick} Arrow`);
             assertArrowSizeInvariant(arrowBody, tick);
             assert(
                 arrowBody.enemyBehaviorState.state
                     === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP,
-                `Arrow acceleration oracle tick ${tick} WINDUP 이탈: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+                `Arrow direct-speed oracle tick ${tick} WINDUP 이탈: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
             );
         }
         const preChargeArrow = findBody(
@@ -9514,18 +9529,18 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
         let chargeDirection = null;
         let previousPosition = preChargePosition;
         for (let tick = 31; tick <= 90; tick++) {
-            // Tower를 매 tick +X로 계속 제어해 가속 CHARGE의 bounded endpoint보다
+            // Tower를 매 tick +X로 계속 제어해 direct-speed CHARGE의 bounded endpoint보다
             // 확실히 앞에 둡니다. 단발 control 뒤 ballistic 상태에 기대지 않습니다.
             const moveTower = endpoint.requestBodyControl({
                 handle: towerHandle,
                 moveIntentX: 1,
                 moveIntentY: 0
-            }, tick, `arrow-expo-oracle:tower-evade:${tick}`);
+            }, tick, `arrow-direct-speed-oracle:tower-evade:${tick}`);
             assert(
                 moveTower.accepted,
-                `Arrow acceleration oracle tick ${tick} Tower evade 요청 실패: ${JSON.stringify(moveTower)}`
+                `Arrow direct-speed oracle tick ${tick} Tower evade 요청 실패: ${JSON.stringify(moveTower)}`
             );
-            const step = await submitTick(tick, `Arrow acceleration oracle CHARGE ${tick}`);
+            const step = await submitTick(tick, `Arrow direct-speed oracle CHARGE ${tick}`);
             towerBody = findBody(step.bodies, towerHandle, `CHARGE ${tick} Tower`);
             arrowBody = findBody(step.bodies, arrowHandle, `CHARGE ${tick} Arrow`);
             const behavior = arrowBody.enemyBehaviorState;
@@ -9534,7 +9549,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 behavior.state === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CHARGE
                     && behavior.stateEnteredFixedTick === 31
                     && behavior.stateExpiresAtFixedTick === 91,
-                `Arrow acceleration oracle tick ${tick} CHARGE 경계 불일치: ${JSON.stringify(behavior)}`
+                `Arrow direct-speed oracle tick ${tick} CHARGE 경계 불일치: ${JSON.stringify(behavior)}`
             );
             if (chargeDirection === null) {
                 chargeDirection = Object.freeze({ ...behavior.chargeDirection });
@@ -9542,14 +9557,11 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                     Math.hypot(chargeDirection.x, chargeDirection.y),
                     1,
                     0.00001,
-                    'Arrow acceleration oracle snapshot direction unit length'
+                    'Arrow direct-speed oracle snapshot direction unit length'
                 );
             }
             const elapsedTick = tick - 31;
-            const expectedSpeed = expectedArrowAcceleratedSpeedF32(
-                elapsedTick,
-                fixedDelta
-            );
+            const expectedSpeed = ARROW_CHARGE_SPEED_F32;
             const deltaX = arrowBody.position.x - previousPosition.x;
             const deltaY = arrowBody.position.y - previousPosition.y;
             const forwardSpeed = (arrowBody.velocity.x * chargeDirection.x)
@@ -9585,7 +9597,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
             previousPosition = arrowBody.position;
         }
 
-        const recover = await submitTick(91, 'Arrow acceleration oracle exact RECOVER boundary');
+        const recover = await submitTick(91, 'Arrow direct-speed oracle exact RECOVER boundary');
         towerBody = findBody(recover.bodies, towerHandle, 'RECOVER Tower');
         arrowBody = findBody(recover.bodies, arrowHandle, 'RECOVER Arrow');
         assertArrowSizeInvariant(arrowBody, 91);
@@ -9594,7 +9606,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.RECOVER
                 && arrowBody.enemyBehaviorState.stateEnteredFixedTick === 91
                 && arrowBody.enemyBehaviorState.stateExpiresAtFixedTick === 121,
-            `Arrow acceleration oracle RECOVER 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
+            `Arrow direct-speed oracle RECOVER 경계 불일치: ${JSON.stringify(arrowBody.enemyBehaviorState)}`
         );
 
         const sampleIndexes = Object.freeze({ k0: 0, k1: 1, middle: 30, end: 59 });
@@ -9606,13 +9618,13 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 sample.forwardSpeed,
                 sample.expectedSpeed,
                 0.02,
-                `Arrow acceleration oracle ${label} f32 speed`
+                `Arrow direct-speed oracle ${label} authored f32 speed`
             );
             assertNear(
                 sample.projectedDisplacement,
                 sample.expectedDisplacement,
                 0.002,
-                `Arrow acceleration oracle ${label} integrated displacement`
+                `Arrow direct-speed oracle ${label} integrated displacement`
             );
         }
         const totalProjectedDistance = (
@@ -9631,6 +9643,9 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
         const minimumTowerClearance = Math.min(
             ...chargeSamples.map(({ towerClearance }) => towerClearance)
         );
+        const forwardSpeeds = chargeSamples.map(({ forwardSpeed }) => forwardSpeed);
+        const accelerationAccumulation = Math.max(...forwardSpeeds)
+            - Math.min(...forwardSpeeds);
         const chargeEvent = completedEvents.find((event) => (
             event.eventType === 'enemy-charge-contact-recoil-started'
                 && exactHandleMatches(event, arrowHandle)
@@ -9653,13 +9668,10 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 && chargeSamples.every((sample, index) => (
                     sample.elapsedTick === index
                     && sample.tick === index + 31
-                    && sample.forwardSpeed > 0
-                    && sample.forwardSpeed
-                        <= ARROW_CHARGE_MAX_SPEED_F32 + 0.0001
+                    && Math.abs(
+                        sample.forwardSpeed - ARROW_CHARGE_SPEED_F32
+                    ) <= 0.02
                     && sample.lateralDisplacement <= 0.0001
-                    && (index === 0
-                        || chargeSamples[index - 1].forwardSpeed
-                            <= sample.forwardSpeed + 0.00001)
                 ))
                 && submittedTicks.length === 91
                 && submittedTicks.every((tick, index) => tick === index + 1)
@@ -9669,6 +9681,7 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                     totalProjectedDistance - expectedTotalProjectedDistance
                 ) <= 0.005
                 && totalLateralDistance <= 0.001
+                && accelerationAccumulation <= 0.0001
                 && minimumTowerClearance > 2
                 && Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y) <= 0.000001
                 && arrowBody.position.x === chargeSamples.at(-1).position.x
@@ -9686,11 +9699,11 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
                 && Object.values(errors).every((count) => count === 0)
                 && !finalStatus.recoveryRequired
                 && !endpoint.requiresRecovery(),
-            `Arrow acceleration oracle endpoint/no-skip/size 불일치: ${JSON.stringify({ chargeSamples, oracleSamples, totalProjectedDistance, expectedTotalProjectedDistance, totalLateralDistance, minimumTowerClearance, towerBody, initialTowerHealth, chargeEvent, towerDamageEvent, radiusSamples, submittedTicks, errors, finalStatus })}`
+            `Arrow direct-speed oracle endpoint/no-skip/size 불일치: ${JSON.stringify({ chargeSamples, oracleSamples, totalProjectedDistance, expectedTotalProjectedDistance, totalLateralDistance, accelerationAccumulation, minimumTowerClearance, towerBody, initialTowerHealth, chargeEvent, towerDamageEvent, radiusSamples, submittedTicks, errors, finalStatus })}`
         );
         return Object.freeze({
-            acceleration: ARROW_CHARGE_ACCELERATION_F32,
-            maxSpeed: ARROW_CHARGE_MAX_SPEED_F32,
+            authoredSpeed: ARROW_CHARGE_SPEED_F32,
+            accelerationAccumulation,
             entered: 31,
             expires: 91,
             samples: Object.freeze({ ...oracleSamples }),
@@ -9718,8 +9731,8 @@ async function runProductionEnemyArrowAccelerationOracleHardwareSmoke(device) {
  * presentation-only로 독립 교체해도 gameplay state가 변하지 않아야 합니다.
  */
 async function runProductionEnemyArrowChargeHardwareSmoke(device) {
-    const accelerationOracle =
-        await runProductionEnemyArrowAccelerationOracleHardwareSmoke(device);
+    const directSpeedOracle =
+        await runProductionEnemyArrowDirectSpeedOracleHardwareSmoke(device);
     const wallVisibility = await runProductionEnemyArrowWallVisibilityHardwareSmoke(device);
     const navigationSource = createPhase5ProjectileNavigationSource();
     const endpoint = createGpuSimulationEndpoint({
@@ -10110,6 +10123,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         let primedMaximumCandidate = false;
         let contactTick = null;
         let contactSnapshot = null;
+        let preContactSnapshot = null;
         let maximumCandidateDamageEvent = null;
         const towerHealthBeforeContact = towerBody.health;
         const maximumCandidateRequest = endpoint.requestSpawn(
@@ -10129,7 +10143,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const tick37Arrow = findBody(
             latest.bodies,
             arrowHandle,
-            'tick 37 accelerating Arrow'
+            'tick 37 direct-speed Arrow'
         );
         recordChargeSpeed(37, tick37Arrow);
         maximumCandidateDamageEvent = latest.completed.contactEvents.find((event) => (
@@ -10142,22 +10156,25 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
             contactTick = 37;
             contactSnapshot = latest;
+            preContactSnapshot = movedTarget;
         }
         for (let tick = 38; contactTick === null && tick < 95; tick++) {
+            const beforeProbe = latest;
             latest = await submitTick(
                 tick,
-                `Arrow charge accelerated contact probe ${tick}`
+                `Arrow charge direct-speed contact probe ${tick}`
             );
             const contactProbeArrow = findBody(
                 latest.bodies,
                 arrowHandle,
-                `accelerated contact probe ${tick} Arrow`
+                `direct-speed contact probe ${tick} Arrow`
             );
             recordChargeSpeed(tick, contactProbeArrow);
             if (contactProbeArrow.enemyBehaviorState.state
                 === GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL) {
                 contactTick = tick;
                 contactSnapshot = latest;
+                preContactSnapshot = beforeProbe;
             }
         }
         assert(
@@ -10167,8 +10184,9 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 && contactTick !== null
                 && contactTick >= 37
                 && contactTick < 95
-                && contactSnapshot,
-            `Arrow charge bounded accelerated contact를 만들지 못했습니다: ${JSON.stringify({ primedMaximumCandidate, projectileHandle, maximumCandidateDamageEvent, contactTick })}`
+                && contactSnapshot
+                && preContactSnapshot,
+            `Arrow charge bounded direct-speed contact를 만들지 못했습니다: ${JSON.stringify({ primedMaximumCandidate, projectileHandle, maximumCandidateDamageEvent, contactTick })}`
         );
 
         towerBody = findBody(contactSnapshot.bodies, towerHandle, 'contact Tower');
@@ -10183,11 +10201,112 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const recoilDot = (arrowBody.velocity.x * snapshotDirection.x)
             + (arrowBody.velocity.y * snapshotDirection.y);
         recordRecoilSpeed(contactTick, arrowBody);
+        const preContactArrowBody = findBody(
+            preContactSnapshot.bodies,
+            arrowHandle,
+            'pre-impact Arrow'
+        );
+        const preContactTowerBody = findBody(
+            preContactSnapshot.bodies,
+            towerHandle,
+            'pre-impact Tower'
+        );
+        const preImpactArrowVelocity = Object.freeze({
+            ...preContactArrowBody.velocity
+        });
+        // tick 37에만 STOP control이 ordinary motion보다 우선합니다. 그 뒤에는
+        // 이전 tick의 실제 reconstructed Tower velocity가 capture 입력입니다.
+        const preImpactTowerVelocity = contactTick === 37
+            ? Object.freeze({ x: 0, y: 0 })
+            : Object.freeze({ ...preContactTowerBody.velocity });
+        const predictedArrowPosition = Object.freeze({
+            x: arrowBody.previousPosition.x
+                + (preImpactArrowVelocity.x * fixedDelta),
+            y: arrowBody.previousPosition.y
+                + (preImpactArrowVelocity.y * fixedDelta)
+        });
+        const predictedTowerPosition = Object.freeze({
+            x: towerBody.previousPosition.x
+                + (preImpactTowerVelocity.x * fixedDelta),
+            y: towerBody.previousPosition.y
+                + (preImpactTowerVelocity.y * fixedDelta)
+        });
+        const towerToArrowNormal = Object.freeze({
+            x: predictedArrowPosition.x - predictedTowerPosition.x,
+            y: predictedArrowPosition.y - predictedTowerPosition.y
+        });
+        const impactOracle = resolveArrowImpactHardwareOracle({
+            arrowVelocity: preImpactArrowVelocity,
+            towerVelocity: preImpactTowerVelocity,
+            towerToArrowNormal,
+            arrowInverseMass: arrowBody.inverseMass,
+            towerInverseMass: towerBody.inverseMass,
+            restitution: behavior.impactRestitution,
+            tangentialRetention: behavior.impactTangentialRetention,
+            sleepThreshold: behavior.recoilSleepThresholdTilesPerSecond
+        });
+        // Ordinary rebuild/finalize의 결과는 corrected position과 previousPosition
+        // 사이의 속도입니다. 최종 readback과의 차가 post-reconstruction custom
+        // impulse이며, STOP Tower의 ordinary velocity는 zero입니다.
+        const ordinaryArrowVelocity = Object.freeze({
+            x: (arrowBody.position.x - arrowBody.previousPosition.x) / fixedDelta,
+            y: (arrowBody.position.y - arrowBody.previousPosition.y) / fixedDelta
+        });
+        const ordinaryTowerVelocity = contactTick === 37
+            ? Object.freeze({ x: 0, y: 0 })
+            : Object.freeze({
+                x: (towerBody.position.x - towerBody.previousPosition.x)
+                    / fixedDelta,
+                y: (towerBody.position.y - towerBody.previousPosition.y)
+                    / fixedDelta
+            });
+        const actualArrowImpactDelta = Object.freeze({
+            x: arrowBody.velocity.x - ordinaryArrowVelocity.x,
+            y: arrowBody.velocity.y - ordinaryArrowVelocity.y
+        });
+        const actualTowerImpactDelta = Object.freeze({
+            x: towerBody.velocity.x - ordinaryTowerVelocity.x,
+            y: towerBody.velocity.y - ordinaryTowerVelocity.y
+        });
+        const impactDeltaError = Math.max(
+            Math.abs(
+                actualArrowImpactDelta.x - impactOracle.arrowVelocityDelta.x
+            ),
+            Math.abs(
+                actualArrowImpactDelta.y - impactOracle.arrowVelocityDelta.y
+            ),
+            Math.abs(
+                actualTowerImpactDelta.x - impactOracle.towerVelocityDelta.x
+            ),
+            Math.abs(
+                actualTowerImpactDelta.y - impactOracle.towerVelocityDelta.y
+            )
+        );
         assert(
-            recoilDot < 0
-                && Math.hypot(arrowBody.velocity.x, arrowBody.velocity.y) > 3.9
+            impactDeltaError <= 0.002,
+            `Arrow charge post-reconstruction impulse delta 불일치: ${JSON.stringify({ impactDeltaError, preImpactArrowVelocity, preImpactTowerVelocity, predictedArrowPosition, predictedTowerPosition, towerToArrowNormal, impactOracle, ordinaryArrowVelocity, ordinaryTowerVelocity, actualArrowImpactDelta, actualTowerImpactDelta, preContactArrowBody, preContactTowerBody, arrowBody, towerBody })}`
+        );
+        for (const component of ['x', 'y']) {
+            assertNear(
+                actualArrowImpactDelta[component],
+                impactOracle.arrowVelocityDelta[component],
+                0.002,
+                `Arrow charge post-reconstruction Arrow impulse delta.${component}`
+            );
+            assertNear(
+                actualTowerImpactDelta[component],
+                impactOracle.towerVelocityDelta[component],
+                0.002,
+                `Arrow charge post-reconstruction Tower impulse delta.${component}`
+            );
+        }
+        assert(
+            impactOracle.normalSpeed
+                    < -behavior.recoilSleepThresholdTilesPerSecond
+                && impactOracle.arrowVelocityDelta.x !== 0
+                && impactOracle.towerVelocityDelta.x !== 0
                 && (behavior.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING) === 0,
-            `Arrow charge solver 후 opposite one-shot recoil 불일치: ${JSON.stringify({ arrowBody, behavior, recoilDot })}`
+            `Arrow charge physical impulse oracle 불일치: ${JSON.stringify({ arrowBody, towerBody, behavior, impactOracle, ordinaryArrowVelocity, actualArrowImpactDelta, actualTowerImpactDelta, recoilDot })}`
         );
         assertNear(towerBody.health, towerHealthBeforeContact - 1, 0.000001,
             'Arrow charge primed max Tower HP delta');
@@ -10229,6 +10348,14 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         );
         arrowBody = findBody(postContact.bodies, arrowHandle, 'post-contact Arrow');
         recordRecoilSpeed(contactTick + 1, arrowBody);
+        const postContactOrdinaryArrowVelocity = Object.freeze({
+            x: (arrowBody.position.x - arrowBody.previousPosition.x) / fixedDelta,
+            y: (arrowBody.position.y - arrowBody.previousPosition.y) / fixedDelta
+        });
+        const postContactCustomDelta = Object.freeze({
+            x: arrowBody.velocity.x - postContactOrdinaryArrowVelocity.x,
+            y: arrowBody.velocity.y - postContactOrdinaryArrowVelocity.y
+        });
         behavior = assertState(
             arrowBody,
             GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.CONTACT_RECOIL,
@@ -10238,10 +10365,14 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         );
         assert(
             (behavior.flags & GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING) === 0
+                && Math.hypot(
+                    postContactCustomDelta.x,
+                    postContactCustomDelta.y
+                ) <= 0.0001
                 && !postContact.completed.contactEvents.some((event) => (
                     event.eventType === 'enemy-charge-contact-recoil-started'
                 )),
-            `Arrow charge recoil가 재적용됐습니다: ${JSON.stringify({ behavior, completed: postContact.completed })}`
+            `Arrow charge impulse가 ordinary reconstruction 뒤 재적용됐습니다: ${JSON.stringify({ behavior, postContactOrdinaryArrowVelocity, postContactCustomDelta, completed: postContact.completed })}`
         );
 
         let recoilBeforeExpiry = postContact;
@@ -10252,7 +10383,7 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
                 findBody(
                     recoilBeforeExpiry.bodies,
                     arrowHandle,
-                    `recoil Expo tick ${tick} Arrow`
+                    `physical recoil damping tick ${tick} Arrow`
                 )
             );
         }
@@ -10548,99 +10679,54 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
         const recoilEvents = chargeEvents.filter((event) => (
             event.eventType === 'enemy-charge-contact-recoil-started'
         ));
-        const assertChargeAcceleration = (samples, label) => {
+        const assertDirectChargeSpeed = (samples, label) => {
             assert(
                 samples.length >= 2
-                    && samples.every(({ speed, forwardSpeed }, index) => (
-                        speed > 0
-                        && forwardSpeed > 0
-                        && speed <= ARROW_CHARGE_MAX_SPEED_F32 + 0.0001
-                        && (index === 0
-                            || samples[index - 1].speed
-                                <= speed + 0.00001)
+                    && samples.every(({ speed, forwardSpeed }) => (
+                        Math.abs(speed - ARROW_CHARGE_SPEED_F32) <= 0.01
+                        && Math.abs(
+                            forwardSpeed - ARROW_CHARGE_SPEED_F32
+                        ) <= 0.01
                     ))
-                    && samples[0].speed < samples.at(-1).speed,
-                `${label} data-owned acceleration/cap 불일치: ${JSON.stringify(samples)}`
+                    && Math.abs(samples[0].speed - samples.at(-1).speed)
+                        <= 0.0001,
+                `${label} authored direct-speed/no-accumulation 불일치: ${JSON.stringify(samples)}`
             );
         };
-        const assertExpoDeceleration = (samples, label) => {
-            assert(
-                samples.length >= 2
-                    && samples.every(({ speed, forwardSpeed, reverseSpeed }) => (
-                        speed > 0 && (forwardSpeed === undefined || forwardSpeed > 0)
-                            && (reverseSpeed === undefined || reverseSpeed > 0)
-                    ))
-                    && samples[0].speed > samples.at(-1).speed,
-                `${label} Expo-out first/last deceleration 불일치: ${JSON.stringify(samples)}`
-            );
-        };
-        assertChargeAcceleration(chargeSpeedSamples, 'Arrow charge');
-        assertExpoDeceleration(recoilSpeedSamples, 'Arrow recoil');
+        assertDirectChargeSpeed(chargeSpeedSamples, 'Arrow charge');
         const chargeK0 = chargeSpeedSamples.find(({ tick }) => tick === 35);
         const chargeK1 = chargeSpeedSamples.find(({ tick }) => tick === 36);
         const recoilPreload = recoilSpeedSamples.find(({ tick }) => tick === contactTick);
         const recoilK0 = recoilSpeedSamples.find(
             ({ tick }) => tick === contactTick + 1
         );
-        const recoilK1 = recoilSpeedSamples.find(
-            ({ tick }) => tick === contactTick + 2
-        );
-        const recoilMiddle = recoilSpeedSamples.find(
-            ({ tick }) => tick === contactTick + 6
-        );
-        const recoilEnd = recoilSpeedSamples.find(
-            ({ tick }) => tick === contactTick + 11
-        );
-        const assertExpoOracleSpeed = (sample, expected, label) => {
-            assert(sample,
-                `${label} Expo sample이 없습니다: ${JSON.stringify({ chargeSpeedSamples, recoilSpeedSamples })}`);
-            assertNear(sample.speed, expected, 0.01,
-                `${label} normalized λ=10 f32 Expo speed`);
-        };
-        const expectedChargeK0 = expectedArrowAcceleratedSpeedF32(0);
-        const expectedChargeK1 = expectedArrowAcceleratedSpeedF32(1);
-        const expectedRecoilK0 = expectedArrowExpoOutSpeedF32(4, 11, 0);
-        const expectedRecoilK1 = expectedArrowExpoOutSpeedF32(4, 11, 1);
-        const expectedRecoilMiddle = expectedArrowExpoOutSpeedF32(4, 11, 5);
-        const expectedRecoilEnd = expectedArrowExpoOutSpeedF32(4, 11, 10);
         assert(chargeK0 && chargeK1,
-            `Arrow charge acceleration samples가 없습니다: ${JSON.stringify(chargeSpeedSamples)}`);
+            `Arrow charge direct-speed samples가 없습니다: ${JSON.stringify(chargeSpeedSamples)}`);
         assertNear(
             chargeK0.speed,
-            expectedChargeK0,
+            ARROW_CHARGE_SPEED_F32,
             0.01,
-            'Arrow charge acceleration k=0'
+            'Arrow charge authored speed k=0'
         );
         assertNear(
             chargeK1.speed,
-            expectedChargeK1,
+            ARROW_CHARGE_SPEED_F32,
             0.01,
-            'Arrow charge acceleration k=1'
+            'Arrow charge no-accumulation k=1'
         );
-        assertExpoOracleSpeed(recoilPreload, expectedRecoilK0, 'Arrow recoil contact preload');
-        assertExpoOracleSpeed(recoilK0, expectedRecoilK0, 'Arrow recoil S+1 k=0');
-        assertExpoOracleSpeed(recoilK1, expectedRecoilK1, 'Arrow recoil S+2 k=1');
-        assertExpoOracleSpeed(
-            recoilMiddle,
-            expectedRecoilMiddle,
-            'Arrow recoil S+6 k=5 middle'
+        assert(
+            recoilPreload
+                && recoilK0
+                && recoilSpeedSamples.length >= 2
+                && recoilK0.speed < recoilPreload.speed
+                && recoilSpeedSamples.every((sample, index) => (
+                    sample.speed >= 0
+                    && (index === 0
+                        || sample.speed <= recoilSpeedSamples[index - 1].speed + 0.02)
+                )),
+            `Arrow recoil data-owned damping 불일치: ${JSON.stringify(recoilSpeedSamples)}`
         );
-        assertExpoOracleSpeed(
-            recoilEnd,
-            expectedRecoilEnd,
-            'Arrow recoil S+11 k=10 end'
-        );
-        const recoilTotalProjectedDistance = -(
-            ((recoilEnd.position.x - recoilPreload.position.x) * snapshotDirection.x)
-            + ((recoilEnd.position.y - recoilPreload.position.y) * snapshotDirection.y)
-        );
-        const expectedRecoilTotalDistance = 4 * 11 * fixedDelta;
-        assertNear(
-            recoilTotalProjectedDistance,
-            expectedRecoilTotalDistance,
-            0.005,
-            'Arrow recoil normalized total endpoint'
-        );
+        const observedFirstDampingRatio = recoilK0.speed / recoilPreload.speed;
         const errors = Object.freeze({
             contactOverflow: gpuStatus.contact.lastOverflowCount,
             eventOverflow: gpuStatus.events.lastAppliedOverflowCount,
@@ -10703,30 +10789,48 @@ async function runProductionEnemyArrowChargeHardwareSmoke(device) {
             wallVisibility,
             motion: Object.freeze({
                 charge: Object.freeze({
-                    fullOracle: accelerationOracle,
-                    acceleration: ARROW_CHARGE_ACCELERATION_F32,
-                    maxSpeed: ARROW_CHARGE_MAX_SPEED_F32,
-                    expectedK0: expectedChargeK0,
-                    expectedK1: expectedChargeK1,
+                    fullOracle: directSpeedOracle,
+                    authoredSpeed: ARROW_CHARGE_SPEED_F32,
+                    accelerationAccumulation: Math.max(
+                        ...chargeSpeedSamples.map(({ speed }) => speed)
+                    ) - Math.min(
+                        ...chargeSpeedSamples.map(({ speed }) => speed)
+                    ),
+                    expectedK0: ARROW_CHARGE_SPEED_F32,
+                    expectedK1: ARROW_CHARGE_SPEED_F32,
                     first: chargeSpeedSamples[0],
                     last: chargeSpeedSamples.at(-1),
                     samples: Object.freeze([...chargeSpeedSamples])
                 }),
-                recoilExpo: Object.freeze({
-                    lambda: ARROW_EXPO_OUT_LAMBDA_F32,
+                impact: Object.freeze({
                     entered: contactTick,
-                    expires: contactTick + 12,
-                    expectedPreloadAndK0: expectedRecoilK0,
-                    expectedK1: expectedRecoilK1,
-                    expectedMiddle: expectedRecoilMiddle,
-                    expectedEnd: expectedRecoilEnd,
-                    expectedTotalDistance: expectedRecoilTotalDistance,
-                    totalProjectedDistance: recoilTotalProjectedDistance,
-                    preload: recoilPreload,
-                    k0: recoilK0,
-                    k1: recoilK1,
-                    middle: recoilMiddle,
-                    end: recoilEnd,
+                    preImpactArrowVelocity,
+                    preImpactTowerVelocity,
+                    normal: impactOracle.normal,
+                    relativeVelocity: impactOracle.relativeVelocity,
+                    normalSpeed: impactOracle.normalSpeed,
+                    arrowInverseMass: arrowBody.inverseMass,
+                    towerInverseMass: towerBody.inverseMass,
+                    restitution: ARROW_CHARGE_CONFIG.impactRestitution,
+                    tangentialRetention:
+                        ARROW_CHARGE_CONFIG.impactTangentialRetention,
+                    expectedArrowVelocityDelta:
+                        impactOracle.arrowVelocityDelta,
+                    actualArrowVelocityDelta: actualArrowImpactDelta,
+                    expectedTowerVelocityDelta:
+                        impactOracle.towerVelocityDelta,
+                    actualTowerVelocityDelta: actualTowerImpactDelta,
+                    ordinaryArrowVelocity,
+                    postContactCustomDelta,
+                    appliedAfterOrdinaryReconstruction: true,
+                    exactOnce: true
+                }),
+                recoilDamping: Object.freeze({
+                    authored: ARROW_CHARGE_CONFIG.recoilDamping,
+                    sleepThreshold:
+                        ARROW_CHARGE_CONFIG.recoilSleepThresholdTilesPerSecond,
+                    observedFirstRatio: observedFirstDampingRatio,
+                    scriptedExpoOverwrite: false,
                     first: recoilSpeedSamples[0],
                     last: recoilSpeedSamples.at(-1),
                     samples: Object.freeze([...recoilSpeedSamples])

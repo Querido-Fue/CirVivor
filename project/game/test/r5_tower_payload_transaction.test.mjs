@@ -498,12 +498,61 @@ function runToCreationStage(fixture) {
     );
     assert.equal(placement.phase, 'actor-action-placement');
     fixture.placementRuntime.complete();
-    const creation = fixture.coordinator.observeCompletedAtFixedBoundary(
+    const placementReady = fixture.coordinator.observeCompletedAtFixedBoundary(
         fixture.command.targetFixedTick + 1
     );
+    assert.equal(placementReady.phase, 'actor-action-placement-ready');
+    assert.equal(placementReady.readyForCreationStage, true);
+    assert.equal(
+        fixture.coordinator.drainActorPayloadTerminalReceipts([]).length,
+        0
+    );
+    const creation = fixture.coordinator
+        .stageReadyActorActionPlacementAtFixedBoundary(
+            fixture.command.targetFixedTick + 1
+        );
     assert.equal(creation.phase, 'tower-creation');
     return creation;
 }
+
+test('placement-ready receipt는 terminal이 아니며 취소 시 retained placement를 exact-once 해제한다', () => {
+    const fixture = createFixture({
+        transactionId: 'transaction.r5.placement-ready-cancel'
+    });
+    assert.equal(
+        fixture.coordinator.requestTowerCreation(fixture.request).accepted,
+        true
+    );
+    fixture.coordinator.stageForFixedTick(fixture.command.targetFixedTick);
+    fixture.placementRuntime.complete();
+    const ready = fixture.coordinator.observeCompletedAtFixedBoundary(
+        fixture.command.targetFixedTick + 1
+    );
+
+    assert.equal(ready.phase, 'actor-action-placement-ready');
+    assert.equal(ready.terminal, undefined);
+    assert.equal(
+        fixture.coordinator.drainActorPayloadTerminalReceipts([]).length,
+        0
+    );
+    assert.equal(fixture.snapshotRuntime.releaseCount, 1);
+    assert.equal(fixture.placementRuntime.releaseCount, 0);
+
+    const cancelled = fixture.coordinator.cancelPending('ready-cancel-test');
+    assert.equal(cancelled.cancelled, true);
+    assert.equal(cancelled.recoveryRequired, false);
+    assert.equal(fixture.snapshotRuntime.releaseCount, 1);
+    assert.equal(fixture.placementRuntime.releaseCount, 1);
+    assert.equal(fixture.placementRuntime.records.size, 0);
+    assert.equal(fixture.registry.getStatus().reservedCount, 0);
+    assert.equal(fixture.backend.preleases.size, 0);
+
+    const receipts = fixture.coordinator.drainActorPayloadTerminalReceipts([]);
+    assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].terminal, true);
+    assert.equal(receipts[0].result,
+        TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED);
+});
 
 test('production capability가 없으면 R5 ingress는 정상 RUNTIME_UNAVAILABLE 0-mutation이다', () => {
     const fixture = createFixture();

@@ -63,9 +63,13 @@ import {
     TOWER_RECOVERY_PLACEMENT_POLICY_ID
 } from './tower/tower_group_contract.js';
 import {
+    planTowerRecoveryLayout
+} from './tower/tower_recovery_layout_planner.js';
+import {
     GPU_TOWER_WORLD_KIND_ID,
     createGpuTowerSpawnIntent
 } from './tower/gpu_tower_spawn_adapter.js';
+import { THE_TOWER_DATA } from 'data/object/tower/the_tower_data.js';
 import {
     TowerCoreCameraFollowTarget
 } from './tower_core_camera_follow_target.js';
@@ -112,6 +116,24 @@ const GPU_WORLD_TERMINAL_STATE = Object.freeze({
     FINAL_COMMIT_PENDING: 'FINAL_COMMIT_PENDING',
     SEALED: 'SEALED',
     SEALED_FAILED: 'SEALED_FAILED'
+});
+
+const GPU_RECOVERY_PROBATION_STATE = Object.freeze({
+    IDLE: 'IDLE',
+    PENDING: 'PENDING',
+    PASSED: 'PASSED',
+    FAILED: 'FAILED'
+});
+
+const IDLE_GPU_RECOVERY_PROBATION = Object.freeze({
+    state: GPU_RECOVERY_PROBATION_STATE.IDLE,
+    sessionGeneration: null,
+    deviceGeneration: null,
+    expectedActiveBodyCount: 0,
+    submittedSourceTick: null,
+    submittedTickCount: null,
+    failureFingerprint: null,
+    failure: null
 });
 
 function syncWorldViewport(target, source = {}) {
@@ -442,6 +464,7 @@ export class GameObjectSystem {
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = false;
         this.enemySimulationRecoveryDiagnostic = null;
+        this.gpuRecoveryProbation = IDLE_GPU_RECOVERY_PROBATION;
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(this.initialFixedTick);
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
@@ -715,7 +738,8 @@ export class GameObjectSystem {
                 this.enemySimulationRecoveryDiagnostic?.proposedFixedTick
                 ?? null,
             pendingFixedTick: this.pendingEnemyFixedTick,
-            lastCompletedFixedTick: this.lastCompletedEnemyFixedTick
+            lastCompletedFixedTick: this.lastCompletedEnemyFixedTick,
+            probation: this.gpuRecoveryProbation
         });
     }
 
@@ -813,6 +837,28 @@ export class GameObjectSystem {
         if (!Number.isSafeInteger(proposedFixedTick) || proposedFixedTick <= 0) {
             throw new RangeError('proposedFixedTick은 양의 안전한 정수여야 합니다.');
         }
+        if (this.gpuRecoveryProbation.state
+                === GPU_RECOVERY_PROBATION_STATE.PENDING
+            && this.gpuRecoveryProbation.submittedSourceTick !== null) {
+            const probation = this.#observeGpuRecoveryProbation(
+                proposedFixedTick
+            );
+            if (probation === GPU_RECOVERY_PROBATION_STATE.PENDING) {
+                return false;
+            }
+            if (probation === GPU_RECOVERY_PROBATION_STATE.FAILED) {
+                return this.#pauseForGpuRecovery(
+                    'recovery-probation',
+                    proposedFixedTick
+                );
+            }
+            this.enemySimulationPaused = false;
+            this.enemySimulationRecoveryRequired = false;
+            this.enemySimulationRecoveryDiagnostic = null;
+            this.lastCompletedEnemyFixedTick = proposedFixedTick;
+            this.pendingEnemyFixedTick = 0;
+            return true;
+        }
         // Terminal은 presentation/status를 살려 둔 채 endpoint mutation/submit/recovery를
         // 전혀 다시 시도하지 않는 성공 no-op입니다.
         if (this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED
@@ -848,6 +894,11 @@ export class GameObjectSystem {
                 = creationObservation?.pending === true
                     && creationObservation.phase === 'tower-creation'
                     && creationObservation.staged === true;
+            const actorCreationReadyForStage
+                = creationObservation?.pending === true
+                    && creationObservation.phase
+                        === 'actor-action-placement-ready'
+                    && creationObservation.readyForCreationStage === true;
             if (creationObservation?.recoveryRequired === true
                 || towerPayloadObservation?.recoveryRequired === true) {
                 return this.#pauseForGpuRecovery(
@@ -858,7 +909,8 @@ export class GameObjectSystem {
                 );
             }
             if (creationObservation?.pending === true
-                && !actorCreationReadyForSubmit) {
+                && !actorCreationReadyForSubmit
+                && !actorCreationReadyForStage) {
                 if (this.enemySimulationEndpoint.requiresRecovery()) {
                     return this.#pauseForGpuRecovery(
                         'tower-creation-pending-runtime',
@@ -1305,6 +1357,16 @@ export class GameObjectSystem {
 
             let primaryProjectileShotReceipt = null;
             if (this.runOutcome.isRunning()) {
+                const readyActorCreationStage = this.towerCreationCoordinator
+                    ?.stageReadyActorActionPlacementAtFixedBoundary(
+                        proposedFixedTick
+                    ) ?? null;
+                if (readyActorCreationStage?.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery(
+                        'tower-creation-ready-stage',
+                        proposedFixedTick
+                    );
+                }
                 const towerCreationStage = this.towerCreationCoordinator
                     ?.stageForFixedTick(proposedFixedTick) ?? null;
                 if (towerCreationStage?.recoveryRequired === true) {
@@ -1339,7 +1401,10 @@ export class GameObjectSystem {
                         targetFixedTick
                     );
                     if (!receipt?.accepted) {
-                        return this.#pauseForGpuRecovery();
+                        return this.#pauseForGpuRecovery(
+                            'tower-group-control-stage',
+                            proposedFixedTick
+                        );
                     }
                     primaryProjectileShotReceipt = this.primaryProjectileController
                         ?.stageShotForFixedTick(targetFixedTick) ?? null;
@@ -1715,6 +1780,24 @@ export class GameObjectSystem {
             return false;
         }
 
+        if (this.gpuRecoveryProbation.state
+                === GPU_RECOVERY_PROBATION_STATE.PENDING
+            && this.gpuRecoveryProbation.submittedSourceTick === null) {
+            if (!gpuSubmitted
+                || !this.#beginGpuRecoveryProbationSubmit(
+                    proposedFixedTick
+                )) {
+                return this.#pauseForGpuRecovery(
+                    'recovery-probation-submit',
+                    proposedFixedTick
+                );
+            }
+            // Lifecycle/body publication은 완료됐지만 첫 fixed submit의
+            // event/overflow readback이 아직 물리적으로 완료되지 않았습니다.
+            // pending tick을 유지해 동일 submit을 절대 반복하지 않습니다.
+            return false;
+        }
+
         if (terminalFinalization) {
             const captureSettlement
                 = this.#settleTerminalProjectileCaptureReadbacks(
@@ -1885,6 +1968,12 @@ export class GameObjectSystem {
             || this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD) {
             return false;
         }
+        if (this.gpuRecoveryProbation.state
+                === GPU_RECOVERY_PROBATION_STATE.PENDING
+            || this.gpuRecoveryProbation.state
+                === GPU_RECOVERY_PROBATION_STATE.FAILED) {
+            return false;
+        }
         const hasFactory = typeof this.endpointDependencies.enemySimulationBackendFactory
             === 'function';
         if (!hasFactory && this.endpointDependencies.enemySimulationBackend) {
@@ -1969,7 +2058,7 @@ export class GameObjectSystem {
                     );
                 }
             }
-        } catch {
+        } catch (error) {
             try {
                 replacementCorkRouteClosureDirector?.destroy();
             } catch {
@@ -2020,6 +2109,33 @@ export class GameObjectSystem {
             } catch {
                 // 실패한 replacement 정리가 recovery caller까지 전파되지 않게 합니다.
             }
+            if (error?.code === 'RECOVERY_LAYOUT_CAPACITY_EXCEEDED') {
+                this.gpuRecoveryProbation = Object.freeze({
+                    state: GPU_RECOVERY_PROBATION_STATE.FAILED,
+                    sessionGeneration:
+                        replacementEndpoint?.getStatus?.().sessionGeneration
+                        ?? null,
+                    deviceGeneration: null,
+                    expectedActiveBodyCount: 0,
+                    submittedSourceTick: null,
+                    submittedTickCount: null,
+                    failureFingerprint: [
+                        'recovery-layout',
+                        error.diagnostic?.requestedCount ?? 0,
+                        error.diagnostic?.placedCount ?? 0,
+                        error.diagnostic?.lastRejectionClass ?? 'unknown'
+                    ].join(':'),
+                    failure: error.diagnostic ?? Object.freeze({
+                        code: error.code,
+                        message: error.message
+                    })
+                });
+                this.enemySimulationRecoveryDiagnostic = Object.freeze({
+                    stage: 'recovery-layout',
+                    proposedFixedTick: this.lastCompletedEnemyFixedTick + 1,
+                    failure: this.gpuRecoveryProbation.failure
+                });
+            }
             return false;
         }
         this.enemySimulationEndpoint.synchronizePresentation();
@@ -2068,6 +2184,25 @@ export class GameObjectSystem {
         this.enemySimulationRecoveryRequired = false;
         this.enemySimulationPaused = true;
         this.enemySimulationRecoveryDiagnostic = null;
+        const replacementBackend = replacementEndpoint.getBackend?.() ?? null;
+        const ownsProductionGridAuthority = replacementBackend
+            ?.getSpawnAdmissionGridDescriptor?.() !== null
+            && typeof replacementBackend?.getSpawnAdmissionGridDescriptor
+                === 'function';
+        this.gpuRecoveryProbation = Object.freeze({
+            state: ownsProductionGridAuthority
+                ? GPU_RECOVERY_PROBATION_STATE.PENDING
+                : GPU_RECOVERY_PROBATION_STATE.PASSED,
+            sessionGeneration:
+                replacementEndpoint.getStatus().sessionGeneration,
+            deviceGeneration: null,
+            expectedActiveBodyCount:
+                replacementActorSpawnPlan.requests.length,
+            submittedSourceTick: null,
+            submittedTickCount: null,
+            failureFingerprint: null,
+            failure: null
+        });
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(
             this.lastCompletedEnemyFixedTick
         );
@@ -3437,14 +3572,54 @@ export class GameObjectSystem {
             throw new Error('TowerGroup 생존 record snapshot이 일치하지 않습니다.');
         }
 
+        const coreProxyIntent = createGpuCoreProxySpawnIntent({
+            position: this.tileMap.getCorePosition()
+        });
+        const backend = endpoint.getBackend?.() ?? null;
+        const grid = backend?.getSpawnAdmissionGridDescriptor?.() ?? null;
+        const sdf = backend?.getSignedDistanceField?.() ?? null;
+        const productionLayoutAvailable = grid !== null && sdf !== null;
+        // Legacy injected unit-test backends는 GPU grid resource를 소유하지 않습니다.
+        // Production backend은 반드시 아래 planner를 통하며, fallback은 별도
+        // grid 근사를 만들지 않고 injected descriptor를 그대로 보존합니다.
+        const recoveryLayout = livingRecords.length > 0
+            && productionLayoutAvailable
+            ? planTowerRecoveryLayout({
+                records: livingRecords,
+                anchorPosition: this.tileMap.getTowerSpawnPosition(),
+                radius: THE_TOWER_DATA.RADIUS_TILES,
+                clearance: THE_TOWER_DATA.RECOVERY_CLEARANCE_TILES,
+                sdf,
+                worldBounds: this.tileMap.getWorldBounds(),
+                grid,
+                existingBodies: [Object.freeze({
+                    position: coreProxyIntent.position,
+                    radius: coreProxyIntent.radius
+                })]
+            })
+            : Object.freeze({
+                placements: Object.freeze(livingRecords.map((record) => (
+                    Object.freeze({
+                        logicalTowerId: record.logicalTowerId,
+                        logicalTowerOrdinal: record.logicalTowerOrdinal,
+                        position: record.recoverySpawnDescriptor?.position
+                            ?? this.tileMap.getTowerSpawnPosition()
+                    })
+                )))
+            });
+        const placementByOrdinal = new Map(
+            recoveryLayout.placements.map((placement) => (
+                [placement.logicalTowerOrdinal, placement]
+            ))
+        );
+
         const towerCommands = livingRecords.map((record, index) => {
-            const position = record.recoverySpawnDescriptor?.position
-                ?? (record.logicalTowerOrdinal === 1
-                    ? this.tileMap.getTowerSpawnPosition()
-                    : null);
+            const position = placementByOrdinal.get(
+                record.logicalTowerOrdinal
+            )?.position ?? null;
             if (!position) {
                 throw new Error(
-                    `${record.logicalTowerId} recovery spawn descriptor가 없습니다.`
+                    `${record.logicalTowerId} recovery layout position이 없습니다.`
                 );
             }
             const baseCommandId = [
@@ -3485,9 +3660,7 @@ export class GameObjectSystem {
             commandId: command.commandId
         }));
         requests.push(Object.freeze({
-            intent: createGpuCoreProxySpawnIntent({
-                position: this.tileMap.getCorePosition()
-            }),
+            intent: coreProxyIntent,
             targetFixedTick,
             commandId: coreProxySpawnCommandId
         }));
@@ -3859,6 +4032,10 @@ export class GameObjectSystem {
     }
 
     #pauseForGpuRecovery(stage = 'unclassified', proposedFixedTick = null) {
+        if (this.gpuRecoveryProbation.state
+                === GPU_RECOVERY_PROBATION_STATE.PENDING) {
+            this.#failGpuRecoveryProbation(stage);
+        }
         this.enemySimulationRecoveryRequired = true;
         this.enemySimulationRecoveryDiagnostic ??= Object.freeze({
             stage,
@@ -3871,5 +4048,102 @@ export class GameObjectSystem {
         }
         this.enemySimulationPaused = true;
         return false;
+    }
+
+    #beginGpuRecoveryProbationSubmit(proposedFixedTick) {
+        const status = this.enemySimulationEndpoint.getBackend?.()
+            ?.getStatus?.()?.gpu ?? null;
+        if (!status
+            || status.activeBodyCount
+                !== this.gpuRecoveryProbation.expectedActiveBodyCount
+            || status.bodyCount
+                < this.gpuRecoveryProbation.expectedActiveBodyCount
+            || !Number.isSafeInteger(status.submittedTickCount)
+            || status.submittedTickCount <= 0
+            || !Number.isSafeInteger(status.deviceGeneration)
+            || status.deviceGeneration < 0) {
+            return false;
+        }
+        this.gpuRecoveryProbation = Object.freeze({
+            ...this.gpuRecoveryProbation,
+            deviceGeneration: status.deviceGeneration,
+            submittedSourceTick: proposedFixedTick,
+            submittedTickCount: status.submittedTickCount
+        });
+        return true;
+    }
+
+    #observeGpuRecoveryProbation(proposedFixedTick) {
+        const probation = this.gpuRecoveryProbation;
+        if (proposedFixedTick !== probation.submittedSourceTick
+            || this.pendingEnemyFixedTick !== probation.submittedSourceTick) {
+            this.#failGpuRecoveryProbation('fixed-tick-mismatch');
+            return GPU_RECOVERY_PROBATION_STATE.FAILED;
+        }
+        const endpointStatus = this.enemySimulationEndpoint.getStatus?.() ?? null;
+        const gpu = this.enemySimulationEndpoint.getBackend?.()
+            ?.getStatus?.()?.gpu ?? null;
+        const eventWatermarkReached = Number(
+            gpu?.events?.completedThroughTick
+        ) >= probation.submittedSourceTick;
+        const overflowWatermarkReached = Number(
+            gpu?.overflow?.lastSampleCompletedTick
+        ) >= probation.submittedTickCount;
+        if (!eventWatermarkReached || !overflowWatermarkReached) {
+            return GPU_RECOVERY_PROBATION_STATE.PENDING;
+        }
+        const initialCellOverflow = Object.freeze({
+            small: Number(gpu?.overflow?.lastSmallCount) || 0,
+            big: Number(gpu?.overflow?.lastBigCount) || 0,
+            capacity: Number(gpu?.maxBodiesPerCell) || null
+        });
+        const protocolOverflow = (Number(
+            gpu?.events?.lastAppliedOverflowCount
+        ) || 0) + (Number(gpu?.events?.lastDeathOverflowCount) || 0);
+        const failed = gpu?.deviceGeneration !== probation.deviceGeneration
+            || gpu?.activeBodyCount !== probation.expectedActiveBodyCount
+            || initialCellOverflow.small !== 0
+            || initialCellOverflow.big !== 0
+            || protocolOverflow !== 0
+            || endpointStatus?.recoveryRequired === true
+            || this.enemySimulationEndpoint.requiresRecovery();
+        if (failed) {
+            this.#failGpuRecoveryProbation('initial-readback', Object.freeze({
+                initialCellOverflow,
+                protocolOverflow,
+                endpointState: endpointStatus?.state ?? null,
+                gpuFailure: gpu?.failure ?? null
+            }));
+            return GPU_RECOVERY_PROBATION_STATE.FAILED;
+        }
+        this.gpuRecoveryProbation = Object.freeze({
+            ...probation,
+            state: GPU_RECOVERY_PROBATION_STATE.PASSED
+        });
+        return GPU_RECOVERY_PROBATION_STATE.PASSED;
+    }
+
+    #failGpuRecoveryProbation(stage, evidence = null) {
+        const probation = this.gpuRecoveryProbation;
+        if (probation.state !== GPU_RECOVERY_PROBATION_STATE.PENDING) {
+            return;
+        }
+        const failureFingerprint = [
+            probation.deviceGeneration ?? 'pending-device',
+            probation.sessionGeneration,
+            probation.submittedSourceTick ?? 'pre-submit',
+            stage
+        ].join(':');
+        this.gpuRecoveryProbation = Object.freeze({
+            ...probation,
+            state: GPU_RECOVERY_PROBATION_STATE.FAILED,
+            failureFingerprint,
+            failure: Object.freeze({
+                code: 'RECOVERY_PROBATION_FAILED',
+                stage,
+                failureFingerprint,
+                evidence
+            })
+        });
     }
 }

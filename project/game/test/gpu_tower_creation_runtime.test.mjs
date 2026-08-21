@@ -23,6 +23,9 @@ import {
     GpuTowerCreationRuntime
 } from '../script/module/ingame/physics/gpu/gpu_tower_creation_runtime.js';
 import {
+    GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION
+} from '../script/module/ingame/physics/gpu/gpu_actor_action_placement_abi.js';
+import {
     GPU_TOWER_GROUP_MEMBER_FLAG,
     computeGpuTowerGroupRosterFingerprint
 } from '../script/module/ingame/physics/gpu/gpu_tower_group_abi.js';
@@ -1090,7 +1093,7 @@ test('ActorAction Tower creation은 placement identity와 metadata pass를 ALIVE
             usage: 0
         });
         const actorAction = Object.freeze({
-            placementAbiVersion: 1,
+            placementAbiVersion: GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION,
             executionOrdinal: 7,
             commandFingerprint: 101,
             snapshotFingerprint: 102,
@@ -1121,7 +1124,7 @@ test('ActorAction Tower creation은 placement identity와 metadata pass를 ALIVE
             mode: GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION,
             actorAction,
             actorActionPlacementBinding: Object.freeze({
-                abiVersion: 1,
+                abiVersion: GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION,
                 buffer: placementBuffer,
                 aggregateByteOffset: 0,
                 byteLength: 320,

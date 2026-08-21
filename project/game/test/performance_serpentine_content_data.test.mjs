@@ -202,29 +202,29 @@ test('성능 wave는 10종을 같은 비율로 1 tick 간격에 총 10,000개 �
     director.destroy();
 });
 
-test('성능 map Arrow도 production acceleration/cap과 recoil-only Expo를 사용한다', () => {
+test('성능 map Arrow도 production direct-speed와 physical impact를 사용한다', () => {
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /fn enemy_charge_accelerated_velocity\(/u
+        /physics\.values\[body_id\]\.velocity = direction[\s\S]*?enemy_behavior_states\.values\[body_id\]\.charge_speed/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /charge_acceleration\s*\* max\(params\.dt, 0\.0\)/u
+        /fn materialize_enemy_charge_impact_evidence\(/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /enemy_behavior_states\.values\[body_id\]\.charge_speed/u
+        /normal_impulse_magnitude = -\(1\.0 \+ restitution\)/u
     );
     assert.match(
         GPU_COLLISION_COMPUTE_WGSL,
-        /const ENEMY_RECOIL_EXPO_OUT_LAMBDA: f32 = 10\.0;/u
-    );
-    assert.match(
-        GPU_COLLISION_COMPUTE_WGSL,
-        /fn normalized_bounded_recoil_expo_out\(progress: f32\) -> f32/u
+        /fn apply_enemy_charge_impact_impulses\(/u
     );
     assert.doesNotMatch(
         GPU_COLLISION_COMPUTE_WGSL,
-        /enemy_charge_expo_out_velocity/u
+        /enemy_charge_accelerated_velocity|normalized_bounded_recoil_expo_out/u
+    );
+    assert.doesNotMatch(
+        GPU_COLLISION_COMPUTE_WGSL,
+        /enemy_recoil_expo_out_velocity/u
     );
 });

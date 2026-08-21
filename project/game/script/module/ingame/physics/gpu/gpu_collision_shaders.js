@@ -10,6 +10,7 @@ import {
     GPU_CIRCLE_BODY_GAMEPLAY_META,
     GPU_CIRCLE_BODY_RENDER_SHAPE,
     GPU_CIRCLE_BODY_SIMULATION_FLAG,
+    GPU_CIRCLE_ENEMY_CHARGE_IMPACT_STATUS,
     GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG,
     GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM,
     GPU_CIRCLE_ENEMY_BEHAVIOR_STATE,
@@ -65,6 +66,9 @@ import {
 import {
     GPU_ATOMIC_TRANSFORM_POSITIVE_DAMAGE_HIT_WGSL
 } from './gpu_atomic_transform_positive_damage_hit_shaders.js';
+import {
+    GPU_COLLISION_GRID_AUTHORITY_WGSL
+} from './gpu_collision_grid_contract.js';
 
 const WGSL_POLYGON_POINT_CAPACITY = 8;
 
@@ -167,7 +171,8 @@ const BODY_FLAG_INTERACTION_CONTINUOUS: u32 = 512u;
 // Arrow의 Tower direct ownership은 다음 fixed tick 전에 SDF route clearance를
 // 통과해야 합니다. 이 상한은 자료/ABI가 아니라 shader-local deterministic budget입니다.
 const ENEMY_CHARGE_VISIBILITY_MAX_STEPS: u32 = 48u;
-const ENEMY_RECOIL_EXPO_OUT_LAMBDA: f32 = 10.0;
+const ENEMY_CHARGE_IMPACT_FIXED_POINT_SCALE: f32 = 65536.0;
+const ENEMY_CHARGE_IMPACT_FIXED_POINT_LIMIT: i32 = 2147000000;
 const BODY_LAYER_ENEMY: u32 = 1u;
 const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
 const BODY_LAYER_TERRAIN: u32 = ${GPU_CIRCLE_BODY_LAYER.TERRAIN}u;
@@ -240,6 +245,7 @@ const ATOMIC_TRANSFORM_CANDIDATE_STATUS_PHASE_COMPARE_EXCHANGE_FAILED: u32 = ${G
 const ATOMIC_TRANSFORM_FIRST_HIT_MARKER_WINNER: u32 = 0x7fc00050u;
 const ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD: u32 = 0x7fc00051u;
 const PROJECTILE_CAPTURE_PREPARED_SHIELD: u32 = 0x7fc00052u;
+const ENEMY_CHARGE_DISARMED_SHIELD: u32 = 0x7fc00053u;
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_PROGRAM_SELECTED_TARGET_PROJECTILE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.SELECTED_TARGET_PROJECTILE}u;
 const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
@@ -252,11 +258,13 @@ const ENEMY_BEHAVIOR_STATE_CORE_FALLBACK: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STAT
 const ENEMY_BEHAVIOR_STATE_ORBIT_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.ORBIT_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TARGET_VALID}u;
 const ENEMY_BEHAVIOR_FLAG_TELEGRAPH_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.TELEGRAPH_PENDING}u;
-const ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.RECOIL_PENDING}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_VALID: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_VALID}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_CORE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_CORE}u;
 const ENEMY_BEHAVIOR_FLAG_SELECTED_TARGET_TOWER: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.SELECTED_TARGET_TOWER}u;
 const ENEMY_BEHAVIOR_FLAG_DIRECTIONAL_DEFENSE_ACTIVE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_FLAG.DIRECTIONAL_DEFENSE_ACTIVE}u;
+const ENEMY_CHARGE_IMPACT_STATUS_EMPTY: u32 = ${GPU_CIRCLE_ENEMY_CHARGE_IMPACT_STATUS.EMPTY}u;
+const ENEMY_CHARGE_IMPACT_STATUS_CAPTURED: u32 = ${GPU_CIRCLE_ENEMY_CHARGE_IMPACT_STATUS.CAPTURED}u;
+const ENEMY_CHARGE_IMPACT_STATUS_RESOLVED: u32 = ${GPU_CIRCLE_ENEMY_CHARGE_IMPACT_STATUS.RESOLVED}u;
 const TOWER_TARGET_QUERY_FLAG_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.VALID}u;
 const TOWER_TARGET_QUERY_FLAG_SOURCE_VALID: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.SOURCE_VALID}u;
 const TOWER_TARGET_QUERY_FLAG_ROSTER_CHANGED: u32 = ${GPU_TOWER_TARGET_QUERY_FLAG.ROSTER_CHANGED}u;
@@ -403,7 +411,7 @@ struct EnemyBehaviorState {
     charge_direction: vec2f,
     windup_range: f32,
     charge_speed: f32,
-    recoil_impulse: f32,
+    impact_restitution: f32,
     windup_ticks: u32,
     charge_max_ticks: u32,
     recoil_ticks: u32,
@@ -411,13 +419,35 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
-    charge_acceleration: f32,
-    reserved_0: u32,
-    reserved_1: u32,
-    reserved_2: u32,
+    deprecated_charge_acceleration: f32,
+    impact_tangential_retention: f32,
+    recoil_damping: f32,
+    recoil_sleep_threshold: f32,
 }
 
 struct EnemyBehaviorStateBuffer { values: array<EnemyBehaviorState> }
+
+struct EnemyChargeImpactState {
+    selected_contact_index: atomic<u32>,
+    status: atomic<u32>,
+    captured_fixed_tick: u32,
+    arrow_slot: u32,
+    tower_slot: u32,
+    arrow_entity_id: u32,
+    arrow_incarnation: u32,
+    tower_entity_id: u32,
+    tower_incarnation: u32,
+    contact_normal: vec2f,
+    pre_impact_relative_velocity: vec2f,
+    arrow_inverse_mass: f32,
+    tower_inverse_mass: f32,
+    velocity_delta_x_fixed_point: atomic<i32>,
+    velocity_delta_y_fixed_point: atomic<i32>,
+}
+
+struct EnemyChargeImpactStateBuffer {
+    values: array<EnemyChargeImpactState>,
+}
 
 // ENEMY_BEHAVIOR_STATE와 독립적인 per-body Effect capability plane입니다.
 struct EffectSummary {
@@ -710,6 +740,7 @@ struct SimulationParams {
 @group(0) @binding(13) var<storage, read> tower_target_queries: TowerTargetQueryResultBuffer;
 @group(0) @binding(14) var<storage, read_write> atomic_transform_states: AtomicTransformStateBuffer;
 @group(0) @binding(15) var<storage, read_write> atomic_transform_candidates: AtomicTransformCandidateBuffer;
+@group(0) @binding(16) var<storage, read_write> enemy_charge_impacts: EnemyChargeImpactStateBuffer;
 @group(1) @binding(0) var<storage, read_write> grid_counts: AtomicGridCounts;
 @group(1) @binding(1) var<storage, read_write> grid_bodies: GridBodyBuffer;
 @group(1) @binding(2) var<storage, read> sdf_values: SdfBuffer;
@@ -752,14 +783,18 @@ fn body_interaction_mask(interaction_meta: u32) -> u32 {
     return (interaction_meta >> 16u) & 65535u;
 }
 
-fn body_interaction_radius(body: GridBody) -> f32 {
-    if (body_interaction_layer(body.interaction_meta)
+fn body_interaction_radius_values(radius: f32, interaction_meta: u32) -> f32 {
+    if (body_interaction_layer(interaction_meta)
         == BODY_LAYER_PLAYER_DAMAGEABLE) {
         // 물리 collider는 그대로 유지하고 피해 접촉에만 작은 skin을 둡니다.
         // solver가 정확한 접선으로 분리해도 Enemy/Tower 접촉이 끊기지 않습니다.
-        return body.radius * PLAYER_DAMAGEABLE_INTERACTION_RADIUS_SCALE;
+        return radius * PLAYER_DAMAGEABLE_INTERACTION_RADIUS_SCALE;
     }
-    return body.radius;
+    return radius;
+}
+
+fn body_interaction_radius(body: GridBody) -> f32 {
+    return body_interaction_radius_values(body.radius, body.interaction_meta);
 }
 
 fn gameplay_team_id(gameplay_meta: u32) -> u32 {
@@ -980,10 +1015,7 @@ fn grid_has_overflow() -> bool {
         || atomicLoad(&grid_overflow.big_count) > 0u;
 }
 
-fn body_uses_small_grid(radius: f32) -> bool {
-    return radius * 2.0
-        <= min(params.grid_cell_size.x, params.grid_cell_size.y);
-}
+${GPU_COLLISION_GRID_AUTHORITY_WGSL}
 
 fn deterministic_separation_normal(self_body_id: u32, other_body_id: u32) -> vec2f {
     let self_entity_id = simulations.values[self_body_id].entity_id;
@@ -2330,68 +2362,48 @@ fn enter_enemy_charge_route_fallback(body_id: u32) {
     );
 }
 
-fn normalized_bounded_recoil_expo_out(progress: f32) -> f32 {
-    let bounded_progress = clamp(progress, 0.0, 1.0);
-    if (bounded_progress <= 0.0) {
-        return 0.0;
+fn enemy_charge_target_is_separated(body_id: u32) -> bool {
+    let target_slot = enemy_behavior_states.values[body_id].target_slot;
+    if (target_slot >= counts.body_count
+        || simulations.values[target_slot].entity_id
+            != enemy_behavior_states.values[body_id].target_entity_id
+        || simulations.values[target_slot].incarnation
+            != enemy_behavior_states.values[body_id].target_incarnation) {
+        return true;
     }
-    if (bounded_progress >= 1.0) {
-        return 1.0;
+    let delta = physics.values[body_id].position
+        - physics.values[target_slot].position;
+    let separation_distance = body_interaction_radius_values(
+        physics.values[body_id].radius,
+        physics.values[body_id].interaction_meta
+    ) + body_interaction_radius_values(
+        physics.values[target_slot].radius,
+        physics.values[target_slot].interaction_meta
+    );
+    return dot(delta, delta) >= separation_distance * separation_distance;
+}
+
+fn damp_enemy_charge_recoil_velocity(body_id: u32) {
+    var velocity = physics.values[body_id].velocity
+        * clamp(enemy_behavior_states.values[body_id].recoil_damping, 0.0, 1.0);
+    let sleep_threshold = max(
+        enemy_behavior_states.values[body_id].recoil_sleep_threshold,
+        0.0
+    );
+    if (dot(velocity, velocity) <= sleep_threshold * sleep_threshold) {
+        velocity = vec2f(0.0);
     }
-    let denominator = 1.0 - exp2(-ENEMY_RECOIL_EXPO_OUT_LAMBDA);
-    return (1.0 - exp2(-ENEMY_RECOIL_EXPO_OUT_LAMBDA * bounded_progress))
-        / denominator;
+    physics.values[body_id].velocity = velocity;
 }
 
-fn enemy_recoil_expo_out_velocity(
-    direction: vec2f,
-    speed: f32,
-    duration_ticks: u32,
-    elapsed_ticks: u32
-) -> vec2f {
-    // Normalize first/last fixed-tick endpoints exactly to [0, 1]. A finite
-    // difference makes every displacement bounded and telescopes to the authored
-    // constant-speed distance without changing the body/behavior ABI.
-    let safe_duration_ticks = max(duration_ticks, 1u);
-    let duration = f32(safe_duration_ticks);
-    let bounded_elapsed = min(elapsed_ticks, safe_duration_ticks);
-    let bounded_next_elapsed = min(
-        bounded_elapsed + 1u,
-        safe_duration_ticks
-    );
-    let start_progress = f32(bounded_elapsed) / duration;
-    let end_progress = f32(bounded_next_elapsed) / duration;
-    let displacement = max(speed, 0.0)
-        * duration
-        * max(params.dt, 0.0)
-        * (normalized_bounded_recoil_expo_out(end_progress)
-            - normalized_bounded_recoil_expo_out(start_progress));
-    return direction * displacement * max(params.inverse_dt, 0.0);
-}
-
-fn enemy_charge_accelerated_velocity(
-    body_id: u32,
-    locked_direction: vec2f
-) -> vec2f {
-    let current_velocity = physics.values[body_id].velocity;
-    let parallel_speed = clamp(
-        max(dot(current_velocity, locked_direction), 0.0)
-            + enemy_behavior_states.values[body_id].charge_acceleration
-                * max(params.dt, 0.0),
-        0.0,
-        enemy_behavior_states.values[body_id].charge_speed
-    );
-    return locked_direction * parallel_speed;
-}
-
-fn enemy_charge_recoil_motion_ticks(body_id: u32) -> u32 {
-    // CONTACT_RECOIL is entered after prepare/solver. Its contact tick is an
-    // output-only impulse, so the following [entered + 1, expires) movement has
-    // recoil_ticks - 1 physical fixed steps. Keep a one-tick config well-defined.
-    return max(
-        max(enemy_behavior_states.values[body_id].recoil_ticks, 1u) - 1u,
-        1u
-    );
+fn encode_enemy_charge_velocity_delta(component: f32) -> i32 {
+    let contribution_limit = ENEMY_CHARGE_IMPACT_FIXED_POINT_LIMIT
+        / i32(max(counts.body_count, 1u));
+    return i32(round(clamp(
+        component * ENEMY_CHARGE_IMPACT_FIXED_POINT_SCALE,
+        -f32(contribution_limit),
+        f32(contribution_limit)
+    )));
 }
 
 fn enemy_charge_segment_is_visible(body_id: u32, segment_end: vec2f) -> bool {
@@ -2453,12 +2465,14 @@ fn octagon_orbit_config_is_valid(body_id: u32) -> bool {
         && armored_facet_count == 3u
         && total_facet_count == ENEMY_ORBIT_SLOT_CAPACITY
         && enemy_behavior_states.values[body_id].charge_speed == 0.0
-        && enemy_behavior_states.values[body_id].recoil_impulse == 0.0
+        && enemy_behavior_states.values[body_id].impact_restitution == 0.0
         && enemy_behavior_states.values[body_id].telegraph_radius_scale == 0.0
-        && enemy_behavior_states.values[body_id].charge_acceleration == 0.0
-        && enemy_behavior_states.values[body_id].reserved_0 == 0u
-        && enemy_behavior_states.values[body_id].reserved_1 == 0u
-        && enemy_behavior_states.values[body_id].reserved_2 == 0u;
+        && enemy_behavior_states.values[body_id]
+            .deprecated_charge_acceleration == 0.0
+        && enemy_behavior_states.values[body_id]
+            .impact_tangential_retention == 0.0
+        && enemy_behavior_states.values[body_id].recoil_damping == 0.0
+        && enemy_behavior_states.values[body_id].recoil_sleep_threshold == 0.0;
 }
 
 fn rotate_octagon_orbit_radial(radial: vec2f, angle: f32) -> vec2f {
@@ -2745,10 +2759,10 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
                 params.fixed_tick
                     + enemy_behavior_states.values[body_id].charge_max_ticks
         );
-        physics.values[body_id].velocity = enemy_charge_accelerated_velocity(
-            body_id,
-            direction
-        );
+        // WINDUP 종료 시 authored speed를 exact-once로 부여합니다. CHARGE는
+        // 이 velocity를 다시 가속하거나 덮어쓰지 않습니다.
+        physics.values[body_id].velocity = direction
+            * enemy_behavior_states.values[body_id].charge_speed;
         return;
     }
     if (state == ENEMY_BEHAVIOR_STATE_CHARGE) {
@@ -2764,11 +2778,7 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             );
             return;
         }
-        let charge_direction = enemy_behavior_states.values[body_id].charge_direction;
-        let charge_velocity = enemy_charge_accelerated_velocity(
-            body_id,
-            charge_direction
-        );
+        let charge_velocity = physics.values[body_id].velocity;
         let charge_segment_end = physics.values[body_id].position
             + charge_velocity * max(params.dt, 0.0);
         if (!enemy_charge_segment_is_visible(
@@ -2792,30 +2802,21 @@ fn advance_enemy_charge(@builtin(global_invocation_id) global_id: vec3u) {
             );
             return;
         }
-        physics.values[body_id].velocity = charge_velocity;
         return;
     }
     if (state == ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
+        // Ordinary reconstruction 뒤 적용된 contact impulse만 감쇠합니다. 이
+        // phase는 scripted reverse/Expo velocity를 생성하지 않습니다.
+        damp_enemy_charge_recoil_velocity(body_id);
         if (params.fixed_tick
-            >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick) {
-            physics.values[body_id].velocity = vec2f(0.0);
+                >= enemy_behavior_states.values[body_id].state_expires_at_fixed_tick
+            && enemy_charge_target_is_separated(body_id)) {
             clear_enemy_charge_route_fallback_latch(body_id);
             set_enemy_behavior_state(
                 body_id,
                 ENEMY_BEHAVIOR_STATE_RECOVER,
                 params.fixed_tick
                     + enemy_behavior_states.values[body_id].recover_ticks
-            );
-        } else if (params.fixed_tick
-            > enemy_behavior_states.values[body_id].state_entered_fixed_tick) {
-            let recoil_elapsed_ticks = params.fixed_tick
-                - enemy_behavior_states.values[body_id].state_entered_fixed_tick
-                - 1u;
-            physics.values[body_id].velocity = enemy_recoil_expo_out_velocity(
-                -enemy_behavior_states.values[body_id].charge_direction,
-                enemy_behavior_states.values[body_id].recoil_impulse,
-                enemy_charge_recoil_motion_ticks(body_id),
-                recoil_elapsed_ticks
             );
         }
         return;
@@ -2963,20 +2964,19 @@ fn build_tick_start_grid(@builtin(global_invocation_id) global_id: vec3u) {
     if (body_id >= counts.body_count || !body_id_is_simulation_active(body_id)) {
         return;
     }
-    let position = physics.values[body_id].position;
-    let cell = vec2i(floor(position / params.grid_cell_size));
-    if (cell.x < 0 || cell.y < 0
-        || cell.x >= i32(params.grid_cell_count.x)
-        || cell.y >= i32(params.grid_cell_count.y)) {
+    let body = physics.values[body_id];
+    let position = body.position;
+    let footprint = collision_grid_footprint(position, body.radius);
+    if (footprint.valid == 0u) {
         return;
     }
-
-    let body = physics.values[body_id];
     let grid_body = make_grid_body(body_id, position);
     let max_per_cell = params.max_bodies_per_cell;
-    if (body_uses_small_grid(body.radius)) {
-        let cell_index = (u32(cell.y) * params.grid_cell_count.x) + u32(cell.x);
-        let counter_index = cell_index * 2u;
+    if (footprint.bucket == 0u) {
+        let counter_index = collision_grid_counter_index(
+            footprint.center,
+            footprint.bucket
+        );
         let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
         if (slot >= max_per_cell) {
             atomicAdd(&grid_overflow.small_count, 1u);
@@ -2988,24 +2988,16 @@ fn build_tick_start_grid(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
 
-    let maximum_small_radius = 0.5
-        * min(params.grid_cell_size.x, params.grid_cell_size.y);
-    let padding = vec2f(body.radius + maximum_small_radius);
-    let max_cell = vec2i(params.grid_cell_count) - vec2i(1);
-    let min_covered = clamp(
-        vec2i(floor((position - padding) / params.grid_cell_size)),
-        vec2i(0),
-        max_cell
-    );
-    let max_covered = clamp(
-        vec2i(floor((position + padding) / params.grid_cell_size)),
-        vec2i(0),
-        max_cell
-    );
-    for (var y = min_covered.y; y <= max_covered.y; y += 1) {
-        for (var x = min_covered.x; x <= max_covered.x; x += 1) {
-            let cell_index = (u32(y) * params.grid_cell_count.x) + u32(x);
-            let counter_index = (cell_index * 2u) + 1u;
+    for (var y = footprint.minimum_cell.y;
+        y <= footprint.maximum_cell.y;
+        y += 1) {
+        for (var x = footprint.minimum_cell.x;
+            x <= footprint.maximum_cell.x;
+            x += 1) {
+            let counter_index = collision_grid_counter_index(
+                vec2i(x, y),
+                footprint.bucket
+            );
             let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
             if (slot >= max_per_cell) {
                 atomicAdd(&grid_overflow.big_count, 1u);
@@ -3032,19 +3024,18 @@ fn build_grid(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
     let predicted = temporaries.values[body_id].predicted_position;
-    let cell = vec2i(floor(predicted / params.grid_cell_size));
-    if (cell.x < 0 || cell.y < 0
-        || cell.x >= i32(params.grid_cell_count.x)
-        || cell.y >= i32(params.grid_cell_count.y)) {
+    let body = physics.values[body_id];
+    let footprint = collision_grid_footprint(predicted, body.radius);
+    if (footprint.valid == 0u) {
         return;
     }
-
-    let body = physics.values[body_id];
     let grid_body = make_grid_body(body_id, predicted);
     let max_per_cell = params.max_bodies_per_cell;
-    if (body_uses_small_grid(body.radius)) {
-        let cell_index = (u32(cell.y) * params.grid_cell_count.x) + u32(cell.x);
-        let counter_index = cell_index * 2u;
+    if (footprint.bucket == 0u) {
+        let counter_index = collision_grid_counter_index(
+            footprint.center,
+            footprint.bucket
+        );
         let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
         if (slot >= max_per_cell) {
             atomicAdd(&grid_overflow.small_count, 1u);
@@ -3057,24 +3048,16 @@ fn build_grid(@builtin(global_invocation_id) global_id: vec3u) {
         return;
     }
 
-    let maximum_small_radius = 0.5
-        * min(params.grid_cell_size.x, params.grid_cell_size.y);
-    let padding = vec2f(body.radius + maximum_small_radius);
-    let max_cell = vec2i(params.grid_cell_count) - vec2i(1);
-    let min_covered = clamp(
-        vec2i(floor((predicted - padding) / params.grid_cell_size)),
-        vec2i(0),
-        max_cell
-    );
-    let max_covered = clamp(
-        vec2i(floor((predicted + padding) / params.grid_cell_size)),
-        vec2i(0),
-        max_cell
-    );
-    for (var y = min_covered.y; y <= max_covered.y; y += 1) {
-        for (var x = min_covered.x; x <= max_covered.x; x += 1) {
-            let cell_index = (u32(y) * params.grid_cell_count.x) + u32(x);
-            let counter_index = (cell_index * 2u) + 1u;
+    for (var y = footprint.minimum_cell.y;
+        y <= footprint.maximum_cell.y;
+        y += 1) {
+        for (var x = footprint.minimum_cell.x;
+            x <= footprint.maximum_cell.x;
+            x += 1) {
+            let counter_index = collision_grid_counter_index(
+                vec2i(x, y),
+                footprint.bucket
+            );
             let slot = atomicAdd(&grid_counts.values[counter_index], 1u);
             if (slot >= max_per_cell) {
                 atomicAdd(&grid_overflow.big_count, 1u);
@@ -3370,6 +3353,51 @@ fn clear_contact_state() {
 }
 
 @compute @workgroup_size(256)
+fn clear_enemy_charge_impact_states(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()) {
+        return;
+    }
+    let body_id = global_id.x;
+    if (body_id >= counts.body_count) {
+        return;
+    }
+    atomicStore(
+        &enemy_charge_impacts.values[body_id].selected_contact_index,
+        INVALID_IDENTITY_COMPONENT
+    );
+    atomicStore(
+        &enemy_charge_impacts.values[body_id].status,
+        ENEMY_CHARGE_IMPACT_STATUS_EMPTY
+    );
+    enemy_charge_impacts.values[body_id].captured_fixed_tick = 0u;
+    enemy_charge_impacts.values[body_id].arrow_slot = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].tower_slot = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].arrow_entity_id
+        = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].arrow_incarnation
+        = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].tower_entity_id
+        = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].tower_incarnation
+        = INVALID_IDENTITY_COMPONENT;
+    enemy_charge_impacts.values[body_id].contact_normal = vec2f(0.0);
+    enemy_charge_impacts.values[body_id].pre_impact_relative_velocity
+        = vec2f(0.0);
+    enemy_charge_impacts.values[body_id].arrow_inverse_mass = 0.0;
+    enemy_charge_impacts.values[body_id].tower_inverse_mass = 0.0;
+    atomicStore(
+        &enemy_charge_impacts.values[body_id].velocity_delta_x_fixed_point,
+        0
+    );
+    atomicStore(
+        &enemy_charge_impacts.values[body_id].velocity_delta_y_fixed_point,
+        0
+    );
+}
+
+@compute @workgroup_size(256)
 fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     if (!abi_is_current()) {
         return;
@@ -3398,7 +3426,7 @@ fn generate_body_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     );
     var selection = empty_contact_selection();
 
-    if (body_uses_small_grid(self_physics.radius)) {
+    if (collision_grid_body_uses_small(self_physics.radius)) {
         let center = vec2i(floor(predicted / params.grid_cell_size));
         if (center.x < 0 || center.y < 0
             || center.x >= i32(params.grid_cell_count.x)
@@ -3584,6 +3612,131 @@ fn generate_world_contacts(@builtin(global_invocation_id) global_id: vec3u) {
         predicted + normal * penetration,
         normal
     ));
+}
+
+fn enemy_charge_contact_matches_bound_tower(contact: Contact) -> bool {
+    if (contact.other_body_id < 0) {
+        return false;
+    }
+    let arrow_slot = contact.self_body_id;
+    let tower_slot = u32(contact.other_body_id);
+    return arrow_slot < counts.body_count
+        && tower_slot < counts.body_count
+        && arrow_slot != tower_slot
+        && enemy_behavior_states.values[arrow_slot].program_id
+            == ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
+        && simulations.values[arrow_slot].incarnation == contact.self_incarnation
+        && simulations.values[tower_slot].incarnation == contact.other_incarnation
+        && body_id_is_simulation_active(arrow_slot)
+        && body_id_is_simulation_active(tower_slot)
+        && behavior_target_matches_gameplay_tower(arrow_slot)
+        && tower_slot == enemy_behavior_states.values[arrow_slot].target_slot
+        && simulations.values[tower_slot].entity_id
+            == enemy_behavior_states.values[arrow_slot].target_entity_id
+        && contact.other_incarnation
+            == enemy_behavior_states.values[arrow_slot].target_incarnation
+        && body_interaction_layer(
+            physics.values[tower_slot].interaction_meta
+        ) == BODY_LAYER_PLAYER_DAMAGEABLE;
+}
+
+@compute @workgroup_size(256)
+fn select_enemy_charge_impact_contacts(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (!enemy_charge_contact_matches_bound_tower(contact)
+        || atomicLoad(
+            &enemy_behavior_states.values[contact.self_body_id].state
+        ) != ENEMY_BEHAVIOR_STATE_CHARGE) {
+        return;
+    }
+    // Contact append 순서와 invocation scheduling에 관계없이 이 Arrow의
+    // canonical contact index 하나만 선택합니다. 동일 identity의 duplicate는
+    // 다음 materialize/shield 단계에서 publication되지 않습니다.
+    atomicMin(
+        &enemy_charge_impacts.values[contact.self_body_id]
+            .selected_contact_index,
+        contact_index
+    );
+}
+
+@compute @workgroup_size(256)
+fn materialize_enemy_charge_impact_evidence(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u) {
+        return;
+    }
+    let arrow_slot = global_id.x;
+    if (arrow_slot >= counts.body_count) {
+        return;
+    }
+    let contact_index = atomicLoad(
+        &enemy_charge_impacts.values[arrow_slot].selected_contact_index
+    );
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (contact.self_body_id != arrow_slot
+        || !enemy_charge_contact_matches_bound_tower(contact)
+        || atomicLoad(&enemy_behavior_states.values[arrow_slot].state)
+            != ENEMY_BEHAVIOR_STATE_CHARGE) {
+        return;
+    }
+    let contact_normal_length_squared = dot(contact.normal, contact.normal);
+    if (contact_normal_length_squared <= EPSILON_DISTANCE_SQUARED) {
+        return;
+    }
+    let tower_slot = u32(contact.other_body_id);
+    // handle/classifier가 contact.normal을 marker로 바꾸기 전에 실제 normal과
+    // pre-impact relative velocity를 이 transient plane에 보존합니다.
+    let tower_to_arrow_normal = -contact.normal
+        * inverseSqrt(contact_normal_length_squared);
+    let relative_velocity = physics.values[arrow_slot].velocity
+        - physics.values[tower_slot].velocity;
+    enemy_charge_impacts.values[arrow_slot].captured_fixed_tick
+        = params.fixed_tick;
+    enemy_charge_impacts.values[arrow_slot].arrow_slot = arrow_slot;
+    enemy_charge_impacts.values[arrow_slot].tower_slot = tower_slot;
+    enemy_charge_impacts.values[arrow_slot].arrow_entity_id
+        = simulations.values[arrow_slot].entity_id;
+    enemy_charge_impacts.values[arrow_slot].arrow_incarnation
+        = contact.self_incarnation;
+    enemy_charge_impacts.values[arrow_slot].tower_entity_id
+        = simulations.values[tower_slot].entity_id;
+    enemy_charge_impacts.values[arrow_slot].tower_incarnation
+        = contact.other_incarnation;
+    enemy_charge_impacts.values[arrow_slot].contact_normal
+        = tower_to_arrow_normal;
+    enemy_charge_impacts.values[arrow_slot].pre_impact_relative_velocity
+        = relative_velocity;
+    enemy_charge_impacts.values[arrow_slot].arrow_inverse_mass
+        = max(physics.values[arrow_slot].inverse_mass, 0.0);
+    enemy_charge_impacts.values[arrow_slot].tower_inverse_mass
+        = max(physics.values[tower_slot].inverse_mass, 0.0);
+    atomicStore(
+        &enemy_charge_impacts.values[arrow_slot].status,
+        ENEMY_CHARGE_IMPACT_STATUS_CAPTURED
+    );
 }
 
 @compute @workgroup_size(256)
@@ -4559,6 +4712,45 @@ fn shield_atomic_transform_first_hit_contacts(
 }
 
 @compute @workgroup_size(256)
+fn shield_unselected_enemy_charge_contacts(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
+    if (!abi_is_current()
+        || atomicLoad(&contact_state.contact_overflow) != 0u) {
+        return;
+    }
+    let contact_index = global_id.x;
+    let contact_count = min(
+        atomicLoad(&contact_state.contact_count),
+        params.max_contacts
+    );
+    if (contact_index >= contact_count) {
+        return;
+    }
+    let contact = contacts.values[contact_index];
+    if (!enemy_charge_contact_matches_bound_tower(contact)) {
+        return;
+    }
+    let arrow_slot = contact.self_body_id;
+    let is_selected_armed_contact = atomicLoad(
+            &enemy_behavior_states.values[arrow_slot].state
+        ) == ENEMY_BEHAVIOR_STATE_CHARGE
+        && atomicLoad(
+            &enemy_charge_impacts.values[arrow_slot].status
+        ) == ENEMY_CHARGE_IMPACT_STATUS_CAPTURED
+        && atomicLoad(
+            &enemy_charge_impacts.values[arrow_slot].selected_contact_index
+        ) == contact_index;
+    if (is_selected_armed_contact) {
+        return;
+    }
+    // CONTACT_RECOIL/RECOVER 중 overlap과 duplicate exact contact를 공통
+    // handler에서 차단해 damage/event/impulse를 하나의 selected identity로 묶습니다.
+    var shield_bits: u32 = ENEMY_CHARGE_DISARMED_SHIELD;
+    contacts.values[contact_index].normal.y = bitcast<f32>(shield_bits);
+}
+
+@compute @workgroup_size(256)
 fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     // clear_contact_state가 같은 pass 앞에서 BODY ABI를 한 번 검증합니다. 여기서는
     // 그 sticky 결과를 소비해 contact ABI storage usage를 9로 유지합니다.
@@ -4580,7 +4772,8 @@ fn handle_contacts(@builtin(global_invocation_id) global_id: vec3u) {
     let atomic_transform_marker = bitcast<u32>(contact.normal.y);
     if (atomic_transform_marker == ATOMIC_TRANSFORM_FIRST_HIT_MARKER_WINNER
         || atomic_transform_marker == ATOMIC_TRANSFORM_FIRST_HIT_MARKER_SHIELD
-        || atomic_transform_marker == PROJECTILE_CAPTURE_PREPARED_SHIELD) {
+        || atomic_transform_marker == PROJECTILE_CAPTURE_PREPARED_SHIELD
+        || atomic_transform_marker == ENEMY_CHARGE_DISARMED_SHIELD) {
         return;
     }
     let self_body_id = contact.self_body_id;
@@ -5184,16 +5377,39 @@ fn resolve_enemy_charge_contacts(@builtin(global_invocation_id) global_id: vec3u
             != enemy_behavior_states.values[body_id].target_incarnation) {
         return;
     }
-    if (atomicLoad(&enemy_behavior_states.values[body_id].state)
-        != ENEMY_BEHAVIOR_STATE_CHARGE) {
+    let impact_status = atomicLoad(
+        &enemy_charge_impacts.values[body_id].status
+    );
+    if (impact_status != ENEMY_CHARGE_IMPACT_STATUS_CAPTURED
+        || atomicLoad(
+            &enemy_charge_impacts.values[body_id].selected_contact_index
+        ) != contact_index
+        || enemy_charge_impacts.values[body_id].captured_fixed_tick
+            != params.fixed_tick
+        || enemy_charge_impacts.values[body_id].arrow_slot != body_id
+        || enemy_charge_impacts.values[body_id].tower_slot != target_slot
+        || enemy_charge_impacts.values[body_id].arrow_entity_id
+            != simulations.values[body_id].entity_id
+        || enemy_charge_impacts.values[body_id].arrow_incarnation
+            != contact.self_incarnation
+        || enemy_charge_impacts.values[body_id].tower_entity_id
+            != simulations.values[target_slot].entity_id
+        || enemy_charge_impacts.values[body_id].tower_incarnation
+            != contact.other_incarnation) {
         return;
     }
-    let previous_state = atomicExchange(
-        &enemy_behavior_states.values[body_id].state,
-        ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL
-    );
-    if (previous_state != ENEMY_BEHAVIOR_STATE_CHARGE) {
-        return;
+    loop {
+        let state_exchange = atomicCompareExchangeWeak(
+            &enemy_behavior_states.values[body_id].state,
+            ENEMY_BEHAVIOR_STATE_CHARGE,
+            ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL
+        );
+        if (state_exchange.exchanged) {
+            break;
+        }
+        if (state_exchange.old_value != ENEMY_BEHAVIOR_STATE_CHARGE) {
+            return;
+        }
     }
     enemy_behavior_states.values[body_id].state_entered_fixed_tick
         = params.fixed_tick;
@@ -5201,7 +5417,68 @@ fn resolve_enemy_charge_contacts(@builtin(global_invocation_id) global_id: vec3u
         = params.fixed_tick + enemy_behavior_states.values[body_id].recoil_ticks;
     atomicStore(
         &enemy_behavior_states.values[body_id].flags,
-        ENEMY_BEHAVIOR_FLAG_TARGET_VALID | ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING
+        ENEMY_BEHAVIOR_FLAG_TARGET_VALID
+    );
+
+    let normal = enemy_charge_impacts.values[body_id].contact_normal;
+    let relative_velocity = enemy_charge_impacts.values[body_id]
+        .pre_impact_relative_velocity;
+    let arrow_inverse_mass = enemy_charge_impacts.values[body_id]
+        .arrow_inverse_mass;
+    let tower_inverse_mass = enemy_charge_impacts.values[body_id]
+        .tower_inverse_mass;
+    let inverse_mass_sum = arrow_inverse_mass + tower_inverse_mass;
+    let normal_speed = dot(relative_velocity, normal);
+    let sleep_threshold = max(
+        enemy_behavior_states.values[body_id].recoil_sleep_threshold,
+        0.0
+    );
+    if (inverse_mass_sum > EPSILON_MASS
+        && normal_speed < -sleep_threshold) {
+        let restitution = clamp(
+            enemy_behavior_states.values[body_id].impact_restitution,
+            0.0,
+            1.0
+        );
+        let tangential_retention = clamp(
+            enemy_behavior_states.values[body_id]
+                .impact_tangential_retention,
+            0.0,
+            1.0
+        );
+        let tangential_velocity = relative_velocity - normal_speed * normal;
+        let normal_impulse_magnitude = -(1.0 + restitution)
+            * normal_speed / inverse_mass_sum;
+        let tangential_impulse = (tangential_retention - 1.0)
+            * tangential_velocity / inverse_mass_sum;
+        let impulse = normal * normal_impulse_magnitude
+            + tangential_impulse;
+        let arrow_velocity_delta = impulse * arrow_inverse_mass;
+        let tower_velocity_delta = -impulse * tower_inverse_mass;
+        atomicAdd(
+            &enemy_charge_impacts.values[body_id]
+                .velocity_delta_x_fixed_point,
+            encode_enemy_charge_velocity_delta(arrow_velocity_delta.x)
+        );
+        atomicAdd(
+            &enemy_charge_impacts.values[body_id]
+                .velocity_delta_y_fixed_point,
+            encode_enemy_charge_velocity_delta(arrow_velocity_delta.y)
+        );
+        atomicAdd(
+            &enemy_charge_impacts.values[target_slot]
+                .velocity_delta_x_fixed_point,
+            encode_enemy_charge_velocity_delta(tower_velocity_delta.x)
+        );
+        atomicAdd(
+            &enemy_charge_impacts.values[target_slot]
+                .velocity_delta_y_fixed_point,
+            encode_enemy_charge_velocity_delta(tower_velocity_delta.y)
+        );
+    }
+    atomicStore(
+        &enemy_charge_impacts.values[body_id].status,
+        ENEMY_CHARGE_IMPACT_STATUS_RESOLVED
     );
     append_applied_event(AppliedEvent(
         simulations.values[body_id].entity_id,
@@ -5569,35 +5846,33 @@ fn finalize_controlled_motion(@builtin(global_invocation_id) global_id: vec3u) {
 }
 
 @compute @workgroup_size(256)
-fn apply_enemy_charge_recoil(@builtin(global_invocation_id) global_id: vec3u) {
+fn apply_enemy_charge_impact_impulses(
+    @builtin(global_invocation_id) global_id: vec3u
+) {
     if (!abi_is_current()) {
         return;
     }
     let body_id = global_id.x;
-    if (body_id >= counts.body_count
-        || enemy_behavior_states.values[body_id].program_id
-            != ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE
-        || !body_id_is_alive(body_id)) {
+    if (body_id >= counts.body_count) {
         return;
     }
-    let previous_flags = atomicAnd(
-        &enemy_behavior_states.values[body_id].flags,
-        ~ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING
+    // 이 pass는 ordinary rebuild/finalize 뒤 한 번만 호출됩니다. Exchange로
+    // accumulator를 소비하므로 동일 tick의 두 번째 호출도 exact zero입니다.
+    let delta_x_fixed_point = atomicExchange(
+        &enemy_charge_impacts.values[body_id].velocity_delta_x_fixed_point,
+        0
     );
-    if ((previous_flags & ENEMY_BEHAVIOR_FLAG_RECOIL_PENDING) == 0u
-        || atomicLoad(&enemy_behavior_states.values[body_id].state)
-            != ENEMY_BEHAVIOR_STATE_CONTACT_RECOIL) {
+    let delta_y_fixed_point = atomicExchange(
+        &enemy_charge_impacts.values[body_id].velocity_delta_y_fixed_point,
+        0
+    );
+    if (delta_x_fixed_point == 0 && delta_y_fixed_point == 0) {
         return;
     }
-    // solver/rebuild/final velocity 뒤에 첫 Expo-out finite difference만 기록합니다.
-    // 다음 fixed tick의 CONTACT_RECOIL branch가 같은 첫 segment를 실제 motion으로
-    // 적용하므로 contact tick에 solver를 두 번 움직이지 않습니다.
-    physics.values[body_id].velocity = enemy_recoil_expo_out_velocity(
-        -enemy_behavior_states.values[body_id].charge_direction,
-        enemy_behavior_states.values[body_id].recoil_impulse,
-        enemy_charge_recoil_motion_ticks(body_id),
-        0u
-    );
+    physics.values[body_id].velocity += vec2f(
+        f32(delta_x_fixed_point),
+        f32(delta_y_fixed_point)
+    ) / ENEMY_CHARGE_IMPACT_FIXED_POINT_SCALE;
 }
 
 @compute @workgroup_size(1)
@@ -5781,7 +6056,7 @@ struct EnemyBehaviorState {
     charge_direction: vec2f,
     windup_range: f32,
     charge_speed: f32,
-    recoil_impulse: f32,
+    impact_restitution: f32,
     windup_ticks: u32,
     charge_max_ticks: u32,
     recoil_ticks: u32,
@@ -5789,10 +6064,10 @@ struct EnemyBehaviorState {
     telegraph_style_code: u32,
     telegraph_color_rgba8: u32,
     telegraph_radius_scale: f32,
-    charge_acceleration: f32,
-    reserved_0: u32,
-    reserved_1: u32,
-    reserved_2: u32,
+    deprecated_charge_acceleration: f32,
+    impact_tangential_retention: f32,
+    recoil_damping: f32,
+    recoil_sleep_threshold: f32,
 }
 
 struct EffectSummary {

@@ -24,6 +24,7 @@ const {
 } = await loadGameModule('ingame/physics/gpu/gpu_circle_body_abi.js');
 const {
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_STORAGE_BINDING_COUNT,
+    GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
     GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL
 } = await loadGameModule(
     'ingame/physics/gpu/gpu_actor_payload_materialization_runtime.js'
@@ -178,7 +179,7 @@ test('Enemy actor payload definition은 persistent ordinary Hostile C다', () =>
     assert.equal(definition.aiActivationFixedTickOffset, 1);
 });
 
-test('Enemy Shoot safe-placement 후보표는 immutable bounded 순서와 final overlap만 허용한다', () => {
+test('Enemy Shoot local 후보표는 immutable bounded 순서이고 overlap 예외가 없다', () => {
     const candidates = R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES;
     assert.equal(Object.isFrozen(candidates), true);
     assert.deepEqual(candidates.map((candidate) => candidate.id), [
@@ -195,31 +196,37 @@ test('Enemy Shoot safe-placement 후보표는 immutable bounded 순서와 final 
         'short-right-45-half-gap',
         'short-left-90-zero-gap',
         'short-right-90-zero-gap',
-        'final-source-local-overlap'
+        'final-source-local-probe'
     ]);
     assert.equal(candidates.length, 14);
     assert.equal(candidates.filter(
         (candidate) => candidate.allowDynamicOverlap
-    ).length, 1);
-    assert.equal(candidates.at(-1).allowDynamicOverlap, true);
+    ).length, 0);
+    assert.equal(candidates.at(-1).allowDynamicOverlap, false);
     assert.equal(candidates.at(-1).radiusSumScale, 0);
     assert.equal(candidates.at(-1).surfaceGapScale, 0);
 });
 
-test('safe-placement WGSL은 static SDF, ordinary overlap, bounded fallback과 방향 일치를 고정한다', () => {
+test('safe-placement는 payload-local 후보와 shared exact admission을 분리한다', () => {
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
         /SAFE_PLACEMENT_CANDIDATE_COUNT: u32 =\s*14u/);
-    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /candidate_index < SAFE_PLACEMENT_CANDIDATE_COUNT/);
-    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /!valid_spawn_point\(position, destination_radius\)[\s\S]*continue/);
-    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /SAFE_PLACEMENT_ALLOW_DYNAMIC_OVERLAP\[candidate_index\][\s\S]*overlaps_dynamic_body/);
-    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /selected_direction = direction/);
-    assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /velocity = direction[\s\S]*bitcast<f32>\(header\(/);
-    assert.doesNotMatch(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /const LOCAL_CANDIDATE_COUNT: u32 = 14u/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /const TOTAL_CANDIDATE_COUNT: u32 =\s*142u/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /candidate_index < TOTAL_CANDIDATE_COUNT/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /spawn_admission_claim\([\s\S]*admission_static_valid/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /spawn_admission_overlaps_existing/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /spawn_admission_overlaps_sibling/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /spawn_admission_cell_capacity_available/);
+    assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
+        /collision_grid_footprint/);
+    assert.doesNotMatch(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
         /random|rand\(/i);
 });
 

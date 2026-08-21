@@ -147,6 +147,10 @@ for (const entryPoint of [
     'clear_contact_state',
     'generate_body_contacts',
     'generate_world_contacts',
+    'clear_enemy_charge_impact_states',
+    'select_enemy_charge_impact_contacts',
+    'materialize_enemy_charge_impact_evidence',
+    'shield_unselected_enemy_charge_contacts',
     'handle_contacts',
     'validate_source_relative_spawns',
     'resolve_source_relative_spawns',
@@ -165,17 +169,22 @@ for (const entryPoint of [
     'preflight_maximum_damage_window',
     'finalize_maximum_damage_window_preflight',
     'resolve_maximum_damage_window',
+    'apply_enemy_charge_impact_impulses',
     'mark_dead'
 ]) {
     assert.match(compute, new RegExp(`fn\\s+${entryPoint}\\b`));
 }
 
-// ABI v9는 기존 gameplay/combat offset을 유지하고 EnemyBehaviorState 끝에
-// Arrow CHARGE acceleration 필드를 append합니다.
-assert.match(compute, /const BODY_ABI_VERSION: u32 = 9u;/);
+// ABI v10은 기존 gameplay/combat stride를 유지하면서 Arrow의 authored impact
+// 계수와 별도 transient impact plane을 고정합니다.
+assert.match(compute, /const BODY_ABI_VERSION: u32 = 10u;/);
 assert.match(
     compute,
-    /struct EnemyBehaviorState \{[\s\S]*?telegraph_radius_scale: f32,[\s\S]*?charge_acceleration: f32,[\s\S]*?reserved_0: u32,[\s\S]*?reserved_1: u32,[\s\S]*?reserved_2: u32,\s*\}/
+    /struct EnemyBehaviorState \{[\s\S]*?charge_speed: f32,[\s\S]*?impact_restitution: f32,[\s\S]*?telegraph_radius_scale: f32,[\s\S]*?deprecated_charge_acceleration: f32,[\s\S]*?impact_tangential_retention: f32,[\s\S]*?recoil_damping: f32,[\s\S]*?recoil_sleep_threshold: f32,\s*\}/
+);
+assert.match(
+    compute,
+    /struct EnemyChargeImpactState \{[\s\S]*?selected_contact_index: atomic<u32>,[\s\S]*?contact_normal: vec2f,[\s\S]*?pre_impact_relative_velocity: vec2f,[\s\S]*?velocity_delta_x_fixed_point: atomic<i32>,[\s\S]*?velocity_delta_y_fixed_point: atomic<i32>,\s*\}/
 );
 assert.match(compute, /struct BodyCounts \{[\s\S]*?abi_version: u32,/);
 assert.match(compute, /struct BodyPhysics \{[\s\S]*?physical_meta: u32,[\s\S]*?interaction_meta: u32,/);
@@ -226,12 +235,12 @@ assert.deepEqual(storageBindings, [
     '0:8:tracked_pose_config', '0:9:tracked_pose_output', '0:10:combat_states',
     '0:11:enemy_behavior_states', '0:12:effect_summaries',
     '0:13:tower_target_queries', '0:14:atomic_transform_states',
-    '0:15:atomic_transform_candidates',
+    '0:15:atomic_transform_candidates', '0:16:enemy_charge_impacts',
     '1:0:grid_counts', '1:1:grid_bodies', '1:2:sdf_values',
     '1:3:grid_overflow', '3:0:contact_state', '3:1:contacts',
     '3:2:applied_events', '3:3:death_events'
 ]);
-assert.equal(storageBindings.length, 24);
+assert.equal(storageBindings.length, 25);
 assert.doesNotMatch(storageBindingBlock, /gameplay_team|damage_policy/i);
 assert.match(
     compute,
@@ -507,7 +516,10 @@ assert.match(compute, /if \(closest_only && selection\.found != 0u\)/);
 
 // big/small 분류와 큰 센서의 covered-cell scan은 최대 상호작용 반경을 사용합니다.
 assert.match(compute, /return radius \* 2\.0\s*<= min\(params\.grid_cell_size\.x, params\.grid_cell_size\.y\)/);
-assert.match(compute, /let maximum_small_radius = 0\.5[\s\S]*?body\.radius \+ maximum_small_radius/);
+assert.match(
+    compute,
+    /fn collision_grid_footprint\([\s\S]*?let maximum_small_radius = 0\.5[\s\S]*?let padding = vec2f\(radius \+ maximum_small_radius\)/
+);
 assert.match(compute, /let interaction_radius = self_physics\.radius\s*\+ max\(params\.maximum_body_radius, 0\.0\);/);
 assert.match(compute, /scan_canonical_big_contact_bucket/);
 assert.match(compute, /deterministic_separation_normal/);

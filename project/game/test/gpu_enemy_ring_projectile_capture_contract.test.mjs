@@ -110,8 +110,8 @@ const SUPPORT_SOURCE = await readFile(new URL(
     import.meta.url
 ), 'utf8');
 
-test('R body side-plane은 ABI v9의 independent 48/16-byte exact-handle state다', () => {
-    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 9);
+test('R body side-plane은 ABI v10의 independent 48/16-byte exact-handle state다', () => {
+    assert.equal(GPU_CIRCLE_BODY_ABI_VERSION, 10);
     assert.deepEqual({ ...GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE }, {
         STRIDE: 48,
         ROLE_PHASE_PROFILE_POLICY: 0,

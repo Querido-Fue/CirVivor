@@ -77,6 +77,20 @@ export class GpuTowerGroupFacade extends GpuTowerActorFacade {
         }
         const group = this.towerGroupState.getStatus();
         const runtime = backend.getTowerGroupRuntimeStatus();
+        // Tower creation은 같은 fixed boundary에 source/target roster를 GPU에
+        // 함께 보유합니다. HP event처럼 roster membership과 무관한
+        // stateRevision 변화가 그 사이에 발생해도 pending transition의 source
+        // revision은 이미 authoritative하므로 host roster를 덮어쓰지 않습니다.
+        const transitionSourceCurrent = !force
+            && runtime.state === 'ready'
+            && runtime.groupRevision === group.groupRevision
+            && runtime.pendingRosterTransition?.sourceGroupRevision
+                === group.groupRevision
+            && this.lastRosterDeviceGeneration === runtime.deviceGeneration
+            && this.lastRosterAuthoritativeEpoch === runtime.authoritativeEpoch;
+        if (transitionSourceCurrent && this.lastRosterReceipt?.accepted === true) {
+            return this.lastRosterReceipt;
+        }
         const current = !force
             && runtime.state === 'ready'
             && runtime.groupRevision === group.groupRevision
