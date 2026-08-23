@@ -168,7 +168,8 @@ test('Formation roster는 accepted prepare에서만 sequence를 전진하고 rej
         registry,
         formationCommandPort: harness.port,
         sessionGeneration: 7,
-        capacity: 4
+        capacity: 4,
+        prepareCadenceTicks: 1
     });
     director.observeLifecycle(lifecycleCommit(1, [
         Object.freeze({ handle: left.handle }),
@@ -229,7 +230,8 @@ test('대규모 H roster prepare는 bounded overlapping round-robin batch로 전
         formationCommandPort: harness.port,
         sessionGeneration: 71,
         capacity: 8,
-        maximumPrepareRecordsPerFixedTick: 3
+        maximumPrepareRecordsPerFixedTick: 3,
+        prepareCadenceTicks: 1
     });
     director.observeLifecycle(lifecycleCommit(
         1,
@@ -249,6 +251,46 @@ test('대규모 H roster prepare는 bounded overlapping round-robin batch로 전
     assert.equal(observed.size, 8);
     assert.equal(director.getStatus().maximumPrepareRecordsPerFixedTick, 3);
     assert.equal(director.requiresRecovery(), false);
+});
+
+test('Formation prepare cadence는 비대상 tick을 bounded no-op으로 넘기고 경계 tick만 stage한다', () => {
+    const registry = new WorldRegistry({
+        capacity: 2,
+        atomicTransformAuthority: Object.freeze({})
+    });
+    const left = activateNaturalH(registry, 1);
+    const right = activateNaturalH(registry, 2);
+    const harness = createCommandHarness();
+    const director = new FormationRuntimeDirector({
+        registry,
+        formationCommandPort: harness.port,
+        sessionGeneration: 74,
+        capacity: 2
+    });
+    director.observeLifecycle(lifecycleCommit(1, [
+        Object.freeze({ handle: left.handle }),
+        Object.freeze({ handle: right.handle })
+    ]), 1);
+
+    const deferred = director.stageForFixedTick({ targetFixedTick: 2 });
+    assert.deepEqual({ ...deferred }, {
+        accepted: true,
+        targetFixedTick: 2,
+        stagedCount: 0,
+        cadenceDeferred: true,
+        replayed: false
+    });
+    assert.equal(
+        director.stageForFixedTick({ targetFixedTick: 2 }).replayed,
+        true
+    );
+    assert.equal(harness.prepareRequests.length, 0);
+
+    const staged = director.stageForFixedTick({ targetFixedTick: 4 });
+    assert.equal(staged.accepted, true);
+    assert.equal(staged.stagedCount, 2);
+    assert.equal(harness.prepareRequests.length, 1);
+    assert.equal(director.getStatus().prepareCadenceTicks, 4);
 });
 
 test('J/C′ atomic transform lifecycle은 독립 Formation roster를 오염시키지 않는다', () => {

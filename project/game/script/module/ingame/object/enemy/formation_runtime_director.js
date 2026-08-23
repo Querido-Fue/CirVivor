@@ -22,6 +22,7 @@ import {
 
 const LINEAGE_CAPACITY = 6;
 const INVALID_U32 = 0xffffffff;
+const DEFAULT_PREPARE_CADENCE_TICKS = 4;
 const FORMATION_DEFINITION_IDS = new Set([
     BASIC_HEXA_ENEMY_DEFINITION_ID,
     BASIC_HEXA_GROUP_ENEMY_DEFINITION_ID,
@@ -174,6 +175,10 @@ export class FormationRuntimeDirector {
                 'maximumPrepareRecordsPerFixedTick은 Formation pair를 위해 2 이상이어야 합니다.'
             );
         }
+        this.prepareCadenceTicks = requirePositiveSafeInteger(
+            options.prepareCadenceTicks ?? DEFAULT_PREPARE_CADENCE_TICKS,
+            'prepareCadenceTicks'
+        );
         this.entityIds = new Uint32Array(this.capacity);
         this.incarnations = new Uint32Array(this.capacity);
         this.definitionCodes = new Uint32Array(this.capacity);
@@ -755,6 +760,18 @@ export class FormationRuntimeDirector {
                 replayed: true
             });
         }
+        if ((tick % this.prepareCadenceTicks) !== 0) {
+            const result = Object.freeze({
+                accepted: true,
+                targetFixedTick: tick,
+                stagedCount: 0,
+                cadenceDeferred: true,
+                replayed: false
+            });
+            this.lastPrepareStageTick = tick;
+            this.lastPrepareStageResult = result;
+            return result;
+        }
         const indices = [];
         for (let index = 0; index < this.activeCount; index++) {
             if (this.memberCounts[index] < LINEAGE_CAPACITY) {
@@ -986,6 +1003,7 @@ export class FormationRuntimeDirector {
             lastPrepareStageTick: this.lastPrepareStageTick,
             maximumPrepareRecordsPerFixedTick:
                 this.maximumPrepareRecordsPerFixedTick,
+            prepareCadenceTicks: this.prepareCadenceTicks,
             nextPrepareCursor: this.nextPrepareCursor,
             hiveHealthBarPolicy: 'hx-separate-health-bar',
             recoveryRequired: this.recoveryRequired,
