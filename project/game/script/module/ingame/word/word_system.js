@@ -9,6 +9,7 @@ import {
     normalizeAbilitySlotId,
     normalizeSentenceRuntimePhase
 } from '../contract/word_sentence_contract.js';
+import { fingerprintR8Record } from '../contract/r8_fingerprint_contract.js';
 import { SentenceCompiler } from './sentence_compiler.js';
 
 export const ABILITY_ACTIVATION_RESULT_CODE = Object.freeze({
@@ -34,6 +35,15 @@ export const ABILITY_EXECUTION_OUTCOME_CODE = Object.freeze({
     PLACEMENT_REJECTED: 'PLACEMENT_REJECTED',
     CANCELLED: 'CANCELLED',
     PROTOCOL_REJECTED: 'PROTOCOL_REJECTED'
+});
+
+export const WORD_SYSTEM_EDITOR_COMMIT_CODE = Object.freeze({
+    COMMITTED: 'COMMITTED',
+    TRANSACTION_CONFLICT: 'TRANSACTION_CONFLICT',
+    WRONG_PHASE: 'WRONG_PHASE',
+    PENDING_ACTIVATION: 'PENDING_ACTIVATION',
+    INVALID_LOADOUT: 'INVALID_LOADOUT',
+    DESTROYED: 'DESTROYED'
 });
 
 const EXECUTION_OUTCOME_CODES = new Set(
@@ -108,6 +118,13 @@ export class WordSystem {
         this.lastExecutionOutcome = null;
         this.runtimePreviewProvider = null;
         this.totalCancelledActivationRequests = 0;
+        this.editorCommitHistoryCapacity = requirePositiveSafeInteger(
+            options.editorCommitHistoryCapacity ?? 256,
+            'editorCommitHistoryCapacity'
+        );
+        this.editorCommitHistory = new Map();
+        this.editorCommitOrder = [];
+        this.lastEditorCommit = null;
         this.destroyed = false;
         this.replaceLoadout(options.loadout ?? {});
     }
@@ -149,6 +166,152 @@ export class WordSystem {
             slot.nextEligibleFixedTick = 0;
         }
         return true;
+    }
+
+    /** SHOP editor가 typed catalog/compiler로 5개 slot을 all-or-none 교체합니다. */
+    commitEditorLoadout(source = {}) {
+        const transactionId = typeof source.transactionId === 'string'
+            ? source.transactionId
+            : '';
+        if (transactionId.length === 0) {
+            throw new TypeError('editor transactionId가 필요합니다.');
+        }
+        const boardFingerprint = requirePositiveSafeInteger(
+            source.boardFingerprint,
+            'editor boardFingerprint'
+        );
+        const compiler = source.compiler;
+        if (!(compiler instanceof SentenceCompiler)) {
+            throw new TypeError('editor commit에는 SentenceCompiler가 필요합니다.');
+        }
+        const loadout = source.loadout;
+        if (!loadout || typeof loadout !== 'object' || Array.isArray(loadout)) {
+            throw new TypeError('editor loadout은 slot lookup 객체여야 합니다.');
+        }
+        for (const key of Object.keys(loadout)) {
+            normalizeAbilitySlotId(key, 'editor loadout slotId');
+        }
+        const fingerprintSource = Object.freeze({
+            transactionId,
+            boardFingerprint,
+            slots: Object.freeze(ABILITY_SLOT_IDS.map((slotId) => Object.freeze({
+                slotId,
+                sentenceDefinition: loadout[slotId] ?? null
+            })))
+        });
+        const requestFingerprint = fingerprintR8Record(
+            'word-system-editor-commit.r8',
+            fingerprintSource
+        );
+        const known = this.editorCommitHistory.get(transactionId);
+        if (known) {
+            if (known.requestFingerprint === requestFingerprint) {
+                return known.receipt;
+            }
+            return Object.freeze({
+                accepted: false,
+                code: WORD_SYSTEM_EDITOR_COMMIT_CODE.TRANSACTION_CONFLICT,
+                transactionId,
+                requestFingerprint,
+                mutationCount: 0
+            });
+        }
+        if (this.destroyed) {
+            return this.#rememberEditorCommit(
+                transactionId,
+                requestFingerprint,
+                Object.freeze({
+                    accepted: false,
+                    code: WORD_SYSTEM_EDITOR_COMMIT_CODE.DESTROYED,
+                    transactionId,
+                    mutationCount: 0
+                })
+            );
+        }
+        if (this.phase !== SENTENCE_RUNTIME_PHASE.SHOP) {
+            return this.#rememberEditorCommit(
+                transactionId,
+                requestFingerprint,
+                Object.freeze({
+                    accepted: false,
+                    code: WORD_SYSTEM_EDITOR_COMMIT_CODE.WRONG_PHASE,
+                    transactionId,
+                    phase: this.phase,
+                    mutationCount: 0
+                })
+            );
+        }
+        if (this.pendingActivationRequests.length !== 0) {
+            return this.#rememberEditorCommit(
+                transactionId,
+                requestFingerprint,
+                Object.freeze({
+                    accepted: false,
+                    code: WORD_SYSTEM_EDITOR_COMMIT_CODE.PENDING_ACTIVATION,
+                    transactionId,
+                    pendingActivationCount:
+                        this.pendingActivationRequests.length,
+                    mutationCount: 0
+                })
+            );
+        }
+        const staged = [];
+        for (const slotId of ABILITY_SLOT_IDS) {
+            const sentenceDefinition = loadout[slotId] ?? null;
+            const compileResult = sentenceDefinition
+                ? compiler.tryCompile(sentenceDefinition)
+                : createEmptyCompileResult();
+            if (sentenceDefinition && compileResult.valid !== true) {
+                return this.#rememberEditorCommit(
+                    transactionId,
+                    requestFingerprint,
+                    Object.freeze({
+                        accepted: false,
+                        code: WORD_SYSTEM_EDITOR_COMMIT_CODE.INVALID_LOADOUT,
+                        transactionId,
+                        slotId,
+                        compileCode: compileResult.code,
+                        mutationCount: 0
+                    })
+                );
+            }
+            staged.push(Object.freeze({
+                slotId,
+                sentenceDefinition,
+                compileResult
+            }));
+        }
+        for (const entry of staged) {
+            const slot = this.slots.get(entry.slotId);
+            slot.sentenceDefinition = entry.sentenceDefinition;
+            slot.compileResult = entry.compileResult;
+        }
+        const receipt = Object.freeze({
+            accepted: true,
+            code: WORD_SYSTEM_EDITOR_COMMIT_CODE.COMMITTED,
+            transactionId,
+            requestFingerprint,
+            boardFingerprint,
+            compiledAbilityIds: Object.freeze(Object.fromEntries(
+                staged.map((entry) => [
+                    entry.slotId,
+                    entry.compileResult.compiledAbility?.compiledAbilityId
+                        ?? null
+                ])
+            )),
+            cooldowns: Object.freeze(Object.fromEntries(
+                ABILITY_SLOT_IDS.map((slotId) => [
+                    slotId,
+                    this.slots.get(slotId).nextEligibleFixedTick
+                ])
+            )),
+            mutationCount: staged.length
+        });
+        return this.#rememberEditorCommit(
+            transactionId,
+            requestFingerprint,
+            receipt
+        );
     }
 
     /** 단일 slot을 headless/editor dependency에서 교체합니다. */
@@ -535,7 +698,9 @@ export class WordSystem {
             totalCancelledActivationRequests:
                 this.totalCancelledActivationRequests,
             lastActivationResult: this.lastActivationResult,
-            lastExecutionOutcome: this.lastExecutionOutcome
+            lastExecutionOutcome: this.lastExecutionOutcome,
+            rememberedEditorCommitCount: this.editorCommitHistory.size,
+            lastEditorCommit: this.lastEditorCommit
         });
     }
 
@@ -547,6 +712,8 @@ export class WordSystem {
         this.pendingActivationRequests.length = 0;
         this.pendingActivationKeys.clear();
         this.slots.clear();
+        this.editorCommitHistory.clear();
+        this.editorCommitOrder.length = 0;
         this.runtimePreviewProvider = null;
         this.lastActivationResult = null;
         this.lastExecutionOutcome = null;
@@ -555,5 +722,22 @@ export class WordSystem {
     #rememberActivationResult(result) {
         this.lastActivationResult = result;
         return result;
+    }
+
+    #rememberEditorCommit(transactionId, requestFingerprint, receipt) {
+        if (!this.editorCommitHistory.has(transactionId)) {
+            this.editorCommitHistory.set(transactionId, Object.freeze({
+                requestFingerprint,
+                receipt
+            }));
+            this.editorCommitOrder.push(transactionId);
+        }
+        while (this.editorCommitOrder.length
+            > this.editorCommitHistoryCapacity) {
+            const retired = this.editorCommitOrder.shift();
+            this.editorCommitHistory.delete(retired);
+        }
+        this.lastEditorCommit = receipt;
+        return receipt;
     }
 }

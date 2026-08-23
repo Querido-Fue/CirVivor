@@ -52,6 +52,24 @@ function compareCanonicalEntries(left, right) {
             : 0;
 }
 
+function resolveStackContribution(instance, instanceId) {
+    if (!Object.hasOwn(instance, 'modifierStackContribution')) return 1;
+    const descriptor = Object.getOwnPropertyDescriptor(
+        instance,
+        'modifierStackContribution'
+    );
+    const value = descriptor?.value;
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')
+        || typeof value !== 'number' || !Number.isSafeInteger(value)
+        || value <= 0 || value > UINT32_MAX) {
+        throw resolutionError(
+            SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER,
+            `Modifier stack contribution이 올바르지 않습니다: ${instanceId}`
+        );
+    }
+    return value;
+}
+
 function resolutionError(code, message) {
     return new SentenceModifierResolutionError(code, message);
 }
@@ -223,12 +241,16 @@ export function resolveSentenceModifiers(options = {}) {
         }
         const definition = resolveDefinition(definitionId);
         const profile = resolveProfile(definition);
+        const stackContribution = resolveStackContribution(
+            instance,
+            instanceId
+        );
         authoredModifierWordInstanceIds.push(instanceId);
         authoredModifierWordDefinitionIds.push(definition.definitionId);
 
         const grouped = groupedEntries.get(definition.definitionId);
         if (grouped) {
-            grouped.stackCount++;
+            grouped.stackCount += stackContribution;
             if (grouped.stackCount > profile.maxStacks) {
                 throw resolutionError(
                     SENTENCE_COMPILE_ERROR_CODE.MODIFIER_STACK_LIMIT_EXCEEDED,
@@ -239,8 +261,14 @@ export function resolveSentenceModifiers(options = {}) {
             groupedEntries.set(definition.definitionId, {
                 definition,
                 profile,
-                stackCount: 1
+                stackCount: stackContribution
             });
+            if (stackContribution > profile.maxStacks) {
+                throw resolutionError(
+                    SENTENCE_COMPILE_ERROR_CODE.MODIFIER_STACK_LIMIT_EXCEEDED,
+                    `${definition.definitionId} stack이 ${profile.maxStacks}를 초과했습니다.`
+                );
+            }
         }
     }
 
