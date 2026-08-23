@@ -39,8 +39,9 @@ export const SENTENCE_PAYLOAD_REQUIREMENT = Object.freeze({
     FORBIDDEN: 'FORBIDDEN'
 });
 
-/** Compile은 가능하지만 실행 owner가 아직 없는 명시적 runtime seam입니다. */
+/** Compiled sentence와 실제 실행 owner 연결 상태를 고정합니다. */
 export const SENTENCE_RUNTIME_AVAILABILITY = Object.freeze({
+    RUNTIME_AVAILABLE: 'RUNTIME_AVAILABLE',
     RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE'
 });
 

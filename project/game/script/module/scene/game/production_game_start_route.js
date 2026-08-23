@@ -14,7 +14,8 @@ import {
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
 import {
-    R5_SHOWCASE_SENTENCE_LOADOUT
+    R5_SHOWCASE_SENTENCE_LOADOUT,
+    R6_QA_SENTENCE_LOADOUT
 } from 'data/word/r3_word_catalog_data.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
@@ -30,7 +31,12 @@ export const PRODUCTION_PERFORMANCE_SELECTION_MAP_ID
 export const PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID
     = PERFORMANCE_SERPENTINE_MAP_DATA.id;
 
-function createPlayableSessionOptions(mapData, waveDefinition, session) {
+function createPlayableSessionOptions(
+    mapData,
+    waveDefinition,
+    session,
+    loadout = R5_SHOWCASE_SENTENCE_LOADOUT
+) {
     return {
         mapId: mapData.id,
         tileNavigationSource: new TileMap(mapData),
@@ -41,8 +47,30 @@ function createPlayableSessionOptions(mapData, waveDefinition, session) {
         coreMaxIntegrity: session.coreMaxIntegrity,
         waveDefinition,
         wordSystemOptions: Object.freeze({
-            loadout: R5_SHOWCASE_SENTENCE_LOADOUT
+            loadout
         })
+    };
+}
+
+function createGameStartOptions(selectedMapId, loadout) {
+    if (selectedMapId === PRODUCTION_STAGE_ONE_SELECTION_MAP_ID) {
+        return createPlayableSessionOptions(
+            R2_ENEMY_SHOWCASE_MAP_DATA,
+            R2_ENEMY_SHOWCASE_WAVE_01_DATA,
+            R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION,
+            loadout
+        );
+    }
+    if (selectedMapId === PRODUCTION_PERFORMANCE_SELECTION_MAP_ID) {
+        return createPlayableSessionOptions(
+            PERFORMANCE_SERPENTINE_MAP_DATA,
+            PERFORMANCE_SERPENTINE_WAVE_01_DATA,
+            PERFORMANCE_SERPENTINE_SESSION,
+            loadout
+        );
+    }
+    return {
+        mapId: selectedMapId
     };
 }
 
@@ -56,21 +84,15 @@ function createPlayableSessionOptions(mapData, waveDefinition, session) {
  * @returns {object} GameScene constructor에 전달할 세션 옵션입니다.
  */
 export function createProductionGameStartOptions(selectedMapId) {
-    if (selectedMapId === PRODUCTION_STAGE_ONE_SELECTION_MAP_ID) {
-        return createPlayableSessionOptions(
-            R2_ENEMY_SHOWCASE_MAP_DATA,
-            R2_ENEMY_SHOWCASE_WAVE_01_DATA,
-            R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION
-        );
-    }
-    if (selectedMapId === PRODUCTION_PERFORMANCE_SELECTION_MAP_ID) {
-        return createPlayableSessionOptions(
-            PERFORMANCE_SERPENTINE_MAP_DATA,
-            PERFORMANCE_SERPENTINE_WAVE_01_DATA,
-            PERFORMANCE_SERPENTINE_SESSION
-        );
-    }
-    return {
-        mapId: selectedMapId
-    };
+    return createGameStartOptions(
+        selectedMapId,
+        R5_SHOWCASE_SENTENCE_LOADOUT
+    );
+}
+
+/** Permanent key 없이 실제 GameScene에 Merge slot을 주입하는 QA launcher입니다. */
+export function createR6QaGameStartOptions(
+    selectedMapId = PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
+) {
+    return createGameStartOptions(selectedMapId, R6_QA_SENTENCE_LOADOUT);
 }

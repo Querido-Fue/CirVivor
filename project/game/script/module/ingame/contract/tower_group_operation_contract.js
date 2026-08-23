@@ -185,7 +185,7 @@ export function normalizeTowerGroupOperationProfile(
         ),
         runtimeAvailability: requireExact(
             source.runtimeAvailability,
-            SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_UNAVAILABLE,
+            SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_AVAILABLE,
             `${label}.runtimeAvailability`
         ),
         previewFormulaId: requireNonEmptyString(

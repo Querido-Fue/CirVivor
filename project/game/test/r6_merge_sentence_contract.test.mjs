@@ -219,7 +219,7 @@ test('The Towers merge는 Payload 없이 별도 immutable group-operation으로 
     assert.equal(ability.runtimeSupport, WORD_RUNTIME_SUPPORT.R6);
     assert.equal(
         ability.runtimeAvailability,
-        SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_UNAVAILABLE
+        SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_AVAILABLE
     );
     assert.equal(Object.hasOwn(ability, 'actorActionProfile'), false);
     assert.equal(Object.hasOwn(ability, 'actorActionProfileId'), false);
@@ -270,7 +270,7 @@ test('Payload null 허용은 Merge FORBIDDEN contract에만 한정되고 modifie
     }), /payloadWordInstanceId/);
 });
 
-test('R6 catalog/loadout은 immutable injection-only이고 activation은 명시적 RUNTIME_UNAVAILABLE다', () => {
+test('R6 catalog/loadout은 immutable injection-only이고 Merge activation을 queue한다', () => {
     assert.equal(
         MERGE_VERB_WORD_DEFINITION.payloadRequirement,
         SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
@@ -305,11 +305,11 @@ test('R6 catalog/loadout은 immutable injection-only이고 activation은 명시�
     const result = wordSystem.requestSlotActivation(ABILITY_SLOT_ID.SHIFT, {
         targetFixedTick: 7
     });
-    assert.equal(result.accepted, false);
+    assert.equal(result.accepted, true);
     assert.equal(result.code,
-        ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE);
-    assert.equal(result.reason, 'RUNTIME_UNAVAILABLE');
-    assert.equal(wordSystem.drainActivationRequests().length, 0);
+        ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+    assert.equal(result.reason, null);
+    assert.equal(wordSystem.drainActivationRequests().length, 1);
     assert.equal(
         wordSystem.getSlotView(ABILITY_SLOT_ID.SHIFT)
             .cooldown.remainingTicks,

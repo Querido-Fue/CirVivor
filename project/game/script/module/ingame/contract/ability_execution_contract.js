@@ -37,6 +37,7 @@ const FNV_OFFSET_BASIS = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 const SELECTOR_CODES = new Set(Object.values(SUBJECT_SELECTOR_CODE));
 const ORIGIN_CODES = new Set(Object.values(ABILITY_CREATION_ORIGIN_CODE));
+const TOWER_GROUP_MERGE_OPERATION_KIND = 'TOWER_GROUP_MERGE';
 
 function requireRecord(value, label) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -200,49 +201,109 @@ export function normalizeAbilityExecutionCommand(command) {
         'subjectLimit',
         { positive: true }
     );
+    const towerGroupMerge = compiledAbility.operationKind
+        === TOWER_GROUP_MERGE_OPERATION_KIND;
     const generationLimit = requireUint32(
-        command.generationLimit ?? compiledAbility.budgets?.generation,
+        towerGroupMerge
+            ? command.generationLimit ?? UINT32_MAX
+            : command.generationLimit ?? compiledAbility.budgets?.generation,
         'generationLimit',
         { positive: true }
     );
+    if (towerGroupMerge && generationLimit !== UINT32_MAX) {
+        throw new RangeError(
+            'Tower Merge execution snapshot은 generation을 필터링할 수 없습니다.'
+        );
+    }
     const aimPoint = Object.freeze({
         x: requireFiniteFloat32(command.aimPoint?.x ?? 0, 'aimPoint.x'),
         y: requireFiniteFloat32(command.aimPoint?.y ?? 0, 'aimPoint.y')
     });
-    const actorActionProfile = requireRecord(
-        compiledAbility.actorActionProfile,
-        'compiledAbility.actorActionProfile'
-    );
-    const canonicalActorActionProfileFingerprint
-        = computeActorActionProfileFingerprint(actorActionProfile);
-    const compiledActorActionProfileFingerprint = requireUint32(
-        compiledAbility.actorActionProfileFingerprint,
-        'compiledAbility.actorActionProfileFingerprint',
-        { positive: true }
-    );
-    if (compiledActorActionProfileFingerprint
-        !== canonicalActorActionProfileFingerprint) {
-        throw new RangeError(
-            'compiledAbility actor-action profile fingerprint가 다릅니다.'
+    let semanticProfileFingerprint;
+    if (towerGroupMerge) {
+        const profile = requireRecord(
+            compiledAbility.groupOperationProfile,
+            'compiledAbility.groupOperationProfile'
         );
-    }
-    const actorActionProfileFingerprint = requireUint32(
-        command.actorActionProfileFingerprint
-            ?? compiledActorActionProfileFingerprint,
-        'actorActionProfileFingerprint',
-        { positive: true }
-    );
-    if (actorActionProfileFingerprint
-        !== compiledActorActionProfileFingerprint) {
-        throw new RangeError(
-            'ability command actor-action profile fingerprint가 다릅니다.'
+        semanticProfileFingerprint = requireUint32(
+            compiledAbility.groupOperationProfileFingerprint,
+            'compiledAbility.groupOperationProfileFingerprint',
+            { positive: true }
         );
+        const canonicalGroupOperationProfileFingerprint
+            = fingerprintAbilityProtocol(
+                'tower-group-operation-profile',
+                profile.abiVersion,
+                profile.id,
+                profile.operationKind,
+                profile.actionCode,
+                profile.subjectSelectorCode,
+                profile.subjectSelectionPolicy,
+                profile.subjectSnapshotPolicy,
+                profile.payloadRequirement,
+                profile.atomic,
+                profile.generatedBodyCount,
+                profile.cooldownAuthority,
+                profile.subjectBudgetAuthority,
+                profile.generatedBodyBudgetAuthority,
+                profile.runtimeSupport,
+                profile.runtimeAvailability,
+                profile.previewFormulaId
+            );
+        if (profile.operationKind !== TOWER_GROUP_MERGE_OPERATION_KIND
+            || profile.towerGroupOperationProfileFingerprint
+                !== semanticProfileFingerprint
+            || canonicalGroupOperationProfileFingerprint
+                !== semanticProfileFingerprint) {
+            throw new RangeError(
+                'compiledAbility Tower Merge profile fingerprint가 다릅니다.'
+            );
+        }
+    } else {
+        const actorActionProfile = requireRecord(
+            compiledAbility.actorActionProfile,
+            'compiledAbility.actorActionProfile'
+        );
+        const canonicalActorActionProfileFingerprint
+            = computeActorActionProfileFingerprint(actorActionProfile);
+        const compiledActorActionProfileFingerprint = requireUint32(
+            compiledAbility.actorActionProfileFingerprint,
+            'compiledAbility.actorActionProfileFingerprint',
+            { positive: true }
+        );
+        if (compiledActorActionProfileFingerprint
+            !== canonicalActorActionProfileFingerprint) {
+            throw new RangeError(
+                'compiledAbility actor-action profile fingerprint가 다릅니다.'
+            );
+        }
+        semanticProfileFingerprint = requireUint32(
+            command.actorActionProfileFingerprint
+                ?? compiledActorActionProfileFingerprint,
+            'actorActionProfileFingerprint',
+            { positive: true }
+        );
+        if (semanticProfileFingerprint
+            !== compiledActorActionProfileFingerprint) {
+            throw new RangeError(
+                'ability command actor-action profile fingerprint가 다릅니다.'
+            );
+        }
     }
+    const payloadCode = towerGroupMerge
+        ? 0
+        : requireUint32(compiledAbility.payloadCode, 'payloadCode');
+    const targetPolicyCode = towerGroupMerge
+        ? 0
+        : requireUint32(
+            compiledAbility.targetPolicyCode,
+            'targetPolicyCode'
+        );
     const compiledAbilityCode = fingerprintAbilityProtocol(
         compiledAbility.compiledAbilityId,
         compiledAbility.schemaVersion,
         compiledAbility.protocolVersion,
-        actorActionProfileFingerprint
+        semanticProfileFingerprint
     );
     const executionFingerprint = requireUint32(
         command.fingerprint ?? fingerprintAbilityProtocol(
@@ -255,9 +316,9 @@ export function normalizeAbilityExecutionCommand(command) {
             selector.nounMask,
             selector.teamId,
             compiledAbility.actionCode,
-            compiledAbility.payloadCode,
-            compiledAbility.targetPolicyCode,
-            actorActionProfileFingerprint,
+            payloadCode,
+            targetPolicyCode,
+            semanticProfileFingerprint,
             subjectLimit,
             generationLimit,
             aimPoint.x,
@@ -278,12 +339,18 @@ export function normalizeAbilityExecutionCommand(command) {
         nounMask: requireUint32(selector.nounMask, 'selector.nounMask'),
         teamId: requireUint32(selector.teamId, 'selector.teamId'),
         actionCode: requireUint32(compiledAbility.actionCode, 'actionCode'),
-        payloadCode: requireUint32(compiledAbility.payloadCode, 'payloadCode'),
-        targetPolicyCode: requireUint32(
-            compiledAbility.targetPolicyCode,
-            'targetPolicyCode'
-        ),
-        actorActionProfileFingerprint,
+        payloadCode,
+        targetPolicyCode,
+        ...(towerGroupMerge
+            ? {
+                actorActionProfileFingerprint: 0,
+                groupOperationProfileFingerprint:
+                    semanticProfileFingerprint
+            }
+            : {
+                actorActionProfileFingerprint:
+                    semanticProfileFingerprint
+            }),
         aimPoint,
         subjectLimit,
         generationLimit,

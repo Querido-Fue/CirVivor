@@ -60,6 +60,10 @@ import {
     TowerCreationCoordinator
 } from './tower/tower_creation_coordinator.js';
 import {
+    TowerMergeCoordinator
+} from './tower/tower_merge_coordinator.js';
+import {
+    TOWER_MERGE_RESULT,
     TOWER_RECOVERY_PLACEMENT_POLICY_ID
 } from './tower/tower_group_contract.js';
 import {
@@ -90,6 +94,9 @@ import {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
 } from '../physics/gpu/gpu_projectile_capture_runtime_abi.js';
 import { AbilityRuntime } from '../word/ability_runtime.js';
+import {
+    ABILITY_EXECUTION_OUTCOME_CODE
+} from '../word/word_system.js';
 import {
     ActorPayloadMaterializer
 } from '../word/actor_payload_materializer.js';
@@ -305,6 +312,8 @@ export class GameObjectSystem {
         this.worldRegistry = null;
         this.enemyLifecycleCommandOwner = null;
         this.towerCreationCoordinator = null;
+        this.towerMergeCoordinator = null;
+        this.towerMergeAbilityExecutions = new Map();
         this.#installGpuEndpoint(this.#createGpuEndpoint(true));
         this.goldLedgerOwned = !options?.goldLedger;
         this.goldLedger = options?.goldLedger ?? new GoldLedger();
@@ -353,6 +362,9 @@ export class GameObjectSystem {
                 ),
                 previewTowerCreation: (request) => (
                     this.#previewTowerPayloadCreation(request)
+                ),
+                previewTowerMerge: (request) => (
+                    this.#previewTowerMerge(request)
                 )
             })
             : null;
@@ -423,6 +435,8 @@ export class GameObjectSystem {
                     // 최초 hostile director 생성 실패가 endpoint 정리를 가리지 않게 합니다.
                 }
                 try {
+                    this.towerMergeCoordinator?.destroy();
+                    this.towerCreationCoordinator?.destroy();
                     this.enemySimulationEndpoint?.destroy();
                 } catch {
                     // 최초 Director 생성 실패의 원래 오류를 보존합니다.
@@ -438,6 +452,8 @@ export class GameObjectSystem {
                 this.enemySimulationBackend = null;
                 this.worldRegistry = null;
                 this.enemyLifecycleCommandOwner = null;
+                this.towerCreationCoordinator = null;
+                this.towerMergeCoordinator = null;
                 throw error;
             }
         }
@@ -680,6 +696,16 @@ export class GameObjectSystem {
         });
     }
 
+    getTowerMergeStatus() {
+        return this.towerMergeCoordinator?.getStatus() ?? Object.freeze({
+            destroyed: false,
+            requiresRecovery: false,
+            pending: null,
+            runtime: null,
+            state: 'unsupported'
+        });
+    }
+
     /** lifecycle 기반 hostile attack producer의 bounded 진단 snapshot입니다. */
     getHostileAttackStatus() {
         return this.hostileAttackDirector?.getStatus() ?? null;
@@ -773,6 +799,7 @@ export class GameObjectSystem {
             towerCurrentHp: this.towerCombatRoster
                 ?.getPrimaryTowerCurrentHp() ?? null,
             towerCreation: this.getTowerCreationStatus(),
+            towerMerge: this.getTowerMergeStatus(),
             lastTowerCombatFacts: this.lastTowerCombatFacts,
             lastCoreImpactFacts: this.lastCoreImpactFacts,
             pentagonEffect: this.getPentagonEffectStatus(),
@@ -815,6 +842,7 @@ export class GameObjectSystem {
             || this.abilityRuntime?.requiresRecovery() === true
             || this.actorPayloadMaterializer?.requiresRecovery() === true
             || this.towerCreationCoordinator?.requiresRecovery() === true
+            || this.towerMergeCoordinator?.requiresRecovery() === true
             || this.bountyRewardDirector?.requiresRecovery() === true;
     }
 
@@ -945,6 +973,8 @@ export class GameObjectSystem {
                 || this.actorPayloadMaterializer?.requiresRecovery()
                     === true
                 || this.towerCreationCoordinator?.requiresRecovery()
+                    === true
+                || this.towerMergeCoordinator?.requiresRecovery()
                     === true
                 || this.bountyRewardDirector?.requiresRecovery() === true)) {
             return this.#pauseForGpuRecovery('director-preflight');
@@ -1344,6 +1374,17 @@ export class GameObjectSystem {
                         reason: 'tower-gameplay-target-clear-failed'
                     });
             }
+            const towerMergeObservation = this
+                .#observeAndRouteTowerMerges(proposedFixedTick);
+            if (towerMergeObservation?.recoveryRequired === true) {
+                return this.#pauseForGpuRecovery(
+                    'tower-merge-completion-or-plan',
+                    proposedFixedTick
+                );
+            }
+            if (towerMergeObservation?.pending === true) {
+                return false;
+            }
             const terminalReady = this.#transitionRunOutcomeForCore(
                 proposedFixedTick,
                 coreCompletedObservation?.coreDepletedFact ?? null
@@ -1475,6 +1516,14 @@ export class GameObjectSystem {
                         === true) {
                     return this.#pauseForGpuRecovery(
                         'ability-or-payload-stage',
+                        proposedFixedTick
+                    );
+                }
+                const towerMergeStage = this
+                    .#stageTowerMergeForFixedTick(proposedFixedTick);
+                if (towerMergeStage.recoveryRequired === true) {
+                    return this.#pauseForGpuRecovery(
+                        'tower-merge-stage',
                         proposedFixedTick
                     );
                 }
@@ -1951,6 +2000,7 @@ export class GameObjectSystem {
                 || this.abilityRuntime?.requiresRecovery() === true
                 || this.actorPayloadMaterializer?.requiresRecovery() === true
                 || this.towerCreationCoordinator?.requiresRecovery() === true
+                || this.towerMergeCoordinator?.requiresRecovery() === true
                 || this.bountyRewardDirector?.requiresRecovery() === true;
         return submitted;
     }
@@ -2139,6 +2189,10 @@ export class GameObjectSystem {
             return false;
         }
         this.enemySimulationEndpoint.synchronizePresentation();
+        this.#cancelTowerMergeDomain(
+            'gpu-endpoint-replaced',
+            this.lastCompletedEnemyFixedTick + 1
+        );
         this.projectileCaptureDirector?.destroy();
         this.corkRouteClosureDirector?.destroy();
         this.jorangSplitLineageDirector?.destroy();
@@ -2159,6 +2213,8 @@ export class GameObjectSystem {
         this.enemySimulationEndpoint.configureTrackedBody?.(null);
         this.towerCreationCoordinator?.destroy();
         this.towerCreationCoordinator = null;
+        this.towerMergeCoordinator?.destroy();
+        this.towerMergeCoordinator = null;
         this.enemySimulationEndpoint.destroy();
         this.tower.resetGpuBinding();
         this.towerCombatRoster?.releaseGpuBinding();
@@ -2233,6 +2289,10 @@ export class GameObjectSystem {
         this.towerController = null;
         this.primaryProjectileController?.destroy();
         this.primaryProjectileController = null;
+        this.#cancelTowerMergeDomain(
+            'game-object-system-destroyed',
+            this.lastCompletedEnemyFixedTick + 1
+        );
         this.actorPayloadMaterializer?.destroy();
         this.actorPayloadMaterializer = null;
         this.abilityRuntime?.destroy();
@@ -2260,6 +2320,9 @@ export class GameObjectSystem {
         this.enemyCoreImpactDirector = null;
         this.towerCreationCoordinator?.destroy();
         this.towerCreationCoordinator = null;
+        this.towerMergeCoordinator?.destroy();
+        this.towerMergeCoordinator = null;
+        this.towerMergeAbilityExecutions.clear();
         this.#revokeCoreImpactCleanupBinding();
         this.waveDirector?.destroy();
         this.waveDirector = null;
@@ -2357,6 +2420,7 @@ export class GameObjectSystem {
             fixedTick,
             'run-defeated'
         );
+        this.#cancelTowerMergeDomain('run-defeated', fixedTick);
         this.actorPayloadMaterializer?.closeForTerminal('run-defeated');
         this.abilityRuntime?.closeForTerminal('run-defeated');
         this.bountyRewardDirector?.closeForTerminal();
@@ -2969,12 +3033,14 @@ export class GameObjectSystem {
     #installGpuEndpoint(bundle) {
         const endpoint = bundle.endpoint;
         this.towerCreationCoordinator?.destroy();
+        this.towerMergeCoordinator?.destroy();
         this.enemySimulationEndpoint = endpoint;
         this.enemySimulationBackend = endpoint.getBackend();
         this.worldRegistry = endpoint.getRegistry();
         this.enemyLifecycleCommandOwner = endpoint.getLifecycleCommandOwner();
         this.#coreImpactCleanupBinding = bundle.coreImpactCleanupBinding;
         this.towerCreationCoordinator = this.#createTowerCreationCoordinator();
+        this.towerMergeCoordinator = this.#createTowerMergeCoordinator();
     }
 
     #createTowerCreationCoordinator() {
@@ -3055,6 +3121,37 @@ export class GameObjectSystem {
             backend,
             abilitySubjectSnapshotRuntime,
             actorActionPlacementRuntime
+        });
+    }
+
+    #createTowerMergeCoordinator() {
+        if (this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD
+            || !this.gameplayWorldActorsEnabled
+            || typeof this.towerCombatRoster?.getTowerGroupState
+                !== 'function') {
+            return null;
+        }
+        const backend = this.enemySimulationBackend;
+        const registry = this.worldRegistry;
+        const requiredBackendMethods = [
+            'canStageTowerMerge',
+            'stageTowerMergeTransaction',
+            'drainCompletedTowerMergeTransactions',
+            'finalizeTowerMergeTransaction',
+            'cleanupTowerMergeTransaction',
+            'cancelAllTowerMerges',
+            'getTowerMergeRuntimeStatus',
+            'getEventProtocolState'
+        ];
+        if (!backend || !registry || requiredBackendMethods.some((method) => (
+            typeof backend[method] !== 'function'
+        ))) {
+            return null;
+        }
+        return new TowerMergeCoordinator({
+            towerGroupState: this.towerCombatRoster.getTowerGroupState(),
+            registry,
+            backend
         });
     }
 
@@ -3953,6 +4050,7 @@ export class GameObjectSystem {
         const liveHostileActorCount = hostile.liveHostileActorCount ?? 0;
         const hostileCountExact = hostile.countExact === true;
         return Object.freeze({
+            nextFixedTick: this.getNextGpuLifecycleFixedTick(),
             livingTowerCount,
             towerSubjectCountExact: true,
             eligibleTowerActorCount,
@@ -4029,6 +4127,250 @@ export class GameObjectSystem {
             });
         }
         return this.towerCreationCoordinator.previewTowerCreation(request);
+    }
+
+    #previewTowerMerge(request) {
+        if (!this.towerMergeCoordinator
+            || this.towerMergeCoordinator.requiresRecovery() === true) {
+            return Object.freeze({
+                accepted: false,
+                executionEnabled: false,
+                result: TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                reason: 'RUNTIME_UNAVAILABLE',
+                recoveryRequired: false,
+                sourceCount: this.towerCombatRoster
+                    ?.getTowerGroupState?.()
+                    ?.getLivingTowerCount?.() ?? 0
+            });
+        }
+        return this.towerMergeCoordinator.previewTowerMerge(request);
+    }
+
+    #routeReadyTowerMergeSnapshots(proposedFixedTick) {
+        const ready = this.abilityRuntime
+            ?.drainReadyTowerMergeSnapshots?.([]) ?? [];
+        let acceptedCount = 0;
+        let rejectedCount = 0;
+        for (const record of ready) {
+            if (!this.towerMergeCoordinator) {
+                if (!this.abilityRuntime.rejectSnapshotExecution(
+                    record,
+                    ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                    {
+                        completedFixedTick: proposedFixedTick,
+                        generatedCount: 0
+                    }
+                )) {
+                    return Object.freeze({
+                        acceptedCount,
+                        rejectedCount,
+                        recoveryRequired: true,
+                        reason: 'merge-runtime-unavailable-settlement'
+                    });
+                }
+                rejectedCount++;
+                continue;
+            }
+            const livingTowerCount = this.towerCombatRoster
+                ?.getTowerGroupState?.()
+                ?.getLivingTowerCount?.() ?? 0;
+            if (livingTowerCount !== Number(record.completion.subjectCount)) {
+                if (!this.abilityRuntime.rejectSnapshotExecution(
+                    record,
+                    ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED,
+                    {
+                        completedFixedTick: proposedFixedTick,
+                        generatedCount: 0
+                    }
+                )) {
+                    return Object.freeze({
+                        acceptedCount,
+                        rejectedCount,
+                        recoveryRequired: true,
+                        reason: 'merge-execution-start-source-mismatch'
+                    });
+                }
+                rejectedCount++;
+                continue;
+            }
+            const receipt = this.towerMergeCoordinator.requestTowerMerge({
+                transactionId: record.command.executionId,
+                compiledOperation: record.request.compiledAbility,
+                requestedFixedTick:
+                    record.completion.sourceTick || proposedFixedTick
+            });
+            if (receipt?.terminal === true) {
+                const code = receipt.result
+                        === TOWER_MERGE_RESULT
+                            .REJECTED_INSUFFICIENT_SUBJECTS
+                    ? ABILITY_EXECUTION_OUTCOME_CODE.INSUFFICIENT_SUBJECTS
+                    : receipt.result === TOWER_MERGE_RESULT.PROTOCOL_FAILURE
+                        ? ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED
+                        : ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED;
+                if (!this.abilityRuntime.rejectSnapshotExecution(
+                    record,
+                    code,
+                    {
+                        completedFixedTick: proposedFixedTick,
+                        generatedCount: 0
+                    }
+                )) {
+                    return Object.freeze({
+                        acceptedCount,
+                        rejectedCount,
+                        recoveryRequired: true,
+                        reason: 'merge-plan-terminal-settlement'
+                    });
+                }
+                rejectedCount++;
+                if (receipt.recoveryRequired === true) {
+                    return Object.freeze({
+                        acceptedCount,
+                        rejectedCount,
+                        recoveryRequired: true,
+                        reason: receipt.reason
+                    });
+                }
+                continue;
+            }
+            if (receipt?.pending !== true
+                || !this.abilityRuntime.markTowerMergePending(
+                    record,
+                    proposedFixedTick
+                )) {
+                this.towerMergeCoordinator.cancelPending(
+                    'ability-merge-pending-transition-failed'
+                );
+                return Object.freeze({
+                    acceptedCount,
+                    rejectedCount,
+                    recoveryRequired: true,
+                    reason: 'ability-merge-pending-transition-failed'
+                });
+            }
+            this.towerMergeAbilityExecutions.set(
+                receipt.transactionId,
+                record
+            );
+            acceptedCount++;
+        }
+        return Object.freeze({
+            acceptedCount,
+            rejectedCount,
+            recoveryRequired: false
+        });
+    }
+
+    #settleTowerMergeTerminal(receipt, proposedFixedTick) {
+        if (receipt?.terminal !== true) {
+            return Object.freeze({
+                settled: false,
+                recoveryRequired: receipt?.recoveryRequired === true
+            });
+        }
+        const transactionId = receipt.transactionId;
+        const record = this.towerMergeAbilityExecutions.get(transactionId);
+        if (!record) {
+            return Object.freeze({
+                settled: false,
+                recoveryRequired: receipt.recoveryRequired === true
+            });
+        }
+        let settled;
+        if (receipt.result === TOWER_MERGE_RESULT.COMMITTED) {
+            settled = this.abilityRuntime.completeSnapshotExecution(record, {
+                snapshotAlreadyReleased: true,
+                completedFixedTick: proposedFixedTick,
+                generatedCount: 0
+            });
+        } else {
+            const code = receipt.result
+                    === TOWER_MERGE_RESULT.REJECTED_INSUFFICIENT_SUBJECTS
+                ? ABILITY_EXECUTION_OUTCOME_CODE.INSUFFICIENT_SUBJECTS
+                : receipt.result === TOWER_MERGE_RESULT.PROTOCOL_FAILURE
+                    ? ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED
+                    : ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED;
+            settled = this.abilityRuntime.rejectSnapshotExecution(
+                record,
+                code,
+                {
+                    snapshotAlreadyReleased: true,
+                    completedFixedTick: proposedFixedTick,
+                    generatedCount: 0
+                }
+            );
+        }
+        if (settled) {
+            this.towerMergeAbilityExecutions.delete(transactionId);
+            if (receipt.result === TOWER_MERGE_RESULT.COMMITTED) {
+                this.lastTowerCombatFacts = this.towerCombatRoster
+                    ?.getLastCommittedFacts?.()
+                    ?? this.lastTowerCombatFacts;
+            }
+        }
+        return Object.freeze({
+            settled,
+            recoveryRequired: !settled
+                || receipt.recoveryRequired === true
+        });
+    }
+
+    #observeAndRouteTowerMerges(proposedFixedTick) {
+        const completion = this.towerMergeCoordinator
+            ?.observeCompletedAtFixedBoundary(proposedFixedTick) ?? null;
+        const settlement = this.#settleTowerMergeTerminal(
+            completion,
+            proposedFixedTick
+        );
+        if (settlement.recoveryRequired) return settlement;
+        if (completion?.pending === true
+            && completion.staged === true
+            && completion.phase === 'gpu-staged') {
+            return Object.freeze({
+                settled: false,
+                pending: true,
+                recoveryRequired: false
+            });
+        }
+        return this.#routeReadyTowerMergeSnapshots(proposedFixedTick);
+    }
+
+    #stageTowerMergeForFixedTick(proposedFixedTick) {
+        const receipt = this.towerMergeCoordinator
+            ?.stageForFixedTick(proposedFixedTick) ?? null;
+        const settlement = this.#settleTowerMergeTerminal(
+            receipt,
+            proposedFixedTick
+        );
+        return Object.freeze({
+            receipt,
+            settled: settlement.settled,
+            recoveryRequired: settlement.recoveryRequired
+                || receipt?.recoveryRequired === true
+        });
+    }
+
+    #cancelTowerMergeDomain(reason, completedFixedTick) {
+        try {
+            this.towerMergeCoordinator?.cancelPending(reason);
+        } catch {
+            // Recovery/terminal teardown는 아래 Ability cancellation을 계속합니다.
+        }
+        const tick = Math.max(1, Number(completedFixedTick) || 1);
+        for (const record of this.towerMergeAbilityExecutions.values()) {
+            this.abilityRuntime?.rejectSnapshotExecution(
+                record,
+                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
+                {
+                    snapshotAlreadyReleased: true,
+                    completedFixedTick: tick,
+                    generatedCount: 0
+                }
+            );
+        }
+        const cancelledCount = this.towerMergeAbilityExecutions.size;
+        this.towerMergeAbilityExecutions.clear();
+        return cancelledCount;
     }
 
     #pauseForGpuRecovery(stage = 'unclassified', proposedFixedTick = null) {

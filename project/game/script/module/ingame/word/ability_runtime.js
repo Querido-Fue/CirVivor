@@ -5,6 +5,9 @@ import {
 import {
     ABILITY_EXECUTION_OUTCOME_CODE
 } from './word_system.js';
+import {
+    TOWER_GROUP_OPERATION_KIND
+} from '../contract/tower_group_operation_contract.js';
 
 const MAX_EXECUTION_HISTORY = 128;
 
@@ -13,9 +16,12 @@ export const ABILITY_EXECUTION_STATE = Object.freeze({
     SUBJECT_SNAPSHOT_PENDING: 'SUBJECT_SNAPSHOT_PENDING',
     DESTINATION_PRELEASE_PENDING: 'DESTINATION_PRELEASE_PENDING',
     GPU_MATERIALIZATION_PENDING: 'GPU_MATERIALIZATION_PENDING',
+    TOWER_MERGE_PENDING: 'TOWER_MERGE_PENDING',
     COMMITTED: 'COMMITTED',
     RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE',
     ZERO_SUBJECT: 'ZERO_SUBJECT',
+    INSUFFICIENT_SUBJECTS: 'INSUFFICIENT_SUBJECTS',
+    SOURCE_CHANGED: 'SOURCE_CHANGED',
     REJECTED_CAPACITY: 'REJECTED_CAPACITY',
     FAILED_PROTOCOL: 'FAILED_PROTOCOL',
     REJECTED_PLACEMENT: 'REJECTED_PLACEMENT',
@@ -26,6 +32,8 @@ const TERMINAL_EXECUTION_STATES = new Set([
     ABILITY_EXECUTION_STATE.COMMITTED,
     ABILITY_EXECUTION_STATE.RUNTIME_UNAVAILABLE,
     ABILITY_EXECUTION_STATE.ZERO_SUBJECT,
+    ABILITY_EXECUTION_STATE.INSUFFICIENT_SUBJECTS,
+    ABILITY_EXECUTION_STATE.SOURCE_CHANGED,
     ABILITY_EXECUTION_STATE.REJECTED_CAPACITY,
     ABILITY_EXECUTION_STATE.FAILED_PROTOCOL,
     ABILITY_EXECUTION_STATE.REJECTED_PLACEMENT,
@@ -79,6 +87,12 @@ function terminalStateForOutcome(code) {
     if (code === ABILITY_EXECUTION_OUTCOME_CODE.ZERO_SUBJECT) {
         return ABILITY_EXECUTION_STATE.ZERO_SUBJECT;
     }
+    if (code === ABILITY_EXECUTION_OUTCOME_CODE.INSUFFICIENT_SUBJECTS) {
+        return ABILITY_EXECUTION_STATE.INSUFFICIENT_SUBJECTS;
+    }
+    if (code === ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED) {
+        return ABILITY_EXECUTION_STATE.SOURCE_CHANGED;
+    }
     if (code === ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE) {
         return ABILITY_EXECUTION_STATE.RUNTIME_UNAVAILABLE;
     }
@@ -94,6 +108,11 @@ function terminalStateForOutcome(code) {
         return ABILITY_EXECUTION_STATE.FAILED_PROTOCOL;
     }
     return ABILITY_EXECUTION_STATE.CANCELLED;
+}
+
+function isTowerMergeExecution(record) {
+    return record?.request?.compiledAbility?.operationKind
+        === TOWER_GROUP_OPERATION_KIND.MERGE;
 }
 
 /** CPU semantic request와 GPU snapshot token 수명을 연결하는 run-domain owner입니다. */
@@ -113,6 +132,7 @@ export class AbilityRuntime {
         this.deferredActivationRequests = [];
         this.inFlightByExecutionId = new Map();
         this.readySnapshots = [];
+        this.readyTowerMergeSnapshots = [];
         this.history = [];
         this.executionStates = new Map();
         this.executionStateHistory = [];
@@ -125,6 +145,7 @@ export class AbilityRuntime {
         this.totalRequested = 0;
         this.totalSnapshotCompleted = 0;
         this.totalZeroSubject = 0;
+        this.totalInsufficientSubjects = 0;
         this.totalCapacityRejected = 0;
         this.totalCancelled = 0;
         this.retryableReplayCount = 0;
@@ -197,8 +218,9 @@ export class AbilityRuntime {
                     aimPoint: aimWorld,
                     subjectLimit:
                         request.compiledAbility.budgets.subjectCount,
-                    generationLimit:
-                        request.compiledAbility.budgets.generation
+                    generationLimit: isTowerMergeExecution({ request })
+                        ? 0xffffffff
+                        : request.compiledAbility.budgets.generation
                 });
                 record = Object.freeze({ request, command });
                 deferred.record = record;
@@ -239,6 +261,7 @@ export class AbilityRuntime {
                 || [
                     'runtime-unavailable',
                     'ability-runtime-unavailable',
+                    'ability-subject-backend-unavailable',
                     'actor-payload-runtime-unavailable'
                 ].includes(receipt?.reason);
             this.recoveryRequired ||= !runtimeUnavailable
@@ -329,26 +352,65 @@ export class AbilityRuntime {
                     );
                     continue;
                 }
+                this.totalSnapshotCompleted++;
+                if (isTowerMergeExecution(record)
+                    && Number(completion.subjectCount) < 2) {
+                    if (!this.endpoint.releaseAbilitySubjectSnapshot(
+                        completion.snapshotToken
+                    )) {
+                        this.recoveryRequired = true;
+                        this.failure = Object.freeze({
+                            code: 'ability-merge-snapshot-release-failed',
+                            message: 'insufficient Merge snapshot token을 release하지 못했습니다.'
+                        });
+                        this.#recordTerminalOutcome(
+                            record,
+                            ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                            completion.sourceTick || tick,
+                            completion
+                        );
+                        continue;
+                    }
+                    this.totalInsufficientSubjects++;
+                    this.#recordTerminalOutcome(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.INSUFFICIENT_SUBJECTS,
+                        completion.sourceTick || tick,
+                        completion
+                    );
+                    continue;
+                }
                 this.#transitionExecution(
                     record,
                     ABILITY_EXECUTION_STATE.DESTINATION_PRELEASE_PENDING,
                     completion.sourceTick || tick,
                     completion
                 );
-                this.readySnapshots.push(Object.freeze({
+                const ready = Object.freeze({
                     request: record.request,
                     command,
                     completion
-                }));
-                this.totalSnapshotCompleted++;
+                });
+                if (isTowerMergeExecution(record)) {
+                    this.readyTowerMergeSnapshots.push(ready);
+                } else {
+                    this.readySnapshots.push(ready);
+                }
                 continue;
             }
             if (completion.status
                 === ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT) {
-                this.totalZeroSubject++;
+                const towerMerge = isTowerMergeExecution(record);
+                if (towerMerge) {
+                    this.totalInsufficientSubjects++;
+                } else {
+                    this.totalZeroSubject++;
+                }
                 this.#recordTerminalOutcome(
                     record,
-                    ABILITY_EXECUTION_OUTCOME_CODE.ZERO_SUBJECT,
+                    towerMerge
+                        ? ABILITY_EXECUTION_OUTCOME_CODE.INSUFFICIENT_SUBJECTS
+                        : ABILITY_EXECUTION_OUTCOME_CODE.ZERO_SUBJECT,
                     completion.sourceTick || tick,
                     completion
                 );
@@ -386,7 +448,9 @@ export class AbilityRuntime {
         }
         return Object.freeze({
             observedCount,
-            readyCount: this.readySnapshots.length,
+            readyCount: this.readySnapshots.length
+                + this.readyTowerMergeSnapshots.length,
+            readyTowerMergeCount: this.readyTowerMergeSnapshots.length,
             recoveryRequired: this.recoveryRequired
         });
     }
@@ -407,12 +471,50 @@ export class AbilityRuntime {
         return true;
     }
 
+    /** Tower Merge owner만 execution-start snapshot을 가져갑니다. */
+    drainReadyTowerMergeSnapshots(out = []) {
+        if (!Array.isArray(out)) {
+            throw new TypeError('Tower Merge ready snapshot output은 배열이어야 합니다.');
+        }
+        out.push(...this.readyTowerMergeSnapshots);
+        this.readyTowerMergeSnapshots.length = 0;
+        return out;
+    }
+
+    returnReadyTowerMergeSnapshot(record) {
+        if (!record?.completion?.snapshotToken || this.destroyed) return false;
+        this.readyTowerMergeSnapshots.unshift(record);
+        return true;
+    }
+
     markGpuMaterializationPending(record, fixedTick) {
         if (!record?.completion?.snapshotToken || this.destroyed) return false;
         this.#transitionExecution(
             record,
             ABILITY_EXECUTION_STATE.GPU_MATERIALIZATION_PENDING,
             requirePositiveSafeInteger(fixedTick, 'materialization fixedTick'),
+            record.completion
+        );
+        return true;
+    }
+
+    /** Merge coordinator가 token을 CPU plan으로 봉인한 뒤 terminal만 기다립니다. */
+    markTowerMergePending(record, fixedTick) {
+        if (!record?.completion?.snapshotToken || this.destroyed) return false;
+        if (!this.endpoint.releaseAbilitySubjectSnapshot(
+            record.completion.snapshotToken
+        )) {
+            this.recoveryRequired = true;
+            this.failure = Object.freeze({
+                code: 'ability-merge-snapshot-release-failed',
+                message: 'Tower Merge execution-start snapshot token을 release하지 못했습니다.'
+            });
+            return false;
+        }
+        this.#transitionExecution(
+            record,
+            ABILITY_EXECUTION_STATE.TOWER_MERGE_PENDING,
+            requirePositiveSafeInteger(fixedTick, 'Tower Merge pending fixedTick'),
             record.completion
         );
         return true;
@@ -462,6 +564,8 @@ export class AbilityRuntime {
             deferredActivationCount: this.deferredActivationRequests.length,
             inFlightCount: this.inFlightByExecutionId.size,
             readySnapshotCount: this.readySnapshots.length,
+            readyTowerMergeSnapshotCount:
+                this.readyTowerMergeSnapshots.length,
             activeExecutions: Object.freeze(Array.from(
                 this.executionStates.values(),
                 ({ view }) => view
@@ -473,6 +577,7 @@ export class AbilityRuntime {
             totalRequested: this.totalRequested,
             totalSnapshotCompleted: this.totalSnapshotCompleted,
             totalZeroSubject: this.totalZeroSubject,
+            totalInsufficientSubjects: this.totalInsufficientSubjects,
             totalCapacityRejected: this.totalCapacityRejected,
             totalCancelled: this.totalCancelled,
             retryableReplayCount: this.retryableReplayCount,
@@ -494,6 +599,7 @@ export class AbilityRuntime {
         this.endpoint = null;
         this.wordSystem = null;
         this.executionStates.clear();
+        this.readyTowerMergeSnapshots.length = 0;
         this.executionStateHistory.length = 0;
         this.lastExecutionState = null;
         this.history.length = 0;
@@ -501,6 +607,11 @@ export class AbilityRuntime {
 
     #settleReadySnapshot(record, code, cooldownConsumed, options) {
         if (!record?.completion?.snapshotToken) return false;
+        const active = this.executionStates.get(record.command.executionId);
+        if (!active || active.record.command.executionId
+            !== record.command.executionId) {
+            return false;
+        }
         if (options.snapshotAlreadyReleased !== true) {
             const released = this.endpoint.releaseAbilitySubjectSnapshot(
                 record.completion.snapshotToken
@@ -611,39 +722,50 @@ export class AbilityRuntime {
     #cancelOwnedState(reason) {
         const pendingActivationCancellation = this.wordSystem
             ?.cancelPendingActivationRequests?.(reason);
-        const readySnapshotCount = this.readySnapshots.length;
-        for (const ready of this.readySnapshots) {
+        const cancelledExecutionIds = new Set();
+        const cancelRecord = (record, fixedTick, facts = {}) => {
+            const executionId = record?.command?.executionId;
+            if (!executionId || cancelledExecutionIds.has(executionId)) return;
+            cancelledExecutionIds.add(executionId);
+            this.#recordTerminalOutcome(
+                record,
+                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
+                fixedTick,
+                facts
+            );
+        };
+        for (const ready of [
+            ...this.readySnapshots,
+            ...this.readyTowerMergeSnapshots
+        ]) {
             this.endpoint?.releaseAbilitySubjectSnapshot(
                 ready.completion.snapshotToken
             );
-            this.#recordTerminalOutcome(
+            cancelRecord(
                 ready,
-                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
                 ready.completion.sourceTick,
                 { subjectCount: ready.completion.subjectCount }
             );
         }
         this.readySnapshots.length = 0;
+        this.readyTowerMergeSnapshots.length = 0;
         for (const record of this.inFlightByExecutionId.values()) {
-            this.#recordTerminalOutcome(
+            cancelRecord(
                 record,
-                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
                 record.command.targetFixedTick,
                 { subjectCount: 0 }
             );
         }
         for (const { record, view } of [...this.executionStates.values()]) {
-            if (view.state !== ABILITY_EXECUTION_STATE.REQUESTED) continue;
-            this.#recordTerminalOutcome(
+            cancelRecord(
                 record,
-                ABILITY_EXECUTION_OUTCOME_CODE.CANCELLED,
-                record.command.targetFixedTick,
-                { subjectCount: 0 }
+                view.fixedTick,
+                { subjectCount: view.subjectCount }
             );
         }
-        this.totalCancelled += this.inFlightByExecutionId.size
-            + readySnapshotCount
-            + this.deferredActivationRequests.length
+        this.totalCancelled += cancelledExecutionIds.size
+            + this.deferredActivationRequests.filter(({ record }) => !record)
+                .length
             + (pendingActivationCancellation?.cancelledCount ?? 0);
         this.inFlightByExecutionId.clear();
         this.deferredActivationRequests.length = 0;

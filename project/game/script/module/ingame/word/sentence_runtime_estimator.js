@@ -10,6 +10,9 @@ import {
     ACTOR_ACTION_ACTIVATION_POLICY,
     ACTOR_ACTION_TRANSIT_POLICY
 } from '../contract/actor_action_contract.js';
+import {
+    TOWER_GROUP_OPERATION_KIND
+} from '../contract/tower_group_operation_contract.js';
 import { evaluateActorPayloadCapacity } from './actor_payload_budget.js';
 
 function nonNegativeInteger(value, fallback = 0) {
@@ -77,14 +80,28 @@ export class SentenceRuntimeEstimator {
             && typeof options.previewTowerCreation !== 'function') {
             throw new TypeError('Tower creation preview provider는 함수여야 합니다.');
         }
+        if (options.previewTowerMerge !== undefined
+            && options.previewTowerMerge !== null
+            && typeof options.previewTowerMerge !== 'function') {
+            throw new TypeError('Tower Merge preview provider는 함수여야 합니다.');
+        }
         this.getRuntimeState = options.getRuntimeState;
         this.previewTowerCreation = options.previewTowerCreation ?? null;
+        this.previewTowerMerge = options.previewTowerMerge ?? null;
         this.destroyed = false;
     }
 
     estimate(compiledAbility, slotView = {}) {
         if (this.destroyed || !compiledAbility) return null;
         const runtime = this.getRuntimeState(compiledAbility) ?? {};
+        if (compiledAbility.operationKind
+            === TOWER_GROUP_OPERATION_KIND.MERGE) {
+            return this.#estimateTowerMerge(
+                compiledAbility,
+                slotView,
+                runtime
+            );
+        }
         const actorAction = createActorActionPreview(compiledAbility);
         const selectorCode = compiledAbility.subjectSelector?.code;
         const towerCount = readNonNegativeInteger(runtime.livingTowerCount);
@@ -315,9 +332,171 @@ export class SentenceRuntimeEstimator {
         });
     }
 
+    #estimateTowerMerge(compiledAbility, slotView, runtime) {
+        const towerCount = readNonNegativeInteger(runtime.livingTowerCount);
+        const countExact = towerCount.known
+            && runtime.towerSubjectCountExact !== false;
+        const cooldownRemainingTicks = nonNegativeInteger(
+            slotView.cooldown?.remainingTicks
+        );
+        let preview = null;
+        if (this.previewTowerMerge) {
+            try {
+                preview = this.previewTowerMerge({
+                    compiledOperation: compiledAbility,
+                    requestedFixedTick: Math.max(
+                        1,
+                        nonNegativeInteger(runtime.nextFixedTick, 1)
+                    )
+                });
+            } catch {
+                preview = null;
+            }
+        }
+        const sourceCount = nonNegativeInteger(
+            preview?.sourceCount,
+            towerCount.value
+        );
+        const previewExact = preview !== null
+            && countExact
+            && sourceCount === towerCount.value;
+        const survivorHandle = preview?.survivor?.exactGpuBinding
+            ? Object.freeze({
+                entityId: Number(
+                    preview.survivor.exactGpuBinding.entityId
+                ),
+                incarnation: Number(
+                    preview.survivor.exactGpuBinding.incarnation
+                )
+            })
+            : null;
+        const survivor = preview?.survivor
+            ? Object.freeze({
+                logicalTowerId:
+                    preview.survivor.logicalTowerId ?? null,
+                logicalTowerOrdinal:
+                    preview.survivor.logicalTowerOrdinal ?? null,
+                exactGpuBinding: survivorHandle
+            })
+            : null;
+        const mergeSnapshot = preview === null
+            ? null
+            : Object.freeze({
+                sourceCount,
+                result: preview.result ?? null,
+                reason: preview.reason ?? null,
+                survivor,
+                livingShareUnits:
+                    preview.livingShareUnits ?? null,
+                lostShareUnits: preview.lostShareUnits ?? null,
+                currentHpFixedPoint:
+                    preview.currentHpFixedPoint ?? null,
+                maxHpFixedPoint: preview.maxHpFixedPoint ?? null,
+                powerFixedPoint: preview.powerFixedPoint ?? null
+            });
+        const executionDisabledReason = cooldownRemainingTicks > 0
+            ? 'COOLDOWN_ACTIVE'
+            : !countExact
+                ? 'SUBJECT_COUNT_NOT_EXACT'
+                : preview === null
+                    ? 'RUNTIME_UNAVAILABLE'
+                    : preview.executionEnabled === true
+                        ? null
+                        : preview.reason ?? 'RUNTIME_UNAVAILABLE';
+        const consolidationWarning = sourceCount >= 2;
+        const resultingTowerCount = previewExact && survivor !== null
+            ? 1
+            : sourceCount;
+        return Object.freeze({
+            formulaId: compiledAbility.previewFormulaId,
+            actorActionProfileId: null,
+            actorActionProfileFingerprint: null,
+            targetSnapshotPolicy:
+                compiledAbility.subjectSelector?.snapshotPolicy ?? null,
+            actorAction: null,
+            spawnAnchorPolicy: null,
+            landingPolicy: null,
+            placementPolicy: null,
+            activationPolicy: null,
+            transitPolicy: null,
+            travelDurationFixedTicks: 0,
+            activationDelayFixedTicks: 0,
+            payloadCode: null,
+            generationLimit: 0,
+            generationEligibilityExact: true,
+            eligibleSubjectCountExact: countExact,
+            rawSubjectCountExact: countExact,
+            rawSubjectCount: sourceCount,
+            eligibleSubjectCount: sourceCount,
+            previewSubjectCount: sourceCount,
+            subjectBudget: nonNegativeInteger(
+                compiledAbility.budgets?.subjectCount
+            ),
+            countExact,
+            subjectCount: sourceCount,
+            newEnemyCount: 0,
+            newTowerCount: 0,
+            currentTowerCount: towerCount.value,
+            resultingTowerCount,
+            resultingHostileCount: nonNegativeInteger(
+                runtime.liveHostileActorCount
+            ) + nonNegativeInteger(runtime.pendingHostileActorCount),
+            potentialBounty: 0,
+            siegeWeightBefore: nonNegativeFinite(runtime.siegeWeight),
+            siegeWeightAfter: nonNegativeFinite(runtime.siegeWeight),
+            requiredBodies: 0,
+            requiredTowers: 0,
+            availableBodies: nonNegativeInteger(runtime.bodyAvailable),
+            registryAvailable: nonNegativeInteger(
+                runtime.registryAvailable
+            ),
+            bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
+            cooldownTicks: compiledAbility.cooldownTicks,
+            cooldownRemainingTicks,
+            allegiance: Object.freeze({
+                teamId: GAMEPLAY_TEAM_ID.PLAYER,
+                policy: GAMEPLAY_ALLEGIANCE_POLICY.FIXED_PLAYER
+            }),
+            capacityValidity: Object.freeze({
+                valid: true,
+                requiredBodies: 0,
+                availableBodies: nonNegativeInteger(runtime.bodyAvailable),
+                registryAvailable: nonNegativeInteger(
+                    runtime.registryAvailable
+                ),
+                bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
+                generatedBodyBudget: 0
+            }),
+            towerCreationPreview: null,
+            towerDilution: null,
+            towerCapacity: null,
+            towerShare: mergeSnapshot
+                ? Object.freeze({
+                    livingShareUnits: mergeSnapshot.livingShareUnits,
+                    lostShareUnits: mergeSnapshot.lostShareUnits,
+                    totalLivingCurrentHp:
+                        mergeSnapshot.currentHpFixedPoint
+                })
+                : null,
+            towerAllocations: null,
+            towerMergePreview: mergeSnapshot,
+            towerPlanExact: previewExact,
+            placementExact: null,
+            previewExact,
+            dangerous: consolidationWarning,
+            warningCode: consolidationWarning
+                ? 'TOWER_MERGE_CONSOLIDATION'
+                : null,
+            executionEnabled: executionDisabledReason === null,
+            executionDisabledReason,
+            blockedReason: executionDisabledReason
+        });
+    }
+
     destroy() {
         this.destroyed = true;
         this.getRuntimeState = null;
         this.previewTowerCreation = null;
+        this.previewTowerMerge = null;
     }
 }

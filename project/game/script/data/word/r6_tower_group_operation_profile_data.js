@@ -35,7 +35,7 @@ export const R6_TOWER_MERGE_GROUP_OPERATION_PROFILE
             TOWER_GROUP_OPERATION_AUTHORITY.PROFILE_FIXED_ZERO,
         runtimeSupport: WORD_RUNTIME_SUPPORT.R6,
         runtimeAvailability:
-            SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_UNAVAILABLE,
+            SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_AVAILABLE,
         previewFormulaId: 'preview.tower-group-merge.r6.v1'
     }, 'R6 Tower Merge group-operation profile');
 
