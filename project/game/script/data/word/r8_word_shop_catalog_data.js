@@ -16,7 +16,9 @@ export const R8_WORD_SHOP_BALANCE = Object.freeze({
     OFFER_COUNT: WORD_SHOP_OFFER_COUNT,
     REROLL_COST: 3,
     QA_INITIAL_GOLD: 100,
-    QA_RUN_SEED: 0x8a24c0de
+    // QA 첫 행에 modifier.twice가 포함되어 exact R8 acceptance route를
+    // 입력 순서 변경 없이 수행할 수 있는 결정적 seed입니다.
+    QA_RUN_SEED: 0x8a24c001
 });
 
 export const R8_WORD_PURCHASE_COST = Object.freeze({

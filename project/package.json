@@ -18,6 +18,7 @@
         "test:webgpu:r5-actor-verbs": "node game/test/support/run_nw_r5_actor_verbs.mjs",
         "test:webgpu:r6-tower-merge": "node game/test/support/run_nw_r6_tower_merge.mjs",
         "test:webgpu:r7-actor-payload-multiplicity": "node game/test/support/run_nw_r7_actor_payload_multiplicity.mjs",
+        "test:webgpu:r8-shop-editor": "node game/test/support/run_nw_r8_shop_editor.mjs",
         "test:webgpu:post-r5-live": "node game/test/support/run_nw_post_r5_live_bugfix.mjs",
         "test:title-gpu:smoke": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke",
         "test:title-gpu:qa": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile qa --keep-run-directory",
