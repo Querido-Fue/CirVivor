@@ -91,6 +91,7 @@ export class ReleaseSimulationProfiler {
         this.totalFrameCount = 0;
         this.totalScheduledFixedStepCount = 0;
         this.totalCompletedFixedStepCount = 0;
+        this.totalDeferredFixedStepCount = 0;
         this.totalFailedFixedStepCount = 0;
         this.totalDroppedFixedStepCount = 0;
         this.totalDroppedDebtSeconds = 0;
@@ -157,15 +158,20 @@ export class ReleaseSimulationProfiler {
      * @param {number} timestampMs - tick 종료 시각입니다.
      * @param {number} durationMs - tick 전체 CPU 시간입니다.
      * @param {boolean} completed - tick 정상 완료 여부입니다.
+     * @param {boolean} [deferred=false] - 정상 backpressure로 같은 tick을 보존했는지 여부입니다.
      * @returns {void}
      */
-    recordFixedStep(timestampMs, durationMs, completed) {
+    recordFixedStep(timestampMs, durationMs, completed, deferred = false) {
         if (!this.isCollecting()) {
             return;
         }
 
         if (completed !== true) {
-            this.totalFailedFixedStepCount++;
+            if (deferred === true) {
+                this.totalDeferredFixedStepCount++;
+            } else {
+                this.totalFailedFixedStepCount++;
+            }
             return;
         }
 
@@ -327,6 +333,7 @@ export class ReleaseSimulationProfiler {
         snapshot.droppedFixedStepsPerSecond = this.snapshotWindowDroppedFixedStepCount / snapshotWindowSeconds;
         snapshot.windowDroppedFixedStepCount = this.snapshotWindowDroppedFixedStepCount;
         snapshot.totalDroppedFixedStepCount = this.totalDroppedFixedStepCount;
+        snapshot.totalDeferredFixedStepCount = this.totalDeferredFixedStepCount;
         snapshot.totalFailedFixedStepCount = this.totalFailedFixedStepCount;
         snapshot.totalScheduledFixedStepCount = this.totalScheduledFixedStepCount;
         snapshot.totalCompletedFixedStepCount = this.totalCompletedFixedStepCount;
@@ -463,10 +470,21 @@ export function resumeReleaseSimulationProfiler(timestampMs = performance.now())
  * @param {number} timestampMs - tick 종료 시각입니다.
  * @param {number} durationMs - tick CPU 시간입니다.
  * @param {boolean} completed - 정상 완료 여부입니다.
+ * @param {boolean} [deferred=false] - 정상 backpressure로 같은 tick을 보존했는지 여부입니다.
  * @returns {void}
  */
-export function recordReleaseSimulationFixedStep(timestampMs, durationMs, completed) {
-    releaseSimulationProfiler.recordFixedStep(timestampMs, durationMs, completed);
+export function recordReleaseSimulationFixedStep(
+    timestampMs,
+    durationMs,
+    completed,
+    deferred = false
+) {
+    releaseSimulationProfiler.recordFixedStep(
+        timestampMs,
+        durationMs,
+        completed,
+        deferred
+    );
 }
 
 /**
@@ -528,6 +546,7 @@ function createEmptySnapshot() {
         droppedFixedStepsPerSecond: 0,
         windowDroppedFixedStepCount: 0,
         totalDroppedFixedStepCount: 0,
+        totalDeferredFixedStepCount: 0,
         totalFailedFixedStepCount: 0,
         totalScheduledFixedStepCount: 0,
         totalCompletedFixedStepCount: 0,

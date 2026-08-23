@@ -45,6 +45,7 @@ assert.ok(Math.abs(snapshot.actualFixedTicksPerSecond - 60) < 1e-9);
 assert.ok(Math.abs(snapshot.cumulativeFixedTicksPerSecond - 60) < 1e-9);
 assert.ok(Math.abs(snapshot.droppedFixedStepsPerSecond - 2) < 1e-9);
 assert.equal(snapshot.totalDroppedFixedStepCount, 2);
+assert.equal(snapshot.totalDeferredFixedStepCount, 0);
 assert.equal(snapshot.totalScheduledFixedStepCount, 60);
 assert.equal(snapshot.totalCompletedFixedStepCount, 60);
 assert.ok(Math.abs(snapshot.totalDroppedDebtSeconds - (2 / 60)) < 1e-9);
@@ -98,8 +99,10 @@ const failedProfiler = new ReleaseSimulationProfiler({
     snapshotIntervalMs: 1
 });
 failedProfiler.setEnabled(true, 0);
+failedProfiler.recordFixedStep(0.5, 2, false, true);
 failedProfiler.recordFixedStep(1, 4, false);
 failedProfiler.recordFrame(2, 1, 0.002, 1, 0, 0, fixedStepSeconds, false);
+assert.equal(failedProfiler.getSnapshot().totalDeferredFixedStepCount, 1);
 assert.equal(failedProfiler.getSnapshot().totalFailedFixedStepCount, 1);
 assert.ok(Math.abs(failedProfiler.getSnapshot().totalLostSimulationSeconds - fixedStepSeconds) < 1e-9);
 

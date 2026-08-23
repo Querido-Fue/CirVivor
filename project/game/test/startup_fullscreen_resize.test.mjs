@@ -177,6 +177,7 @@ async function loadMainHarness(options = {}) {
         }],
         ['simulation/fixed_step_catch_up_policy.js', {
             FixedStepCatchUpPolicy,
+            countExcessFixedStepDebt: () => 0,
             countWholeFixedSteps: () => 0,
             restoreUncompletedFixedStepDebt: (accumulatorSeconds) => accumulatorSeconds
         }],

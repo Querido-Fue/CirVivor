@@ -43,8 +43,8 @@ function findLeadingJsDoc(source, declaration) {
 
 test('scheduler·title transition·overlay geometry JSDoc은 실행문과 관찰 계약을 고정한다', () => {
     assert.equal(
-        hashExecutableSource(policySource, 9),
-        'fad6a5a39aa87a93b273009ffd7f558bd83da7189a0869d6c4222c0f95d4819c'
+        hashExecutableSource(policySource, 10),
+        '06f1f1db2717161cb5247a45d823c662c8e3bbd94bedb24eecfe35a157df1264'
     );
     assert.equal(
         hashExecutableSource(titleSegmentsSource, 1),
@@ -69,6 +69,13 @@ test('scheduler·title transition·overlay geometry JSDoc은 실행문과 관찰
         'export function countWholeFixedSteps\\(accumulatorSeconds, fixedStepSeconds\\)'
     );
     assert.match(wholeStepsDoc, /문자열·객체를 숫자로 강제 변환하지 않습니다/);
+
+    const excessDebtDoc = findLeadingJsDoc(
+        policySource,
+        'export function countExcessFixedStepDebt\\('
+    );
+    assert.match(excessDebtDoc, /bounded catch-up 창/);
+    assert.match(excessDebtDoc, /0 이상의 정수만 수용/);
 
     const restoredDebtDoc = findLeadingJsDoc(
         policySource,

@@ -293,12 +293,12 @@ test('scene의 명시적 false는 남은 catch-up을 중단하고 완료 fixed s
     assert.deepEqual(sceneResults, [true]);
 });
 
-test('release profiler는 GPU 대기 attempt를 미완료로 기록하고 같은 frame에서 재시도하지 않는다', async () => {
-    const completedFlags = [];
+test('release profiler는 GPU 대기 attempt를 deferred로 기록하고 같은 frame에서 재시도하지 않는다', async () => {
+    const fixedStepOutcomes = [];
     const SystemHandler = await loadSystemHandler({
         measureFixedSteps: true,
-        recordFixedStep(_timestampMs, _durationMs, completed) {
-            completedFlags.push(completed);
+        recordFixedStep(_timestampMs, _durationMs, completed, deferred) {
+            fixedStepOutcomes.push({ completed, deferred });
         }
     });
     const handler = createRenderableHandler(SystemHandler, []);
@@ -307,8 +307,35 @@ test('release profiler는 GPU 대기 attempt를 미완료로 기록하고 같은
     handler.sceneSystem.fixedUpdate = () => sceneResults.shift();
 
     assert.equal(handler.tick({ fixedStepCount: 3 }), 1);
-    assert.deepEqual(completedFlags, [true, false]);
+    assert.deepEqual(fixedStepOutcomes, [
+        { completed: true, deferred: false },
+        { completed: false, deferred: true }
+    ]);
     assert.deepEqual(sceneResults, [true]);
+});
+
+test('release profiler는 fixed step 예외를 deferred가 아닌 실패로 기록한다', async () => {
+    const fixedStepOutcomes = [];
+    const expectedError = new Error('fixed-step-failed');
+    const SystemHandler = await loadSystemHandler({
+        measureFixedSteps: true,
+        recordFixedStep(_timestampMs, _durationMs, completed, deferred) {
+            fixedStepOutcomes.push({ completed, deferred });
+        }
+    });
+    const handler = createRenderableHandler(SystemHandler, []);
+    handler.frameExecutionPolicy = handler.createPausePolicy({ renderFrame: false });
+    handler.sceneSystem.fixedUpdate = () => {
+        throw expectedError;
+    };
+
+    assert.throws(
+        () => handler.tick({ fixedStepCount: 1 }),
+        (error) => error === expectedError
+    );
+    assert.deepEqual(fixedStepOutcomes, [
+        { completed: false, deferred: false }
+    ]);
 });
 
 console.log('system handler WebGPU frame composer contract: ok');

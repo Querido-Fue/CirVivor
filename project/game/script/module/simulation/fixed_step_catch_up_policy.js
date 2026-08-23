@@ -101,6 +101,29 @@ export function countWholeFixedSteps(accumulatorSeconds, fixedStepSeconds) {
 }
 
 /**
+ * bounded catch-up 창을 넘어 실제로 폐기해야 하는 정수 fixed debt 수를 계산합니다.
+ * retained step 입력은 숫자 강제 변환 없이 0 이상의 정수만 수용합니다.
+ * @param {number} accumulatorSeconds - 완료되지 않아 보존 중인 simulation 시간입니다.
+ * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
+ * @param {number} maximumRetainedStepCount - 보존할 최대 정수 tick 수입니다.
+ * @returns {number} bounded 창을 넘어 폐기할 정수 tick 수입니다.
+ */
+export function countExcessFixedStepDebt(
+    accumulatorSeconds,
+    fixedStepSeconds,
+    maximumRetainedStepCount
+) {
+    const retainedStepCount = Number.isInteger(maximumRetainedStepCount)
+        ? Math.max(0, maximumRetainedStepCount)
+        : 0;
+    return Math.max(
+        0,
+        countWholeFixedSteps(accumulatorSeconds, fixedStepSeconds)
+            - retainedStepCount
+    );
+}
+
+/**
  * GPU readback/backpressure 때문에 완료되지 않은 fixed tick의 시간을 accumulator에 되돌립니다.
  * 완료 수가 예약 수보다 크면 예약 수로 제한하고, 유효한 정수가 아니면 호환성을 위해 전부 완료된 것으로 봅니다.
  * @param {number} accumulatorSeconds - 예약 tick을 선차감한 뒤 남은 simulation 시간입니다.

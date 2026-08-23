@@ -653,6 +653,7 @@ async function runAutoSoak(
         fixed: Object.freeze({
             scheduled: releaseProfiler.totalScheduledFixedStepCount,
             completed: releaseProfiler.totalCompletedFixedStepCount,
+            deferred: releaseProfiler.totalDeferredFixedStepCount,
             failed: releaseProfiler.totalFailedFixedStepCount,
             dropped: releaseProfiler.totalDroppedFixedStepCount,
             lostSimulationSeconds:

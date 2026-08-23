@@ -400,13 +400,16 @@ export class SystemHandler {
 
                 const releaseFixedStart = performance.now();
                 let completedReleaseFixedStep = false;
+                let deferredReleaseFixedStep = false;
                 try {
                     if (timeHandler && typeof timeHandler.updateFixed === 'function') {
                         const fixedTimeStart = beginPerformanceSection();
                         timeHandler.updateFixed(fixedStepSeconds);
                         endPerformanceSection('fixed.time', fixedTimeStart);
                     }
-                    completedReleaseFixedStep = this.#runFixedStep();
+                    const fixedStepResult = this.#runFixedStep();
+                    completedReleaseFixedStep = fixedStepResult === true;
+                    deferredReleaseFixedStep = fixedStepResult === false;
                     if (completedReleaseFixedStep) {
                         completedFixedStepCount++;
                     }
@@ -416,7 +419,8 @@ export class SystemHandler {
                         recordReleaseSimulationFixedStep(
                             releaseFixedEnd,
                             releaseFixedEnd - releaseFixedStart,
-                            completedReleaseFixedStep
+                            completedReleaseFixedStep,
+                            deferredReleaseFixedStep
                         );
                     }
                 }

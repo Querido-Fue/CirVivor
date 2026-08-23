@@ -3,6 +3,7 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 
 const policyModule = await loadGameModule('simulation/fixed_step_catch_up_policy.js');
 const {
+    countExcessFixedStepDebt,
     FixedStepCatchUpPolicy,
     countWholeFixedSteps,
     restoreUncompletedFixedStepDebt
@@ -42,6 +43,12 @@ assert.equal(countWholeFixedSteps(fixedStep * 0.99, fixedStep), 0);
 assert.equal(countWholeFixedSteps(fixedStep, fixedStep), 1);
 assert.equal(countWholeFixedSteps(fixedStep * 5.5, fixedStep), 5);
 assert.equal(countWholeFixedSteps(Number.NaN, fixedStep), 0);
+
+assert.equal(countExcessFixedStepDebt(fixedStep * 7.5, fixedStep, 8), 0);
+assert.equal(countExcessFixedStepDebt(fixedStep * 8.5, fixedStep, 8), 0);
+assert.equal(countExcessFixedStepDebt(fixedStep * 9.5, fixedStep, 8), 1);
+assert.equal(countExcessFixedStepDebt(fixedStep * 12, fixedStep, 8), 4);
+assert.equal(countExcessFixedStepDebt(fixedStep * 2, fixedStep, undefined), 2);
 
 assert.equal(
     restoreUncompletedFixedStepDebt(0.005, 2, 1, fixedStep),
