@@ -9,7 +9,6 @@ import {
     normalizeAbilitySlotId,
     normalizeSentenceRuntimePhase
 } from '../contract/word_sentence_contract.js';
-import { fingerprintR8Record } from '../contract/r8_fingerprint_contract.js';
 import { SentenceCompiler } from './sentence_compiler.js';
 
 export const ABILITY_ACTIVATION_RESULT_CODE = Object.freeze({
@@ -191,17 +190,9 @@ export class WordSystem {
         for (const key of Object.keys(loadout)) {
             normalizeAbilitySlotId(key, 'editor loadout slotId');
         }
-        const fingerprintSource = Object.freeze({
-            transactionId,
-            boardFingerprint,
-            slots: Object.freeze(ABILITY_SLOT_IDS.map((slotId) => Object.freeze({
-                slotId,
-                sentenceDefinition: loadout[slotId] ?? null
-            })))
-        });
-        const requestFingerprint = fingerprintR8Record(
-            'word-system-editor-commit.r8',
-            fingerprintSource
+        const requestFingerprint = requirePositiveSafeInteger(
+            source.requestFingerprint,
+            'editor requestFingerprint'
         );
         const known = this.editorCommitHistory.get(transactionId);
         if (known) {

@@ -18,6 +18,10 @@ import {
     R6_QA_SENTENCE_LOADOUT,
     R7_QA_SENTENCE_LOADOUT
 } from 'data/word/r3_word_catalog_data.js';
+import {
+    R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+    R8_WORD_SHOP_BALANCE
+} from 'data/word/r8_word_shop_catalog_data.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
 /** 타이틀 맵 선택의 첫 production 카드가 유지하는 preview/selection identity입니다. */
@@ -34,6 +38,7 @@ export const PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID
 
 export const R6_QA_LAUNCH_ARGUMENT = '--r6-qa';
 export const R7_QA_LAUNCH_ARGUMENT = '--r7-qa';
+export const R8_QA_LAUNCH_ARGUMENT = '--r8-qa';
 
 /** 실제 executable에서만 쓰는 명시적 QA launcher 선택 seam입니다. */
 export function isR6QaLaunchRequested(
@@ -47,6 +52,13 @@ export function isR7QaLaunchRequested(
     argv = globalThis.nw?.App?.argv ?? []
 ) {
     return Array.isArray(argv) && argv.includes(R7_QA_LAUNCH_ARGUMENT);
+}
+
+/** R8 Shop/editor QA는 exact launcher argument에서만 활성화됩니다. */
+export function isR8QaLaunchRequested(
+    argv = globalThis.nw?.App?.argv ?? []
+) {
+    return Array.isArray(argv) && argv.includes(R8_QA_LAUNCH_ARGUMENT);
 }
 
 function createPlayableSessionOptions(
@@ -102,6 +114,9 @@ function createGameStartOptions(selectedMapId, loadout) {
  * @returns {object} GameScene constructor에 전달할 세션 옵션입니다.
  */
 export function createProductionGameStartOptions(selectedMapId) {
+    if (isR8QaLaunchRequested()) {
+        return createR8QaGameStartOptions(selectedMapId);
+    }
     return createGameStartOptions(
         selectedMapId,
         isR7QaLaunchRequested()
@@ -124,4 +139,26 @@ export function createR7QaGameStartOptions(
     selectedMapId = PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
 ) {
     return createGameStartOptions(selectedMapId, R7_QA_SENTENCE_LOADOUT);
+}
+
+/** Starter board와 data-owned Gold/pool로 frozen Shop을 자동 여는 R8 QA route입니다. */
+export function createR8QaGameStartOptions(
+    selectedMapId = PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
+) {
+    return {
+        ...createGameStartOptions(
+            selectedMapId,
+            R5_SHOWCASE_SENTENCE_LOADOUT
+        ),
+        enemyWaveEnabled: false,
+        initialGold: R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD,
+        r8ShopOptions: Object.freeze({
+            autoOpen: true,
+            sourceId: 'launcher.--r8-qa',
+            runSessionId: 'run.r8.qa',
+            runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
+            unlockedWordDefinitionIds:
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        })
+    };
 }

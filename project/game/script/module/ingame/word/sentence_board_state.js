@@ -182,10 +182,17 @@ export class SentenceBoardState {
         this.draftSlots = null;
         this.draftInventoryRevision = null;
         this.lastValidation = null;
+        this.lastCommittedValidation = null;
         this.lastReceipt = null;
         this.transactionEntries = new Map();
         this.transactionOrder = [];
         this.destroyed = false;
+        const initialValidation = this.validateCommitted();
+        if (initialValidation.valid !== true) {
+            throw new RangeError(
+                `initial sentence board가 compile되지 않습니다: ${initialValidation.code}`
+            );
+        }
     }
 
     beginDraft() {
@@ -282,6 +289,18 @@ export class SentenceBoardState {
         return this.#validateDraftInternal().result;
     }
 
+    /** Continue가 현재 inventory revision의 committed board를 재검증합니다. */
+    validateCommitted() {
+        if (this.destroyed) return this.#destroyedReceipt();
+        const validation = this.#validateSlotsInternal(
+            this.committedSlots,
+            this.inventoryRevision,
+            'COMMITTED'
+        );
+        this.lastCommittedValidation = validation.result;
+        return validation.result;
+    }
+
     commitDraft(source = {}) {
         const transactionId = requireR8NonEmptyString(
             source.transactionId,
@@ -354,6 +373,7 @@ export class SentenceBoardState {
         }
         const wordSystemReceipt = this.wordSystem.commitEditorLoadout({
             transactionId,
+            requestFingerprint,
             boardFingerprint: validation.result.boardFingerprint,
             compiler: validation.compiler,
             loadout: validation.loadout
@@ -373,6 +393,10 @@ export class SentenceBoardState {
         this.inventoryRevision = this.draftInventoryRevision;
         this.boardFingerprint = validation.result.boardFingerprint;
         this.boardRevision++;
+        this.lastCommittedValidation = Object.freeze({
+            ...validation.result,
+            scope: 'COMMITTED'
+        });
         const receipt = freezeReceipt({
             accepted: true,
             code: SENTENCE_BOARD_RESULT_CODE.COMMITTED,
@@ -386,6 +410,8 @@ export class SentenceBoardState {
             wordSystemReceipt,
             mutationCount: ABILITY_SLOT_IDS.length
         });
+        this.draftSlots = null;
+        this.draftInventoryRevision = null;
         return this.#remember(
             transactionId,
             requestFingerprint,
@@ -405,6 +431,7 @@ export class SentenceBoardState {
             committedSlots: this.destroyed ? null : this.committedSlots,
             draftSlots: this.destroyed ? null : this.draftSlots,
             lastValidation: this.lastValidation,
+            lastCommittedValidation: this.lastCommittedValidation,
             lastReceipt: this.lastReceipt,
             rememberedTransactionCount: this.transactionEntries.size,
             transactionHistoryCapacity: this.transactionHistoryCapacity,
@@ -419,6 +446,7 @@ export class SentenceBoardState {
         this.draftSlots = null;
         this.draftInventoryRevision = null;
         this.lastValidation = null;
+        this.lastCommittedValidation = null;
         this.lastReceipt = null;
         this.transactionEntries.clear();
         this.transactionOrder.length = 0;
@@ -439,20 +467,32 @@ export class SentenceBoardState {
                 loadout: null
             });
         }
+        const validation = this.#validateSlotsInternal(
+            this.draftSlots,
+            this.draftInventoryRevision,
+            'DRAFT'
+        );
+        this.lastValidation = validation.result;
+        return validation;
+    }
+
+    #validateSlotsInternal(slots, expectedInventoryRevision, scope) {
         const inventorySnapshot = this.inventory.getSnapshot();
-        if (inventorySnapshot.revision !== this.draftInventoryRevision) {
+        if (inventorySnapshot.revision !== expectedInventoryRevision) {
             const result = freezeReceipt({
                 accepted: false,
                 valid: false,
                 code: SENTENCE_BOARD_RESULT_CODE.INVENTORY_CHANGED,
-                expectedInventoryRevision: this.draftInventoryRevision,
+                scope,
+                expectedInventoryRevision,
                 inventoryRevision: inventorySnapshot.revision,
-                draftRevision: this.draftRevision,
+                ...(scope === 'DRAFT'
+                    ? { draftRevision: this.draftRevision }
+                    : { boardRevision: this.boardRevision }),
                 boardFingerprint: null,
                 slotValidations: Object.freeze([]),
                 mutationCount: 0
             });
-            this.lastValidation = result;
             return Object.freeze({ result, compiler: null, loadout: null });
         }
         const catalog = createRuntimeWordCatalogView({
@@ -467,31 +507,33 @@ export class SentenceBoardState {
         const slotValidations = Object.freeze(ABILITY_SLOT_IDS.map(
             (slotId) => createSlotValidation(
                 slotId,
-                this.draftSlots[slotId],
+                slots[slotId],
                 compiler
             )
         ));
         const valid = slotValidations.every((entry) => entry.valid);
         const boardFingerprint = valid
             ? fingerprintSentenceBoardAuthored(
-                this.draftSlots,
+                slots,
                 inventorySnapshot
             )
             : null;
         const result = Object.freeze({
             accepted: valid,
             valid,
+            scope,
             code: valid
                 ? SENTENCE_BOARD_RESULT_CODE.VALID
                 : SENTENCE_BOARD_RESULT_CODE.INVALID_DRAFT,
-            draftRevision: this.draftRevision,
+            ...(scope === 'DRAFT'
+                ? { draftRevision: this.draftRevision }
+                : { boardRevision: this.boardRevision }),
             inventoryRevision: inventorySnapshot.revision,
             catalogFingerprint: catalog.catalogFingerprint,
             boardFingerprint,
             slotValidations,
             mutationCount: 0
         });
-        this.lastValidation = result;
         const loadout = valid
             ? Object.freeze(Object.fromEntries(slotValidations.map((entry) => [
                 entry.slotId,

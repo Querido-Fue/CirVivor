@@ -265,6 +265,7 @@ test('다섯 slot commit은 invalid 하나에도 전부 무변경이고 replay/c
         committed
     );
 
+    board.beginDraft();
     board.clearSlot(ABILITY_SLOT_ID.Q);
     const conflict = board.commitDraft({ transactionId: 'board.commit.1' });
     assert.equal(

@@ -7,8 +7,15 @@ import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
 import { TowerGroupState } from './object/tower/tower_group_state.js';
 import { CoreIntegrity } from './state/core_integrity.js';
 import { RunOutcome } from './state/run_outcome.js';
-import { GoldLedger } from './state/gold_ledger.js';
+import { RunCommerceState } from './state/run_commerce_state.js';
+import {
+    SHOP_OPEN_SOURCE_KIND,
+    SHOP_RUNTIME_PHASE,
+    ShopPhaseCoordinator
+} from './flow/shop_phase_coordinator.js';
+import { SentenceBoardState } from './word/sentence_board_state.js';
 import { SentenceSlotController } from './word/sentence_slot_controller.js';
+import { WordShopSession } from './word/word_shop_session.js';
 import { WordSystem } from './word/word_system.js';
 import {
     GAME_WORLD_SESSION_MODE,
@@ -205,7 +212,7 @@ export class GameSystem {
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
      * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
-     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number,initialGold?:number,wordSystemOptions?:object}} [options={}] - 세션 시작 옵션입니다.
+     * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number,initialGold?:number,wordSystemOptions?:object,r8ShopOptions?:object}} [options={}] - 세션 시작 옵션입니다.
      */
     constructor(dependencies, options = {}) {
         if (!dependencies?.inputActionSource
@@ -236,9 +243,39 @@ export class GameSystem {
         this.playerControlRouter = new PlayerControlRouter();
         this.wordSystem = new WordSystem(options.wordSystemOptions);
         this.sentenceSlotController = new SentenceSlotController(this.wordSystem);
-        this.goldLedger = new GoldLedger({
+        this.runCommerceState = new RunCommerceState({
+            runSessionId: options.r8ShopOptions?.runSessionId,
             initialGold: options.initialGold ?? 0
         });
+        this.wordInventory = this.runCommerceState.inventory;
+        // Existing bounty/GameObjectSystem port 이름을 append-only alias로 유지합니다.
+        this.goldLedger = this.runCommerceState;
+        this.sentenceBoard = new SentenceBoardState({
+            inventory: this.wordInventory,
+            wordSystem: this.wordSystem,
+            initialLoadout: options.r8ShopOptions?.initialLoadout
+        });
+        this.wordShopSession = new WordShopSession({
+            commerceState: this.runCommerceState,
+            runSeed: options.r8ShopOptions?.runSeed,
+            unlockedWordDefinitionIds:
+                options.r8ShopOptions?.unlockedWordDefinitionIds
+        });
+        this.shopPhaseCoordinator = new ShopPhaseCoordinator({
+            wordSystem: this.wordSystem,
+            shopSession: this.wordShopSession,
+            sentenceBoard: this.sentenceBoard,
+            commerceState: this.runCommerceState,
+            safeBoundaryPort: Object.freeze({
+                getSnapshot: () => this.#createShopSafeBoundarySnapshot()
+            }),
+            presentationPort: Object.freeze({
+                synchronize: () => this.synchronizePresentation()
+            })
+        });
+        this.r8QaAutoOpen = options.r8ShopOptions?.autoOpen === true;
+        this.r8QaOpenSourceId = options.r8ShopOptions?.sourceId
+            ?? 'launcher.--r8-qa';
         this.coreIntegrity = new CoreIntegrity({
             maxIntegrity: options.coreMaxIntegrity
                 ?? THE_CORE_DATA.MAX_INTEGRITY
@@ -336,6 +373,15 @@ export class GameSystem {
             this.dependencies.inputActionSource
         );
         this.entered = true;
+        if (this.r8QaAutoOpen) {
+            this.requestShopOpen({
+                sourceKind: SHOP_OPEN_SOURCE_KIND.QA_EXPLICIT,
+                sourceId: this.r8QaOpenSourceId,
+                settlementOrdinal: 1,
+                transactionId: 'shop-open.r8.qa:1',
+                minimumFixedTick: this.fixedTick + 1
+            });
+        }
         return true;
     }
 
@@ -347,6 +393,27 @@ export class GameSystem {
     fixedUpdate() {
         if (!this.entered || this.destroyed) {
             return false;
+        }
+        let suppressGameplayInput = false;
+        const shopPhase = this.shopPhaseCoordinator.getPhase();
+        if (shopPhase === SHOP_RUNTIME_PHASE.SHOP) {
+            return false;
+        }
+        if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_CLOSING) {
+            const closing = this.shopPhaseCoordinator.progressClosing();
+            if (closing.accepted !== true
+                || this.shopPhaseCoordinator.getPhase()
+                    !== SHOP_RUNTIME_PHASE.COMBAT) {
+                return false;
+            }
+        } else if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_OPENING) {
+            this.shopPhaseCoordinator.progressOpening();
+            if (this.shopPhaseCoordinator.getPhase()
+                === SHOP_RUNTIME_PHASE.SHOP) {
+                return false;
+            }
+            suppressGameplayInput = this.shopPhaseCoordinator.getPhase()
+                === SHOP_RUNTIME_PHASE.SHOP_OPENING;
         }
         const proposedFixedTick = this.fixedTick + 1;
         // Terminal run은 input semantics를 새 gameplay request로 materialize하지 않습니다.
@@ -360,18 +427,22 @@ export class GameSystem {
             );
         }
         this.wordSystem.beginFixedTick(proposedFixedTick);
-        const moveAction = this.inputActionMapper.mapMoveAction(
-            this.dependencies.inputActionSource
-        );
-        const primaryPointerFireAction = this.inputActionMapper
-            .mapPrimaryPointerFireAction(this.dependencies.inputActionSource);
-        this.playerControlRouter.dispatch(moveAction);
-        this.playerControlRouter.dispatch(primaryPointerFireAction);
-        const skillEdgeActions = this.inputActionMapper.mapSkillEdgeActions(
-            this.dependencies.inputActionSource
-        );
-        for (let index = 0; index < skillEdgeActions.length; index++) {
-            this.playerControlRouter.dispatch(skillEdgeActions[index]);
+        if (!suppressGameplayInput) {
+            const moveAction = this.inputActionMapper.mapMoveAction(
+                this.dependencies.inputActionSource
+            );
+            const primaryPointerFireAction = this.inputActionMapper
+                .mapPrimaryPointerFireAction(
+                    this.dependencies.inputActionSource
+                );
+            this.playerControlRouter.dispatch(moveAction);
+            this.playerControlRouter.dispatch(primaryPointerFireAction);
+            const skillEdgeActions = this.inputActionMapper.mapSkillEdgeActions(
+                this.dependencies.inputActionSource
+            );
+            for (let index = 0; index < skillEdgeActions.length; index++) {
+                this.playerControlRouter.dispatch(skillEdgeActions[index]);
+            }
         }
         const advanced = this.objectSystem.fixedUpdate(
             this.dependencies.timePort.getFixedDelta(),
@@ -567,12 +638,57 @@ export class GameSystem {
         return this.objectSystem?.getActorPayloadMaterializerStatus() ?? null;
     }
 
+    getTowerMergeStatus() {
+        return this.objectSystem?.getTowerMergeStatus?.() ?? null;
+    }
+
+    getGpuRecoveryStatus() {
+        return this.objectSystem?.getGpuRecoveryStatus?.() ?? null;
+    }
+
+    /** CPU run-domain Gold+Inventory authority입니다. */
+    getRunCommerceState() {
+        return this.runCommerceState;
+    }
+
+    getWordInventory() {
+        return this.wordInventory;
+    }
+
+    getSentenceBoard() {
+        return this.sentenceBoard;
+    }
+
+    getWordShopSession() {
+        return this.wordShopSession;
+    }
+
+    getShopPhaseCoordinator() {
+        return this.shopPhaseCoordinator;
+    }
+
+    getShopPhaseStatus() {
+        return this.shopPhaseCoordinator?.getStatus() ?? null;
+    }
+
+    requestShopOpen(source) {
+        return this.shopPhaseCoordinator.requestOpen(source);
+    }
+
+    requestShopContinue(source) {
+        return this.shopPhaseCoordinator.requestContinue(source);
+    }
+
     getGoldLedger() {
         return this.goldLedger;
     }
 
     getGold() {
         return this.goldLedger?.getBalance() ?? 0;
+    }
+
+    getGoldStatus() {
+        return this.runCommerceState?.getGoldStatus() ?? null;
     }
 
     getBountyRewardStatus() {
@@ -615,6 +731,11 @@ export class GameSystem {
             abilities: this.getAbilityRuntimeStatus(),
             actorPayloads: this.getActorPayloadMaterializerStatus(),
             gold: this.getGold(),
+            commerce: this.runCommerceState?.getStatus() ?? null,
+            inventory: this.wordInventory?.getStatus() ?? null,
+            sentenceBoard: this.sentenceBoard?.getStatus() ?? null,
+            shop: this.wordShopSession?.getStatus() ?? null,
+            shopPhase: this.getShopPhaseStatus(),
             bounty: this.getBountyRewardStatus(),
             hostiles: this.getHostileParticipationStatus(),
             words: wordStatus,
@@ -713,7 +834,15 @@ export class GameSystem {
         this.towerGroupState?.destroy();
         this.towerGroupState = null;
         this.runOutcome.destroy();
-        this.goldLedger?.destroy();
+        this.shopPhaseCoordinator?.destroy();
+        this.shopPhaseCoordinator = null;
+        this.wordShopSession?.destroy();
+        this.wordShopSession = null;
+        this.sentenceBoard?.destroy();
+        this.sentenceBoard = null;
+        this.runCommerceState?.destroy();
+        this.runCommerceState = null;
+        this.wordInventory = null;
         this.goldLedger = null;
         this.wordSystem?.destroy();
         this.wordSystem = null;
@@ -735,5 +864,43 @@ export class GameSystem {
             this.viewportSnapshot.uiOffsetX = snapshot.uiOffsetX;
             this.viewportSnapshot.uiScale = snapshot.uiScale;
         }
+    }
+
+    #createShopSafeBoundarySnapshot() {
+        const wordStatus = this.wordSystem?.getStatusView() ?? null;
+        const ability = this.getAbilityRuntimeStatus();
+        const creation = this.getTowerCreationStatus();
+        const merge = this.getTowerMergeStatus();
+        const actor = this.getActorPayloadMaterializerStatus();
+        const recovery = this.getGpuRecoveryStatus();
+        const wave = this.objectSystem?.getEnemyWaveStatus?.() ?? null;
+        return Object.freeze({
+            fixedTick: this.fixedTick,
+            wordActivationCount: wordStatus?.pendingActivationCount ?? 0,
+            abilityExecutionCount:
+                (ability?.deferredActivationCount ?? 0)
+                + (ability?.inFlightCount ?? 0)
+                + (ability?.readySnapshotCount ?? 0)
+                + (ability?.readyTowerMergeSnapshotCount ?? 0),
+            towerCreationPendingCount:
+                (creation?.queuedTransaction ? 1 : 0)
+                + (creation?.pendingTransaction ? 1 : 0)
+                + (creation?.pendingActorPayloadTerminalReceiptCount ?? 0),
+            towerMergePendingCount: merge?.pending ? 1 : 0,
+            actorMaterializationPendingCount: actor?.inFlightCount ?? 0,
+            actorTransitActiveCount:
+                actor?.telemetry?.transitActiveCount ?? 0,
+            commercePendingCount:
+                this.runCommerceState?.getStatus().pendingTransactionCount
+                ?? 0,
+            endpointPendingFixedTick: recovery?.pendingFixedTick ?? 0,
+            wavePendingSpawnCount: wave
+                ? (wave.remainingSpawnCount ?? 0)
+                    + (wave.blockedSpawnCount ?? 0)
+                : 0,
+            endpointRecoveryRequired: this.isGpuWorldRecoveryRequired(),
+            recoveryProbationState: recovery?.probation?.state ?? null,
+            runDefeated: this.runOutcome.isDefeated()
+        });
     }
 }
