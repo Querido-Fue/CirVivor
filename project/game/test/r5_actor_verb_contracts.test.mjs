@@ -130,18 +130,21 @@ test('R5 stable verb/action/payload identity는 기존 값을 보존하고 appen
         SHOOT: 'verb.shoot',
         THROW: 'verb.throw',
         EMIT: 'verb.emit',
-        SUMMON: 'verb.summon'
+        SUMMON: 'verb.summon',
+        MERGE: 'verb.merge'
     });
     assert.deepEqual({ ...SENTENCE_ACTION_CODE }, {
         SHOOT: 1,
         THROW: 2,
         EMIT: 3,
-        SUMMON: 4
+        SUMMON: 4,
+        MERGE: 5
     });
     assert.deepEqual({ ...ACTOR_PAYLOAD_CODE }, { ENEMY: 1, TOWER: 2 });
     assert.equal(WORD_RUNTIME_SUPPORT.R3, 'r3');
     assert.equal(WORD_RUNTIME_SUPPORT.FUTURE_R5, 'future-r5');
     assert.equal(WORD_RUNTIME_SUPPORT.R5, 'r5');
+    assert.equal(WORD_RUNTIME_SUPPORT.R6, 'r6');
 
     assert.equal(TOWER_ENTITY_WORD_DEFINITION.payload.definitionId,
         THE_TOWER_DEFINITION_ID);

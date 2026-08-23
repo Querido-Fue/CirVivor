@@ -1,18 +1,25 @@
 import {
-    R5_WORD_PROTOCOL_DATA,
-    R5_WORD_DEFINITION_BY_ID,
-    R5_WORD_INSTANCE_BY_ID
+    R6_WORD_PROTOCOL_DATA,
+    R6_WORD_DEFINITION_BY_ID,
+    R6_WORD_INSTANCE_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
     R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE
 } from 'data/word/r5_actor_action_profile_data.js';
 import {
+    R6_TOWER_GROUP_OPERATION_PROFILE_BY_ACTION_CODE
+} from 'data/word/r6_tower_group_operation_profile_data.js';
+import {
     actorActionProfileFingerprint as computeActorActionProfileFingerprint
 } from '../contract/actor_action_contract.js';
+import {
+    towerGroupOperationProfileFingerprint as computeTowerGroupOperationProfileFingerprint
+} from '../contract/tower_group_operation_contract.js';
 import {
     ABILITY_TARGET_POLICY_CODE,
     SENTENCE_ACTION_CODE,
     SENTENCE_COMPILE_ERROR_CODE,
+    SENTENCE_PAYLOAD_REQUIREMENT,
     SENTENCE_RUNTIME_PHASE,
     SUBJECT_SELECTOR_CODE,
     WORD_DEFINITION_ID,
@@ -111,11 +118,11 @@ export class SentenceCompileError extends Error {
 export class SentenceCompiler {
     constructor(options = {}) {
         this.wordDefinitionsById = requireCatalog(
-            options.wordDefinitionsById ?? R5_WORD_DEFINITION_BY_ID,
+            options.wordDefinitionsById ?? R6_WORD_DEFINITION_BY_ID,
             'wordDefinitionsById'
         );
         this.wordInstancesById = requireCatalog(
-            options.wordInstancesById ?? R5_WORD_INSTANCE_BY_ID,
+            options.wordInstancesById ?? R6_WORD_INSTANCE_BY_ID,
             'wordInstancesById'
         );
         this.actorActionProfilesByActionCode = requireCatalog(
@@ -123,8 +130,13 @@ export class SentenceCompiler {
                 ?? R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE,
             'actorActionProfilesByActionCode'
         );
+        this.towerGroupOperationProfilesByActionCode = requireCatalog(
+            options.towerGroupOperationProfilesByActionCode
+                ?? R6_TOWER_GROUP_OPERATION_PROFILE_BY_ACTION_CODE,
+            'towerGroupOperationProfilesByActionCode'
+        );
         this.protocol = normalizeProtocolData(
-            options.protocol ?? R5_WORD_PROTOCOL_DATA
+            options.protocol ?? R6_WORD_PROTOCOL_DATA
         );
         this.cache = new Map();
     }
@@ -144,7 +156,6 @@ export class SentenceCompiler {
         }
         requireSentenceSlot(rawSentence, 'subjectWordInstanceId');
         requireSentenceSlot(rawSentence, 'verbWordInstanceId');
-        requireSentenceSlot(rawSentence, 'payloadWordInstanceId');
 
         if (options.executionPhase !== undefined) {
             let phase;
@@ -164,9 +175,53 @@ export class SentenceCompiler {
             }
         }
 
+        const subjectInstance = this.#resolveInstance(
+            rawSentence.subjectWordInstanceId,
+            'Subject'
+        );
+        const verbInstance = this.#resolveInstance(
+            rawSentence.verbWordInstanceId,
+            'Verb'
+        );
+        const subjectDefinition = this.#resolveDefinition(
+            subjectInstance.definitionId,
+            'Subject'
+        );
+        const verbDefinition = this.#resolveDefinition(
+            verbInstance.definitionId,
+            'Verb'
+        );
+        if (verbDefinition.kind !== WORD_KIND.VERB) {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
+                'Verb slot에는 Verb Word가 필요합니다.'
+            );
+        }
+        const payloadRequirement = verbDefinition.payloadRequirement;
+        if (payloadRequirement === SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED) {
+            requireSentenceSlot(rawSentence, 'payloadWordInstanceId');
+        } else if (payloadRequirement
+            === SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN) {
+            if (rawSentence.payloadWordInstanceId !== null) {
+                throw new SentenceCompileError(
+                    SENTENCE_COMPILE_ERROR_CODE.PAYLOAD_FORBIDDEN,
+                    `${verbDefinition.id}에는 Payload를 제공할 수 없습니다.`
+                );
+            }
+        } else {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
+                `${verbDefinition.id} Payload 문법 계약이 없습니다.`
+            );
+        }
+
         let sentence;
         try {
-            sentence = normalizeSentenceDefinition(rawSentence);
+            sentence = normalizeSentenceDefinition(
+                rawSentence,
+                'sentenceDefinition',
+                { payloadRequirement }
+            );
         } catch (error) {
             throw new SentenceCompileError(
                 SENTENCE_COMPILE_ERROR_CODE.INVALID_SENTENCE,
@@ -180,31 +235,6 @@ export class SentenceCompiler {
             );
         }
 
-        const subjectInstance = this.#resolveInstance(
-            sentence.subjectWordInstanceId,
-            'Subject'
-        );
-        const verbInstance = this.#resolveInstance(
-            sentence.verbWordInstanceId,
-            'Verb'
-        );
-        const payloadInstance = this.#resolveInstance(
-            sentence.payloadWordInstanceId,
-            'Payload'
-        );
-        const subjectDefinition = this.#resolveDefinition(
-            subjectInstance.definitionId,
-            'Subject'
-        );
-        const verbDefinition = this.#resolveDefinition(
-            verbInstance.definitionId,
-            'Verb'
-        );
-        const payloadDefinition = this.#resolveDefinition(
-            payloadInstance.definitionId,
-            'Payload'
-        );
-
         if (subjectDefinition.kind !== WORD_KIND.ENTITY
             || !hasRole(subjectDefinition, WORD_GRAMMATICAL_ROLE.SUBJECT)
             || !subjectDefinition.subject) {
@@ -213,11 +243,26 @@ export class SentenceCompiler {
                 'Subject slot에는 Subject Entity Word가 필요합니다.'
             );
         }
+        if (payloadRequirement === SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN) {
+            return this.#compileTowerGroupOperation({
+                sentence,
+                subjectDefinition,
+                verbDefinition
+            });
+        }
+
+        const payloadInstance = this.#resolveInstance(
+            sentence.payloadWordInstanceId,
+            'Payload'
+        );
+        const payloadDefinition = this.#resolveDefinition(
+            payloadInstance.definitionId,
+            'Payload'
+        );
         const actorActionProfile = this.actorActionProfilesByActionCode[
             verbDefinition.actionCode
         ];
-        if (verbDefinition.kind !== WORD_KIND.VERB
-            || !actorActionProfile
+        if (!actorActionProfile
             || actorActionProfile.actionCode !== verbDefinition.actionCode) {
             throw new SentenceCompileError(
                 SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
@@ -380,6 +425,130 @@ export class SentenceCompiler {
                 subjectWordDefinitionId: subjectDefinition.id,
                 verbWordDefinitionId: verbDefinition.id,
                 payloadWordDefinitionId: payloadDefinition.id
+            })
+        });
+        this.cache.set(semanticKey, compiledAbility);
+        return compiledAbility;
+    }
+
+    #compileTowerGroupOperation({
+        sentence,
+        subjectDefinition,
+        verbDefinition
+    }) {
+        const profile = this.towerGroupOperationProfilesByActionCode[
+            verbDefinition.actionCode
+        ];
+        let profileFingerprint;
+        try {
+            profileFingerprint = computeTowerGroupOperationProfileFingerprint(
+                profile,
+                `${verbDefinition.id} towerGroupOperationProfile`
+            );
+        } catch (error) {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_VERB,
+                error.message
+            );
+        }
+        if (!Object.isFrozen(profile)
+            || profile.actionCode !== verbDefinition.actionCode
+            || profile.payloadRequirement
+                !== SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
+            || profile.subjectSelectorCode
+                !== subjectDefinition.subject.selectorCode
+            || profile.towerGroupOperationProfileFingerprint
+                !== profileFingerprint) {
+            throw new SentenceCompileError(
+                SENTENCE_COMPILE_ERROR_CODE.WRONG_WORD_KIND,
+                'Tower-group operation Subject/profile identity가 일치하지 않습니다.'
+            );
+        }
+
+        const semanticKey = [
+            COMPILED_ABILITY_SCHEMA_VERSION,
+            this.protocol.abiVersion,
+            'tower-group-operation',
+            subjectDefinition.id,
+            verbDefinition.id,
+            profile.abiVersion,
+            profile.id,
+            profile.operationKind,
+            profile.actionCode,
+            profile.subjectSelectorCode,
+            profile.subjectSelectionPolicy,
+            profile.subjectSnapshotPolicy,
+            profile.payloadRequirement,
+            profile.atomic,
+            profile.generatedBodyCount,
+            profile.cooldownAuthority,
+            profile.subjectBudgetAuthority,
+            profile.generatedBodyBudgetAuthority,
+            profile.runtimeSupport,
+            profile.runtimeAvailability,
+            profile.previewFormulaId,
+            profileFingerprint,
+            this.protocol.cooldownTicks,
+            this.protocol.subjectBudget
+        ].join('|');
+        const cached = this.cache.get(semanticKey);
+        if (cached) return cached;
+
+        const compiledAbilityId = [
+            'compiled-ability.r6',
+            subjectDefinition.id,
+            verbDefinition.id,
+            profile.id,
+            `abi${this.protocol.abiVersion}`
+        ].join(':');
+        const compiledAbility = Object.freeze({
+            schemaVersion: COMPILED_ABILITY_SCHEMA_VERSION,
+            protocolVersion: this.protocol.abiVersion,
+            compiledAbilityId,
+            subjectSelector: Object.freeze({
+                code: subjectDefinition.subject.selectorCode,
+                teamId: subjectDefinition.subject.teamId,
+                nounMask: subjectDefinition.subject.nounMask,
+                snapshotPolicy: profile.subjectSnapshotPolicy,
+                deterministicOrder: 'private-stable-slot-ascending'
+            }),
+            actionCode: verbDefinition.actionCode,
+            operationKind: profile.operationKind,
+            groupOperationProfileId: profile.id,
+            groupOperationProfileFingerprint: profileFingerprint,
+            groupOperationProfile: profile,
+            subjectSelectionPolicy: profile.subjectSelectionPolicy,
+            payloadRequirement: profile.payloadRequirement,
+            payloadAbsent: true,
+            payloadCode: null,
+            payloadDefinitionId: null,
+            payloadRuntimeSupport: null,
+            allegiancePolicy: null,
+            targetPolicyCode: null,
+            targetSnapshotPolicy: null,
+            executionPolicy: Object.freeze({
+                atomic: profile.atomic,
+                generatedSubjectsJoinCurrentExecution: false
+            }),
+            generatedBodyCount: profile.generatedBodyCount,
+            cooldownTicks: this.protocol.cooldownTicks,
+            budgets: Object.freeze({
+                subjectCount: this.protocol.subjectBudget,
+                generatedBodyCount: profile.generatedBodyCount,
+                generation: 0
+            }),
+            authorities: Object.freeze({
+                cooldown: profile.cooldownAuthority,
+                subjectBudget: profile.subjectBudgetAuthority,
+                generatedBodyBudget: profile.generatedBodyBudgetAuthority
+            }),
+            previewFormulaId: profile.previewFormulaId,
+            runtimeSupport: profile.runtimeSupport,
+            runtimeAvailability: profile.runtimeAvailability,
+            displaySentenceData: Object.freeze({
+                subjectWordDefinitionId: subjectDefinition.id,
+                verbWordDefinitionId: verbDefinition.id,
+                payloadWordDefinitionId: null
             })
         });
         this.cache.set(semanticKey, compiledAbility);

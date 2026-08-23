@@ -13,6 +13,7 @@ import {
     ABILITY_SLOT_ID,
     GAMEPLAY_NOUN_MASK,
     SENTENCE_ACTION_CODE,
+    SENTENCE_PAYLOAD_REQUIREMENT,
     SUBJECT_SELECTOR_CODE,
     WORD_DEFINITION_ID,
     WORD_GRAMMATICAL_ROLE,
@@ -34,6 +35,9 @@ export const R3_WORD_PROTOCOL_DATA = Object.freeze({
 
 /** R5 typed compiler가 R3 GPU command budgets/ABI를 append-only로 계승합니다. */
 export const R5_WORD_PROTOCOL_DATA = R3_WORD_PROTOCOL_DATA;
+
+/** R6 group operation은 기존 cooldown/Subject budget ABI를 그대로 사용합니다. */
+export const R6_WORD_PROTOCOL_DATA = R5_WORD_PROTOCOL_DATA;
 
 export const TOWER_ENTITY_WORD_DEFINITION = normalizeWordDefinition({
     id: WORD_DEFINITION_ID.TOWER,
@@ -100,7 +104,8 @@ export const SHOOT_VERB_WORD_DEFINITION = normalizeWordDefinition({
     shopEligible: true,
     subject: null,
     payload: null,
-    actionCode: SENTENCE_ACTION_CODE.SHOOT
+    actionCode: SENTENCE_ACTION_CODE.SHOOT,
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED
 });
 
 export const THROW_VERB_WORD_DEFINITION = normalizeWordDefinition({
@@ -114,7 +119,8 @@ export const THROW_VERB_WORD_DEFINITION = normalizeWordDefinition({
     shopEligible: true,
     subject: null,
     payload: null,
-    actionCode: SENTENCE_ACTION_CODE.THROW
+    actionCode: SENTENCE_ACTION_CODE.THROW,
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED
 });
 
 export const EMIT_VERB_WORD_DEFINITION = normalizeWordDefinition({
@@ -128,7 +134,8 @@ export const EMIT_VERB_WORD_DEFINITION = normalizeWordDefinition({
     shopEligible: true,
     subject: null,
     payload: null,
-    actionCode: SENTENCE_ACTION_CODE.EMIT
+    actionCode: SENTENCE_ACTION_CODE.EMIT,
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED
 });
 
 export const SUMMON_VERB_WORD_DEFINITION = normalizeWordDefinition({
@@ -142,7 +149,23 @@ export const SUMMON_VERB_WORD_DEFINITION = normalizeWordDefinition({
     shopEligible: true,
     subject: null,
     payload: null,
-    actionCode: SENTENCE_ACTION_CODE.SUMMON
+    actionCode: SENTENCE_ACTION_CODE.SUMMON,
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED
+});
+
+export const MERGE_VERB_WORD_DEFINITION = normalizeWordDefinition({
+    id: WORD_DEFINITION_ID.MERGE,
+    kind: WORD_KIND.VERB,
+    roles: [],
+    display: {
+        english: { singular: 'merges', plural: 'merge' },
+        korean: { singular: '합친다', plural: '합친다' }
+    },
+    shopEligible: true,
+    subject: null,
+    payload: null,
+    actionCode: SENTENCE_ACTION_CODE.MERGE,
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
 });
 
 export const R3_WORD_DEFINITIONS = Object.freeze([
@@ -164,6 +187,15 @@ export const R5_WORD_DEFINITIONS = Object.freeze([
 
 export const R5_WORD_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
     R5_WORD_DEFINITIONS.map((definition) => [definition.id, definition])
+));
+
+export const R6_WORD_DEFINITIONS = Object.freeze([
+    ...R5_WORD_DEFINITIONS,
+    MERGE_VERB_WORD_DEFINITION
+]);
+
+export const R6_WORD_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
+    R6_WORD_DEFINITIONS.map((definition) => [definition.id, definition])
 ));
 
 /** R8 shop transaction 전에도 normal offer semantics를 공유하는 bounded catalog view입니다. */
@@ -220,6 +252,11 @@ export const R5_SUMMON_WORD_INSTANCE = normalizeWordInstance({
     definitionId: WORD_DEFINITION_ID.SUMMON
 });
 
+export const R6_MERGE_WORD_INSTANCE = normalizeWordInstance({
+    id: 'word-instance.r6.merge',
+    definitionId: WORD_DEFINITION_ID.MERGE
+});
+
 export const R3_WORD_INSTANCES = Object.freeze([
     R3_TOWER_WORD_INSTANCE,
     R3_ENEMY_WORD_INSTANCE,
@@ -239,6 +276,15 @@ export const R5_WORD_INSTANCES = Object.freeze([
 
 export const R5_WORD_INSTANCE_BY_ID = Object.freeze(Object.fromEntries(
     R5_WORD_INSTANCES.map((instance) => [instance.id, instance])
+));
+
+export const R6_WORD_INSTANCES = Object.freeze([
+    ...R5_WORD_INSTANCES,
+    R6_MERGE_WORD_INSTANCE
+]);
+
+export const R6_WORD_INSTANCE_BY_ID = Object.freeze(Object.fromEntries(
+    R6_WORD_INSTANCES.map((instance) => [instance.id, instance])
 ));
 
 export const R3_TOWER_SHOOTS_ENEMY_SENTENCE = normalizeSentenceDefinition({
@@ -292,6 +338,25 @@ export const R5_SENTENCE_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
     R5_SENTENCE_DEFINITIONS.map((sentence) => [sentence.id, sentence])
 ));
 
+export const R6_TOWERS_MERGE_SENTENCE = normalizeSentenceDefinition({
+    id: 'sentence.r6.towers-merge',
+    subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+    verbWordInstanceId: R6_MERGE_WORD_INSTANCE.id,
+    payloadWordInstanceId: null,
+    modifierWordInstanceIds: []
+}, 'R6 Towers Merge sentence', {
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
+});
+
+export const R6_SENTENCE_DEFINITIONS = Object.freeze([
+    ...R5_SENTENCE_DEFINITIONS,
+    R6_TOWERS_MERGE_SENTENCE
+]);
+
+export const R6_SENTENCE_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
+    R6_SENTENCE_DEFINITIONS.map((sentence) => [sentence.id, sentence])
+));
+
 /** Production showcase에서만 주입하는 R3 문장 loadout입니다. */
 export const R3_SHOWCASE_SENTENCE_LOADOUT = Object.freeze({
     [ABILITY_SLOT_ID.Q]: R3_TOWER_SHOOTS_ENEMY_SENTENCE,
@@ -302,6 +367,13 @@ export const R3_SHOWCASE_SENTENCE_LOADOUT = Object.freeze({
 export const R5_SHOWCASE_SENTENCE_LOADOUT = Object.freeze({
     [ABILITY_SLOT_ID.SHIFT]: R5_TOWER_SHOOTS_TOWER_SENTENCE,
     [ABILITY_SLOT_ID.SPACE]: R5_ENEMIES_SHOOT_TOWER_SENTENCE,
+    [ABILITY_SLOT_ID.Q]: R3_TOWER_SHOOTS_ENEMY_SENTENCE,
+    [ABILITY_SLOT_ID.E]: R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
+});
+
+/** Production key binding과 분리된 actual GameScene R6 QA 주입용 loadout입니다. */
+export const R6_QA_SENTENCE_LOADOUT = Object.freeze({
+    [ABILITY_SLOT_ID.SHIFT]: R6_TOWERS_MERGE_SENTENCE,
     [ABILITY_SLOT_ID.Q]: R3_TOWER_SHOOTS_ENEMY_SENTENCE,
     [ABILITY_SLOT_ID.E]: R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
 });

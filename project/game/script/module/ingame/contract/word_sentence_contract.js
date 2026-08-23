@@ -12,7 +12,8 @@ export const WORD_DEFINITION_ID = Object.freeze({
     SHOOT: 'verb.shoot',
     THROW: 'verb.throw',
     EMIT: 'verb.emit',
-    SUMMON: 'verb.summon'
+    SUMMON: 'verb.summon',
+    MERGE: 'verb.merge'
 });
 
 export const WORD_KIND = Object.freeze({
@@ -28,7 +29,19 @@ export const WORD_GRAMMATICAL_ROLE = Object.freeze({
 export const WORD_RUNTIME_SUPPORT = Object.freeze({
     R3: 'r3',
     FUTURE_R5: 'future-r5',
-    R5: 'r5'
+    R5: 'r5',
+    R6: 'r6'
+});
+
+/** Verb별 Payload slot 존재 조건을 고정하는 좁은 문법 계약입니다. */
+export const SENTENCE_PAYLOAD_REQUIREMENT = Object.freeze({
+    REQUIRED: 'REQUIRED',
+    FORBIDDEN: 'FORBIDDEN'
+});
+
+/** Compile은 가능하지만 실행 owner가 아직 없는 명시적 runtime seam입니다. */
+export const SENTENCE_RUNTIME_AVAILABILITY = Object.freeze({
+    RUNTIME_UNAVAILABLE: 'RUNTIME_UNAVAILABLE'
 });
 
 /** GPU metadata와 공유할 append-only gameplay noun bits입니다. */
@@ -48,7 +61,8 @@ export const SENTENCE_ACTION_CODE = Object.freeze({
     SHOOT: 1,
     THROW: 2,
     EMIT: 3,
-    SUMMON: 4
+    SUMMON: 4,
+    MERGE: 5
 });
 
 export const ACTOR_PAYLOAD_CODE = Object.freeze({
@@ -89,6 +103,7 @@ export const SENTENCE_COMPILE_ERROR_CODE = Object.freeze({
     WRONG_WORD_KIND: 'WRONG_WORD_KIND',
     UNSUPPORTED_VERB: 'UNSUPPORTED_VERB',
     UNSUPPORTED_PAYLOAD: 'UNSUPPORTED_PAYLOAD',
+    PAYLOAD_FORBIDDEN: 'PAYLOAD_FORBIDDEN',
     UNKNOWN_MODIFIER: 'UNKNOWN_MODIFIER',
     INVALID_PHASE: 'INVALID_PHASE',
     INVALID_SENTENCE: 'INVALID_SENTENCE'
@@ -97,6 +112,9 @@ export const SENTENCE_COMPILE_ERROR_CODE = Object.freeze({
 const WORD_KIND_VALUES = new Set(Object.values(WORD_KIND));
 const WORD_ROLE_VALUES = new Set(Object.values(WORD_GRAMMATICAL_ROLE));
 const WORD_RUNTIME_SUPPORT_VALUES = new Set(Object.values(WORD_RUNTIME_SUPPORT));
+const PAYLOAD_REQUIREMENT_VALUES = new Set(
+    Object.values(SENTENCE_PAYLOAD_REQUIREMENT)
+);
 const SUBJECT_SELECTOR_VALUES = new Set(Object.values(SUBJECT_SELECTOR_CODE));
 const ACTION_CODE_VALUES = new Set(Object.values(SENTENCE_ACTION_CODE));
 const PAYLOAD_CODE_VALUES = new Set(Object.values(ACTOR_PAYLOAD_CODE));
@@ -264,7 +282,8 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
             'shopEligible',
             'subject',
             'payload',
-            'actionCode'
+            'actionCode',
+            'payloadRequirement'
         ]),
         label
     );
@@ -298,15 +317,30 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
         && (!Number.isSafeInteger(actionCode) || !ACTION_CODE_VALUES.has(actionCode))) {
         throw new RangeError(`${label}.actionCode가 알려지지 않았습니다.`);
     }
+    const rawPayloadRequirement = definition.payloadRequirement;
+    const payloadRequirement = rawPayloadRequirement === null
+        || rawPayloadRequirement === undefined
+        ? null
+        : requireNonEmptyString(
+            rawPayloadRequirement,
+            `${label}.payloadRequirement`
+        );
+    if (payloadRequirement !== null
+        && !PAYLOAD_REQUIREMENT_VALUES.has(payloadRequirement)) {
+        throw new RangeError(`${label}.payloadRequirement가 알려지지 않았습니다.`);
+    }
     if (kind === WORD_KIND.ENTITY) {
-        if (actionCode !== null) {
-            throw new RangeError(`${label} Entity Word에는 actionCode를 둘 수 없습니다.`);
+        if (actionCode !== null || payloadRequirement !== null) {
+            throw new RangeError(
+                `${label} Entity Word에는 actionCode/payloadRequirement를 둘 수 없습니다.`
+            );
         }
         if (roles.includes(WORD_GRAMMATICAL_ROLE.SUBJECT) !== Boolean(subject)
             || roles.includes(WORD_GRAMMATICAL_ROLE.PAYLOAD) !== Boolean(payload)) {
             throw new RangeError(`${label} role과 subject/payload 구현이 일치하지 않습니다.`);
         }
-    } else if (subject || payload || roles.length !== 0 || actionCode === null) {
+    } else if (subject || payload || roles.length !== 0 || actionCode === null
+        || payloadRequirement === null) {
         throw new RangeError(`${label} Verb Word 구조가 올바르지 않습니다.`);
     }
 
@@ -318,7 +352,8 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
         shopEligible: definition.shopEligible === true,
         subject,
         payload,
-        actionCode
+        actionCode,
+        payloadRequirement
     });
 }
 
@@ -338,7 +373,8 @@ export function normalizeWordInstance(instance, label = 'wordInstance') {
 /** Typed word-instance IDs만 담는 SentenceDefinition을 생성합니다. */
 export function normalizeSentenceDefinition(
     sentence,
-    label = 'sentenceDefinition'
+    label = 'sentenceDefinition',
+    options = {}
 ) {
     requireRecord(sentence, label);
     requireKnownKeys(
@@ -361,6 +397,27 @@ export function normalizeSentenceDefinition(
             `${label}.modifierWordInstanceIds[${index}]`
         )
     );
+    const payloadRequirement = options.payloadRequirement
+        ?? SENTENCE_PAYLOAD_REQUIREMENT.REQUIRED;
+    if (!PAYLOAD_REQUIREMENT_VALUES.has(payloadRequirement)) {
+        throw new RangeError(
+            `${label} payloadRequirement가 알려지지 않았습니다.`
+        );
+    }
+    let payloadWordInstanceId;
+    if (payloadRequirement === SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN) {
+        if (sentence.payloadWordInstanceId !== null) {
+            throw new TypeError(
+                `${label}.payloadWordInstanceId는 FORBIDDEN verb에서 null이어야 합니다.`
+            );
+        }
+        payloadWordInstanceId = null;
+    } else {
+        payloadWordInstanceId = requireNonEmptyString(
+            sentence.payloadWordInstanceId,
+            `${label}.payloadWordInstanceId`
+        );
+    }
     return Object.freeze({
         id: requireNonEmptyString(sentence.id, `${label}.id`),
         subjectWordInstanceId: requireNonEmptyString(
@@ -371,10 +428,7 @@ export function normalizeSentenceDefinition(
             sentence.verbWordInstanceId,
             `${label}.verbWordInstanceId`
         ),
-        payloadWordInstanceId: requireNonEmptyString(
-            sentence.payloadWordInstanceId,
-            `${label}.payloadWordInstanceId`
-        ),
+        payloadWordInstanceId,
         modifierWordInstanceIds: Object.freeze(modifierWordInstanceIds)
     });
 }

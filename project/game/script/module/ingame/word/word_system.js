@@ -1,9 +1,10 @@
 import {
-    R5_SENTENCE_DEFINITION_BY_ID
+    R6_SENTENCE_DEFINITION_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
     ACTOR_PAYLOAD_CODE,
     ABILITY_SLOT_IDS,
+    SENTENCE_RUNTIME_AVAILABILITY,
     SENTENCE_RUNTIME_PHASE,
     normalizeAbilitySlotId,
     normalizeSentenceRuntimePhase
@@ -78,7 +79,7 @@ export class WordSystem {
             ? options.compiler
             : new SentenceCompiler(options.compilerOptions);
         this.sentenceDefinitionsById = options.sentenceDefinitionsById
-            ?? R5_SENTENCE_DEFINITION_BY_ID;
+            ?? R6_SENTENCE_DEFINITION_BY_ID;
         this.slots = new Map();
         for (const slotId of ABILITY_SLOT_IDS) {
             this.slots.set(slotId, {
@@ -245,6 +246,18 @@ export class WordSystem {
                     targetFixedTick,
                     compiledAbilityId:
                         slot.compileResult.compiledAbility.compiledAbilityId
+                }
+            ));
+        }
+        if (compiledAbility.runtimeAvailability
+            === SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_UNAVAILABLE) {
+            return this.#rememberActivationResult(freezeActivationResult(
+                ABILITY_ACTIVATION_RESULT_CODE.RUNTIME_UNAVAILABLE,
+                {
+                    slotId: normalizedSlotId,
+                    targetFixedTick,
+                    compiledAbilityId: compiledAbility.compiledAbilityId,
+                    reason: SENTENCE_RUNTIME_AVAILABILITY.RUNTIME_UNAVAILABLE
                 }
             ));
         }
