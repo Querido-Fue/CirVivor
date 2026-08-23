@@ -18,6 +18,14 @@ const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_CAPACITY = 256;
 const DEFAULT_HISTORY_CAPACITY = 65536;
 const DEFAULT_COMPLETION_BATCH_CAPACITY = 256;
+export const GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE = Object.freeze({
+    FULL: 'full',
+    VALIDATED_COUNT_ONLY: 'validated-count-only'
+});
+const VALID_COMPLETION_EVENT_PUBLICATION_MODES = new Set(
+    Object.values(GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE)
+);
+const COMPLETION_FINGERPRINT_FLOAT32 = new DataView(new ArrayBuffer(4));
 const NORMAL_COMPLETION_RESULTS = new Set([
     GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED,
     GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
@@ -238,13 +246,152 @@ function compareProtocolGeneration(left, right) {
     return 0;
 }
 
-function createEmptyCompletionSnapshot(fixedTick = 0, completedThroughTick = 0) {
+function normalizeCompletionEventPublicationMode(value) {
+    const mode = value
+        ?? GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.FULL;
+    if (!VALID_COMPLETION_EVENT_PUBLICATION_MODES.has(mode)) {
+        throw new RangeError(
+            `지원하지 않는 Effect completion event publication mode입니다: ${String(mode)}`
+        );
+    }
+    return mode;
+}
+
+function mixCompletionFingerprint(state, value) {
+    const word = Number(value) >>> 0;
+    state[0] = Math.imul((state[0] ^ word) >>> 0, 0x01000193) >>> 0;
+    state[1] = Math.imul(
+        (state[1] + word + 0x9e3779b9) >>> 0,
+        0x85ebca6b
+    ) >>> 0;
+    state[2] = Math.imul(
+        (state[2] ^ ((word << 16) | (word >>> 16))) >>> 0,
+        0xc2b2ae35
+    ) >>> 0;
+    state[3] = Math.imul(
+        (state[3] + (word ^ 0x27d4eb2f)) >>> 0,
+        0x165667b1
+    ) >>> 0;
+}
+
+function completionFloat32Bits(value) {
+    COMPLETION_FINGERPRINT_FLOAT32.setFloat32(
+        0,
+        Math.fround(Number(value)),
+        true
+    );
+    return COMPLETION_FINGERPRINT_FLOAT32.getUint32(0, true);
+}
+
+function finalizeCompletionFingerprintLane(value) {
+    let lane = value >>> 0;
+    lane ^= lane >>> 16;
+    lane = Math.imul(lane, 0x85ebca6b) >>> 0;
+    lane ^= lane >>> 13;
+    lane = Math.imul(lane, 0xc2b2ae35) >>> 0;
+    lane ^= lane >>> 16;
+    return lane >>> 0;
+}
+
+/**
+ * Replay identity를 위해 의미 있는 numeric ABI field 전체를 streaming hash합니다.
+ * 과거의 stableFingerprint(batch.source)는 event마다 key sort/문자열을 만들고
+ * 그 거대한 문자열을 history에 보존했습니다. 네 독립 lane은 동일 계약 필드를
+ * 고정 길이로 보존하면서 정상 completion 경로의 문자열/객체 폭증을 피합니다.
+ */
+function createCompletionBatchFingerprint(batch) {
+    const state = [0x811c9dc5, 0x9e3779b9, 0x243f6a88, 0xb7e15162];
+    for (const value of [
+        0x45464631,
+        batch.abiVersion,
+        batch.sessionGeneration,
+        batch.deviceGeneration,
+        batch.authoritativeEpoch,
+        batch.previousSourceTick,
+        batch.previousSubmittedTick,
+        batch.sourceTick,
+        batch.submittedTick,
+        batch.completedThroughTick,
+        batch.status,
+        batch.candidateCount,
+        batch.appliedInstanceCount,
+        batch.eventCount,
+        batch.pulseResults.length
+    ]) {
+        mixCompletionFingerprint(state, value);
+    }
+    for (const result of batch.pulseResults) {
+        mixCompletionFingerprint(state, 0x50554c53);
+        mixCompletionFingerprint(state, result.programIndex);
+        mixCompletionFingerprint(state, result.pulseSequence);
+        mixCompletionFingerprint(state, result.resultCode);
+        mixCompletionFingerprint(state, result.candidateCount);
+        mixCompletionFingerprint(state, result.appliedCount);
+    }
+    mixCompletionFingerprint(state, batch.events.length);
+    for (const event of batch.events) {
+        let presenceMask = 0;
+        const fields = [
+            'type',
+            'flags',
+            'effectInstanceId',
+            'instanceIncarnation',
+            'sourceEntityId',
+            'sourceIncarnation',
+            'targetEntityId',
+            'targetIncarnation',
+            'effectDefinitionCode',
+            'valueFixedPoint',
+            'position'
+        ];
+        for (let index = 0; index < fields.length; index++) {
+            if (Object.hasOwn(event ?? {}, fields[index])) {
+                presenceMask |= 1 << index;
+            }
+        }
+        if (Object.hasOwn(event?.position ?? {}, 'x')) presenceMask |= 1 << 11;
+        if (Object.hasOwn(event?.position ?? {}, 'y')) presenceMask |= 1 << 12;
+        mixCompletionFingerprint(state, 0x45564e54);
+        mixCompletionFingerprint(state, presenceMask);
+        mixCompletionFingerprint(state, event?.type);
+        mixCompletionFingerprint(state, event?.flags ?? 0);
+        mixCompletionFingerprint(state, event?.effectInstanceId);
+        mixCompletionFingerprint(state, event?.instanceIncarnation);
+        mixCompletionFingerprint(state, event?.sourceEntityId);
+        mixCompletionFingerprint(state, event?.sourceIncarnation);
+        mixCompletionFingerprint(state, event?.targetEntityId);
+        mixCompletionFingerprint(state, event?.targetIncarnation);
+        mixCompletionFingerprint(state, event?.effectDefinitionCode);
+        mixCompletionFingerprint(state, event?.valueFixedPoint);
+        mixCompletionFingerprint(
+            state,
+            completionFloat32Bits(event?.position?.x)
+        );
+        mixCompletionFingerprint(
+            state,
+            completionFloat32Bits(event?.position?.y)
+        );
+    }
+    return state.map((lane) => (
+        finalizeCompletionFingerprintLane(lane)
+            .toString(16)
+            .padStart(8, '0')
+    )).join('');
+}
+
+function createEmptyCompletionSnapshot(
+    fixedTick = 0,
+    completedThroughTick = 0,
+    eventPublicationMode = GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.FULL
+) {
     return Object.freeze({
         fixedTick,
         completedThroughTick,
         batchCount: 0,
         results: Object.freeze([]),
         events: Object.freeze([]),
+        validatedEventCount: 0,
+        eventPublicationMode,
         staleBatchCount: 0,
         protocolFailure: null
     });
@@ -353,6 +500,10 @@ export class GpuEffectCommandOwner {
             options.completionBatchCapacity ?? DEFAULT_COMPLETION_BATCH_CAPACITY,
             'effectCompletionBatchCapacity'
         );
+        this.completionEventPublicationMode
+            = normalizeCompletionEventPublicationMode(
+                options.completionEventPublicationMode
+            );
         this.pendingBatchByTick = new Map();
         this.inFlightBatchByTick = new Map();
         this.knownBatchById = new Map();
@@ -369,7 +520,11 @@ export class GpuEffectCommandOwner {
         this.lastCompletionProtocolKey = null;
         this.completedThroughTick = 0;
         this.lastCommitResult = null;
-        this.lastCompletionResult = createEmptyCompletionSnapshot();
+        this.lastCompletionResult = createEmptyCompletionSnapshot(
+            0,
+            0,
+            this.completionEventPublicationMode
+        );
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -676,7 +831,8 @@ export class GpuEffectCommandOwner {
             this.deferredCompletionBatches.length = 0;
             this.lastCompletionResult = createEmptyCompletionSnapshot(
                 tick,
-                this.completedThroughTick
+                this.completedThroughTick,
+                this.completionEventPublicationMode
             );
             return this.lastCompletionResult;
         }
@@ -708,7 +864,8 @@ export class GpuEffectCommandOwner {
         if (this.deferredCompletionBatches.length === 0) {
             this.lastCompletionResult = createEmptyCompletionSnapshot(
                 tick,
-                this.completedThroughTick
+                this.completedThroughTick,
+                this.completionEventPublicationMode
             );
             return this.lastCompletionResult;
         }
@@ -756,6 +913,7 @@ export class GpuEffectCommandOwner {
         let zeroTargetCount = 0;
         let sourceInvalidCount = 0;
         let deferredCapacityCount = 0;
+        let validatedEventCount = 0;
         try {
             for (const batch of eligible) {
                 const key = [
@@ -765,7 +923,7 @@ export class GpuEffectCommandOwner {
                     batch.sourceTick,
                     batch.submittedTick
                 ].join(':');
-                const fingerprint = stableFingerprint(batch.source);
+                const fingerprint = createCompletionBatchFingerprint(batch);
                 const knownFingerprint = this.knownCompletionBatchFingerprints.get(key);
                 if (knownFingerprint !== undefined) {
                     if (knownFingerprint !== fingerprint) {
@@ -802,7 +960,12 @@ export class GpuEffectCommandOwner {
                 let candidateCount = 0;
                 let appliedInstanceCount = 0;
                 const pulseResultByCommandId = new Map();
-                const commandByEventKey = new Map();
+                const publishCompletionEvents
+                    = this.completionEventPublicationMode
+                        === GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.FULL;
+                const commandByEventKey = publishCompletionEvents
+                    ? new Map()
+                    : null;
                 for (let index = 0; index < pending.commands.length; index++) {
                     const command = pending.commands[index];
                     const result = batch.pulseResults[index];
@@ -834,17 +997,19 @@ export class GpuEffectCommandOwner {
                     }
                     appliedInstanceCount += result.appliedCount;
                     pulseResultByCommandId.set(command.commandId, result);
-                    const eventKey = effectEventCommandKey(
-                        command.sourceHandle.entityId,
-                        command.sourceHandle.incarnation,
-                        command.backendRecord.effectDefinitionCode
-                    );
-                    if (commandByEventKey.has(eventKey)) {
-                        throw new RangeError(
-                            'Effect event source/definition command key가 중복되었습니다.'
+                    if (commandByEventKey) {
+                        const eventKey = effectEventCommandKey(
+                            command.sourceHandle.entityId,
+                            command.sourceHandle.incarnation,
+                            command.backendRecord.effectDefinitionCode
                         );
+                        if (commandByEventKey.has(eventKey)) {
+                            throw new RangeError(
+                                'Effect event source/definition command key가 중복되었습니다.'
+                            );
+                        }
+                        commandByEventKey.set(eventKey, command);
                     }
-                    commandByEventKey.set(eventKey, command);
                     if (result.resultCode === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET) {
                         zeroTargetCount++;
                     } else if (result.resultCode
@@ -872,95 +1037,120 @@ export class GpuEffectCommandOwner {
                     || appliedInstanceCount !== batch.appliedInstanceCount) {
                     throw new RangeError('Effect completion aggregate count가 pulse result와 다릅니다.');
                 }
-                const eventCountsByCommandId = new Map(
-                    pending.commands.map((command) => [
-                        command.commandId,
-                        { pulse: 0, instance: 0 }
-                    ])
-                );
-                const validPulseCommandIds = pending.commands
-                    .filter((command) => (
-                        ![
-                            GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
-                            GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
-                        ].includes(
-                            pulseResultByCommandId.get(command.commandId)?.resultCode
-                        )
-                    ))
-                    .map(({ commandId }) => commandId);
-                let nextPulseEventIndex = 0;
-                let sawInstanceEvent = false;
-                let batchInstanceIncarnation = null;
-                const appliedInstanceKeys = new Set();
-                const appliedTargetKeys = new Set();
-                for (const rawEvent of batch.events) {
-                    const event = this.#normalizeCompletionEvent(
-                        rawEvent,
-                        pending,
-                        commandByEventKey
+                if (publishCompletionEvents) {
+                    const eventCountsByCommandId = new Map(
+                        pending.commands.map((command) => [
+                            command.commandId,
+                            { pulse: 0, instance: 0 }
+                        ])
                     );
-                    const counts = eventCountsByCommandId.get(event.commandId);
-                    const result = pulseResultByCommandId.get(event.commandId);
-                    if (!counts || !result) {
-                        throw new RangeError('Effect event command provenance가 없습니다.');
-                    }
-                    if (batchInstanceIncarnation === null) {
-                        batchInstanceIncarnation = event.instanceIncarnation;
-                    } else if (batchInstanceIncarnation !== event.instanceIncarnation) {
-                        throw new RangeError(
-                            'Effect event instance incarnation이 batch 안에서 일치하지 않습니다.'
+                    const validPulseCommandIds = pending.commands
+                        .filter((command) => (
+                            ![
+                                GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
+                                GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
+                            ].includes(
+                                pulseResultByCommandId.get(command.commandId)
+                                    ?.resultCode
+                            )
+                        ))
+                        .map(({ commandId }) => commandId);
+                    let nextPulseEventIndex = 0;
+                    let sawInstanceEvent = false;
+                    let batchInstanceIncarnation = null;
+                    const appliedInstanceKeys = new Set();
+                    const appliedTargetKeys = new Set();
+                    for (const rawEvent of batch.events) {
+                        const event = this.#normalizeCompletionEvent(
+                            rawEvent,
+                            pending,
+                            commandByEventKey
                         );
-                    }
-                    if (event.type === GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED) {
-                        if (sawInstanceEvent
-                            || validPulseCommandIds[nextPulseEventIndex]
-                                !== event.commandId
-                            || event.valueFixedPoint !== result.appliedCount) {
+                        const counts = eventCountsByCommandId.get(
+                            event.commandId
+                        );
+                        const result = pulseResultByCommandId.get(
+                            event.commandId
+                        );
+                        if (!counts || !result) {
                             throw new RangeError(
-                                'PULSE_EMITTED order/value가 authored pulse result와 다릅니다.'
+                                'Effect event command provenance가 없습니다.'
                             );
                         }
-                        counts.pulse++;
-                        nextPulseEventIndex++;
-                    } else {
-                        sawInstanceEvent = true;
-                        const instanceKey = [
-                            event.effectInstanceId,
-                            event.instanceIncarnation
-                        ].join(':');
-                        const targetKey = [
-                            event.commandId,
-                            event.targetHandle.entityId,
-                            event.targetHandle.incarnation
-                        ].join(':');
-                        if (appliedInstanceKeys.has(instanceKey)
-                            || appliedTargetKeys.has(targetKey)) {
+                        if (batchInstanceIncarnation === null) {
+                            batchInstanceIncarnation
+                                = event.instanceIncarnation;
+                        } else if (batchInstanceIncarnation
+                            !== event.instanceIncarnation) {
                             throw new RangeError(
-                                'INSTANCE_APPLIED instance/target provenance가 중복되었습니다.'
+                                'Effect event instance incarnation이 batch 안에서 일치하지 않습니다.'
                             );
                         }
-                        appliedInstanceKeys.add(instanceKey);
-                        appliedTargetKeys.add(targetKey);
-                        counts.instance++;
+                        if (event.type
+                            === GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED) {
+                            if (sawInstanceEvent
+                                || validPulseCommandIds[nextPulseEventIndex]
+                                    !== event.commandId
+                                || event.valueFixedPoint
+                                    !== result.appliedCount) {
+                                throw new RangeError(
+                                    'PULSE_EMITTED order/value가 authored pulse result와 다릅니다.'
+                                );
+                            }
+                            counts.pulse++;
+                            nextPulseEventIndex++;
+                        } else {
+                            sawInstanceEvent = true;
+                            const instanceKey = [
+                                event.effectInstanceId,
+                                event.instanceIncarnation
+                            ].join(':');
+                            const targetKey = [
+                                event.commandId,
+                                event.targetHandle.entityId,
+                                event.targetHandle.incarnation
+                            ].join(':');
+                            if (appliedInstanceKeys.has(instanceKey)
+                                || appliedTargetKeys.has(targetKey)) {
+                                throw new RangeError(
+                                    'INSTANCE_APPLIED instance/target provenance가 중복되었습니다.'
+                                );
+                            }
+                            appliedInstanceKeys.add(instanceKey);
+                            appliedTargetKeys.add(targetKey);
+                            counts.instance++;
+                        }
+                        events.push(event);
                     }
-                    events.push(event);
-                }
-                for (const command of pending.commands) {
-                    const result = pulseResultByCommandId.get(command.commandId);
-                    const counts = eventCountsByCommandId.get(command.commandId);
-                    const expectedPulseCount = result.resultCode
-                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
-                        || result.resultCode
-                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
-                        ? 0
-                        : 1;
-                    if (counts.pulse !== expectedPulseCount
-                        || counts.instance !== result.appliedCount) {
-                        throw new RangeError(
-                            `Effect event composition이 pulse result와 다릅니다: ${command.commandId}`
+                    for (const command of pending.commands) {
+                        const result = pulseResultByCommandId.get(
+                            command.commandId
                         );
+                        const counts = eventCountsByCommandId.get(
+                            command.commandId
+                        );
+                        const expectedPulseCount = result.resultCode
+                                === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                            || result.resultCode
+                                === GPU_EFFECT_PULSE_PROGRAM_RESULT
+                                    .DEFERRED_CAPACITY
+                            ? 0
+                            : 1;
+                        if (counts.pulse !== expectedPulseCount
+                            || counts.instance !== result.appliedCount) {
+                            throw new RangeError(
+                                `Effect event composition이 pulse result와 다릅니다: ${command.commandId}`
+                            );
+                        }
                     }
+                } else {
+                    this.#validateCompletionEventsWithoutPublication(
+                        batch.events,
+                        pending,
+                        batch.pulseResults
+                    );
                 }
+                validatedEventCount += batch.events.length;
                 this.inFlightBatchByTick.delete(batch.sourceTick);
                 this.#completeKnownBatch(pending);
                 this.#rememberCompletionBatch(key, fingerprint);
@@ -991,6 +1181,8 @@ export class GpuEffectCommandOwner {
             batchCount: acceptedBatchCount,
             results: Object.freeze(results),
             events: Object.freeze(events),
+            validatedEventCount,
+            eventPublicationMode: this.completionEventPublicationMode,
             staleBatchCount,
             protocolFailure: null
         });
@@ -1044,6 +1236,8 @@ export class GpuEffectCommandOwner {
             inFlightBatchCount: this.inFlightBatchByTick.size,
             pendingPulseProgramCount: this.#getPendingProgramCount(),
             deferredCompletionBatchCount: this.deferredCompletionBatches.length,
+            completionEventPublicationMode:
+                this.completionEventPublicationMode,
             completedThroughTick: this.completedThroughTick,
             recoveryRequired: this.recoveryRequired,
             failure: this.failure,
@@ -1528,6 +1722,174 @@ export class GpuEffectCommandOwner {
         });
     }
 
+    #validateCompletionEventsWithoutPublication(
+        rawEvents,
+        pending,
+        pulseResults
+    ) {
+        const commandCount = pending.commands.length;
+        const commandIndexBySourceEntityId = new Map();
+        for (let index = 0; index < commandCount; index++) {
+            const entityId = pending.commands[index].sourceHandle.entityId;
+            if (commandIndexBySourceEntityId.has(entityId)) {
+                throw new RangeError(
+                    'Effect event source entity command key가 중복되었습니다.'
+                );
+            }
+            commandIndexBySourceEntityId.set(entityId, index);
+        }
+        const pulseCounts = new Uint8Array(commandCount);
+        const instanceCounts = new Uint32Array(commandCount);
+        const appliedInstanceIds = new Set();
+        const appliedTargetEntityIdsByCommand = new Array(commandCount);
+        let nextPulseCommandIndex = 0;
+        let sawInstanceEvent = false;
+        let batchInstanceIncarnation = null;
+        for (const source of rawEvents) {
+            const type = requirePositiveSafeInteger(
+                source?.type,
+                'effectEvent.type'
+            );
+            if (!VALID_EFFECT_EVENT_TYPES.has(type)) {
+                throw new RangeError(
+                    `지원하지 않는 Effect event type입니다: ${type}`
+                );
+            }
+            const sourceEntityId = requirePositiveSafeInteger(
+                source.sourceEntityId,
+                'effectEvent.source.entityId'
+            );
+            const sourceIncarnation = requirePositiveSafeInteger(
+                source.sourceIncarnation,
+                'effectEvent.source.incarnation'
+            );
+            const targetEntityId = requirePositiveSafeInteger(
+                source.targetEntityId,
+                'effectEvent.target.entityId'
+            );
+            const targetIncarnation = requirePositiveSafeInteger(
+                source.targetIncarnation,
+                'effectEvent.target.incarnation'
+            );
+            const effectDefinitionCode = requirePositiveSafeInteger(
+                source.effectDefinitionCode,
+                'effectEvent.effectDefinitionCode'
+            );
+            const commandIndex = commandIndexBySourceEntityId.get(
+                sourceEntityId
+            );
+            const command = commandIndex === undefined
+                ? null
+                : pending.commands[commandIndex];
+            if (!command
+                || command.sourceHandle.incarnation !== sourceIncarnation
+                || command.backendRecord.effectDefinitionCode
+                    !== effectDefinitionCode) {
+                throw new RangeError(
+                    'Effect event source/definition이 pending command 하나와 exact match해야 합니다.'
+                );
+            }
+            const effectInstanceId = requirePositiveSafeInteger(
+                source.effectInstanceId,
+                'effectEvent.effectInstanceId'
+            );
+            if (type === GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED
+                && (targetEntityId !== sourceEntityId
+                    || targetIncarnation !== sourceIncarnation
+                    || effectInstanceId
+                        !== command.backendRecord.fingerprint)) {
+                throw new RangeError(
+                    'PULSE_EMITTED target/provenance가 exact source command와 다릅니다.'
+                );
+            }
+            const flags = requireNonNegativeSafeInteger(
+                source.flags ?? 0,
+                'effectEvent.flags'
+            );
+            if (flags !== 0) {
+                throw new RangeError('Effect event ABI v1 flags는 0이어야 합니다.');
+            }
+            const instanceIncarnation = requirePositiveSafeInteger(
+                source.instanceIncarnation,
+                'effectEvent.instanceIncarnation'
+            );
+            const valueFixedPoint = requireInt32(
+                source.valueFixedPoint,
+                'effectEvent.valueFixedPoint'
+            );
+            requireFiniteFloat32(
+                source.position?.x,
+                'effectEvent.position.x'
+            );
+            requireFiniteFloat32(
+                source.position?.y,
+                'effectEvent.position.y'
+            );
+            if (batchInstanceIncarnation === null) {
+                batchInstanceIncarnation = instanceIncarnation;
+            } else if (batchInstanceIncarnation !== instanceIncarnation) {
+                throw new RangeError(
+                    'Effect event instance incarnation이 batch 안에서 일치하지 않습니다.'
+                );
+            }
+            const result = pulseResults[commandIndex];
+            if (type === GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED) {
+                while (nextPulseCommandIndex < commandCount
+                    && [
+                        GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
+                        GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
+                    ].includes(
+                        pulseResults[nextPulseCommandIndex].resultCode
+                    )) {
+                    nextPulseCommandIndex++;
+                }
+                if (sawInstanceEvent
+                    || nextPulseCommandIndex !== commandIndex
+                    || valueFixedPoint !== result.appliedCount) {
+                    throw new RangeError(
+                        'PULSE_EMITTED order/value가 authored pulse result와 다릅니다.'
+                    );
+                }
+                pulseCounts[commandIndex]++;
+                nextPulseCommandIndex++;
+                continue;
+            }
+            sawInstanceEvent = true;
+            let appliedTargets
+                = appliedTargetEntityIdsByCommand[commandIndex];
+            if (!appliedTargets) {
+                appliedTargets = new Set();
+                appliedTargetEntityIdsByCommand[commandIndex]
+                    = appliedTargets;
+            }
+            if (appliedInstanceIds.has(effectInstanceId)
+                || appliedTargets.has(targetEntityId)) {
+                throw new RangeError(
+                    'INSTANCE_APPLIED instance/target provenance가 중복되었습니다.'
+                );
+            }
+            appliedInstanceIds.add(effectInstanceId);
+            appliedTargets.add(targetEntityId);
+            instanceCounts[commandIndex]++;
+        }
+        for (let index = 0; index < commandCount; index++) {
+            const command = pending.commands[index];
+            const result = pulseResults[index];
+            const expectedPulseCount = result.resultCode
+                    === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                || result.resultCode
+                    === GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
+                ? 0
+                : 1;
+            if (pulseCounts[index] !== expectedPulseCount
+                || instanceCounts[index] !== result.appliedCount) {
+                throw new RangeError(
+                    `Effect event composition이 pulse result와 다릅니다: ${command.commandId}`
+                );
+            }
+        }
+    }
+
     #cancelForTerminal(finalFixedTick) {
         const tick = requirePositiveSafeInteger(finalFixedTick, 'finalFixedTick');
         const pulseProgramCount = [...this.inFlightBatchByTick.values()]
@@ -1629,7 +1991,11 @@ export class GpuEffectCommandOwner {
     #failCompletion(fixedTick, code, message) {
         const failure = this.#failProtocol(code, message);
         this.lastCompletionResult = Object.freeze({
-            ...createEmptyCompletionSnapshot(fixedTick, this.completedThroughTick),
+            ...createEmptyCompletionSnapshot(
+                fixedTick,
+                this.completedThroughTick,
+                this.completionEventPublicationMode
+            ),
             protocolFailure: failure
         });
         return this.lastCompletionResult;

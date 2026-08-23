@@ -1,6 +1,9 @@
 import { WorldRegistry } from '../world_registry.js';
 import { GpuFixedCommandOwner } from '../gpu_fixed_command_owner.js';
-import { GpuEffectCommandOwner } from './gpu_effect_command_owner.js';
+import {
+    GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE,
+    GpuEffectCommandOwner
+} from './gpu_effect_command_owner.js';
 import { GpuFormationCommandOwner } from './gpu_formation_command_owner.js';
 import { GpuAtomicTransformCommandOwner } from './gpu_atomic_transform_command_owner.js';
 import {
@@ -1550,6 +1553,9 @@ export class GpuEnemySimulationEndpoint {
                 commandCapacity: this.effectCommandCapacity,
                 historyCapacity: options.effectCommandHistoryCapacity,
                 completionBatchCapacity: options.effectCompletionBatchCapacity,
+                completionEventPublicationMode:
+                    GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE
+                        .VALIDATED_COUNT_ONLY,
                 effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
                 effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
                 lifecycleCommitProofPort: Object.freeze({

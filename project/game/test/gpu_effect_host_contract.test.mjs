@@ -25,6 +25,7 @@ const { WorldRegistry } = await loadGameModule(
     'ingame/object/world_registry.js'
 );
 const {
+    GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE,
     GpuEffectCommandOwner,
     createGpuEffectPulseBatchId,
     createGpuEffectPulseCommandId
@@ -457,6 +458,115 @@ test('Effect owner는 pulse/application event의 exact source-target-definition 
     assert.deepEqual(
         { ...completion.events[1].targetHandle },
         { ...targetHandle }
+    );
+});
+
+test('Effect owner validated-count-only mode는 provenance를 검증하고 event 객체 공개를 생략한다', () => {
+    const sessionGeneration = 151;
+    const registry = new WorldRegistry({ capacity: 4 });
+    const backend = createEffectBackend(sessionGeneration);
+    const sourceHandle = activateEmitter(registry, backend);
+    const targetHandle = activateEmitter(registry, backend);
+    const owner = new GpuEffectCommandOwner(backend, registry, {
+        sessionGeneration,
+        effectEmitterProfileById: ENEMY_EFFECT_EMITTER_PROFILE_BY_ID,
+        effectDefinitionById: ENEMY_EFFECT_DEFINITION_BY_ID,
+        commandCapacity: 4,
+        completionEventPublicationMode:
+            GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE
+                .VALIDATED_COUNT_ONLY
+    });
+    const commands = [createPulseCommand(sessionGeneration, 5, sourceHandle)];
+    assert.equal(owner.getCommandPort().requestPulseBatch({
+        batchId: createGpuEffectPulseBatchId(sessionGeneration, 5, commands),
+        targetFixedTick: 5,
+        commands
+    }).accepted, true);
+    assert.equal(owner.commitAtFixedBoundary(5).programs.length, 1);
+    const record = backend.staged[0].records[0];
+    const events = Object.freeze([
+        Object.freeze({
+            type: GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED,
+            flags: 0,
+            effectInstanceId: record.fingerprint,
+            instanceIncarnation: 7,
+            sourceEntityId: sourceHandle.entityId,
+            sourceIncarnation: sourceHandle.incarnation,
+            targetEntityId: sourceHandle.entityId,
+            targetIncarnation: sourceHandle.incarnation,
+            effectDefinitionCode: DEFINITION.effectDefinitionCode,
+            valueFixedPoint: 1,
+            position: Object.freeze({ x: 1, y: 2 })
+        }),
+        Object.freeze({
+            type: GPU_EFFECT_EVENT_TYPE.INSTANCE_APPLIED,
+            flags: 0,
+            effectInstanceId: 1,
+            instanceIncarnation: 7,
+            sourceEntityId: sourceHandle.entityId,
+            sourceIncarnation: sourceHandle.incarnation,
+            targetEntityId: targetHandle.entityId,
+            targetIncarnation: targetHandle.incarnation,
+            effectDefinitionCode: DEFINITION.effectDefinitionCode,
+            valueFixedPoint: 1,
+            position: Object.freeze({ x: 3, y: 4 })
+        })
+    ]);
+    const completionBatch = Object.freeze({
+        abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
+        ...backend.getEventProtocolState(),
+        previousSourceTick: 0,
+        previousSubmittedTick: 0,
+        sourceTick: 5,
+        submittedTick: 5,
+        completedThroughTick: 5,
+        status: GPU_EFFECT_RUNTIME_STATUS.OK,
+        candidateCount: 1,
+        appliedInstanceCount: 1,
+        eventCount: events.length,
+        pulseResults: Object.freeze([Object.freeze({
+            programIndex: 0,
+            pulseSequence: 0,
+            resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED,
+            candidateCount: 1,
+            appliedCount: 1
+        })]),
+        events
+    });
+    backend.completed.push(completionBatch);
+    const completion = owner.commitCompletedAtFixedBoundary(6);
+    assert.equal(completion.protocolFailure, null);
+    assert.equal(completion.results.length, 1);
+    assert.equal(completion.events.length, 0);
+    assert.equal(completion.validatedEventCount, 2);
+    assert.equal(
+        completion.eventPublicationMode,
+        GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.VALIDATED_COUNT_ONLY
+    );
+    assert.equal(
+        owner.getStatus().completionEventPublicationMode,
+        GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.VALIDATED_COUNT_ONLY
+    );
+
+    backend.completed.push(completionBatch);
+    const replay = owner.commitCompletedAtFixedBoundary(7);
+    assert.equal(replay.protocolFailure, null);
+    assert.equal(replay.batchCount, 0);
+
+    backend.completed.push(Object.freeze({
+        ...completionBatch,
+        events: Object.freeze([
+            events[0],
+            Object.freeze({
+                ...events[1],
+                position: Object.freeze({ x: 9, y: 4 })
+            })
+        ])
+    }));
+    const conflict = owner.commitCompletedAtFixedBoundary(8);
+    assert.equal(
+        conflict.protocolFailure.code,
+        'effect-completion-protocol'
     );
 });
 
