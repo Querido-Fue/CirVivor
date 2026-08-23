@@ -19,6 +19,7 @@ const PULSE_PENDING_PHASE = Object.freeze({
     QUEUED: 1,
     SUBMITTED: 2
 });
+const EFFECT_COMMAND_PIPELINE_DEPTH = 4;
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -115,6 +116,34 @@ export class PentagonEffectDirector {
             ?? ENEMY_EFFECT_EMITTER_PROFILE_BY_ID;
         this.effectDefinitionById = options.effectDefinitionById
             ?? ENEMY_EFFECT_DEFINITION_BY_ID;
+        const endpointStatus = this.endpoint.getStatus();
+        const endpointEffectCommandCapacity = Number(
+            endpointStatus?.effectCommandCapacity
+        );
+        const defaultPulseAdmission = Number.isSafeInteger(
+            endpointEffectCommandCapacity
+        ) && endpointEffectCommandCapacity > 0
+            ? Math.max(
+                1,
+                Math.floor(
+                    endpointEffectCommandCapacity
+                        / EFFECT_COMMAND_PIPELINE_DEPTH
+                )
+            )
+            : this.capacity;
+        this.maximumPulseProgramsPerFixedTick = requirePositiveSafeInteger(
+            options.maximumPulseProgramsPerFixedTick
+                ?? defaultPulseAdmission,
+            'maximumPulseProgramsPerFixedTick'
+        );
+        if (Number.isSafeInteger(endpointEffectCommandCapacity)
+            && endpointEffectCommandCapacity > 0
+            && this.maximumPulseProgramsPerFixedTick
+                > endpointEffectCommandCapacity) {
+            throw new RangeError(
+                'maximumPulseProgramsPerFixedTick은 Effect command capacity를 초과할 수 없습니다.'
+            );
+        }
 
         this.entityIds = new Uint32Array(this.capacity);
         this.incarnations = new Uint32Array(this.capacity);
@@ -138,6 +167,7 @@ export class PentagonEffectDirector {
         this.observedCompletionSnapshots = new WeakSet();
         this.lastCompletedSourceTick = 0;
         this.lastStageResult = createEmptyStageResult();
+        this.nextDueCursor = 0;
         this.recoveryRequired = false;
         this.failure = null;
         this.ingressOpen = true;
@@ -154,6 +184,9 @@ export class PentagonEffectDirector {
             stagedPulseCount: 0,
             completedPulseCount: 0,
             duePulseCount: 0,
+            quotaDeferredPulseCount: 0,
+            maximumDuePulseCount: 0,
+            maximumStagedPulseCount: 0,
             appliedPulseCount: 0,
             deferredPulseCount: 0,
             maxTargetsPerPulse: 0,
@@ -511,12 +544,43 @@ export class PentagonEffectDirector {
             return this.lastStageResult;
         }
         this.telemetry.duePulseCount += dueIndexes.length;
+        this.telemetry.maximumDuePulseCount = Math.max(
+            this.telemetry.maximumDuePulseCount,
+            dueIndexes.length
+        );
         dueIndexes.sort((left, right) => (
             this.entityIds[left] - this.entityIds[right]
                 || this.incarnations[left] - this.incarnations[right]
                 || this.pulseSequences[left] - this.pulseSequences[right]
         ));
-        const commands = dueIndexes.map((index) => {
+        const stagedIndexCount = Math.min(
+            dueIndexes.length,
+            this.maximumPulseProgramsPerFixedTick
+        );
+        const startCursor = dueIndexes.length <= stagedIndexCount
+            ? 0
+            : this.nextDueCursor % dueIndexes.length;
+        const stagedIndexes = Array.from(
+            { length: stagedIndexCount },
+            (_, offset) => dueIndexes[(startCursor + offset) % dueIndexes.length]
+        ).sort((left, right) => (
+            this.entityIds[left] - this.entityIds[right]
+                || this.incarnations[left] - this.incarnations[right]
+                || this.pulseSequences[left] - this.pulseSequences[right]
+        ));
+        if (stagedIndexCount < dueIndexes.length) {
+            for (let offset = stagedIndexCount;
+                offset < dueIndexes.length;
+                offset++) {
+                const index = dueIndexes[
+                    (startCursor + offset) % dueIndexes.length
+                ];
+                this.nextPulseTicks[index] = tick + 1;
+            }
+            this.telemetry.quotaDeferredPulseCount +=
+                dueIndexes.length - stagedIndexCount;
+        }
+        const commands = stagedIndexes.map((index) => {
             const sourceHandle = Object.freeze({
                 entityId: this.entityIds[index],
                 incarnation: this.incarnations[index]
@@ -572,7 +636,7 @@ export class PentagonEffectDirector {
                     'effect-command-history-capacity'
                 ].includes(receipt.reason);
             if (retryableCapacity) {
-                for (const index of dueIndexes) {
+                for (const index of stagedIndexes) {
                     this.nextPulseTicks[index] = tick + 1;
                 }
                 this.telemetry.capacityRejectedStageCount++;
@@ -593,14 +657,21 @@ export class PentagonEffectDirector {
             });
             return this.lastStageResult;
         }
-        for (const index of dueIndexes) {
+        for (const index of stagedIndexes) {
             this.pendingTicks[index] = tick;
             this.pendingPhases[index] = PULSE_PENDING_PHASE.QUEUED;
         }
+        this.nextDueCursor = dueIndexes.length <= stagedIndexCount
+            ? 0
+            : (startCursor + stagedIndexCount) % dueIndexes.length;
         this.pendingBatchIdByTick.set(tick, batchId);
         this.pendingBatchCountByTick.set(tick, commands.length);
         this.telemetry.stagedBatchCount++;
         this.telemetry.stagedPulseCount += commands.length;
+        this.telemetry.maximumStagedPulseCount = Math.max(
+            this.telemetry.maximumStagedPulseCount,
+            commands.length
+        );
         this.lastStageResult = Object.freeze({
             accepted: true,
             targetFixedTick: tick,
@@ -726,6 +797,7 @@ export class PentagonEffectDirector {
         this.observedCompletionSnapshots = new WeakSet();
         this.lastCompletedSourceTick = 0;
         this.lastStageResult = createEmptyStageResult();
+        this.nextDueCursor = 0;
         this.recoveryRequired = false;
         this.failure = null;
         return true;
@@ -750,6 +822,9 @@ export class PentagonEffectDirector {
             pendingBatchCount: this.pendingBatchIdByTick.size,
             pendingStaleCompletionCount: this.staleSubmittedCommandById.size,
             lastCompletedSourceTick: this.lastCompletedSourceTick,
+            maximumPulseProgramsPerFixedTick:
+                this.maximumPulseProgramsPerFixedTick,
+            nextDueCursor: this.nextDueCursor,
             recoveryRequired: this.recoveryRequired,
             failure: this.failure,
             ingressOpen: this.ingressOpen,
@@ -1002,6 +1077,7 @@ export class PentagonEffectDirector {
         this.indexByExactHandle.clear();
         this.indexByEntityId.clear();
         this.count = 0;
+        this.nextDueCursor = 0;
     }
 
     #observeTerminalFixedCommit(lifecycleResult, fixedTick) {

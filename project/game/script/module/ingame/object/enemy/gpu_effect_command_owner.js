@@ -96,6 +96,10 @@ function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
+function effectEventCommandKey(entityId, incarnation, effectDefinitionCode) {
+    return `${entityId}:${incarnation}:${effectDefinitionCode}`;
+}
+
 function compareCommands(left, right) {
     return left.sourceHandle.entityId - right.sourceHandle.entityId
         || left.sourceHandle.incarnation - right.sourceHandle.incarnation
@@ -798,6 +802,7 @@ export class GpuEffectCommandOwner {
                 let candidateCount = 0;
                 let appliedInstanceCount = 0;
                 const pulseResultByCommandId = new Map();
+                const commandByEventKey = new Map();
                 for (let index = 0; index < pending.commands.length; index++) {
                     const command = pending.commands[index];
                     const result = batch.pulseResults[index];
@@ -829,6 +834,17 @@ export class GpuEffectCommandOwner {
                     }
                     appliedInstanceCount += result.appliedCount;
                     pulseResultByCommandId.set(command.commandId, result);
+                    const eventKey = effectEventCommandKey(
+                        command.sourceHandle.entityId,
+                        command.sourceHandle.incarnation,
+                        command.backendRecord.effectDefinitionCode
+                    );
+                    if (commandByEventKey.has(eventKey)) {
+                        throw new RangeError(
+                            'Effect event source/definition command key가 중복되었습니다.'
+                        );
+                    }
+                    commandByEventKey.set(eventKey, command);
                     if (result.resultCode === GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET) {
                         zeroTargetCount++;
                     } else if (result.resultCode
@@ -878,7 +894,11 @@ export class GpuEffectCommandOwner {
                 const appliedInstanceKeys = new Set();
                 const appliedTargetKeys = new Set();
                 for (const rawEvent of batch.events) {
-                    const event = this.#normalizeCompletionEvent(rawEvent, pending);
+                    const event = this.#normalizeCompletionEvent(
+                        rawEvent,
+                        pending,
+                        commandByEventKey
+                    );
                     const counts = eventCountsByCommandId.get(event.commandId);
                     const result = pulseResultByCommandId.get(event.commandId);
                     if (!counts || !result) {
@@ -1428,7 +1448,7 @@ export class GpuEffectCommandOwner {
         });
     }
 
-    #normalizeCompletionEvent(source, pending) {
+    #normalizeCompletionEvent(source, pending, commandByEventKey) {
         const type = requirePositiveSafeInteger(source?.type, 'effectEvent.type');
         if (!VALID_EFFECT_EVENT_TYPES.has(type)) {
             throw new RangeError(`지원하지 않는 Effect event type입니다: ${type}`);
@@ -1445,17 +1465,18 @@ export class GpuEffectCommandOwner {
             source.effectDefinitionCode,
             'effectEvent.effectDefinitionCode'
         );
-        const matchingCommands = pending.commands.filter((command) => (
-            handleKey(command.sourceHandle) === handleKey(sourceHandle)
-                && command.backendRecord.effectDefinitionCode
-                    === effectDefinitionCode
-        ));
-        if (matchingCommands.length !== 1) {
+        const matchingCommand = commandByEventKey.get(
+            effectEventCommandKey(
+                sourceHandle.entityId,
+                sourceHandle.incarnation,
+                effectDefinitionCode
+            )
+        );
+        if (!matchingCommand) {
             throw new RangeError(
                 'Effect event source/definition이 pending command 하나와 exact match해야 합니다.'
             );
         }
-        const matchingCommand = matchingCommands[0];
         const effectInstanceId = requirePositiveSafeInteger(
             source.effectInstanceId,
             'effectEvent.effectInstanceId'
