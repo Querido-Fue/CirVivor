@@ -123,6 +123,17 @@ function percentile(values, ratio) {
     )];
 }
 
+function summarizeDurationSamples(values) {
+    return Object.freeze({
+        count: values.length,
+        totalMs: values.reduce((sum, value) => sum + value, 0),
+        p50Ms: percentile(values, 0.5),
+        p95Ms: percentile(values, 0.95),
+        p99Ms: percentile(values, 0.99),
+        maximumMs: values.length > 0 ? Math.max(...values) : null
+    });
+}
+
 function requestAutoSoakForeground() {
     const appWindow = globalThis.nw?.Window?.get?.();
     appWindow?.show?.();
@@ -161,11 +172,21 @@ function installAutoSoakDiagnostics() {
         endpointSubmitDeferredCount: 0,
         acceptedSpawnCountByDefinitionId: {},
         catchUpMaximumStepHistogram: {},
+        phaseDurationSamplesMs: {
+            gameFixedAdvanced: [],
+            gameFixedDeferred: [],
+            endpointFixedSubmitted: [],
+            endpointFixedDeferred: [],
+            lifecycleCommit: [],
+            endpointDraw: []
+        },
         completion: Object.fromEntries(
             Object.keys(AUTO_SOAK_COMPLETION_METHODS).map((label) => [label, {
                 callCount: 0,
                 pendingCount: 0,
-                protocolFailureCount: 0
+                protocolFailureCount: 0,
+                readyDurationSamplesMs: [],
+                pendingDurationSamplesMs: []
             }])
         )
     };
@@ -284,27 +305,58 @@ function installAutoSoakDiagnostics() {
     });
     wrap(gameSystem, 'fixedUpdate', (original, receiver, args) => {
         counters.gameFixedAttemptCount++;
+        const startedAt = performance.now();
         const advanced = original.apply(receiver, args);
+        const elapsedMs = performance.now() - startedAt;
         if (advanced === true) {
             counters.gameFixedAdvancedCount++;
+            counters.phaseDurationSamplesMs.gameFixedAdvanced.push(elapsedMs);
+        } else {
+            counters.phaseDurationSamplesMs.gameFixedDeferred.push(elapsedMs);
         }
         return advanced;
     });
     wrap(endpoint, 'fixedUpdate', (original, receiver, args) => {
         counters.endpointSubmitCount++;
+        const startedAt = performance.now();
         const submitted = original.apply(receiver, args);
+        const elapsedMs = performance.now() - startedAt;
         if (submitted !== true) {
             counters.endpointSubmitDeferredCount++;
+            counters.phaseDurationSamplesMs.endpointFixedDeferred.push(elapsedMs);
+        } else {
+            counters.phaseDurationSamplesMs.endpointFixedSubmitted.push(elapsedMs);
         }
         return submitted;
     });
+    wrap(endpoint, 'commitAtFixedBoundary', (original, receiver, args) => {
+        const startedAt = performance.now();
+        const result = original.apply(receiver, args);
+        counters.phaseDurationSamplesMs.lifecycleCommit.push(
+            performance.now() - startedAt
+        );
+        return result;
+    });
+    wrap(endpoint, 'draw', (original, receiver, args) => {
+        const startedAt = performance.now();
+        const result = original.apply(receiver, args);
+        counters.phaseDurationSamplesMs.endpointDraw.push(
+            performance.now() - startedAt
+        );
+        return result;
+    });
     for (const [label, methodName] of Object.entries(AUTO_SOAK_COMPLETION_METHODS)) {
         wrap(endpoint, methodName, (original, receiver, args) => {
+            const startedAt = performance.now();
             const result = original.apply(receiver, args);
+            const elapsedMs = performance.now() - startedAt;
             const counter = counters.completion[label];
             counter.callCount++;
             if (result?.pending === true) {
                 counter.pendingCount++;
+                counter.pendingDurationSamplesMs.push(elapsedMs);
+            } else {
+                counter.readyDurationSamplesMs.push(elapsedMs);
             }
             if (result?.protocolFailure) {
                 counter.protocolFailureCount++;
@@ -333,16 +385,45 @@ function installAutoSoakDiagnostics() {
             counters.endpointSubmitCount = 0;
             counters.endpointSubmitDeferredCount = 0;
             counters.catchUpMaximumStepHistogram = {};
+            for (const samples of Object.values(
+                counters.phaseDurationSamplesMs
+            )) {
+                samples.length = 0;
+            }
             lastRafTimestamp = Number(game.lastFrameTimestamp);
             lastWallTimestamp = performance.now();
             for (const counter of Object.values(counters.completion)) {
                 counter.callCount = 0;
                 counter.pendingCount = 0;
                 counter.protocolFailureCount = 0;
+                counter.readyDurationSamplesMs.length = 0;
+                counter.pendingDurationSamplesMs.length = 0;
             }
         },
         snapshot() {
-            return JSON.parse(JSON.stringify(counters));
+            const snapshot = JSON.parse(JSON.stringify(counters));
+            snapshot.phaseTimings = Object.freeze(Object.fromEntries(
+                Object.entries(counters.phaseDurationSamplesMs).map(
+                    ([label, samples]) => [
+                        label,
+                        summarizeDurationSamples(samples)
+                    ]
+                )
+            ));
+            delete snapshot.phaseDurationSamplesMs;
+            for (const [label, counter] of Object.entries(
+                snapshot.completion
+            )) {
+                counter.readyTiming = summarizeDurationSamples(
+                    counters.completion[label].readyDurationSamplesMs
+                );
+                counter.pendingTiming = summarizeDurationSamples(
+                    counters.completion[label].pendingDurationSamplesMs
+                );
+                delete counter.readyDurationSamplesMs;
+                delete counter.pendingDurationSamplesMs;
+            }
+            return snapshot;
         },
         routeRuntimeSnapshot() {
             return endpoint.getRouteAvailabilityRuntimeStatus();
