@@ -178,7 +178,10 @@ function createMaterializerHarness({ runtimeUnavailable = false } = {}) {
                     reason: 'actor-payload-runtime-unavailable',
                     requiresRecovery: false
                 })
-                : Object.freeze({ accepted: true });
+                : Object.freeze({
+                    accepted: true,
+                    destinationFingerprint: 0xdecafbad
+                });
         },
         drainCompletedActorPayloadMaterializations(out) {
             out.push(...payloadCompletions.splice(0));
@@ -251,7 +254,7 @@ test('Throw duration은 권위이고 midpoint/arc/0·1 tick 경계가 결정적�
 });
 
 test('persistent transit ABI/pass는 stable-slot parallel, exact identity, <=9 storage를 고정한다', () => {
-    assert.equal(GPU_ACTOR_TRANSIT_ABI_VERSION, 1);
+    assert.equal(GPU_ACTOR_TRANSIT_ABI_VERSION, 2);
     assert.equal(GPU_ACTOR_TRANSIT_ABI.RECORD.STRIDE, 160);
     assert.equal(GPU_ACTOR_TRANSIT_ABI.DISPATCH_ARGS.STRIDE, 16);
     assert.equal(GPU_ACTOR_TRANSIT_STORAGE_BINDING_COUNT, 7);
@@ -367,6 +370,10 @@ test('Enemy Throw는 launch에서 cooldown을 commit하되 hostile handle은 lan
         commandFingerprint: harness.command.fingerprint,
         snapshotFingerprint: 702,
         subjectCount: 2,
+        destinationCount: 2,
+        copiesPerSubject: 1,
+        modifierSetFingerprint: 0,
+        destinationFingerprint: 0xdecafbad,
         generatedCount: 2,
         materializationTargetTick: 30,
         status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE,

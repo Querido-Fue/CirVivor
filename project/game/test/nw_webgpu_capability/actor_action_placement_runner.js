@@ -51,6 +51,11 @@ const LITTLE_ENDIAN = true;
 const BODY_CAPACITY = 16;
 const TOWER_MEMBER_CAPACITY = 16;
 const DESTINATION_SLOT_BASE = 12;
+const GRID_COLUMNS = 20;
+const GRID_ROWS = 20;
+const GRID_MAX_BODIES_PER_CELL = 32;
+const GRID_BODY_STRIDE = 32;
+const SIMULATION_PARAMS_STRIDE = 4224;
 const PROTOCOL = Object.freeze({
     sessionGeneration: 1,
     deviceGeneration: 1,
@@ -325,6 +330,27 @@ function createCaseResources(device, source = {}) {
         }))
     });
     const sdfValues = new Float32Array(source.sdfValues ?? [100]);
+    const paramsBytes = new ArrayBuffer(SIMULATION_PARAMS_STRIDE);
+    const paramsView = new DataView(paramsBytes);
+    paramsView.setFloat32(0, 20, LITTLE_ENDIAN);
+    paramsView.setFloat32(4, 20, LITTLE_ENDIAN);
+    paramsView.setFloat32(8, 1, LITTLE_ENDIAN);
+    paramsView.setFloat32(12, 1, LITTLE_ENDIAN);
+    paramsView.setUint32(16, GRID_COLUMNS, LITTLE_ENDIAN);
+    paramsView.setUint32(20, GRID_ROWS, LITTLE_ENDIAN);
+    paramsView.setUint32(24, GRID_MAX_BODIES_PER_CELL, LITTLE_ENDIAN);
+    paramsView.setFloat32(32, 1 / 60, LITTLE_ENDIAN);
+    paramsView.setFloat32(36, 60, LITTLE_ENDIAN);
+    paramsView.setUint32(40, sdfValues.length, LITTLE_ENDIAN);
+    paramsView.setUint32(44, 1, LITTLE_ENDIAN);
+    paramsView.setUint32(48, source.sdfEnabled === true ? 1 : 0,
+        LITTLE_ENDIAN);
+    paramsView.setFloat32(4192 + 12, 0.75, LITTLE_ENDIAN);
+    const gridCounterCount = GRID_COLUMNS * GRID_ROWS * 2;
+    const gridCounts = new Uint32Array(gridCounterCount);
+    const gridBodies = new ArrayBuffer(
+        gridCounterCount * GRID_MAX_BODIES_PER_CELL * GRID_BODY_STRIDE
+    );
     const storageUsage = GPUBufferUsage.STORAGE
         | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC;
     const buffers = Object.freeze({
@@ -341,7 +367,13 @@ function createCaseResources(device, source = {}) {
         towerRoster: createBuffer(device, 'r5-placement-tower-roster',
             towerStorage.roster, storageUsage),
         sdf: createBuffer(device, 'r5-placement-sdf',
-            sdfValues, storageUsage)
+            sdfValues, storageUsage),
+        params: createBuffer(device, 'r5-placement-params', paramsBytes,
+            GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST),
+        gridCounts: createBuffer(device, 'r5-placement-grid-counts',
+            gridCounts, storageUsage),
+        gridBodies: createBuffer(device, 'r5-placement-grid-bodies',
+            gridBodies, storageUsage)
     });
     return Object.freeze({
         subjects,
@@ -401,14 +433,14 @@ async function readPlacementBinding(device, binding) {
     const transitBytes = copied.slice(binding.placementByteLength);
     return Object.freeze({
         placements: Object.freeze(Array.from(
-            { length: binding.subjectCount },
+            { length: binding.destinationCount },
             (_, rank) => readGpuActorActionPlacementRecord(
                 placementBytes,
                 rank
             )
         )),
         transits: Object.freeze(Array.from(
-            { length: binding.subjectCount },
+            { length: binding.destinationCount },
             (_, rank) => readGpuActorActionTransitRecord(transitBytes, rank)
         ))
     });
@@ -672,9 +704,7 @@ async function runFixture(device) {
         sdfValues: [100]
     });
     const exactThrowSdf = new Array(20).fill(0.5);
-    const blockedThrowSourceSdf = exactThrowSdf.slice();
-    blockedThrowSourceSdf[5] = 0;
-    blockedThrowSourceSdf[6] = 0;
+    const blockedThrowSourceSdf = new Array(20).fill(0);
     const blockedThrowLandingSdf = exactThrowSdf.slice();
     blockedThrowLandingSdf[9] = 0;
     blockedThrowLandingSdf[10] = 0;

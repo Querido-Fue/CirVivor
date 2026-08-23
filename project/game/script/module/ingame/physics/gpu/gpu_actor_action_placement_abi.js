@@ -18,7 +18,7 @@ const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 const UINT32_MAX = 0xffffffff;
 
-export const GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION = 2;
+export const GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION = 3;
 
 export const GPU_ACTOR_ACTION_PLACEMENT_STATUS = Object.freeze({
     PENDING: 1,
@@ -154,9 +154,9 @@ export const GPU_ACTOR_ACTION_PLACEMENT_ABI = Object.freeze({
         FIXED_HZ: 196,
         PLACEMENT_RECORD_WORDS: 200,
         TRANSIT_RECORD_WORDS: 204,
-        RESERVED_0: 208,
-        RESERVED_1: 212,
-        RESERVED_2: 216,
+        DESTINATION_COUNT: 208,
+        COPIES_PER_SUBJECT: 212,
+        MODIFIER_SET_FINGERPRINT: 216,
         RESERVED_3: 220
     }),
     DESTINATION_LEASE: Object.freeze({
@@ -167,11 +167,11 @@ export const GPU_ACTOR_ACTION_PLACEMENT_ABI = Object.freeze({
         SNAPSHOT_RANK: 12,
         DESTINATION_RANK: 16,
         BASELINE_FLAGS: 20,
-        RESERVED_0: 24,
+        COPY_INDEX: 24,
         RESERVED_1: 28
     }),
     AGGREGATE: Object.freeze({
-        STRIDE: 96,
+        STRIDE: 112,
         ABI_VERSION: 0,
         SNAPSHOT_ABI_VERSION: 4,
         BODY_ABI_VERSION: 8,
@@ -184,21 +184,25 @@ export const GPU_ACTOR_ACTION_PLACEMENT_ABI = Object.freeze({
         EXECUTION_ORDINAL: 36,
         STATUS: 40,
         SUBJECT_COUNT: 44,
-        VALID_COUNT: 48,
-        COMMAND_FINGERPRINT: 52,
-        SNAPSHOT_FINGERPRINT: 56,
-        DESTINATION_FINGERPRINT: 60,
-        PLACEMENT_FINGERPRINT: 64,
-        ERROR_FLAGS: 68,
-        ACTION_CODE: 72,
-        PROFILE_CODE: 76,
-        PAYLOAD_CODE: 80,
-        PLACEMENT_BYTE_LENGTH: 84,
-        TRANSIT_BYTE_LENGTH: 88,
-        PROFILE_FINGERPRINT: 92
+        DESTINATION_COUNT: 48,
+        VALID_COUNT: 52,
+        COMMAND_FINGERPRINT: 56,
+        SNAPSHOT_FINGERPRINT: 60,
+        DESTINATION_FINGERPRINT: 64,
+        PLACEMENT_FINGERPRINT: 68,
+        ERROR_FLAGS: 72,
+        ACTION_CODE: 76,
+        PROFILE_CODE: 80,
+        PAYLOAD_CODE: 84,
+        PLACEMENT_BYTE_LENGTH: 88,
+        TRANSIT_BYTE_LENGTH: 92,
+        PROFILE_FINGERPRINT: 96,
+        COPIES_PER_SUBJECT: 100,
+        MODIFIER_SET_FINGERPRINT: 104,
+        RESERVED: 108
     }),
     PLACEMENT_RECORD: Object.freeze({
-        STRIDE: 144,
+        STRIDE: 152,
         ABI_VERSION: 0,
         STATUS: 4,
         ERROR_FLAGS: 8,
@@ -232,9 +236,11 @@ export const GPU_ACTOR_ACTION_PLACEMENT_ABI = Object.freeze({
         DESTINATION_RADIUS: 120,
         DIRECTION_X: 124,
         DIRECTION_Y: 128,
-        RESERVED_0: 132,
-        RESERVED_1: 136,
-        RESERVED_2: 140
+        COPY_INDEX: 132,
+        MODIFIER_SET_FINGERPRINT: 136,
+        ADMISSION_CHOSEN_CANDIDATE_INDEX: 140,
+        ADMISSION_ATTEMPTED_CANDIDATE_COUNT: 144,
+        ADMISSION_FAILURE_CLASS: 148
     }),
     TRANSIT_RECORD: Object.freeze({
         STRIDE: 80,
@@ -256,8 +262,8 @@ export const GPU_ACTOR_ACTION_PLACEMENT_ABI = Object.freeze({
         VELOCITY_X: 60,
         VELOCITY_Y: 64,
         FINGERPRINT: 68,
-        RESERVED_0: 72,
-        RESERVED_1: 76
+        COPY_INDEX: 72,
+        MODIFIER_SET_FINGERPRINT: 76
     }),
     DISPATCH_ARGS: Object.freeze({
         STRIDE: 16,
@@ -428,16 +434,39 @@ export function encodeGpuActorActionProfile(source) {
 
 export function computeGpuActorActionDestinationFingerprint(
     destinationLeases,
-    commandFingerprint
+    commandFingerprint,
+    options = {}
 ) {
     if (!Array.isArray(destinationLeases) || destinationLeases.length === 0) {
         throw new TypeError('destinationLeases는 비어 있지 않은 배열이어야 합니다.');
     }
+    const subjectCount = requireUint32(
+        options.subjectCount ?? destinationLeases.length,
+        'subjectCount',
+        { positive: true }
+    );
+    const copiesPerSubject = requireUint32(
+        options.copiesPerSubject ?? 1,
+        'copiesPerSubject',
+        { positive: true }
+    );
+    if (subjectCount > Math.floor(UINT32_MAX / copiesPerSubject)
+        || subjectCount * copiesPerSubject !== destinationLeases.length) {
+        throw new RangeError('destination lease cardinality가 일관되지 않습니다.');
+    }
+    const modifierSetFingerprint = requireUint32(
+        options.modifierSetFingerprint ?? 0,
+        'modifierSetFingerprint'
+    );
     let hash = hashWord(FNV_OFFSET, requireUint32(
         commandFingerprint,
         'commandFingerprint',
         { positive: true }
     ));
+    hash = hashWord(hash, subjectCount);
+    hash = hashWord(hash, destinationLeases.length);
+    hash = hashWord(hash, copiesPerSubject);
+    hash = hashWord(hash, modifierSetFingerprint);
     destinationLeases.forEach((lease, index) => {
         const snapshotRank = requireUint32(
             lease.snapshotRank,
@@ -447,8 +476,14 @@ export function computeGpuActorActionDestinationFingerprint(
             lease.destinationRank ?? index,
             `destinationLeases[${index}].destinationRank`
         );
-        if (snapshotRank !== index || destinationRank !== index) {
-            throw new RangeError('destination lease rank는 stable snapshot rank와 같아야 합니다.');
+        const copyIndex = requireUint32(
+            lease.copyIndex ?? 0,
+            `destinationLeases[${index}].copyIndex`
+        );
+        if (snapshotRank !== Math.floor(index / copiesPerSubject)
+            || destinationRank !== index
+            || copyIndex !== index % copiesPerSubject) {
+            throw new RangeError('destination lease multiplicity rank가 일관되지 않습니다.');
         }
         for (const word of [
             requireUint32(lease.destinationSlot,
@@ -460,7 +495,8 @@ export function computeGpuActorActionDestinationFingerprint(
                 `destinationLeases[${index}].destinationIncarnation`,
                 { positive: true }),
             snapshotRank,
-            destinationRank
+            destinationRank,
+            copyIndex
         ]) {
             hash = hashWord(hash, word);
         }
@@ -468,19 +504,28 @@ export function computeGpuActorActionDestinationFingerprint(
     return nonZeroHash(hash);
 }
 
-export function createGpuActorActionPlacementOutputLayout(subjectCount) {
+export function createGpuActorActionPlacementOutputLayout(
+    subjectCount,
+    destinationCount = subjectCount
+) {
     const count = requireUint32(subjectCount, 'subjectCount', { positive: true });
+    const destinations = requireUint32(
+        destinationCount,
+        'destinationCount',
+        { positive: true }
+    );
     const aggregateByteOffset = 0;
     const placementByteOffset
         = GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STRIDE;
-    const placementByteLength = count
+    const placementByteLength = destinations
         * GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE;
     const transitByteOffset = placementByteOffset + placementByteLength;
-    const transitByteLength = count
+    const transitByteLength = destinations
         * GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE;
     const byteLength = transitByteOffset + transitByteLength;
     return Object.freeze({
         subjectCount: count,
+        destinationCount: destinations,
         aggregateByteOffset,
         placementByteOffset,
         placementByteLength,
@@ -493,8 +538,12 @@ export function createGpuActorActionPlacementOutputLayout(subjectCount) {
     });
 }
 
-export function createGpuActorActionProgramStorage(subjectCount) {
-    const count = requireUint32(subjectCount, 'subjectCount', { positive: true });
+export function createGpuActorActionProgramStorage(destinationCount) {
+    const count = requireUint32(
+        destinationCount,
+        'destinationCount',
+        { positive: true }
+    );
     return new ArrayBuffer(
         GPU_ACTOR_ACTION_PLACEMENT_ABI.PROGRAM_HEADER.STRIDE
             + count
@@ -512,7 +561,27 @@ export function writeGpuActorActionProgramHeader(storage, source = {}) {
         'subjectCount',
         { positive: true }
     );
-    const expectedByteLength = h.STRIDE + subjectCount
+    const copiesPerSubject = requireUint32(
+        source.copiesPerSubject ?? 1,
+        'copiesPerSubject',
+        { positive: true }
+    );
+    if (subjectCount > Math.floor(UINT32_MAX / copiesPerSubject)) {
+        throw new RangeError('actor action destinationCount가 uint32를 넘습니다.');
+    }
+    const destinationCount = requireUint32(
+        source.destinationCount ?? subjectCount,
+        'destinationCount',
+        { positive: true }
+    );
+    if (subjectCount * copiesPerSubject !== destinationCount) {
+        throw new RangeError('actor action cardinality가 일관되지 않습니다.');
+    }
+    const modifierSetFingerprint = requireUint32(
+        source.modifierSetFingerprint ?? 0,
+        'modifierSetFingerprint'
+    );
+    const expectedByteLength = h.STRIDE + destinationCount
         * GPU_ACTOR_ACTION_PLACEMENT_ABI.DESTINATION_LEASE.STRIDE;
     if (storage.byteLength !== expectedByteLength) {
         throw new RangeError('actor action program storage 크기가 다릅니다.');
@@ -528,7 +597,10 @@ export function writeGpuActorActionProgramHeader(storage, source = {}) {
     )) {
         throw new RangeError('actor action profile fingerprint가 command와 다릅니다.');
     }
-    const output = createGpuActorActionPlacementOutputLayout(subjectCount);
+    const output = createGpuActorActionPlacementOutputLayout(
+        subjectCount,
+        destinationCount
+    );
     const view = new DataView(storage);
     const uintValues = [
         [h.ABI_VERSION, GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION],
@@ -577,9 +649,9 @@ export function writeGpuActorActionProgramHeader(storage, source = {}) {
             GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE / 4],
         [h.TRANSIT_RECORD_WORDS,
             GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE / 4],
-        [h.RESERVED_0, 0],
-        [h.RESERVED_1, 0],
-        [h.RESERVED_2, 0],
+        [h.DESTINATION_COUNT, destinationCount],
+        [h.COPIES_PER_SUBJECT, copiesPerSubject],
+        [h.MODIFIER_SET_FINGERPRINT, modifierSetFingerprint],
         [h.RESERVED_3, 0]
     ];
     for (const [offset, value] of uintValues) {
@@ -633,11 +705,15 @@ export function writeGpuActorActionProgramHeader(storage, source = {}) {
 
 export function writeGpuActorActionDestinationLease(
     storage,
-    subjectCount,
+    destinationCount,
     index,
     source = {}
 ) {
-    const count = requireUint32(subjectCount, 'subjectCount', { positive: true });
+    const count = requireUint32(
+        destinationCount,
+        'destinationCount',
+        { positive: true }
+    );
     const rank = requireUint32(index, 'destination lease index');
     const h = GPU_ACTOR_ACTION_PLACEMENT_ABI.PROGRAM_HEADER;
     const r = GPU_ACTOR_ACTION_PLACEMENT_ABI.DESTINATION_LEASE;
@@ -654,8 +730,19 @@ export function writeGpuActorActionDestinationLease(
         source.destinationRank ?? rank,
         'destinationRank'
     );
-    if (snapshotRank !== rank || destinationRank !== rank) {
-        throw new RangeError('destination lease rank가 stable rank와 다릅니다.');
+    const copiesPerSubject = requireUint32(
+        source.copiesPerSubject ?? 1,
+        'copiesPerSubject',
+        { positive: true }
+    );
+    const copyIndex = requireUint32(
+        source.copyIndex ?? 0,
+        'copyIndex'
+    );
+    if (snapshotRank !== Math.floor(rank / copiesPerSubject)
+        || destinationRank !== rank
+        || copyIndex !== rank % copiesPerSubject) {
+        throw new RangeError('destination lease multiplicity rank가 다릅니다.');
     }
     const base = h.STRIDE + rank * r.STRIDE;
     const view = new DataView(storage);
@@ -666,7 +753,7 @@ export function writeGpuActorActionDestinationLease(
         [r.SNAPSHOT_RANK, snapshotRank],
         [r.DESTINATION_RANK, destinationRank],
         [r.BASELINE_FLAGS, source.baselineFlags ?? 0],
-        [r.RESERVED_0, 0],
+        [r.COPY_INDEX, copyIndex],
         [r.RESERVED_1, 0]
     ];
     for (const [offset, value] of values) {
@@ -713,6 +800,10 @@ export function readGpuActorActionPlacementAggregate(buffer) {
         executionOrdinal: view.getUint32(a.EXECUTION_ORDINAL, LITTLE_ENDIAN),
         status: view.getUint32(a.STATUS, LITTLE_ENDIAN),
         subjectCount: view.getUint32(a.SUBJECT_COUNT, LITTLE_ENDIAN),
+        destinationCount: view.getUint32(
+            a.DESTINATION_COUNT,
+            LITTLE_ENDIAN
+        ),
         validCount: view.getUint32(a.VALID_COUNT, LITTLE_ENDIAN),
         commandFingerprint: view.getUint32(
             a.COMMAND_FINGERPRINT,
@@ -745,6 +836,14 @@ export function readGpuActorActionPlacementAggregate(buffer) {
         actorActionProfileFingerprint: view.getUint32(
             a.PROFILE_FINGERPRINT,
             LITTLE_ENDIAN
+        ),
+        copiesPerSubject: view.getUint32(
+            a.COPIES_PER_SUBJECT,
+            LITTLE_ENDIAN
+        ),
+        modifierSetFingerprint: view.getUint32(
+            a.MODIFIER_SET_FINGERPRINT,
+            LITTLE_ENDIAN
         )
     });
     if (result.abiVersion !== GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION
@@ -756,9 +855,18 @@ export function readGpuActorActionPlacementAggregate(buffer) {
         || (result.errorFlags & ~KNOWN_ERROR_MASK) !== 0) {
         throw new RangeError('actor action placement aggregate ABI가 잘못됐습니다.');
     }
+    const exactCardinality = result.subjectCount > 0
+        && result.copiesPerSubject > 0
+        && result.subjectCount <= Math.floor(
+            UINT32_MAX / result.copiesPerSubject
+        )
+        && result.subjectCount * result.copiesPerSubject
+            === result.destinationCount;
+    if (!exactCardinality) {
+        throw new RangeError('actor action placement cardinality가 잘못됐습니다.');
+    }
     if (result.status === GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE
-        && (result.subjectCount <= 0
-            || result.validCount !== result.subjectCount
+        && (result.validCount !== result.destinationCount
             || result.errorFlags !== 0
             || result.placementFingerprint === 0
             || result.actorActionProfileFingerprint === 0)) {
@@ -837,7 +945,14 @@ export function readGpuActorActionPlacementRecord(buffer, index = 0) {
         direction: Object.freeze({
             x: float(r.DIRECTION_X),
             y: float(r.DIRECTION_Y)
-        })
+        }),
+        copyIndex: uint(r.COPY_INDEX),
+        modifierSetFingerprint: uint(r.MODIFIER_SET_FINGERPRINT),
+        admissionChosenCandidateIndex:
+            uint(r.ADMISSION_CHOSEN_CANDIDATE_INDEX),
+        admissionAttemptedCandidateCount:
+            uint(r.ADMISSION_ATTEMPTED_CANDIDATE_COUNT),
+        admissionFailureClass: uint(r.ADMISSION_FAILURE_CLASS)
     });
 }
 
@@ -876,7 +991,9 @@ export function readGpuActorActionTransitRecord(buffer, index = 0) {
             x: float(r.VELOCITY_X),
             y: float(r.VELOCITY_Y)
         }),
-        fingerprint: uint(r.FINGERPRINT)
+        fingerprint: uint(r.FINGERPRINT),
+        copyIndex: uint(r.COPY_INDEX),
+        modifierSetFingerprint: uint(r.MODIFIER_SET_FINGERPRINT)
     });
 }
 

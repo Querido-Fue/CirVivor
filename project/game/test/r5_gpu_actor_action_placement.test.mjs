@@ -238,9 +238,9 @@ function createStageFixture(subjectCount = 2) {
     };
 }
 
-test('ActorAction placement ABI는 aligned side-plane과 aggregate-only 구역을 고정한다', () => {
+test('ActorAction placement ABI는 word-aligned side-plane과 aggregate-only 구역을 고정한다', () => {
     for (const layout of Object.values(GPU_ACTOR_ACTION_PLACEMENT_ABI)) {
-        assert.equal(layout.STRIDE % 16, 0);
+        assert.equal(layout.STRIDE % 4, 0);
         for (const [name, offset] of Object.entries(layout)) {
             if (name !== 'STRIDE') assert.equal(offset % 4, 0);
         }
@@ -248,15 +248,16 @@ test('ActorAction placement ABI는 aligned side-plane과 aggregate-only 구역�
     const output = createGpuActorActionPlacementOutputLayout(3);
     assert.deepEqual(output, {
         subjectCount: 3,
+        destinationCount: 3,
         aggregateByteOffset: 0,
-        placementByteOffset: 96,
-        placementByteLength: 432,
-        transitByteOffset: 528,
+        placementByteOffset: 112,
+        placementByteLength: 456,
+        transitByteOffset: 568,
         transitByteLength: 240,
-        byteLength: 768,
-        placementWordOffset: 24,
-        transitWordOffset: 132,
-        outputWordCapacity: 192
+        byteLength: 808,
+        placementWordOffset: 28,
+        transitWordOffset: 142,
+        outputWordCapacity: 202
     });
     assert.equal(GPU_ACTOR_ACTION_PLACEMENT_STORAGE_BINDING_COUNT, 9);
     assert.equal(GPU_ACTOR_ACTION_DISPATCH_STORAGE_BINDING_COUNT, 2);
@@ -285,7 +286,7 @@ test('4개 actor profile GPU encoding은 독립 identity와 Throw transit를 보
     );
 });
 
-test('program header와 destination lease는 reserved zero 및 stable rank fingerprint를 고정한다', () => {
+test('program header와 destination lease는 multiplicity 및 stable rank fingerprint를 고정한다', () => {
     const count = 2;
     const storage = createGpuActorActionProgramStorage(count);
     const leases = [
@@ -340,13 +341,15 @@ test('program header와 destination lease는 reserved zero 및 stable rank finge
         destinationFingerprint);
     assert.equal(view.getUint32(h.PROFILE_FINGERPRINT, LITTLE_ENDIAN),
         result.profile.actorActionProfileFingerprint);
-    assert.equal(view.getUint32(h.RESERVED_0, LITTLE_ENDIAN), 0);
+    assert.equal(view.getUint32(h.DESTINATION_COUNT, LITTLE_ENDIAN), count);
+    assert.equal(view.getUint32(h.COPIES_PER_SUBJECT, LITTLE_ENDIAN), 1);
+    assert.equal(view.getUint32(h.MODIFIER_SET_FINGERPRINT, LITTLE_ENDIAN), 0);
     assert.equal(view.getUint32(h.RESERVED_3, LITTLE_ENDIAN), 0);
     assert.equal(result.output.byteLength,
         createGpuActorActionPlacementOutputLayout(count).byteLength);
     assert.throws(() => computeGpuActorActionDestinationFingerprint([
         { ...leases[0], snapshotRank: 1 }
-    ], 123), /stable snapshot rank/);
+    ], 123), /multiplicity rank/);
 });
 
 test('Summon square spiral과 degenerate direction chain은 host oracle에서 결정적이다', () => {
@@ -433,10 +436,12 @@ test('aggregate/placement/transit readers는 complete record와 invalid ABI를 �
     u32(a.PROFILE_ABI_VERSION, ACTOR_ACTION_PROFILE_ABI_VERSION);
     u32(a.STATUS, GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE);
     u32(a.SUBJECT_COUNT, 1);
+    u32(a.DESTINATION_COUNT, 1);
     u32(a.VALID_COUNT, 1);
     u32(a.PLACEMENT_FINGERPRINT, 99);
     u32(a.PROFILE_FINGERPRINT,
         R5_SHOOT_ACTOR_ACTION_PROFILE.actorActionProfileFingerprint);
+    u32(a.COPIES_PER_SUBJECT, 1);
     assert.equal(readGpuActorActionPlacementAggregate(aggregateBytes).status,
         GPU_ACTOR_ACTION_PLACEMENT_STATUS.COMPLETE);
 
@@ -478,7 +483,7 @@ test('WGSL은 GPU count indirect, frozen snapshot, compact roster, atomic SDF �
     assert.match(GPU_ACTOR_ACTION_DISPATCH_WGSL,
         /\(count \+ WORKGROUP_SIZE - 1u\) \/ WORKGROUP_SIZE/);
     assert.match(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
-        /snapshot_word\(rank,/);
+        /snapshot_word\(source_rank,/);
     assert.match(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
         /roster_rank < tower_roster\.member_count/);
     assert.match(GPU_ACTOR_ACTION_PLACEMENT_WGSL,
@@ -555,7 +560,7 @@ test('runtime stage는 exact snapshot/lease와 capacity를 검증하고 aggregat
             'payload-local-candidates/shared-grid-verdict/stable-rank-claim'
         );
         assert.equal(status.dispatchStorageBindingCount, 2);
-        assert.equal(status.aggregateReadbackByteSize, 96);
+        assert.equal(status.aggregateReadbackByteSize, 112);
         assert.equal(status.perSubjectCpuCommandCount, 0);
         assert.equal(status.placementRecordCpuReadback, false);
         assert.equal(status.transitRecordCpuReadback, false);

@@ -96,7 +96,8 @@ function createReadyRecord(compiledAbility, ordinal) {
 }
 
 function createHarness(ready, endpointResult = Object.freeze({
-    accepted: true
+    accepted: true,
+    destinationFingerprint: 0x5ecafbad
 })) {
     const endpointRequests = [];
     const towerRequests = [];
@@ -245,6 +246,10 @@ test('Enemy Emit/Summon은 launch completion에서 ordinary handle과 cooldown�
             commandFingerprint: ready.command.fingerprint,
             snapshotFingerprint: ready.completion.snapshotFingerprint,
             subjectCount: 1,
+            destinationCount: 1,
+            copiesPerSubject: 1,
+            modifierSetFingerprint: 0,
+            destinationFingerprint: 0x5ecafbad,
             generatedCount: 1,
             materializationTargetTick: 20,
             status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE,

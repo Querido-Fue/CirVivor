@@ -41,6 +41,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/word/r3_word_catalog_data.js',
     'data/word/r5_actor_action_profile_data.js',
     'data/word/r6_tower_group_operation_profile_data.js',
+    'data/word/r7_sentence_modifier_profile_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
     'data/scene/game/cork_dual_route_map_data.js',
@@ -68,6 +69,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/enemy_route_closure_contract.js',
     'module/ingame/contract/route_availability_contract.js',
     'module/ingame/contract/run_outcome_contract.js',
+    'module/ingame/contract/sentence_modifier_contract.js',
     'module/ingame/contract/tower_group_operation_contract.js',
     'module/ingame/contract/tower_merge_identity_proof_contract.js',
     'module/ingame/game_world_session_mode.js',
@@ -83,6 +85,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/word/ability_runtime.js',
     'module/ingame/word/actor_payload_materializer.js',
     'module/ingame/word/sentence_compiler.js',
+    'module/ingame/word/sentence_modifier_resolver.js',
     'module/ingame/word/sentence_runtime_estimator.js',
     'module/ingame/word/word_system.js',
     'module/ingame/object/enemy/enemy_core_impact_director.js',
@@ -520,6 +523,60 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && fixture.storageMaximum <= 9
             && fixture.recoveryRequired === false
             && fixture.destroyedTeardown === true;
+    } else if (fixtureStage === 'r7-actor-payload-multiplicity') {
+        fixture = result?.r7ActorPayloadMultiplicity;
+        const positives = fixture?.positives ?? [];
+        const byId = Object.fromEntries(positives.map((entry) => [
+            entry.id,
+            entry
+        ]));
+        const exactPositive = (id, subjectCount, copiesPerSubject,
+            generatedCount) => {
+            const entry = byId[id];
+            return entry?.subjectCount === subjectCount
+                && entry.copiesPerSubject === copiesPerSubject
+                && entry.generatedCount === generatedCount
+                && entry.cooldownConsumed === true
+                && entry.sourceCopyPairCount === generatedCount
+                && entry.destinationCount === generatedCount
+                && entry.destinationFingerprint > 0
+                && entry.siblingOverlapCount === 0
+                && entry.gridOverflowCount === 0
+                && entry.destroyedTeardown === true;
+        };
+        const negatives = fixture?.negatives;
+        const cleanReject = (entry) => entry?.generatedCount === 0
+            && entry.cooldownConsumed === false
+            && entry.reservationCount === 0
+            && entry.recoveryRequired === false
+            && entry.destroyedTeardown === true;
+        scenarioValid = fixture?.scenario
+                === 'r7-actor-payload-multiplicity-actual-webgpu'
+            && positives.length === 5
+            && exactPositive('tower-shoot-enemy-x2', 1, 2, 2)
+            && exactPositive('enemy-100-shoot-enemy-x2', 100, 2, 200)
+            && exactPositive('enemy-50-shoot-enemy-x4', 50, 4, 200)
+            && exactPositive('enemy-125-throw-enemy-x2', 125, 2, 250)
+            && byId['enemy-125-throw-enemy-x2']?.airborneHighWater === 250
+            && byId['enemy-125-throw-enemy-x2']?.landedCount === 250
+            && exactPositive('enemy-128-summon-enemy-x2', 128, 2, 256)
+            && cleanReject(negatives?.generatedBudget)
+            && negatives.generatedBudget.subjectCount === 501
+            && cleanReject(negatives?.oneShortBody)
+            && cleanReject(negatives?.closedPlacement)
+            && negatives.closedPlacement.partialPublicationCount === 0
+            && negatives?.ringPressure?.firstStagedCount === 1
+            && negatives.ringPressure.retryStagedCount === 1
+            && negatives.ringPressure.maximumReservationCount === 2
+            && negatives.ringPressure.generatedCount === 4
+            && negatives.ringPressure.rejectedCount === 0
+            && negatives.ringPressure.recoveryRequired === false
+            && negatives.ringPressure.destroyedTeardown === true
+            && negatives?.staleCompletion?.observedMutationCount === 0
+            && cleanReject(negatives.staleCompletion)
+            && fixture.storageMaximum <= 9
+            && fixture.uncapturedErrorCount === 0
+            && fixture.destroyedTeardown === true;
     } else if (fixtureStage === 'post-r5-live-bugfix') {
         fixture = result?.postR5LiveBugfix;
         const safeCases = fixture?.safePlacement?.cases ?? [];
@@ -660,7 +717,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && contracts.capacityRejected === true
             && contracts.staleDeviceRejected === true
             && contracts.staleDestinationFingerprintRejected === true
-            && contracts.aggregateReadbackByteSize === 96
+            && contracts.aggregateReadbackByteSize === 112
             && contracts.placementRecordCpuReadback === false
             && contracts.transitRecordCpuReadback === false
             && contracts.bodyStateCommitCount === 0
@@ -2914,6 +2971,7 @@ function assertFixtureStageResult(result) {
         fixtureStage === 'enemy-arrow-charge'
         || fixtureStage === 'actor-action-placement'
         || fixtureStage === 'r5-actor-verbs'
+        || fixtureStage === 'r7-actor-payload-multiplicity'
         || fixtureStage === 'post-r5-live-bugfix'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
@@ -3030,6 +3088,8 @@ async function prepareHarnessApp(
         ? 'tower_group_target_query_runner.js'
         : fixtureStage === 'r5-actor-verbs'
             ? 'r5_actor_verbs_bootstrap.js'
+        : fixtureStage === 'r7-actor-payload-multiplicity'
+            ? 'r7_actor_payload_multiplicity_runner.js'
         : fixtureStage === 'post-r5-live-bugfix'
             ? 'post_r5_live_bugfix_runner.js'
         : fixtureStage === 'actor-action-placement'
@@ -3053,7 +3113,8 @@ async function prepareHarnessApp(
         path.join(harnessDirectory, runnerFileName),
         path.join(appDirectory, 'runner.js')
     );
-    if (fixtureStage === 'r5-actor-verbs') {
+    if (fixtureStage === 'r5-actor-verbs'
+        || fixtureStage === 'r7-actor-payload-multiplicity') {
         await linkRuntimeFile(
             path.join(harnessDirectory, 'r5_actor_verbs_runner.js'),
             path.join(appDirectory, 'r5_actor_verbs_runner.js')
@@ -3159,6 +3220,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'post_r5_live_bugfix_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'r7_actor_payload_multiplicity_runner.js'
             )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))

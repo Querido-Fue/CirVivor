@@ -123,12 +123,12 @@ struct RawWriteBuffer { values: array<u32> }
 @group(0) @binding(0) var<storage, read> program: RawReadBuffer;
 @group(0) @binding(1) var<storage, read_write> dispatch_args: RawWriteBuffer;
 
-const SUBJECT_COUNT_WORD: u32 = ${H.SUBJECT_COUNT}u;
+const DESTINATION_COUNT_WORD: u32 = ${H.DESTINATION_COUNT}u;
 const WORKGROUP_SIZE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE}u;
 
 @compute @workgroup_size(1)
 fn prepare_actor_action_dispatch() {
-    let count = program.values[SUBJECT_COUNT_WORD];
+    let count = program.values[DESTINATION_COUNT_WORD];
     dispatch_args.values[0] = (count + WORKGROUP_SIZE - 1u) / WORKGROUP_SIZE;
     dispatch_args.values[1] = 1u;
     dispatch_args.values[2] = 1u;
@@ -724,12 +724,27 @@ fn reject_header(error_flags: u32) {
     store_aggregate(${A.ERROR_FLAGS}u, error_flags);
 }
 
+fn u32_multiplication_overflows(left: u32, right: u32) -> bool {
+    let left_low = left & 0xffffu;
+    let left_high = left >> 16u;
+    let right_low = right & 0xffffu;
+    let right_high = right >> 16u;
+    if (left_high * right_high != 0u) { return true; }
+    let cross_left = left_high * right_low;
+    let cross_right = left_low * right_high;
+    if (cross_left > 0xffffu || cross_right > 0xffffu) { return true; }
+    let low_carry = (left_low * right_low) >> 16u;
+    return cross_left + cross_right + low_carry > 0xffffu;
+}
+
 @compute @workgroup_size(${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE})
 fn initialize_actor_action_program(
     @builtin(global_invocation_id) invocation: vec3u
 ) {
     let rank = invocation.x;
     let subject_count = header(${H.SUBJECT_COUNT}u);
+    let destination_count = header(${H.DESTINATION_COUNT}u);
+    let copies_per_subject = header(${H.COPIES_PER_SUBJECT}u);
     if (rank == 0u) {
         for (var word = 0u; word < AGGREGATE_WORDS; word += 1u) {
             store_aggregate(word, 0u);
@@ -752,6 +767,7 @@ fn initialize_actor_action_program(
             header(${H.EXECUTION_ORDINAL}u));
         store_aggregate(${A.STATUS}u, STATUS_PENDING);
         store_aggregate(${A.SUBJECT_COUNT}u, subject_count);
+        store_aggregate(${A.DESTINATION_COUNT}u, destination_count);
         store_aggregate(${A.COMMAND_FINGERPRINT}u,
             header(${H.COMMAND_FINGERPRINT}u));
         store_aggregate(${A.SNAPSHOT_FINGERPRINT}u,
@@ -762,11 +778,14 @@ fn initialize_actor_action_program(
         store_aggregate(${A.PROFILE_CODE}u, header(${H.PROFILE_CODE}u));
         store_aggregate(${A.PAYLOAD_CODE}u, header(${H.PAYLOAD_CODE}u));
         store_aggregate(${A.PLACEMENT_BYTE_LENGTH}u,
-            subject_count * PLACEMENT_WORDS * 4u);
+            destination_count * PLACEMENT_WORDS * 4u);
         store_aggregate(${A.TRANSIT_BYTE_LENGTH}u,
-            subject_count * TRANSIT_WORDS * 4u);
+            destination_count * TRANSIT_WORDS * 4u);
         store_aggregate(${A.PROFILE_FINGERPRINT}u,
             header(${H.PROFILE_FINGERPRINT}u));
+        store_aggregate(${A.COPIES_PER_SUBJECT}u, copies_per_subject);
+        store_aggregate(${A.MODIFIER_SET_FINGERPRINT}u,
+            header(${H.MODIFIER_SET_FINGERPRINT}u));
 
         var header_error = 0u;
         if (header(${H.ABI_VERSION}u) != PLACEMENT_ABI) {
@@ -782,9 +801,9 @@ fn initialize_actor_action_program(
             header_error |= ERROR_PROFILE_ABI;
         }
         let expected_transit = AGGREGATE_WORDS
-            + subject_count * PLACEMENT_WORDS;
+            + destination_count * PLACEMENT_WORDS;
         let expected_capacity = expected_transit
-            + subject_count * TRANSIT_WORDS;
+            + destination_count * TRANSIT_WORDS;
         let selector = header(${H.SOURCE_SELECTOR_CODE}u);
         let payload = header(${H.PAYLOAD_CODE}u);
         let sdf_cols = header(${H.SDF_COLS}u);
@@ -792,6 +811,13 @@ fn initialize_actor_action_program(
         let sdf_size_valid = sdf_cols > 0u && sdf_rows > 0u
             && sdf_cols <= arrayLength(&sdf.values) / sdf_rows;
         if (subject_count == 0u
+            || destination_count == 0u
+            || copies_per_subject == 0u
+            || u32_multiplication_overflows(
+                subject_count,
+                copies_per_subject
+            )
+            || subject_count * copies_per_subject != destination_count
             || header(${H.EXECUTION_ORDINAL}u) == 0u
             || header(${H.EXECUTION_ORDINAL}u) == INVALID
             || header(${H.COMMAND_FINGERPRINT}u) == 0u
@@ -818,7 +844,7 @@ fn initialize_actor_action_program(
         header_error |= profile_contract_error();
         if (header_error != 0u) { reject_header(header_error); }
     }
-    if (rank >= subject_count) { return; }
+    if (rank >= destination_count) { return; }
     for (var word = 0u; word < PLACEMENT_WORDS; word += 1u) {
         store_placement(rank, word, 0u);
     }
@@ -827,10 +853,19 @@ fn initialize_actor_action_program(
     }
     store_placement(rank, ${P.ABI_VERSION}u, PLACEMENT_ABI);
     store_placement(rank, ${P.STATUS}u, RECORD_UNINITIALIZED);
-    store_placement(rank, ${P.SOURCE_RANK}u, rank);
+    let source_rank = lease_word(rank, ${D.SNAPSHOT_RANK}u);
+    store_placement(rank, ${P.SOURCE_RANK}u, source_rank);
     store_placement(rank, ${P.DESTINATION_RANK}u, rank);
+    store_placement(rank, ${P.COPY_INDEX}u,
+        lease_word(rank, ${D.COPY_INDEX}u));
+    store_placement(rank, ${P.MODIFIER_SET_FINGERPRINT}u,
+        header(${H.MODIFIER_SET_FINGERPRINT}u));
     store_transit(rank, ${T.ABI_VERSION}u, PLACEMENT_ABI);
-    store_transit(rank, ${T.SOURCE_RANK}u, rank);
+    store_transit(rank, ${T.SOURCE_RANK}u, source_rank);
+    store_transit(rank, ${T.COPY_INDEX}u,
+        lease_word(rank, ${D.COPY_INDEX}u));
+    store_transit(rank, ${T.MODIFIER_SET_FINGERPRINT}u,
+        header(${H.MODIFIER_SET_FINGERPRINT}u));
 }
 
 @compute @workgroup_size(${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE})
@@ -838,29 +873,32 @@ fn resolve_actor_action_placement(
     @builtin(global_invocation_id) invocation: vec3u
 ) {
     let rank = invocation.x;
-    let subject_count = header(${H.SUBJECT_COUNT}u);
-    if (rank >= subject_count
+    let destination_count = header(${H.DESTINATION_COUNT}u);
+    if (rank >= destination_count
         || aggregate_word(${A.STATUS}u) != STATUS_PENDING) { return; }
 
     var errors = 0u;
-    let source_slot = snapshot_word(rank, ${S.PRIVATE_SLOT}u);
-    let source_entity_id = snapshot_word(rank, ${S.ENTITY_ID}u);
-    let source_incarnation = snapshot_word(rank, ${S.INCARNATION}u);
-    let source_team = snapshot_word(rank, ${S.TEAM_ID}u);
-    let source_generation = snapshot_word(rank, ${S.GENERATION}u);
+    let copies_per_subject = header(${H.COPIES_PER_SUBJECT}u);
+    let source_rank = lease_word(rank, ${D.SNAPSHOT_RANK}u);
+    let copy_index = lease_word(rank, ${D.COPY_INDEX}u);
+    let source_slot = snapshot_word(source_rank, ${S.PRIVATE_SLOT}u);
+    let source_entity_id = snapshot_word(source_rank, ${S.ENTITY_ID}u);
+    let source_incarnation = snapshot_word(source_rank, ${S.INCARNATION}u);
+    let source_team = snapshot_word(source_rank, ${S.TEAM_ID}u);
+    let source_generation = snapshot_word(source_rank, ${S.GENERATION}u);
     let source_position = vec2f(
-        bitcast<f32>(snapshot_word(rank, ${S.POSITION_X}u)),
-        bitcast<f32>(snapshot_word(rank, ${S.POSITION_Y}u))
+        bitcast<f32>(snapshot_word(source_rank, ${S.POSITION_X}u)),
+        bitcast<f32>(snapshot_word(source_rank, ${S.POSITION_Y}u))
     );
     let source_velocity = vec2f(
-        bitcast<f32>(snapshot_word(rank, ${S.VELOCITY_X}u)),
-        bitcast<f32>(snapshot_word(rank, ${S.VELOCITY_Y}u))
+        bitcast<f32>(snapshot_word(source_rank, ${S.VELOCITY_X}u)),
+        bitcast<f32>(snapshot_word(source_rank, ${S.VELOCITY_Y}u))
     );
     let source_facing = vec2f(
-        bitcast<f32>(snapshot_word(rank, ${S.FACING_X}u)),
-        bitcast<f32>(snapshot_word(rank, ${S.FACING_Y}u))
+        bitcast<f32>(snapshot_word(source_rank, ${S.FACING_X}u)),
+        bitcast<f32>(snapshot_word(source_rank, ${S.FACING_Y}u))
     );
-    let source_radius = bitcast<f32>(snapshot_word(rank, ${S.RADIUS}u));
+    let source_radius = bitcast<f32>(snapshot_word(source_rank, ${S.RADIUS}u));
     let expected_source_team = select(
         HOSTILE_TEAM,
         PLAYER_TEAM,
@@ -892,8 +930,9 @@ fn resolve_actor_action_placement(
     let destination_in_range = destination_slot
         < arrayLength(&simulations.values)
         && destination_slot < arrayLength(&physics.values);
-    if (lease_word(rank, ${D.SNAPSHOT_RANK}u) != rank
+    if (source_rank != rank / copies_per_subject
         || destination_rank != rank
+        || copy_index != rank % copies_per_subject
         || destination_entity_id == 0u || destination_entity_id == INVALID
         || destination_incarnation == 0u
         || destination_incarnation == INVALID
@@ -914,7 +953,7 @@ fn resolve_actor_action_placement(
         }
     }
 
-    var resolved_target = resolve_target(rank, source_position);
+    var resolved_target = resolve_target(source_rank, source_position);
     errors |= resolved_target.error_flags;
     var direction = normalized_direction(
         resolved_target.position - source_position,
@@ -993,9 +1032,12 @@ fn resolve_actor_action_placement(
         bitcast<u32>(destination_radius));
     store_placement(rank, ${P.DIRECTION_X}u, bitcast<u32>(direction.x));
     store_placement(rank, ${P.DIRECTION_Y}u, bitcast<u32>(direction.y));
-    store_placement(rank, ${P.RESERVED_0}u, INVALID);
-    store_placement(rank, ${P.RESERVED_1}u, 0u);
-    store_placement(rank, ${P.RESERVED_2}u, 0u);
+    store_placement(rank, ${P.COPY_INDEX}u, copy_index);
+    store_placement(rank, ${P.MODIFIER_SET_FINGERPRINT}u,
+        header(${H.MODIFIER_SET_FINGERPRINT}u));
+    store_placement(rank, ${P.ADMISSION_CHOSEN_CANDIDATE_INDEX}u, INVALID);
+    store_placement(rank, ${P.ADMISSION_ATTEMPTED_CANDIDATE_COUNT}u, 0u);
+    store_placement(rank, ${P.ADMISSION_FAILURE_CLASS}u, 0u);
 
     let transit_phase = select(
         TRANSIT_PHASE_PENDING,
@@ -1024,6 +1066,9 @@ fn resolve_actor_action_placement(
         bitcast<u32>(initial_velocity.x));
     store_transit(rank, ${T.VELOCITY_Y}u,
         bitcast<u32>(initial_velocity.y));
+    store_transit(rank, ${T.COPY_INDEX}u, copy_index);
+    store_transit(rank, ${T.MODIFIER_SET_FINGERPRINT}u,
+        header(${H.MODIFIER_SET_FINGERPRINT}u));
 }
 
 @compute @workgroup_size(${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE})
@@ -1031,7 +1076,7 @@ fn validate_actor_action_placement(
     @builtin(global_invocation_id) invocation: vec3u
 ) {
     let rank = invocation.x;
-    if (rank >= header(${H.SUBJECT_COUNT}u)
+    if (rank >= header(${H.DESTINATION_COUNT}u)
         || aggregate_word(${A.STATUS}u) != STATUS_PENDING) { return; }
     var errors = placement_word(rank, ${P.ERROR_FLAGS}u);
     if (placement_word(rank, ${P.STATUS}u) != RECORD_RESOLVED) {
@@ -1070,9 +1115,10 @@ fn validate_actor_action_placement(
         errors |= ERROR_SDF;
     }
     if (header(${H.ACTION_CODE}u) == SUMMON_ACTION) {
+        let source_rank = placement_word(rank, ${P.SOURCE_RANK}u);
         let source_position = vec2f(
-            bitcast<f32>(snapshot_word(rank, ${S.POSITION_X}u)),
-            bitcast<f32>(snapshot_word(rank, ${S.POSITION_Y}u))
+            bitcast<f32>(snapshot_word(source_rank, ${S.POSITION_X}u)),
+            bitcast<f32>(snapshot_word(source_rank, ${S.POSITION_Y}u))
         );
         let source_radius = bitcast<f32>(
             placement_word(rank, ${P.SOURCE_RADIUS}u)
@@ -1098,7 +1144,7 @@ fn validate_actor_action_placement(
         header(${H.COMMAND_FINGERPRINT}u)
     );
     for (var field = ${P.SOURCE_RANK}u;
-        field <= ${P.RESERVED_2}u;
+        field <= ${P.ADMISSION_FAILURE_CLASS}u;
         field += 1u) {
         if (field == ${P.PLACEMENT_FINGERPRINT}u) { continue; }
         fingerprint = hash_word(fingerprint, placement_word(rank, field));
@@ -1130,17 +1176,33 @@ fn validate_actor_action_placement(
 fn aggregate_actor_action_placement() {
     if (aggregate_word(${A.STATUS}u) != STATUS_PENDING) { return; }
     let subject_count = header(${H.SUBJECT_COUNT}u);
+    let destination_count = header(${H.DESTINATION_COUNT}u);
+    let copies_per_subject = header(${H.COPIES_PER_SUBJECT}u);
+    let modifier_set_fingerprint = header(${H.MODIFIER_SET_FINGERPRINT}u);
     var errors = 0u;
     var valid_count = 0u;
     var destination_fingerprint = hash_word(
         FNV_OFFSET,
         header(${H.COMMAND_FINGERPRINT}u)
     );
+    destination_fingerprint = hash_word(destination_fingerprint, subject_count);
+    destination_fingerprint = hash_word(
+        destination_fingerprint,
+        destination_count
+    );
+    destination_fingerprint = hash_word(
+        destination_fingerprint,
+        copies_per_subject
+    );
+    destination_fingerprint = hash_word(
+        destination_fingerprint,
+        modifier_set_fingerprint
+    );
     var placement_fingerprint = hash_word(
         header(${H.PROFILE_FINGERPRINT}u),
         header(${H.SNAPSHOT_FINGERPRINT}u)
     );
-    for (var rank = 0u; rank < subject_count; rank += 1u) {
+    for (var rank = 0u; rank < destination_count; rank += 1u) {
         let record_status = placement_word(rank, ${P.STATUS}u);
         var record_errors = placement_word(rank, ${P.ERROR_FLAGS}u);
         if (record_status == RECORD_VALID && record_errors == 0u) {
@@ -1157,6 +1219,10 @@ fn aggregate_actor_action_placement() {
                 lease_word(rank, field)
             );
         }
+        destination_fingerprint = hash_word(
+            destination_fingerprint,
+            lease_word(rank, ${D.COPY_INDEX}u)
+        );
         placement_fingerprint = hash_word(
             placement_fingerprint,
             placement_word(rank, ${P.PLACEMENT_FINGERPRINT}u)
@@ -1173,12 +1239,16 @@ fn aggregate_actor_action_placement() {
         errors |= ERROR_FINGERPRINT;
     }
     store_aggregate(${A.VALID_COUNT}u, valid_count);
+    store_aggregate(${A.DESTINATION_COUNT}u, destination_count);
     store_aggregate(${A.DESTINATION_FINGERPRINT}u,
         destination_fingerprint);
     store_aggregate(${A.PLACEMENT_FINGERPRINT}u,
         placement_fingerprint);
     store_aggregate(${A.ERROR_FLAGS}u, errors);
-    if (errors == 0u && valid_count == subject_count) {
+    store_aggregate(${A.COPIES_PER_SUBJECT}u, copies_per_subject);
+    store_aggregate(${A.MODIFIER_SET_FINGERPRINT}u,
+        modifier_set_fingerprint);
+    if (errors == 0u && valid_count == destination_count) {
         store_aggregate(${A.STATUS}u, STATUS_COMPLETE);
     } else if ((errors
         & ~(ERROR_SDF
@@ -1233,6 +1303,8 @@ ${GPU_SPAWN_ADMISSION_GRID_TYPES_WGSL}
 
 const SPAWN_ADMISSION_ALIVE_FLAG: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
 const ADMISSION_INVALID: u32 = 0xffffffffu;
+const ADMISSION_FNV_OFFSET: u32 = 0x811c9dc5u;
+const ADMISSION_FNV_PRIME: u32 = 0x01000193u;
 const ADMISSION_HEADER_WORDS: u32 = ${HEADER_WORD_COUNT}u;
 const ADMISSION_AGGREGATE_WORDS: u32 = ${AGGREGATE_WORD_COUNT}u;
 const ADMISSION_PLACEMENT_WORDS: u32 = ${PLACEMENT_WORD_COUNT}u;
@@ -1329,6 +1401,43 @@ fn admission_store_transit(rank: u32, field: u32, value: u32) {
     ], value);
 }
 
+fn admission_hash_word(hash: u32, word: u32) -> u32 {
+    return (hash ^ word) * ADMISSION_FNV_PRIME;
+}
+
+fn admission_source_rank(rank: u32) -> u32 {
+    return admission_placement_word(rank, ${P.SOURCE_RANK}u);
+}
+
+fn admission_candidate_seed(rank: u32) -> u32 {
+    var hash = admission_hash_word(
+        ADMISSION_FNV_OFFSET,
+        admission_header(${H.COMMAND_FINGERPRINT}u)
+    );
+    hash = admission_hash_word(
+        hash,
+        admission_header(${H.MODIFIER_SET_FINGERPRINT}u)
+    );
+    hash = admission_hash_word(hash, admission_source_rank(rank));
+    hash = admission_hash_word(
+        hash,
+        admission_placement_word(rank, ${P.COPY_INDEX}u)
+    );
+    hash = admission_hash_word(hash, rank);
+    hash = admission_hash_word(
+        hash,
+        admission_placement_word(rank, ${P.DESTINATION_SLOT}u)
+    );
+    hash = admission_hash_word(
+        hash,
+        admission_placement_word(rank, ${P.DESTINATION_ENTITY_ID}u)
+    );
+    return admission_hash_word(
+        hash,
+        admission_placement_word(rank, ${P.DESTINATION_INCARNATION}u)
+    );
+}
+
 fn admission_finite(value: f32) -> bool {
     return value == value && value - value == 0.0;
 }
@@ -1413,7 +1522,10 @@ fn admission_lattice_offset(rank: u32) -> vec2i {
 }
 
 fn spawn_admission_claim_is_committed(rank: u32) -> bool {
-    return admission_placement_word(rank, ${P.RESERVED_0}u)
+    return admission_placement_word(
+            rank,
+            ${P.ADMISSION_CHOSEN_CANDIDATE_INDEX}u
+        )
             != ADMISSION_INVALID
         && admission_placement_word(rank, ${P.ERROR_FLAGS}u) == 0u;
 }
@@ -1438,9 +1550,10 @@ fn tower_source_radial_candidate(
     rank: u32,
     candidate_index: u32
 ) -> ActorActionCandidate {
+    let source_rank = admission_source_rank(rank);
     let source_position = vec2f(
-        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
-        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+        bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_X}u)),
+        bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_Y}u))
     );
     let authored_direction = vec2f(
         bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_X}u)),
@@ -1480,9 +1593,10 @@ fn enemy_source_radial_candidate(
     rank: u32,
     candidate_index: u32
 ) -> ActorActionCandidate {
+    let source_rank = admission_source_rank(rank);
     let source_position = vec2f(
-        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
-        bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+        bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_X}u)),
+        bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_Y}u))
     );
     let authored_direction = vec2f(
         bitcast<f32>(admission_placement_word(rank, ${P.DIRECTION_X}u)),
@@ -1523,19 +1637,20 @@ fn tower_payload_candidate(
     candidate_index: u32
 ) -> ActorActionCandidate {
     let placement = admission_header(${H.PLACEMENT_POLICY_CODE}u);
-    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    let destination_count = admission_header(${H.DESTINATION_COUNT}u);
     if (placement == ADMISSION_PLACE_TARGET_LATTICE
         && candidate_index < TOWER_TARGET_LATTICE_ROUNDS) {
         let target_position = vec2f(
             bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
             bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
         );
+        let source_rank = admission_source_rank(rank);
         let source = vec2f(
-            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
-            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+            bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_X}u)),
+            bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_Y}u))
         );
         let lattice = admission_lattice_offset(
-            rank + candidate_index * subject_count
+            rank + candidate_index * destination_count
         );
         let position = target_position + vec2f(lattice)
             * bitcast<f32>(admission_header(${H.SUMMON_LATTICE_SPACING}u));
@@ -1563,19 +1678,20 @@ fn enemy_payload_candidate(
     candidate_index: u32
 ) -> ActorActionCandidate {
     let placement = admission_header(${H.PLACEMENT_POLICY_CODE}u);
-    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    let destination_count = admission_header(${H.DESTINATION_COUNT}u);
     if (placement == ADMISSION_PLACE_TARGET_LATTICE
         && candidate_index < ENEMY_TARGET_LATTICE_ROUNDS) {
         let target_position = vec2f(
             bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
             bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
         );
+        let source_rank = admission_source_rank(rank);
         let source = vec2f(
-            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_X}u)),
-            bitcast<f32>(admission_snapshot_word(rank, ${S.POSITION_Y}u))
+            bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_X}u)),
+            bitcast<f32>(admission_snapshot_word(source_rank, ${S.POSITION_Y}u))
         );
         let lattice = admission_lattice_offset(
-            rank + candidate_index * subject_count
+            rank + candidate_index * destination_count
         );
         let position = target_position + vec2f(lattice)
             * bitcast<f32>(admission_header(${H.SUMMON_LATTICE_SPACING}u));
@@ -1604,10 +1720,10 @@ fn admit_actor_action_spawns() {
             != ADMISSION_STATUS_PENDING) {
         return;
     }
-    let subject_count = admission_header(${H.SUBJECT_COUNT}u);
+    let destination_count = admission_header(${H.DESTINATION_COUNT}u);
     let tower_payload = admission_header(${H.PAYLOAD_CODE}u)
         == ADMISSION_TOWER_PAYLOAD;
-    for (var rank = 0u; rank < subject_count; rank += 1u) {
+    for (var rank = 0u; rank < destination_count; rank += 1u) {
         var errors = admission_placement_word(rank, ${P.ERROR_FLAGS}u);
         if (errors != 0u) {
             continue;
@@ -1621,14 +1737,30 @@ fn admit_actor_action_spawns() {
         var attempted = 0u;
         var rejection_class = 0u;
         var selected = ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
-        let candidate_capacity = select(
-            ENEMY_CANDIDATE_CAPACITY,
-            TOWER_CANDIDATE_CAPACITY,
+        let placement_policy = admission_header(${H.PLACEMENT_POLICY_CODE}u);
+        var candidate_capacity = select(
+            ENEMY_SOURCE_RADIAL_ROUNDS * ENEMY_RADIAL_SLOT_COUNT,
+            TOWER_SOURCE_RADIAL_ROUNDS * TOWER_RADIAL_SLOT_COUNT,
             tower_payload
         );
-        for (var candidate_index = 0u;
-            candidate_index < candidate_capacity;
-            candidate_index += 1u) {
+        if (placement_policy == ADMISSION_PLACE_TARGET_LATTICE) {
+            candidate_capacity = select(
+                ENEMY_TARGET_LATTICE_ROUNDS,
+                TOWER_TARGET_LATTICE_ROUNDS,
+                tower_payload
+            );
+        }
+        let candidate_seed = admission_candidate_seed(rank);
+        let candidate_offset = select(
+            0u,
+            candidate_seed % candidate_capacity,
+            admission_header(${H.COPIES_PER_SUBJECT}u) > 1u
+        );
+        for (var candidate_attempt = 0u;
+            candidate_attempt < candidate_capacity;
+            candidate_attempt += 1u) {
+            let candidate_index = (candidate_attempt + candidate_offset)
+                % candidate_capacity;
             var candidate = enemy_payload_candidate(rank, candidate_index);
             if (tower_payload) {
                 candidate = tower_payload_candidate(rank, candidate_index);
@@ -1719,11 +1851,19 @@ fn admit_actor_action_spawns() {
             );
             rejection_class = 0u;
         }
-        admission_store_placement(rank, ${P.RESERVED_0}u, chosen);
-        admission_store_placement(rank, ${P.RESERVED_1}u, attempted);
         admission_store_placement(
             rank,
-            ${P.RESERVED_2}u,
+            ${P.ADMISSION_CHOSEN_CANDIDATE_INDEX}u,
+            chosen
+        );
+        admission_store_placement(
+            rank,
+            ${P.ADMISSION_ATTEMPTED_CANDIDATE_COUNT}u,
+            attempted
+        );
+        admission_store_placement(
+            rank,
+            ${P.ADMISSION_FAILURE_CLASS}u,
             rejection_class
         );
         admission_store_placement(rank, ${P.ERROR_FLAGS}u, errors);

@@ -1,7 +1,7 @@
 import {
-    R6_WORD_PROTOCOL_DATA,
-    R6_WORD_DEFINITION_BY_ID,
-    R6_WORD_INSTANCE_BY_ID
+    R7_WORD_PROTOCOL_DATA,
+    R7_WORD_DEFINITION_BY_ID,
+    R7_WORD_INSTANCE_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
     R5_ACTOR_ACTION_PROFILE_BY_ACTION_CODE
@@ -126,11 +126,11 @@ export class SentenceCompileError extends Error {
 export class SentenceCompiler {
     constructor(options = {}) {
         this.wordDefinitionsById = requireCatalog(
-            options.wordDefinitionsById ?? R6_WORD_DEFINITION_BY_ID,
+            options.wordDefinitionsById ?? R7_WORD_DEFINITION_BY_ID,
             'wordDefinitionsById'
         );
         this.wordInstancesById = requireCatalog(
-            options.wordInstancesById ?? R6_WORD_INSTANCE_BY_ID,
+            options.wordInstancesById ?? R7_WORD_INSTANCE_BY_ID,
             'wordInstancesById'
         );
         this.actorActionProfilesByActionCode = requireCatalog(
@@ -154,7 +154,7 @@ export class SentenceCompiler {
             'modifierProfilesByCode'
         );
         this.protocol = normalizeProtocolData(
-            options.protocol ?? R6_WORD_PROTOCOL_DATA
+            options.protocol ?? R7_WORD_PROTOCOL_DATA
         );
         this.cache = new Map();
     }

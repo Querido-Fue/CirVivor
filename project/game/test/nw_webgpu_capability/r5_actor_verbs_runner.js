@@ -460,7 +460,8 @@ function createHarness(
     loadout = R5_SHOWCASE_SENTENCE_LOADOUT,
     options = {}
 ) {
-    const navigationSource = createNavigationSource();
+    const navigationSource = options.navigationSource
+        ?? createNavigationSource();
     let coreCleanupBinding = null;
     const endpoint = createGpuSimulationEndpoint({
         webGpuPlatformPort: createPlatformPort(
@@ -475,9 +476,17 @@ function createHarness(
         abilitySubjectCommandCapacity: 4,
         abilitySubjectCapacity: 1_000,
         abilitySubjectReadbackSlotCount: 3,
+        actorPayloadCommandCapacity:
+            options.actorPayloadCommandCapacity,
+        actorPayloadReadbackSlotCount:
+            options.actorPayloadReadbackSlotCount,
         actorActionPlacementCommandCapacity: 4,
         actorActionPlacementSubjectCapacity: 256,
+        actorActionPlacementDestinationCapacity:
+            options.actorActionPlacementDestinationCapacity ?? 1_000,
         actorActionPlacementReadbackSlotCount: 3,
+        actorTransitReadbackSlotCount:
+            options.actorTransitReadbackSlotCount,
         towerGroupMemberCapacity: Math.min(capacity, 256),
         towerGroupReadbackSlotCount: 3,
         towerCreationReadbackSlotCount: 3
@@ -812,10 +821,14 @@ function captureRuntimeTelemetry(harness) {
         bodyCountHighWater: gpu?.bodyCountHighWater ?? 0,
         activeBodyCountHighWater:
             gpu?.activeBodyCountHighWater ?? 0,
+        gridOverflowCount:
+            (gpu?.overflow?.totalSmallCount ?? 0)
+            + (gpu?.overflow?.totalBigCount ?? 0),
         towerRecordHighWater:
             harness.towerGroupState.getStatus().totalTowerRecordCount,
         placementCommandHighWater: placement.commandHighWater ?? 0,
         placementSubjectHighWater: placement.subjectHighWater ?? 0,
+        placementDestinationHighWater: placement.destinationHighWater ?? 0,
         retainedPlacementHighWater:
             placement.retainedPlacementHighWater ?? 0,
         transitActorHighWater: transit?.activeActorHighWater ?? 0,
@@ -2600,8 +2613,8 @@ async function run() {
             && acceptanceTelemetry.highWater.transitActor === 256,
         `R5 high-water mismatch: ${JSON.stringify(acceptanceTelemetry)}`);
         assert(acceptanceTelemetry.readbackBytes.abilitySubjectAggregate === 64
-            && acceptanceTelemetry.readbackBytes.payloadAggregate === 72
-            && acceptanceTelemetry.readbackBytes.placementAggregate === 96
+            && acceptanceTelemetry.readbackBytes.payloadAggregate === 88
+            && acceptanceTelemetry.readbackBytes.placementAggregate === 112
             && acceptanceTelemetry.readbackBytes.transitAggregate === 64
             && acceptanceTelemetry.readbackBytes.towerCreationAggregate === 96
             && acceptanceTelemetry.readbackBytes.towerMetadataCommitRecord === 32
@@ -2649,4 +2662,24 @@ async function run() {
     nw.App.quit();
 }
 
-run();
+export {
+    FIXED_DELTA,
+    advanceTransitThroughFixedTick,
+    captureRuntimeTelemetry,
+    checkpoint,
+    createHarness,
+    createNavigationSource,
+    destroyHarness,
+    executeImmediateEnemyPayload,
+    initializePrimaryTower,
+    openGenericBoundary,
+    recoveryRequired,
+    requestEnemyBatch,
+    storageMaximum,
+    timedFixedUpdate,
+    waitFor
+};
+
+if (process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE !== 'r7-actor-payload-multiplicity') {
+    run();
+}

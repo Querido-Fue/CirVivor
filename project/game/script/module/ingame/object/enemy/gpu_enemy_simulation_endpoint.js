@@ -26,7 +26,8 @@ import {
     SENTENCE_ACTION_CODE
 } from '../../contract/word_sentence_contract.js';
 import {
-    evaluateActorPayloadCapacity
+    evaluateActorPayloadCapacity,
+    evaluateActorPayloadCardinality
 } from '../../word/actor_payload_budget.js';
 import {
     GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION
@@ -235,7 +236,12 @@ function toPositiveSafeInteger(value, fallback = 0) {
     return Number.isSafeInteger(number) && number > 0 ? number : fallback;
 }
 
-function createActorPayloadRegistryMetadata(template, command, snapshotRank) {
+function createActorPayloadRegistryMetadata(
+    template,
+    command,
+    sourceSubjectRank,
+    copyIndex
+) {
     const metadata = Object.create(null);
     for (const [key, value] of Object.entries(template ?? {})) {
         if (value === null
@@ -257,7 +263,12 @@ function createActorPayloadRegistryMetadata(template, command, snapshotRank) {
     metadata.sourceExecutionOrdinal = command.executionOrdinal;
     metadata.executionOrdinal = command.executionOrdinal;
     metadata.visibleFromExecutionOrdinal = command.executionOrdinal + 1;
-    metadata.sourceSnapshotRank = snapshotRank;
+    metadata.sourceSnapshotRank = sourceSubjectRank;
+    metadata.sourceSubjectRank = sourceSubjectRank;
+    metadata.copyIndex = copyIndex;
+    metadata.copiesPerSubject = command.copiesPerSubject ?? 1;
+    metadata.modifierSetFingerprint
+        = command.modifierSetFingerprint ?? 0;
     metadata.sourceSubjectIdentityAuthority = 'GPU_SUBJECT_SNAPSHOT';
     metadata.generation = null;
     metadata.generationAuthority = 'GPU_ABILITY_METADATA';
@@ -885,7 +896,7 @@ export class GpuEnemySimulationEndpoint {
 
     /**
      * @param {{webGpuPlatformPort?:object|null,gpuSimulationBackend?:object,gpuSimulationBackendFactory?:(dependencies:object,options:object)=>object,enemySimulationBackend?:object,enemySimulationBackendFactory?:(dependencies:object,options:object)=>object,coreImpactCleanupPortReceiver?:(binding:object)=>void}} [dependencies={}]
-     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number,abilitySubjectCommandCapacity?:number,abilitySubjectCapacity?:number,abilitySubjectReadbackSlotCount?:number,actorActionPlacementCommandCapacity?:number,actorActionPlacementSubjectCapacity?:number,actorActionPlacementReadbackSlotCount?:number,towerGroupMemberCapacity?:number,towerGroupReadbackSlotCount?:number,towerCreationReadbackSlotCount?:number}} [options={}]
+     * @param {{capacity?:number,presentationProfile?:string,completedEventSnapshotCapacity?:number,completedEventKeyHistoryCapacity?:number,controlCommandCapacity?:number,spawnProgramCapacity?:number,effectCommandCapacity?:number,effectCommandHistoryCapacity?:number,effectCompletionBatchCapacity?:number,formationCommandCapacity?:number,formationCommandHistoryCapacity?:number,abilitySubjectCommandCapacity?:number,abilitySubjectCapacity?:number,abilitySubjectReadbackSlotCount?:number,actorActionPlacementCommandCapacity?:number,actorActionPlacementSubjectCapacity?:number,actorActionPlacementDestinationCapacity?:number,actorActionPlacementReadbackSlotCount?:number,towerGroupMemberCapacity?:number,towerGroupReadbackSlotCount?:number,towerCreationReadbackSlotCount?:number}} [options={}]
      */
     constructor(dependencies = {}, options = {}) {
         if (dependencies.coreImpactCleanupPortReceiver !== undefined
@@ -968,6 +979,8 @@ export class GpuEnemySimulationEndpoint {
                 options.actorActionPlacementCommandCapacity,
             actorActionPlacementSubjectCapacity:
                 options.actorActionPlacementSubjectCapacity,
+            actorActionPlacementDestinationCapacity:
+                options.actorActionPlacementDestinationCapacity,
             actorActionPlacementReadbackSlotCount:
                 options.actorActionPlacementReadbackSlotCount,
             actorTransitReadbackSlotCount:
@@ -1957,6 +1970,10 @@ export class GpuEnemySimulationEndpoint {
         const command = request.command;
         const completion = request.subjectCompletion;
         const subjectCount = Number(completion?.subjectCount);
+        const copiesPerSubject = Number(command?.copiesPerSubject ?? 1);
+        const modifierSetFingerprint = Number(
+            command?.modifierSetFingerprint ?? 0
+        );
         const throwAction = command?.actionCode
             === SENTENCE_ACTION_CODE.THROW;
         const placementAction = [
@@ -1967,6 +1984,13 @@ export class GpuEnemySimulationEndpoint {
         if (transactionId.length === 0
             || !command || !completion?.snapshotToken
             || !Number.isSafeInteger(subjectCount) || subjectCount <= 0
+            || !Number.isSafeInteger(copiesPerSubject)
+            || copiesPerSubject <= 0
+            || copiesPerSubject > 0xffffffff
+            || !Number.isSafeInteger(modifierSetFingerprint)
+            || modifierSetFingerprint < 0
+            || modifierSetFingerprint > 0xffffffff
+            || (copiesPerSubject > 1 && modifierSetFingerprint === 0)
             || subjectCount !== Number(completion.capacityDemand)
             || completion.executionId !== command.executionId
             || completion.executionOrdinal !== command.executionOrdinal
@@ -2018,20 +2042,27 @@ export class GpuEnemySimulationEndpoint {
             - registryStatus.reservedCount;
         const bodyAvailable = this.backend
             .getAvailableActorPayloadBodyCapacity();
-        const capacity = evaluateActorPayloadCapacity({
-            requiredBodies: subjectCount,
+        const capacity = evaluateActorPayloadCardinality({
+            subjectCount,
+            copiesPerSubject,
             registryAvailable,
             bodyAvailable,
             generatedBodyBudget:
                 command.compiledAbility.budgets.generatedBodyCount
         });
+        const destinationCount = capacity.effectiveGeneratedCount;
         if (!capacity.valid) {
             this.actorPayloadCapacityRejectedCount++;
             return Object.freeze({
                 accepted: false,
                 reason: 'actor-payload-capacity',
                 capacityRejected: true,
-                requestedCount: subjectCount,
+                requestedCount: destinationCount,
+                subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
+                capacityReason: capacity.reason,
                 registryAvailable,
                 bodyAvailable,
                 reservationCount: 0,
@@ -2040,15 +2071,67 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: false
             });
         }
-        if (!this.backend.canStageActorPayloadMaterialization()) {
+        const materializationCanStage
+            = this.backend.canStageActorPayloadMaterialization({
+                subjectCount,
+                destinationCount
+            });
+        const placementPreflightStatus = placementAction
+            ? this.backend.getActorActionPlacementRuntimeStatus()
+            : null;
+        const placementCanStage = !placementAction
+            || (typeof this.backend.canStageActorActionPlacement === 'function'
+                ? this.backend.canStageActorActionPlacement({
+                    subjectCount,
+                    destinationCount
+                }) === true
+                : placementPreflightStatus?.state === 'ready'
+                    && placementPreflightStatus.requiresRecovery !== true
+                    && subjectCount
+                        <= Number(
+                            placementPreflightStatus.subjectCapacity
+                                ?? 0xffffffff
+                        )
+                    && destinationCount
+                        <= Number(
+                            placementPreflightStatus.destinationCapacity
+                                ?? 0xffffffff
+                        ));
+        const transitStatus = throwAction
+            ? this.backend.getActorTransitRuntimeStatus()
+            : null;
+        const transitCanStage = !throwAction
+            || (transitStatus?.state === 'ready'
+                && transitStatus.requiresRecovery !== true
+                && Number(transitStatus.activeActorCount ?? 0)
+                    + destinationCount
+                    <= Number(transitStatus.bodyCapacity ?? 0));
+        if (!materializationCanStage || !placementCanStage
+            || !transitCanStage) {
             const status = this.backend.getActorPayloadMaterializationStatus();
+            const placementStatus = placementPreflightStatus;
+            const requiresRecovery = status.requiresRecovery === true
+                || placementStatus?.requiresRecovery === true
+                || transitStatus?.requiresRecovery === true;
             return Object.freeze({
                 accepted: false,
-                retryable: status.requiresRecovery !== true,
-                reason: status.requiresRecovery === true
+                retryable: !requiresRecovery,
+                reason: requiresRecovery
                     ? 'actor-payload-runtime-failed'
-                    : 'actor-payload-readback-pressure',
-                requiresRecovery: status.requiresRecovery === true
+                    : !placementCanStage
+                        ? 'actor-payload-placement-pressure'
+                        : !transitCanStage
+                            ? 'actor-payload-transit-capacity'
+                            : 'actor-payload-readback-pressure',
+                requestedCount: destinationCount,
+                subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
+                reservationCount: 0,
+                spawnCount: 0,
+                cooldownConsumed: false,
+                requiresRecovery
             });
         }
         const snapshotBinding = this.getAbilitySubjectSnapshotGpuBinding(
@@ -2083,7 +2166,7 @@ export class GpuEnemySimulationEndpoint {
         }
         const handles = [];
         try {
-            for (let index = 0; index < subjectCount; index++) {
+            for (let index = 0; index < destinationCount; index++) {
                 const handle = this.registry.reserveEntity({
                     kindId: payloadDefinition.kindId,
                     definitionId: payloadDefinition.definitionId,
@@ -2105,7 +2188,7 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: true
             });
         }
-        if (handles.length !== subjectCount) {
+        if (handles.length !== destinationCount) {
             for (const handle of handles) {
                 this.registry.cancelReservation(handle);
             }
@@ -2114,7 +2197,11 @@ export class GpuEnemySimulationEndpoint {
                 accepted: false,
                 reason: 'actor-payload-capacity',
                 capacityRejected: true,
-                requestedCount: subjectCount,
+                requestedCount: destinationCount,
+                subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
                 reservationCount: 0,
                 spawnCount: 0,
                 cooldownConsumed: false,
@@ -2145,7 +2232,11 @@ export class GpuEnemySimulationEndpoint {
                         ?? 'actor-payload-body-prelease',
                 capacityRejected: bodyCapacityRejected,
                 retryable: bodyPrelease?.retryable === true,
-                requestedCount: subjectCount,
+                requestedCount: destinationCount,
+                subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
                 reservationCount: 0,
                 spawnCount: 0,
                 cooldownConsumed: false,
@@ -2165,6 +2256,11 @@ export class GpuEnemySimulationEndpoint {
             snapshotBinding,
             actorActionProfile:
                 command.compiledAbility.actorActionProfile,
+            subjectCount,
+            destinationCount,
+            copiesPerSubject,
+            modifierSetFingerprint,
+            destinationFingerprint: 0,
             state: 'preleased'
         };
         const payloadTargets = this.actorPayloadTargetProvider.resolveTargets();
@@ -2204,6 +2300,7 @@ export class GpuEnemySimulationEndpoint {
                 requiresRecovery: stage?.requiresRecovery === true
             });
         }
+        transaction.destinationFingerprint = stage.destinationFingerprint;
         transaction.state = placementAction
             ? 'gpu-placement-pending'
             : 'gpu-materialization-pending';
@@ -2215,8 +2312,13 @@ export class GpuEnemySimulationEndpoint {
         return Object.freeze({
             accepted: true,
             transactionId,
-            requestedCount: subjectCount,
-            reservationCount: subjectCount,
+            requestedCount: destinationCount,
+            subjectCount,
+            destinationCount,
+            copiesPerSubject,
+            modifierSetFingerprint,
+            destinationFingerprint: transaction.destinationFingerprint,
+            reservationCount: destinationCount,
             spawnCount: 0,
             cooldownConsumed: false,
             requiresRecovery: false
@@ -2253,8 +2355,13 @@ export class GpuEnemySimulationEndpoint {
                     && placement.actorActionProfileFingerprint
                         === transaction.command
                             .actorActionProfileFingerprint
-                    && placement.subjectCount
-                        === transaction.handles.length
+                    && placement.subjectCount === transaction.subjectCount
+                    && placement.destinationCount
+                        === transaction.destinationCount
+                    && placement.copiesPerSubject
+                        === transaction.copiesPerSubject
+                    && placement.modifierSetFingerprint
+                        === transaction.modifierSetFingerprint
                     && placement.actionCode
                         === transaction.command.actionCode
                     && placement.payloadCode === ACTOR_PAYLOAD_CODE.ENEMY;
@@ -2271,7 +2378,15 @@ export class GpuEnemySimulationEndpoint {
                             === transaction.command
                                 .actorActionProfileFingerprint
                         && binding.placementTargetTick
-                            === transaction.targetFixedTick;
+                            === transaction.targetFixedTick
+                        && binding.subjectCount
+                            === transaction.subjectCount
+                        && binding.destinationCount
+                            === transaction.destinationCount
+                        && binding.copiesPerSubject
+                            === transaction.copiesPerSubject
+                        && binding.modifierSetFingerprint
+                            === transaction.modifierSetFingerprint;
                     const stage = bindingExact
                         ? this.backend.stageActorPayloadMaterialization({
                             transactionId: transaction.transactionId,
@@ -2366,7 +2481,12 @@ export class GpuEnemySimulationEndpoint {
                     === transaction.command.fingerprint
                 && aggregate.snapshotFingerprint
                     === transaction.completion.snapshotFingerprint
-                && aggregate.subjectCount === transaction.handles.length
+                && aggregate.subjectCount === transaction.subjectCount
+                && aggregate.destinationCount === transaction.destinationCount
+                && aggregate.copiesPerSubject
+                    === transaction.copiesPerSubject
+                && aggregate.modifierSetFingerprint
+                    === transaction.modifierSetFingerprint
                 && (!placementAction
                     || (aggregate.actorActionProfileFingerprint
                             === transaction.command
@@ -2395,10 +2515,16 @@ export class GpuEnemySimulationEndpoint {
                 === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE) {
                 const landingMetadata = transaction.handles.map(
                     (_handle, index) => {
+                        const sourceSubjectRank = Math.floor(
+                            index / transaction.copiesPerSubject
+                        );
+                        const copyIndex = index
+                            % transaction.copiesPerSubject;
                         const metadata = createActorPayloadRegistryMetadata(
                             transaction.spawnTemplate,
                             transaction.command,
-                            index
+                            sourceSubjectRank,
+                            copyIndex
                         );
                         if (throwAction) {
                             metadata.actorTransitPhase = 'ACTIVE';
@@ -2482,6 +2608,11 @@ export class GpuEnemySimulationEndpoint {
                             transactionId: transaction.transactionId,
                             completionOwner: 'actor-payload',
                             handles: transaction.handles,
+                            subjectCount: transaction.subjectCount,
+                            copiesPerSubject:
+                                transaction.copiesPerSubject,
+                            modifierSetFingerprint:
+                                transaction.modifierSetFingerprint,
                             startTick: transaction.targetFixedTick,
                             durationFixedTicks:
                                 transaction.actorActionProfile
@@ -2519,6 +2650,13 @@ export class GpuEnemySimulationEndpoint {
                             transactionId: transaction.transactionId,
                             handles: transaction.handles,
                             landingMetadata: Object.freeze(landingMetadata),
+                            subjectCount: transaction.subjectCount,
+                            destinationCount:
+                                transaction.destinationCount,
+                            copiesPerSubject:
+                                transaction.copiesPerSubject,
+                            modifierSetFingerprint:
+                                transaction.modifierSetFingerprint,
                             actionCode: transaction.command.actionCode,
                             payloadCode: transaction.command.payloadCode,
                             executionOrdinal:
@@ -2608,6 +2746,13 @@ export class GpuEnemySimulationEndpoint {
                     === landing.actorActionProfileFingerprint
                 && completion.placementFingerprint
                     === landing.placementFingerprint
+                && completion.subjectCount === landing.subjectCount
+                && completion.destinationCount
+                    === landing.destinationCount
+                && completion.copiesPerSubject
+                    === landing.copiesPerSubject
+                && completion.modifierSetFingerprint
+                    === landing.modifierSetFingerprint
                 && completion.handles.length === landing.handles.length
                 && completion.handles.every((handle, index) => (
                     handle.entityId === landing.handles[index].entityId

@@ -1,7 +1,7 @@
 const LITTLE_ENDIAN = true;
 const UINT32_MAX = 0xffffffff;
 
-export const GPU_ACTOR_TRANSIT_ABI_VERSION = 1;
+export const GPU_ACTOR_TRANSIT_ABI_VERSION = 2;
 
 export const GPU_ACTOR_TRANSIT_PHASE = Object.freeze({
     EMPTY: 0,

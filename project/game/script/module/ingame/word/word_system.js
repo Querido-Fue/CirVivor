@@ -1,5 +1,5 @@
 import {
-    R6_SENTENCE_DEFINITION_BY_ID
+    R7_SENTENCE_DEFINITION_BY_ID
 } from 'data/word/r3_word_catalog_data.js';
 import {
     ACTOR_PAYLOAD_CODE,
@@ -50,6 +50,14 @@ function requireNonNegativeSafeInteger(value, label) {
     return number;
 }
 
+function requirePositiveSafeInteger(value, label) {
+    const number = requireNonNegativeSafeInteger(value, label);
+    if (number === 0) {
+        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
 function freezeActivationResult(code, options = {}) {
     return Object.freeze({
         accepted: code === ABILITY_ACTIVATION_RESULT_CODE.REQUESTED,
@@ -81,7 +89,7 @@ export class WordSystem {
             ? options.compiler
             : new SentenceCompiler(options.compilerOptions);
         this.sentenceDefinitionsById = options.sentenceDefinitionsById
-            ?? R6_SENTENCE_DEFINITION_BY_ID;
+            ?? R7_SENTENCE_DEFINITION_BY_ID;
         this.slots = new Map();
         for (const slotId of ABILITY_SLOT_IDS) {
             this.slots.set(slotId, {
@@ -434,6 +442,14 @@ export class WordSystem {
             generatedCount: requireNonNegativeSafeInteger(
                 source.generatedCount ?? 0,
                 'generatedCount'
+            ),
+            copiesPerSubject: requirePositiveSafeInteger(
+                source.copiesPerSubject ?? 1,
+                'copiesPerSubject'
+            ),
+            modifierSetFingerprint: requireNonNegativeSafeInteger(
+                source.modifierSetFingerprint ?? 0,
+                'modifierSetFingerprint'
             ),
             cooldownConsumed
         });

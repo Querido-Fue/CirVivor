@@ -77,6 +77,11 @@ function freezeHistory(source) {
         executionOrdinal: source.executionOrdinal,
         state: source.state,
         subjectCount: source.subjectCount,
+        destinationCount: source.destinationCount,
+        copiesPerSubject: source.copiesPerSubject,
+        modifierSetFingerprint: source.modifierSetFingerprint,
+        destinationFingerprint: source.destinationFingerprint,
+        placementFingerprint: source.placementFingerprint,
         generatedCount: source.generatedCount,
         targetFixedTick: source.targetFixedTick,
         completedFixedTick: source.completedFixedTick,
@@ -243,6 +248,11 @@ export class ActorPayloadMaterializer {
             if (!record || record.kind !== MATERIALIZATION_KIND.ENEMY) continue;
             this.inFlight.delete(completion.transactionId);
             observedCount++;
+            const subjectCount = record.ready.completion.subjectCount;
+            const copiesPerSubject = record.ready.command.copiesPerSubject ?? 1;
+            const destinationCount = subjectCount * copiesPerSubject;
+            const modifierSetFingerprint
+                = record.ready.command.modifierSetFingerprint ?? 0;
             const exact = completion.executionOrdinal
                     === record.ready.command.executionOrdinal
                 && completion.commandFingerprint
@@ -250,7 +260,13 @@ export class ActorPayloadMaterializer {
                 && completion.snapshotFingerprint
                     === record.ready.completion.snapshotFingerprint
                 && completion.subjectCount
-                    === record.ready.completion.subjectCount;
+                    === subjectCount
+                && completion.destinationCount === destinationCount
+                && completion.copiesPerSubject === copiesPerSubject
+                && completion.modifierSetFingerprint
+                    === modifierSetFingerprint
+                && completion.destinationFingerprint
+                    === record.destinationFingerprint;
             if (!exact) {
                 this.recoveryRequired = true;
                 this.failure = Object.freeze({
@@ -271,7 +287,7 @@ export class ActorPayloadMaterializer {
                 )
                 && completion.status
                     === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE
-                && completion.generatedCount === completion.subjectCount) {
+                && completion.generatedCount === completion.destinationCount) {
                 const settled = this.abilityRuntime
                     .completeSnapshotExecution(record.ready, {
                         completedFixedTick:
@@ -715,7 +731,8 @@ export class ActorPayloadMaterializer {
                     kind: MATERIALIZATION_KIND.ENEMY,
                     transactionId,
                     ready: record,
-                    targetFixedTick: tick
+                    targetFixedTick: tick,
+                    destinationFingerprint: result.destinationFingerprint
                 });
                 this.inFlight.set(transactionId, inFlight);
                 if (!this.abilityRuntime.markGpuMaterializationPending(
@@ -974,6 +991,14 @@ export class ActorPayloadMaterializer {
             executionOrdinal: record.ready.command.executionOrdinal,
             state,
             subjectCount: record.ready.completion.subjectCount,
+            destinationCount: completion.destinationCount
+                ?? completion.createdCount ?? record.ready.completion.subjectCount,
+            copiesPerSubject: completion.copiesPerSubject
+                ?? record.ready.command.copiesPerSubject ?? 1,
+            modifierSetFingerprint: completion.modifierSetFingerprint
+                ?? record.ready.command.modifierSetFingerprint ?? 0,
+            destinationFingerprint: completion.destinationFingerprint ?? 0,
+            placementFingerprint: completion.placementFingerprint ?? 0,
             generatedCount: completion.generatedCount
                 ?? completion.createdCount ?? 0,
             targetFixedTick: record.targetFixedTick,

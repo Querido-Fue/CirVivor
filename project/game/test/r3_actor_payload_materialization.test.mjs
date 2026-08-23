@@ -146,7 +146,11 @@ class FakeEndpoint {
                 spawnCount: 0,
                 requiresRecovery: false
             }
-            : { accepted: true, transactionId: request.transactionId };
+            : {
+                accepted: true,
+                transactionId: request.transactionId,
+                destinationFingerprint: 0xdecafbad
+            };
     }
 
     drainCompletedActorPayloadMaterializations(out) {
@@ -215,7 +219,7 @@ test('safe-placement는 payload-local 후보와 shared exact admission을 분리
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
         /const TOTAL_CANDIDATE_COUNT: u32 =\s*142u/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
-        /candidate_index < TOTAL_CANDIDATE_COUNT/);
+        /candidate_attempt < TOTAL_CANDIDATE_COUNT/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
         /spawn_admission_claim\([\s\S]*admission_static_valid/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
@@ -241,6 +245,8 @@ test('placement reject aggregate는 NO_VALID_PLACEMENT용 bounded rank/count/cla
     view.setUint32(abi.AGGREGATE.STATUS,
         ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED, true);
     view.setUint32(abi.AGGREGATE.SUBJECT_COUNT, 735, true);
+    view.setUint32(abi.AGGREGATE.DESTINATION_COUNT, 735, true);
+    view.setUint32(abi.AGGREGATE.COPIES_PER_SUBJECT, 1, true);
     view.setUint32(abi.AGGREGATE.ERROR_FLAGS,
         ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.SDF_PLACEMENT
             | ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP,
@@ -262,19 +268,21 @@ test('placement reject aggregate는 NO_VALID_PLACEMENT용 bounded rank/count/cla
 
 test('snapshot/lease/materialization ABI는 rank i 대응과 aggregate-only readback을 고정한다', () => {
     assert.equal(GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE, 112);
-    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE, 176);
+    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.LEASE_HEADER.STRIDE, 192);
     assert.equal(
         GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.DESTINATION_LEASE.STRIDE,
         32
     );
-    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.AGGREGATE.STRIDE, 72);
+    assert.equal(GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.AGGREGATE.STRIDE, 88);
     assert.equal(
         GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI.VALIDATION_RECORD.STRIDE,
         32
     );
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /snapshot_word\(rank,[\s\S]*lease_word\([\s\S]*rank/);
-    assert.match(BACKEND_SOURCE, /snapshotRank: index/);
+        /source_rank = lease_word\(rank,[\s\S]*snapshot_word\(source_rank,/);
+    assert.match(BACKEND_SOURCE,
+        /snapshotRank: Math\.floor\(index \/ copiesPerSubject\)/);
+    assert.match(BACKEND_SOURCE, /copyIndex: index % copiesPerSubject/);
     assert.match(BACKEND_SOURCE, /destinationFingerprint/);
 });
 
@@ -325,11 +333,11 @@ test('Tower aim/Enemy Tower→Core→facing, route inheritance, SDF를 GPU에서
 
 test('child metadata는 exact source/provenance, generation+1, current+1을 GPU에 기록한다', () => {
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /owner_entity_id[\s\S]*snapshot_word\(rank, \d+u\)/);
+        /owner_entity_id[\s\S]*snapshot_word\(source_rank, \d+u\)/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /owner_incarnation[\s\S]*snapshot_word\(rank, \d+u\)/);
+        /owner_incarnation[\s\S]*snapshot_word\(source_rank, \d+u\)/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
-        /\.generation[\s\S]*snapshot_word\(rank, \d+u\) \+ 1u/);
+        /\.generation[\s\S]*snapshot_word\(source_rank, \d+u\) \+ 1u/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
         /visible_from_execution_ordinal[\s\S]*header\(\d+u\) \+ 1u/);
     assert.match(GPU_ACTOR_PAYLOAD_MATERIALIZATION_WGSL,
@@ -353,6 +361,10 @@ test('IActorPayloadMaterializer는 committed aggregate에서만 cooldown 자격�
         commandFingerprint: ready.command.fingerprint,
         snapshotFingerprint: ready.completion.snapshotFingerprint,
         subjectCount: ready.completion.subjectCount,
+        destinationCount: ready.completion.subjectCount,
+        copiesPerSubject: 1,
+        modifierSetFingerprint: 0,
+        destinationFingerprint: 0xdecafbad,
         materializationTargetTick: 9,
         status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE,
         state: 'COMMITTED',
@@ -398,6 +410,10 @@ test('placement reject history는 bounded NO_VALID_PLACEMENT telemetry를 보존
         commandFingerprint: ready.command.fingerprint,
         snapshotFingerprint: ready.completion.snapshotFingerprint,
         subjectCount: ready.completion.subjectCount,
+        destinationCount: ready.completion.subjectCount,
+        copiesPerSubject: 1,
+        modifierSetFingerprint: 0,
+        destinationFingerprint: 0xdecafbad,
         materializationTargetTick: 80,
         status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED,
         state: 'REJECTED_PLACEMENT',

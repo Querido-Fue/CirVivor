@@ -33,6 +33,7 @@ const UINT32_MAX = 0xffffffff;
 const DEFAULT_COMMAND_CAPACITY = 4;
 const DEFAULT_READBACK_SLOT_COUNT = 4;
 const DEFAULT_SUBJECT_CAPACITY = 1000;
+const DEFAULT_DESTINATION_CAPACITY = 1000;
 const PIPELINES_BY_DEVICE = new WeakMap();
 
 export const GPU_ACTOR_ACTION_PLACEMENT_DEFAULT_COMMAND_CAPACITY
@@ -41,6 +42,8 @@ export const GPU_ACTOR_ACTION_PLACEMENT_DEFAULT_READBACK_SLOTS
     = DEFAULT_READBACK_SLOT_COUNT;
 export const GPU_ACTOR_ACTION_PLACEMENT_DEFAULT_SUBJECT_CAPACITY
     = DEFAULT_SUBJECT_CAPACITY;
+export const GPU_ACTOR_ACTION_PLACEMENT_DEFAULT_DESTINATION_CAPACITY
+    = DEFAULT_DESTINATION_CAPACITY;
 
 function requireRecord(value, label) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -257,9 +260,15 @@ function createPipelines(device, stage) {
     return result;
 }
 
-function normalizeDestinationLeases(source, subjectCount, bodyCapacity) {
-    if (!Array.isArray(source) || source.length !== subjectCount) {
-        throw new RangeError('destination lease 수가 snapshot subject 수와 다릅니다.');
+function normalizeDestinationLeases(
+    source,
+    subjectCount,
+    copiesPerSubject,
+    destinationCount,
+    bodyCapacity
+) {
+    if (!Array.isArray(source) || source.length !== destinationCount) {
+        throw new RangeError('destination lease 수가 destinationCount와 다릅니다.');
     }
     const slots = new Set();
     return Object.freeze(source.map((lease, index) => {
@@ -280,8 +289,15 @@ function normalizeDestinationLeases(source, subjectCount, bodyCapacity) {
             lease.destinationRank ?? index,
             `destinationLeases[${index}].destinationRank`
         );
-        if (snapshotRank !== index || destinationRank !== index) {
-            throw new RangeError('destination rank는 stable snapshot rank여야 합니다.');
+        const copyIndex = requireUint32(
+            lease.copyIndex ?? 0,
+            `destinationLeases[${index}].copyIndex`
+        );
+        if (snapshotRank !== Math.floor(index / copiesPerSubject)
+            || snapshotRank >= subjectCount
+            || destinationRank !== index
+            || copyIndex !== index % copiesPerSubject) {
+            throw new RangeError('destination multiplicity rank가 일관되지 않습니다.');
         }
         return Object.freeze({
             destinationSlot,
@@ -297,6 +313,7 @@ function normalizeDestinationLeases(source, subjectCount, bodyCapacity) {
             ),
             snapshotRank,
             destinationRank,
+            copyIndex,
             baselineFlags: requireUint32(
                 lease.baselineFlags ?? 0,
                 `destinationLeases[${index}].baselineFlags`
@@ -425,6 +442,10 @@ export class GpuActorActionPlacementRuntime {
             options.subjectCapacity ?? DEFAULT_SUBJECT_CAPACITY,
             'subjectCapacity'
         );
+        this.destinationCapacity = requirePositiveInteger(
+            options.destinationCapacity ?? DEFAULT_DESTINATION_CAPACITY,
+            'destinationCapacity'
+        );
         if (this.readbackSlotCount > this.commandCapacity) {
             throw new RangeError('placement readback slot은 command capacity 이하여야 합니다.');
         }
@@ -456,6 +477,7 @@ export class GpuActorActionPlacementRuntime {
         this.ringDeferredCount = 0;
         this.commandHighWater = 0;
         this.subjectHighWater = 0;
+        this.destinationHighWater = 0;
         this.retainedPlacementHighWater = 0;
         this.aggregateReadbackByteSize
             = GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STRIDE;
@@ -579,14 +601,27 @@ export class GpuActorActionPlacementRuntime {
         return true;
     }
 
-    canAccept() {
+    canAccept(request = {}) {
+        const subjectCount = request.subjectCount === undefined
+            ? 1
+            : Number(request.subjectCount);
+        const destinationCount = request.destinationCount === undefined
+            ? subjectCount
+            : Number(request.destinationCount);
         return !this.destroyed && this.state === 'ready'
+            && Number.isSafeInteger(subjectCount) && subjectCount > 0
+            && subjectCount <= this.subjectCapacity
+            && Number.isSafeInteger(destinationCount) && destinationCount > 0
+            && destinationCount <= this.destinationCapacity
             && this.pending.length + this.inFlight.size
                 + this.retainedPlacementTokens.size < this.commandCapacity;
     }
 
     stage(request = {}) {
-        if (!this.canAccept()) {
+        if (!this.canAccept({
+            subjectCount: request.subjectCompletion?.subjectCount,
+            destinationCount: request.destinationLeases?.length
+        })) {
             return Object.freeze({
                 accepted: false,
                 retryable: this.state === 'ready',
@@ -621,15 +656,38 @@ export class GpuActorActionPlacementRuntime {
                 subjectCapacity: this.subjectCapacity
             });
             const subjectCount = completion.subjectCount;
+            const copiesPerSubject = requireUint32(
+                command.copiesPerSubject ?? 1,
+                'copiesPerSubject',
+                { positive: true }
+            );
+            if (subjectCount > Math.floor(UINT32_MAX / copiesPerSubject)) {
+                throw new RangeError('actor action destinationCount가 uint32를 넘습니다.');
+            }
+            const destinationCount = subjectCount * copiesPerSubject;
+            if (destinationCount > this.destinationCapacity) {
+                throw new RangeError('actor action destination capacity를 넘습니다.');
+            }
+            const modifierSetFingerprint = requireUint32(
+                command.modifierSetFingerprint ?? 0,
+                'modifierSetFingerprint'
+            );
             const destinationLeases = normalizeDestinationLeases(
                 request.destinationLeases,
                 subjectCount,
+                copiesPerSubject,
+                destinationCount,
                 this.bodyCapacity
             );
             const destinationFingerprint
                 = computeGpuActorActionDestinationFingerprint(
                     destinationLeases,
-                    command.fingerprint
+                    command.fingerprint,
+                    {
+                        subjectCount,
+                        copiesPerSubject,
+                        modifierSetFingerprint
+                    }
                 );
             if (request.destinationFingerprint !== undefined
                 && requireUint32(
@@ -652,7 +710,9 @@ export class GpuActorActionPlacementRuntime {
                 request.coreTarget,
                 this.bodyCapacity
             );
-            const programBytes = createGpuActorActionProgramStorage(subjectCount);
+            const programBytes = createGpuActorActionProgramStorage(
+                destinationCount
+            );
             const { profile, output } = writeGpuActorActionProgramHeader(
                 programBytes,
                 {
@@ -669,6 +729,9 @@ export class GpuActorActionPlacementRuntime {
                     snapshotFingerprint: completion.snapshotFingerprint,
                     destinationFingerprint,
                     subjectCount,
+                    destinationCount,
+                    copiesPerSubject,
+                    modifierSetFingerprint,
                     sourceSelectorCode: command.selectorCode,
                     actionCode: command.actionCode,
                     payloadCode: command.payloadCode,
@@ -681,12 +744,15 @@ export class GpuActorActionPlacementRuntime {
                     aimPoint: command.aimPoint
                 }
             );
-            for (let index = 0; index < subjectCount; index++) {
+            for (let index = 0; index < destinationCount; index++) {
                 writeGpuActorActionDestinationLease(
                     programBytes,
-                    subjectCount,
+                    destinationCount,
                     index,
-                    destinationLeases[index]
+                    {
+                        ...destinationLeases[index],
+                        copiesPerSubject
+                    }
                 );
             }
 
@@ -716,6 +782,9 @@ export class GpuActorActionPlacementRuntime {
                 completion,
                 targetFixedTick,
                 subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
                 destinationFingerprint,
                 profile,
                 output,
@@ -737,10 +806,17 @@ export class GpuActorActionPlacementRuntime {
                 this.subjectHighWater,
                 subjectCount
             );
+            this.destinationHighWater = Math.max(
+                this.destinationHighWater,
+                destinationCount
+            );
             return Object.freeze({
                 accepted: true,
                 transactionId,
                 subjectCount,
+                destinationCount,
+                copiesPerSubject,
+                modifierSetFingerprint,
                 destinationFingerprint,
                 profileFingerprint: profile.fingerprint
             });
@@ -919,6 +995,7 @@ export class GpuActorActionPlacementRuntime {
                     executionOrdinal: entry.command.executionOrdinal,
                     status: GPU_ACTOR_ACTION_PLACEMENT_STATUS.PROTOCOL_REJECTED,
                     subjectCount: entry.subjectCount,
+                    destinationCount: entry.destinationCount,
                     validCount: 0,
                     commandFingerprint: entry.command.fingerprint,
                     snapshotFingerprint: entry.completion.snapshotFingerprint,
@@ -932,7 +1009,10 @@ export class GpuActorActionPlacementRuntime {
                     placementByteLength: entry.output.placementByteLength,
                     transitByteLength: entry.output.transitByteLength,
                     actorActionProfileFingerprint:
-                        entry.command.actorActionProfileFingerprint
+                        entry.command.actorActionProfileFingerprint,
+                    copiesPerSubject: entry.copiesPerSubject,
+                    modifierSetFingerprint:
+                        entry.modifierSetFingerprint
                 }, { placementToken: null, failure: this.failure }));
             }
             return Object.freeze({
@@ -980,6 +1060,9 @@ export class GpuActorActionPlacementRuntime {
                 GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE,
             byteLength: record.output.byteLength,
             subjectCount: record.subjectCount,
+            destinationCount: record.destinationCount,
+            copiesPerSubject: record.copiesPerSubject,
+            modifierSetFingerprint: record.modifierSetFingerprint,
             executionOrdinal: record.executionOrdinal,
             commandFingerprint: record.commandFingerprint,
             snapshotFingerprint: record.snapshotFingerprint,
@@ -1049,6 +1132,7 @@ export class GpuActorActionPlacementRuntime {
             towerMemberCapacity: this.towerMemberCapacity,
             commandCapacity: this.commandCapacity,
             subjectCapacity: this.subjectCapacity,
+            destinationCapacity: this.destinationCapacity,
             readbackSlotCount: this.readbackSlotCount,
             pendingCount: this.pending.length,
             inFlightCount: this.inFlight.size,
@@ -1061,6 +1145,7 @@ export class GpuActorActionPlacementRuntime {
             ringDeferredCount: this.ringDeferredCount,
             commandHighWater: this.commandHighWater,
             subjectHighWater: this.subjectHighWater,
+            destinationHighWater: this.destinationHighWater,
             retainedPlacementHighWater:
                 this.retainedPlacementHighWater,
             storageBindingCount:
@@ -1140,6 +1225,10 @@ export class GpuActorActionPlacementRuntime {
                     && aggregate.placementTargetTick === entry.targetFixedTick
                     && aggregate.executionOrdinal === entry.command.executionOrdinal
                     && aggregate.subjectCount === entry.subjectCount
+                    && aggregate.destinationCount === entry.destinationCount
+                    && aggregate.copiesPerSubject === entry.copiesPerSubject
+                    && aggregate.modifierSetFingerprint
+                        === entry.modifierSetFingerprint
                     && aggregate.commandFingerprint === entry.command.fingerprint
                     && aggregate.snapshotFingerprint
                         === entry.completion.snapshotFingerprint
@@ -1227,6 +1316,7 @@ export class GpuActorActionPlacementRuntime {
             executionOrdinal: entry.command.executionOrdinal,
             status: GPU_ACTOR_ACTION_PLACEMENT_STATUS.CANCELLED,
             subjectCount: entry.subjectCount,
+            destinationCount: entry.destinationCount,
             validCount: 0,
             commandFingerprint: entry.command.fingerprint,
             snapshotFingerprint: entry.completion.snapshotFingerprint,
@@ -1239,7 +1329,9 @@ export class GpuActorActionPlacementRuntime {
             placementByteLength: entry.output.placementByteLength,
             transitByteLength: entry.output.transitByteLength,
             actorActionProfileFingerprint:
-                entry.command.actorActionProfileFingerprint
+                entry.command.actorActionProfileFingerprint,
+            copiesPerSubject: entry.copiesPerSubject,
+            modifierSetFingerprint: entry.modifierSetFingerprint
         }, { placementToken: null, reason });
     }
 

@@ -255,6 +255,8 @@ export class EnemySimulationBackend {
             = options.actorActionPlacementCommandCapacity;
         this.actorActionPlacementSubjectCapacity
             = options.actorActionPlacementSubjectCapacity;
+        this.actorActionPlacementDestinationCapacity
+            = options.actorActionPlacementDestinationCapacity;
         this.actorActionPlacementReadbackSlotCount
             = options.actorActionPlacementReadbackSlotCount;
         this.actorTransitReadbackSlotCount
@@ -299,6 +301,8 @@ export class EnemySimulationBackend {
                 sessionGeneration: this.sessionGeneration,
                 commandCapacity: this.actorActionPlacementCommandCapacity,
                 subjectCapacity: this.actorActionPlacementSubjectCapacity,
+                destinationCapacity:
+                    this.actorActionPlacementDestinationCapacity,
                 readbackSlotCount:
                     this.actorActionPlacementReadbackSlotCount
             });
@@ -600,9 +604,9 @@ export class EnemySimulationBackend {
             && this.#ensureActorActionPlacementRuntime(null);
     }
 
-    canStageActorActionPlacement() {
+    canStageActorActionPlacement(request = {}) {
         return this.#ensureActorActionPlacementRuntime(null)
-            && this.actorActionPlacementRuntime.canAccept();
+            && this.actorActionPlacementRuntime.canAccept(request);
     }
 
     stageActorActionPlacement(request = {}) {
@@ -742,9 +746,9 @@ export class EnemySimulationBackend {
         );
     }
 
-    canStageActorPayloadMaterialization() {
+    canStageActorPayloadMaterialization(request = {}) {
         return this.#ensureActorPayloadMaterializationRuntime(null)
-            && this.actorPayloadMaterializationRuntime.canAccept();
+            && this.actorPayloadMaterializationRuntime.canAccept(request);
     }
 
     /**
@@ -965,11 +969,45 @@ export class EnemySimulationBackend {
                 reason: 'actor-payload-runtime-unavailable'
             });
         }
+        const subjectCount = Number(request.subjectCompletion?.subjectCount);
+        const copiesPerSubject = Number(
+            request.command?.copiesPerSubject ?? 1
+        );
+        const modifierSetFingerprint = Number(
+            request.command?.modifierSetFingerprint ?? 0
+        );
+        if (!Number.isSafeInteger(subjectCount) || subjectCount <= 0
+            || !Number.isSafeInteger(copiesPerSubject)
+            || copiesPerSubject <= 0
+            || subjectCount > Math.floor(0xffffffff / copiesPerSubject)
+            || subjectCount * copiesPerSubject !== prelease.records.length
+            || !Number.isSafeInteger(modifierSetFingerprint)
+            || modifierSetFingerprint < 0
+            || modifierSetFingerprint > 0xffffffff) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-cardinality-contract'
+            });
+        }
+        const destinationCount = prelease.records.length;
         let destinationFingerprint = hashAbilityPayloadWord(
             ABILITY_PAYLOAD_FNV_OFFSET,
             request.command?.fingerprint
         );
+        for (const word of [
+            subjectCount,
+            destinationCount,
+            copiesPerSubject,
+            modifierSetFingerprint
+        ]) {
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                word
+            );
+        }
         const destinationLeases = prelease.records.map((entry, index) => {
+            const snapshotRank = Math.floor(index / copiesPerSubject);
+            const copyIndex = index % copiesPerSubject;
             destinationFingerprint = hashAbilityPayloadWord(
                 destinationFingerprint,
                 entry.slot
@@ -982,16 +1020,32 @@ export class EnemySimulationBackend {
                 destinationFingerprint,
                 entry.handle.incarnation
             );
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                snapshotRank
+            );
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                index
+            );
+            destinationFingerprint = hashAbilityPayloadWord(
+                destinationFingerprint,
+                copyIndex
+            );
             return Object.freeze({
                 destinationSlot: entry.slot,
                 destinationEntityId: entry.handle.entityId,
                 destinationIncarnation: entry.handle.incarnation,
-                snapshotRank: index,
+                snapshotRank,
+                copyIndex,
                 baselineFlags: entry.baselineFlags,
                 defaultRouteMeta: entry.defaultRouteMeta,
                 defaultRouteProfileCode: entry.defaultRouteProfileCode
             });
         });
+        if (destinationFingerprint === 0) {
+            destinationFingerprint = ABILITY_PAYLOAD_FNV_OFFSET;
+        }
         const first = prelease.records[0];
         const result = this.actorPayloadMaterializationRuntime.stage({
             ...request,
@@ -1027,13 +1081,28 @@ export class EnemySimulationBackend {
                 reason: 'actor-payload-prelease-token'
             });
         }
+        const subjectCount = Number(request.subjectCompletion?.subjectCount);
+        const copiesPerSubject = Number(
+            request.command?.copiesPerSubject ?? 1
+        );
+        if (!Number.isSafeInteger(subjectCount) || subjectCount <= 0
+            || !Number.isSafeInteger(copiesPerSubject)
+            || copiesPerSubject <= 0
+            || subjectCount > Math.floor(0xffffffff / copiesPerSubject)
+            || subjectCount * copiesPerSubject !== prelease.records.length) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'actor-payload-cardinality-contract'
+            });
+        }
         const destinationLeases = Object.freeze(prelease.records.map(
             (entry, index) => Object.freeze({
                 destinationSlot: entry.slot,
                 destinationEntityId: entry.handle.entityId,
                 destinationIncarnation: entry.handle.incarnation,
-                snapshotRank: index,
+                snapshotRank: Math.floor(index / copiesPerSubject),
                 destinationRank: index,
+                copyIndex: index % copiesPerSubject,
                 baselineFlags: entry.baselineFlags
             })
         ));

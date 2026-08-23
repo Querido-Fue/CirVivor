@@ -81,7 +81,9 @@ function freezeHistoryEntry(source) {
         completedFixedTick: source.completedFixedTick,
         subjectCount: source.subjectCount ?? 0,
         capacityDemand: source.capacityDemand ?? 0,
-        generatedCount: source.generatedCount ?? 0
+        generatedCount: source.generatedCount ?? 0,
+        copiesPerSubject: source.copiesPerSubject ?? 1,
+        modifierSetFingerprint: source.modifierSetFingerprint ?? 0
     });
 }
 
@@ -784,7 +786,9 @@ export class AbilityRuntime {
             completedFixedTick,
             subjectCount: facts.subjectCount ?? 0,
             capacityDemand: facts.capacityDemand ?? 0,
-            generatedCount: facts.generatedCount ?? 0
+            generatedCount: facts.generatedCount ?? 0,
+            copiesPerSubject: command.copiesPerSubject ?? 1,
+            modifierSetFingerprint: command.modifierSetFingerprint ?? 0
         });
         this.history.push(entry);
         while (this.history.length > MAX_EXECUTION_HISTORY) {
@@ -799,6 +803,8 @@ export class AbilityRuntime {
             completedFixedTick,
             subjectCount: entry.subjectCount,
             generatedCount: entry.generatedCount,
+            copiesPerSubject: entry.copiesPerSubject,
+            modifierSetFingerprint: entry.modifierSetFingerprint,
             cooldownConsumed: facts.cooldownConsumed === true
         });
         return entry;
@@ -829,7 +835,9 @@ export class AbilityRuntime {
                 : 0,
             generatedCount: Number.isSafeInteger(Number(facts.generatedCount))
                 ? Number(facts.generatedCount)
-                : 0
+                : 0,
+            copiesPerSubject: command.copiesPerSubject ?? 1,
+            modifierSetFingerprint: command.modifierSetFingerprint ?? 0
         });
         this.lastExecutionState = view;
         this.executionStateHistory.push(view);

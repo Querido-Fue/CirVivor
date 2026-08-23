@@ -11,11 +11,12 @@ import {
 } from './gpu_ability_subject_snapshot_abi.js';
 
 const LITTLE_ENDIAN = true;
+const UINT32_MAX = 0xffffffff;
 const KNOWN_PLACEMENT_FAILURE_CLASSES = new Set(
     Object.values(ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS)
 );
 
-export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 4;
+export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION = 5;
 
 export const GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY = Object.freeze({
     RANK_MASK: 0xffff,
@@ -28,7 +29,7 @@ export const GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY = Object.freeze({
 
 export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
     LEASE_HEADER: Object.freeze({
-        STRIDE: 176,
+        STRIDE: 192,
         ABI_VERSION: 0,
         SNAPSHOT_ABI_VERSION: 4,
         BODY_ABI_VERSION: 8,
@@ -72,7 +73,11 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         DEFAULT_CURRENT_PATH_INDEX: 160,
         DEFAULT_ROUTE_SET_INDEX: 164,
         ACTOR_ACTION_PROFILE_FINGERPRINT: 168,
-        PLACEMENT_FINGERPRINT: 172
+        PLACEMENT_FINGERPRINT: 172,
+        DESTINATION_COUNT: 176,
+        COPIES_PER_SUBJECT: 180,
+        MODIFIER_SET_FINGERPRINT: 184,
+        RESERVED: 188
     }),
     DESTINATION_LEASE: Object.freeze({
         STRIDE: 32,
@@ -83,10 +88,10 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         BASELINE_FLAGS: 16,
         DEFAULT_ROUTE_META: 20,
         DEFAULT_ROUTE_PROFILE_CODE: 24,
-        RESERVED: 28
+        COPY_INDEX: 28
     }),
     AGGREGATE: Object.freeze({
-        STRIDE: 72,
+        STRIDE: 88,
         ABI_VERSION: 0,
         BODY_ABI_VERSION: 4,
         SESSION_GENERATION: 8,
@@ -97,14 +102,18 @@ export const GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI = Object.freeze({
         EXECUTION_ORDINAL: 28,
         STATUS: 32,
         SUBJECT_COUNT: 36,
-        MATERIALIZED_COUNT: 40,
-        COMMAND_FINGERPRINT: 44,
-        SNAPSHOT_FINGERPRINT: 48,
-        DESTINATION_FINGERPRINT: 52,
-        ERROR_FLAGS: 56,
-        ACTOR_ACTION_PROFILE_FINGERPRINT: 60,
-        PLACEMENT_FINGERPRINT: 64,
-        PLACEMENT_TELEMETRY: 68
+        DESTINATION_COUNT: 40,
+        MATERIALIZED_COUNT: 44,
+        COMMAND_FINGERPRINT: 48,
+        SNAPSHOT_FINGERPRINT: 52,
+        DESTINATION_FINGERPRINT: 56,
+        ERROR_FLAGS: 60,
+        ACTOR_ACTION_PROFILE_FINGERPRINT: 64,
+        PLACEMENT_FINGERPRINT: 68,
+        PLACEMENT_TELEMETRY: 72,
+        COPIES_PER_SUBJECT: 76,
+        MODIFIER_SET_FINGERPRINT: 80,
+        RESERVED: 84
     }),
     VALIDATION_RECORD: Object.freeze({
         STRIDE: 32,
@@ -162,6 +171,20 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         throw new RangeError('actor payload lease storage가 짧습니다.');
     }
     const view = new DataView(storage);
+    const subjectCount = requireUint32(source.subjectCount, 'subjectCount');
+    const copiesPerSubject = requireUint32(
+        source.copiesPerSubject ?? 1,
+        'copiesPerSubject'
+    );
+    const destinationCount = requireUint32(
+        source.destinationCount ?? subjectCount,
+        'destinationCount'
+    );
+    if (subjectCount <= 0 || copiesPerSubject <= 0
+        || subjectCount > Math.floor(UINT32_MAX / copiesPerSubject)
+        || subjectCount * copiesPerSubject !== destinationCount) {
+        throw new RangeError('actor payload cardinality가 일관되지 않습니다.');
+    }
     const uintValues = [
         [h.ABI_VERSION, GPU_ACTOR_PAYLOAD_MATERIALIZATION_ABI_VERSION],
         [h.SNAPSHOT_ABI_VERSION, GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION],
@@ -174,7 +197,7 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         [h.EXECUTION_ORDINAL, source.executionOrdinal],
         [h.COMMAND_FINGERPRINT, source.commandFingerprint],
         [h.SNAPSHOT_FINGERPRINT, source.snapshotFingerprint],
-        [h.SUBJECT_COUNT, source.subjectCount],
+        [h.SUBJECT_COUNT, subjectCount],
         [h.PAYLOAD_DEFINITION_CODE, source.payloadDefinitionCode],
         [h.PAYLOAD_NOUN_MASK, source.payloadNounMask],
         [h.PAYLOAD_TEAM_ID, source.payloadTeamId],
@@ -202,7 +225,12 @@ export function writeGpuActorPayloadLeaseHeader(storage, source) {
         [h.DEFAULT_ROUTE_SET_INDEX, source.defaultRouteSetIndex],
         [h.ACTOR_ACTION_PROFILE_FINGERPRINT,
             source.actorActionProfileFingerprint ?? 0],
-        [h.PLACEMENT_FINGERPRINT, source.placementFingerprint ?? 0]
+        [h.PLACEMENT_FINGERPRINT, source.placementFingerprint ?? 0],
+        [h.DESTINATION_COUNT, destinationCount],
+        [h.COPIES_PER_SUBJECT, copiesPerSubject],
+        [h.MODIFIER_SET_FINGERPRINT,
+            source.modifierSetFingerprint ?? 0],
+        [h.RESERVED, 0]
     ];
     for (const [offset, value] of uintValues) {
         view.setUint32(
@@ -254,7 +282,7 @@ export function writeGpuActorPayloadDestinationLease(
         [r.DEFAULT_ROUTE_META, source.defaultRouteMeta ?? 0],
         [r.DEFAULT_ROUTE_PROFILE_CODE,
             source.defaultRouteProfileCode ?? 0],
-        [r.RESERVED, 0]
+        [r.COPY_INDEX, source.copyIndex ?? 0]
     ];
     for (const [offset, value] of values) {
         view.setUint32(
@@ -308,6 +336,10 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         executionOrdinal: view.getUint32(a.EXECUTION_ORDINAL, LITTLE_ENDIAN),
         status: view.getUint32(a.STATUS, LITTLE_ENDIAN),
         subjectCount: view.getUint32(a.SUBJECT_COUNT, LITTLE_ENDIAN),
+        destinationCount: view.getUint32(
+            a.DESTINATION_COUNT,
+            LITTLE_ENDIAN
+        ),
         materializedCount: view.getUint32(
             a.MATERIALIZED_COUNT,
             LITTLE_ENDIAN
@@ -331,6 +363,14 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         ),
         placementFingerprint: view.getUint32(
             a.PLACEMENT_FINGERPRINT,
+            LITTLE_ENDIAN
+        ),
+        copiesPerSubject: view.getUint32(
+            a.COPIES_PER_SUBJECT,
+            LITTLE_ENDIAN
+        ),
+        modifierSetFingerprint: view.getUint32(
+            a.MODIFIER_SET_FINGERPRINT,
             LITTLE_ENDIAN
         ),
         placementTelemetry,
@@ -357,9 +397,17 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         )) {
         throw new RangeError('actor payload aggregate ABI/status가 잘못됐습니다.');
     }
+    const exactCardinality = result.subjectCount > 0
+        && result.copiesPerSubject > 0
+        && result.subjectCount
+            <= Math.floor(UINT32_MAX / result.copiesPerSubject)
+        && result.subjectCount * result.copiesPerSubject
+            === result.destinationCount;
+    if (!exactCardinality) {
+        throw new RangeError('actor payload aggregate cardinality가 일관되지 않습니다.');
+    }
     if (result.status === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE
-        && (result.subjectCount <= 0
-            || result.materializedCount !== result.subjectCount
+        && (result.materializedCount !== result.destinationCount
             || result.errorFlags !== 0
             || result.placementFailureClass
                 !== ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE
@@ -367,10 +415,9 @@ export function readGpuActorPayloadMaterializationAggregate(buffer) {
         throw new RangeError('complete actor payload aggregate가 일관되지 않습니다.');
     }
     if (result.status === ACTOR_PAYLOAD_MATERIALIZATION_STATUS.SDF_REJECTED
-        && (result.subjectCount <= 0
-            || result.materializedCount !== 0
+        && (result.materializedCount !== 0
             || result.firstFailingRank === null
-            || result.firstFailingRank >= result.subjectCount
+            || result.firstFailingRank >= result.destinationCount
             || result.attemptedCandidateCount <= 0
             || result.placementFailureClass
                 === ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS.NONE

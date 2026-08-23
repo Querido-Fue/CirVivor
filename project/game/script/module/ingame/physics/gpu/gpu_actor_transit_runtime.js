@@ -343,6 +343,22 @@ export class GpuActorTransitRuntime {
             ) !== activationTick) {
             throw new RangeError('actor transit activation tick이 duration과 다릅니다.');
         }
+        const subjectCount = requirePositiveInteger(
+            source.subjectCount ?? handles.length,
+            'subjectCount'
+        );
+        const copiesPerSubject = requirePositiveInteger(
+            source.copiesPerSubject ?? 1,
+            'copiesPerSubject'
+        );
+        if (subjectCount > Math.floor(0xffffffff / copiesPerSubject)
+            || subjectCount * copiesPerSubject !== handles.length) {
+            throw new RangeError('actor transit cardinality가 일관되지 않습니다.');
+        }
+        const modifierSetFingerprint = requireNonNegativeInteger(
+            source.modifierSetFingerprint ?? 0,
+            'modifierSetFingerprint'
+        );
         const batch = Object.freeze({
             transactionId,
             completionOwner: requireNonEmptyString(
@@ -350,6 +366,10 @@ export class GpuActorTransitRuntime {
                 'completionOwner'
             ),
             handles,
+            subjectCount,
+            destinationCount: handles.length,
+            copiesPerSubject,
+            modifierSetFingerprint,
             startTick,
             activationTick,
             durationFixedTicks,

@@ -95,7 +95,9 @@ class FakeSentenceGpuEndpoint {
         return {
             accepted: true,
             transactionId: request.transactionId,
-            reservationCount: request.subjectCompletion.subjectCount
+            reservationCount: request.subjectCompletion.subjectCount,
+            destinationFingerprint:
+                (0x70000000 + request.command.executionOrdinal) >>> 0
         };
     }
 
@@ -113,11 +115,19 @@ class FakeSentenceGpuEndpoint {
             snapshotFingerprint:
                 request.subjectCompletion.snapshotFingerprint,
             subjectCount: request.subjectCompletion.subjectCount,
+            destinationCount: request.subjectCompletion.subjectCount
+                * (request.command.copiesPerSubject ?? 1),
+            copiesPerSubject: request.command.copiesPerSubject ?? 1,
+            modifierSetFingerprint:
+                request.command.modifierSetFingerprint ?? 0,
+            destinationFingerprint:
+                (0x70000000 + request.command.executionOrdinal) >>> 0,
             materializationTargetTick: request.targetFixedTick,
             status: ACTOR_PAYLOAD_MATERIALIZATION_STATUS.COMPLETE,
             state: 'COMMITTED',
             committed: true,
-            generatedCount: request.subjectCompletion.subjectCount,
+            generatedCount: request.subjectCompletion.subjectCount
+                * (request.command.copiesPerSubject ?? 1),
             requiresRecovery: false
         }));
     }
