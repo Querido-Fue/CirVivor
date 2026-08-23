@@ -206,10 +206,10 @@ struct TowerCreationProgram {
     visible_from_execution_ordinal: u32,
     snapshot_source_tick: u32,
     metadata_commit_abi_version: u32,
+    subject_count: u32,
+    copies_per_subject: u32,
+    modifier_set_fingerprint: u32,
     reserved_0: u32,
-    reserved_1: u32,
-    reserved_2: u32,
-    reserved_3: u32,
 }
 
 struct TowerCreationRecord {
@@ -483,7 +483,10 @@ fn validate_program_header() -> u32 {
             || program.creation_origin_code != NATURAL_CREATION_ORIGIN
             || program.visible_from_execution_ordinal != 0u
             || program.snapshot_source_tick != 0u
-            || program.metadata_commit_abi_version != 0u)) {
+            || program.metadata_commit_abi_version != 0u
+            || program.subject_count != 0u
+            || program.copies_per_subject != 0u
+            || program.modifier_set_fingerprint != 0u)) {
         errors |= ERROR_PROGRAM_INVALID;
     }
     if (actor_mode
@@ -505,7 +508,13 @@ fn validate_program_header() -> u32 {
             || program.snapshot_source_tick == 0u
             || program.snapshot_source_tick > program.source_tick
             || program.metadata_commit_abi_version
-                != METADATA_COMMIT_ABI)) {
+                != METADATA_COMMIT_ABI
+            || program.subject_count == 0u
+            || program.copies_per_subject == 0u
+            || program.subject_count
+                > 0xffffffffu / program.copies_per_subject
+            || program.child_count
+                != program.subject_count * program.copies_per_subject)) {
         errors |= ERROR_PROGRAM_INVALID;
     }
     let record_fingerprint = compute_record_fingerprint();
@@ -830,6 +839,9 @@ const PROGRAM_PROFILE_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.ACTOR_
 const PROGRAM_SOURCE_EXECUTION_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.SOURCE_EXECUTION_FINGERPRINT / 4}u;
 const PROGRAM_ACTION_CODE: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.ACTION_CODE / 4}u;
 const PROGRAM_PAYLOAD_CODE: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.PAYLOAD_CODE / 4}u;
+const PROGRAM_SUBJECT_COUNT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.SUBJECT_COUNT / 4}u;
+const PROGRAM_COPIES_PER_SUBJECT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.COPIES_PER_SUBJECT / 4}u;
+const PROGRAM_MODIFIER_SET_FINGERPRINT: u32 = ${GPU_TOWER_CREATION_ABI.PROGRAM.MODIFIER_SET_FINGERPRINT / 4}u;
 
 const RESULT_STATUS: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.STATUS / 4}u;
 const RESULT_ERROR_FLAGS: u32 = ${GPU_TOWER_CREATION_ABI.RESULT.ERROR_FLAGS / 4}u;
@@ -847,6 +859,7 @@ const AGGREGATE_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.ABI_VERSIO
 const AGGREGATE_EXECUTION_ORDINAL: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.EXECUTION_ORDINAL / 4}u;
 const AGGREGATE_STATUS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.STATUS / 4}u;
 const AGGREGATE_SUBJECT_COUNT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.SUBJECT_COUNT / 4}u;
+const AGGREGATE_DESTINATION_COUNT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.DESTINATION_COUNT / 4}u;
 const AGGREGATE_VALID_COUNT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.VALID_COUNT / 4}u;
 const AGGREGATE_COMMAND_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.COMMAND_FINGERPRINT / 4}u;
 const AGGREGATE_SNAPSHOT_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.SNAPSHOT_FINGERPRINT / 4}u;
@@ -857,6 +870,8 @@ const AGGREGATE_ACTION_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.AC
 const AGGREGATE_PAYLOAD_CODE: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PAYLOAD_CODE / 4}u;
 const AGGREGATE_PROFILE_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PROFILE_FINGERPRINT / 4}u;
 const AGGREGATE_PLACEMENT_TARGET_TICK: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.PLACEMENT_TARGET_TICK / 4}u;
+const AGGREGATE_COPIES_PER_SUBJECT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.COPIES_PER_SUBJECT / 4}u;
+const AGGREGATE_MODIFIER_SET_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.AGGREGATE.MODIFIER_SET_FINGERPRINT / 4}u;
 
 const PLACEMENT_WORDS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.STRIDE / 4}u;
 const PLACEMENT_RECORD_ABI: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.ABI_VERSION / 4}u;
@@ -881,6 +896,8 @@ const PLACEMENT_DURATION_FIXED_TICKS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLA
 const PLACEMENT_SOURCE_GENERATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.SOURCE_GENERATION / 4}u;
 const PLACEMENT_CHILD_GENERATION: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.CHILD_GENERATION / 4}u;
 const PLACEMENT_RECORD_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.PLACEMENT_FINGERPRINT / 4}u;
+const PLACEMENT_COPY_INDEX: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.COPY_INDEX / 4}u;
+const PLACEMENT_MODIFIER_SET_FINGERPRINT: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.MODIFIER_SET_FINGERPRINT / 4}u;
 
 const PLACEMENT_TRANSIT_WORDS: u32 = ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.STRIDE / 4}u;
 const TRANSIT_RECORD_WORDS: u32 = ${ACTOR_TRANSIT_RECORD_WORDS}u;
@@ -1026,14 +1043,24 @@ fn validate_actor_action_placement(
 ) {
     let rank = invocation.x;
     let child_count = actor_program.values[PROGRAM_CHILD_COUNT];
+    let subject_count = actor_program.values[PROGRAM_SUBJECT_COUNT];
+    let copies_per_subject
+        = actor_program.values[PROGRAM_COPIES_PER_SUBJECT];
     if (rank == 0u) {
         let action_code = actor_program.values[PROGRAM_ACTION_CODE];
         var header_invalid = actor_program.values[PROGRAM_MODE]
                 != MODE_GPU_SUBJECT_ACTOR_ACTION
             || actor_placement.values[AGGREGATE_ABI] != PLACEMENT_ABI
             || actor_placement.values[AGGREGATE_STATUS] != PLACEMENT_COMPLETE
-            || actor_placement.values[AGGREGATE_SUBJECT_COUNT] != child_count
+            || actor_placement.values[AGGREGATE_SUBJECT_COUNT]
+                != subject_count
+            || actor_placement.values[AGGREGATE_DESTINATION_COUNT]
+                != child_count
             || actor_placement.values[AGGREGATE_VALID_COUNT] != child_count
+            || actor_placement.values[AGGREGATE_COPIES_PER_SUBJECT]
+                != copies_per_subject
+            || actor_placement.values[AGGREGATE_MODIFIER_SET_FINGERPRINT]
+                != actor_program.values[PROGRAM_MODIFIER_SET_FINGERPRINT]
             || actor_placement.values[AGGREGATE_ERROR_FLAGS] != 0u
             || actor_placement.values[AGGREGATE_EXECUTION_ORDINAL]
                 != actor_program.values[PROGRAM_EXECUTION_ORDINAL]
@@ -1069,6 +1096,8 @@ fn validate_actor_action_placement(
     let slot = creation_record_word(rank, RECORD_SLOT);
     let entity_id = creation_record_word(rank, RECORD_ENTITY_ID);
     let incarnation = creation_record_word(rank, RECORD_INCARNATION);
+    let source_rank = placement_word(rank, PLACEMENT_SOURCE_RANK);
+    let copy_index = placement_word(rank, PLACEMENT_COPY_INDEX);
     let spawn_x = bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_X));
     let spawn_y = bitcast<f32>(placement_word(rank, PLACEMENT_SPAWN_Y));
     let velocity_x = bitcast<f32>(placement_word(rank, PLACEMENT_VELOCITY_X));
@@ -1096,7 +1125,7 @@ fn validate_actor_action_placement(
         * (60.0 / select(1.0, f32(duration), duration > 0u));
     let transit_common_invalid = placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.ABI_VERSION / 4}u)
             != PLACEMENT_ABI
-        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.SOURCE_RANK / 4}u) != rank
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.SOURCE_RANK / 4}u) != source_rank
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_SLOT / 4}u) != slot
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_ENTITY_ID / 4}u) != entity_id
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DESTINATION_INCARNATION / 4}u) != incarnation
@@ -1107,6 +1136,9 @@ fn validate_actor_action_placement(
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.DURATION_FIXED_TICKS / 4}u) != duration
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.PROGRESS_FIXED_TICKS / 4}u) != 0u
         || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.FINGERPRINT / 4}u) == 0u
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.COPY_INDEX / 4}u) != copy_index
+        || placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.MODIFIER_SET_FINGERPRINT / 4}u)
+            != actor_program.values[PROGRAM_MODIFIER_SET_FINGERPRINT]
         || placement_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.TARGET_X / 4}u)
             != placement_transit_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.TRANSIT_RECORD.LANDING_X / 4}u)
         || placement_word(rank, ${GPU_ACTOR_ACTION_PLACEMENT_ABI.PLACEMENT_RECORD.TARGET_Y / 4}u)
@@ -1146,8 +1178,12 @@ fn validate_actor_action_placement(
         || placement_word(rank, PLACEMENT_RECORD_STATUS)
             != PLACEMENT_RECORD_VALID
         || placement_word(rank, PLACEMENT_RECORD_ERROR_FLAGS) != 0u
-        || placement_word(rank, PLACEMENT_SOURCE_RANK) != rank
+        || source_rank >= subject_count
+        || copy_index >= copies_per_subject
+        || source_rank * copies_per_subject + copy_index != rank
         || placement_word(rank, PLACEMENT_DESTINATION_RANK) != rank
+        || placement_word(rank, PLACEMENT_MODIFIER_SET_FINGERPRINT)
+            != actor_program.values[PROGRAM_MODIFIER_SET_FINGERPRINT]
         || placement_word(rank, PLACEMENT_DESTINATION_SLOT) != slot
         || placement_word(rank, PLACEMENT_DESTINATION_ENTITY_ID) != entity_id
         || placement_word(rank, PLACEMENT_DESTINATION_INCARNATION)
@@ -1360,7 +1396,11 @@ fn apply_actor_action_placement(
             ${TR.BASELINE_VELOCITY_Y}u,
             bitcast<u32>(baseline_velocity.y)
         );
-        set_transit_word(slot, ${TR.SOURCE_RANK}u, rank);
+        set_transit_word(
+            slot,
+            ${TR.SOURCE_RANK}u,
+            placement_word(rank, PLACEMENT_SOURCE_RANK)
+        );
         set_transit_word(slot, ${TR.RESERVED_0}u, 0u);
         set_transit_word(slot, ${TR.RESERVED_1}u, 0u);
         set_transit_word(slot, ${TR.RESERVED_2}u, 0u);

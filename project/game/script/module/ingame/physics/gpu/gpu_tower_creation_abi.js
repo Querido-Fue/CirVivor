@@ -17,7 +17,7 @@ const LITTLE_ENDIAN = true;
 const FNV_OFFSET = 0x811c9dc5;
 const FNV_PRIME = 0x01000193;
 
-export const GPU_TOWER_CREATION_ABI_VERSION = 2;
+export const GPU_TOWER_CREATION_ABI_VERSION = 3;
 export const GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION = 1;
 
 export const GPU_TOWER_CREATION_MODE = Object.freeze({
@@ -113,10 +113,10 @@ export const GPU_TOWER_CREATION_ABI = Object.freeze({
         VISIBLE_FROM_EXECUTION_ORDINAL: 132,
         SNAPSHOT_SOURCE_TICK: 136,
         METADATA_COMMIT_ABI_VERSION: 140,
-        RESERVED_0: 144,
-        RESERVED_1: 148,
-        RESERVED_2: 152,
-        RESERVED_3: 156
+        SUBJECT_COUNT: 144,
+        COPIES_PER_SUBJECT: 148,
+        MODIFIER_SET_FINGERPRINT: 152,
+        RESERVED_0: 156
     }),
     RECORD: Object.freeze({
         STRIDE: 64,
@@ -229,7 +229,7 @@ function normalizeProtocol(source = {}) {
     });
 }
 
-function normalizeCreationMode(source = {}) {
+function normalizeCreationMode(source = {}, childCount = null) {
     const mode = requireUint32(
         source.mode ?? GPU_TOWER_CREATION_MODE.CPU_EXPLICIT_DESCRIPTORS,
         'Tower creation mode'
@@ -255,7 +255,11 @@ function normalizeCreationMode(source = {}) {
             creationOriginCode: ABILITY_CREATION_ORIGIN_CODE.NATURAL,
             visibleFromExecutionOrdinal: 0,
             snapshotSourceTick: 0,
-            metadataCommitAbiVersion: 0
+            metadataCommitAbiVersion: 0,
+            subjectCount: 0,
+            destinationCount: 0,
+            copiesPerSubject: 0,
+            modifierSetFingerprint: 0
         });
     }
     const creationOriginCode = requireUint32(
@@ -272,6 +276,24 @@ function normalizeCreationMode(source = {}) {
     );
     if (placementAbiVersion !== GPU_ACTOR_ACTION_PLACEMENT_ABI_VERSION) {
         throw new RangeError('ActorAction placement ABI version이 다릅니다.');
+    }
+    const subjectCount = requirePositiveUint32(
+        actor.subjectCount ?? childCount,
+        'Tower creation actorAction.subjectCount'
+    );
+    const copiesPerSubject = requirePositiveUint32(
+        actor.copiesPerSubject ?? 1,
+        'Tower creation actorAction.copiesPerSubject'
+    );
+    if (subjectCount > Math.floor(0xffffffff / copiesPerSubject)) {
+        throw new RangeError('ActorAction Tower destination cardinality가 uint32를 넘습니다.');
+    }
+    const destinationCount = requirePositiveUint32(
+        actor.destinationCount ?? childCount,
+        'Tower creation actorAction.destinationCount'
+    );
+    if (subjectCount * copiesPerSubject !== destinationCount) {
+        throw new RangeError('ActorAction Tower cardinality가 일관되지 않습니다.');
     }
     return Object.freeze({
         mode,
@@ -326,7 +348,14 @@ function normalizeCreationMode(source = {}) {
             'Tower creation actorAction.snapshotSourceTick'
         ),
         metadataCommitAbiVersion:
-            GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION
+            GPU_TOWER_CREATION_METADATA_COMMIT_ABI_VERSION,
+        subjectCount,
+        destinationCount,
+        copiesPerSubject,
+        modifierSetFingerprint: requireUint32(
+            actor.modifierSetFingerprint ?? 0,
+            'Tower creation actorAction.modifierSetFingerprint'
+        )
     });
 }
 
@@ -474,7 +503,6 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
         throw new TypeError('Tower creation host storage가 필요합니다.');
     }
     const protocol = normalizeProtocol(source.protocol);
-    const creationMode = normalizeCreationMode(source);
     const sourceGroupRevision = requirePositiveUint32(
         source.sourceGroupRevision,
         'Tower creation sourceGroupRevision'
@@ -501,6 +529,13 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
     );
     if (existingCount + childCount !== source.records.length) {
         throw new RangeError('Tower creation record count가 existing + child와 다릅니다.');
+    }
+    const creationMode = normalizeCreationMode(source, childCount);
+    if (creationMode.mode === GPU_TOWER_CREATION_MODE.GPU_SUBJECT_ACTOR_ACTION
+        && creationMode.destinationCount !== childCount) {
+        throw new RangeError(
+            'ActorAction Tower destinationCount는 childCount와 같아야 합니다.'
+        );
     }
     const records = source.records.map((record, index) => normalizeRecord(
         record,
@@ -659,7 +694,11 @@ export function writeGpuTowerCreationProgram(storage, source = {}) {
             program.visibleFromExecutionOrdinal],
         [p.SNAPSHOT_SOURCE_TICK, program.snapshotSourceTick],
         [p.METADATA_COMMIT_ABI_VERSION,
-            program.metadataCommitAbiVersion]
+            program.metadataCommitAbiVersion],
+        [p.SUBJECT_COUNT, program.subjectCount],
+        [p.COPIES_PER_SUBJECT, program.copiesPerSubject],
+        [p.MODIFIER_SET_FINGERPRINT,
+            program.modifierSetFingerprint]
     ];
     for (const [offset, value] of programWords) {
         programView.setUint32(offset, value, LITTLE_ENDIAN);

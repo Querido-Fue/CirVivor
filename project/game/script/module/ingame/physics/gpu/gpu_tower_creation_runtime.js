@@ -79,7 +79,12 @@ function normalizeActorActionPlacementBinding(binding, program) {
     if (!binding || typeof binding !== 'object' || !binding.buffer) {
         throw new TypeError('ActorAction Tower creation placement binding이 필요합니다.');
     }
-    const exact = binding.subjectCount === program.childCount
+    const exact = binding.subjectCount === program.subjectCount
+        && (binding.destinationCount ?? binding.subjectCount)
+            === program.childCount
+        && (binding.copiesPerSubject ?? 1) === program.copiesPerSubject
+        && (binding.modifierSetFingerprint ?? 0)
+            === program.modifierSetFingerprint
         && binding.executionOrdinal === program.executionOrdinal
         && binding.commandFingerprint === program.commandFingerprint
         && binding.snapshotFingerprint === program.snapshotFingerprint
@@ -517,6 +522,10 @@ export class GpuTowerCreationRuntime {
             recordCount: program.recordCount,
             existingCount: program.existingCount,
             childCount: program.childCount,
+            subjectCount: program.subjectCount,
+            destinationCount: program.childCount,
+            copiesPerSubject: program.copiesPerSubject,
+            modifierSetFingerprint: program.modifierSetFingerprint,
             sourceGroupRevision: program.sourceGroupRevision,
             targetGroupRevision: program.targetGroupRevision,
             targetRosterFingerprint: program.targetRosterFingerprint,
@@ -564,6 +573,10 @@ export class GpuTowerCreationRuntime {
             sourceTick: envelope.sourceTick,
             recordCount: envelope.recordCount,
             childCount: envelope.childCount,
+            subjectCount: envelope.subjectCount,
+            destinationCount: envelope.destinationCount,
+            copiesPerSubject: envelope.copiesPerSubject,
+            modifierSetFingerprint: envelope.modifierSetFingerprint,
             targetGroupRevision: envelope.targetGroupRevision,
             targetRosterFingerprint: envelope.targetRosterFingerprint,
             mode: envelope.mode,
@@ -905,6 +918,11 @@ export class GpuTowerCreationRuntime {
                     sourceTick: envelope.sourceTick,
                     submittedTick: envelope.sourceTick,
                     childCount: envelope.childCount,
+                    subjectCount: envelope.subjectCount,
+                    destinationCount: envelope.destinationCount,
+                    copiesPerSubject: envelope.copiesPerSubject,
+                    modifierSetFingerprint:
+                        envelope.modifierSetFingerprint,
                     result: protocolFailure
                         ? GPU_TOWER_CREATION_STATUS.PROTOCOL_FAILURE
                         : result.status,
@@ -954,6 +972,11 @@ export class GpuTowerCreationRuntime {
                     sourceTick: envelope.sourceTick,
                     submittedTick: envelope.sourceTick,
                     childCount: envelope.childCount,
+                    subjectCount: envelope.subjectCount,
+                    destinationCount: envelope.destinationCount,
+                    copiesPerSubject: envelope.copiesPerSubject,
+                    modifierSetFingerprint:
+                        envelope.modifierSetFingerprint,
                     committed: false,
                     rejectedSourceChanged: false,
                     protocolFailure: true,

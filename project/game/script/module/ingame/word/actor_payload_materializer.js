@@ -125,6 +125,19 @@ function findTowerReceiptMismatchField(completion, record) {
         !== record.ready.command.actorActionProfileFingerprint) {
         return 'actorActionProfileFingerprint';
     }
+    if (completion.subjectCount !== record.subjectCount) {
+        return 'subjectCount';
+    }
+    if (completion.destinationCount !== record.destinationCount) {
+        return 'destinationCount';
+    }
+    if (completion.copiesPerSubject !== record.copiesPerSubject) {
+        return 'copiesPerSubject';
+    }
+    if (completion.modifierSetFingerprint
+        !== record.modifierSetFingerprint) {
+        return 'modifierSetFingerprint';
+    }
     return 'unknown';
 }
 
@@ -389,7 +402,12 @@ export class ActorPayloadMaterializer {
             && (record.requestFingerprint === null
                 || completion.requestFingerprint === record.requestFingerprint)
             && completion.actorActionProfileFingerprint
-                === expectedProfileFingerprint;
+                === expectedProfileFingerprint
+            && completion.subjectCount === record.subjectCount
+            && completion.destinationCount === record.destinationCount
+            && completion.copiesPerSubject === record.copiesPerSubject
+            && completion.modifierSetFingerprint
+                === record.modifierSetFingerprint;
         if (!exact) {
             this.recoveryRequired = true;
             this.failure = Object.freeze({
@@ -417,7 +435,7 @@ export class ActorPayloadMaterializer {
 
         const committed = completion.result === TOWER_CREATION_RESULT.COMMITTED
             && completion.committed === true
-            && completion.createdCount === ready.completion.subjectCount
+            && completion.createdCount === record.destinationCount
             && Array.isArray(completion.handles)
             && completion.handles.length === completion.createdCount;
         if (committed) {
@@ -474,7 +492,7 @@ export class ActorPayloadMaterializer {
                 stage: 'tower-payload-terminal-shape',
                 mismatchField: findCommittedShapeMismatchField(
                     completion,
-                    ready.completion.subjectCount
+                    record.destinationCount
                 )
             });
             this.#settleTowerRejected(
@@ -566,6 +584,40 @@ export class ActorPayloadMaterializer {
             }
 
             if (record.command.payloadCode === ACTOR_PAYLOAD_CODE.TOWER) {
+                const copiesPerSubject = Number(
+                    record.command.copiesPerSubject ?? 1
+                );
+                const modifierSetFingerprint = Number(
+                    record.command.modifierSetFingerprint ?? 0
+                );
+                const cardinalityValid = Number.isSafeInteger(subjectCount)
+                    && subjectCount > 0
+                    && Number.isSafeInteger(copiesPerSubject)
+                    && copiesPerSubject > 0
+                    && copiesPerSubject <= 0xffffffff
+                    && subjectCount <= Math.floor(
+                        0xffffffff / copiesPerSubject
+                    );
+                const destinationCount = cardinalityValid
+                    ? subjectCount * copiesPerSubject
+                    : 0;
+                if (destinationCount <= 0
+                    || !Number.isSafeInteger(modifierSetFingerprint)
+                    || modifierSetFingerprint < 0
+                    || modifierSetFingerprint > 0xffffffff) {
+                    this.recoveryRequired = true;
+                    this.failure = Object.freeze({
+                        code: 'tower-payload-cardinality-invalid',
+                        message: 'Tower payload modifier cardinality가 유효하지 않습니다.'
+                    });
+                    this.#rejectReady(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                        tick
+                    );
+                    rejectedCount++;
+                    continue;
+                }
                 const coordinator = this.towerCreationCoordinatorProvider?.()
                     ?? null;
                 if (!coordinator
@@ -624,7 +676,7 @@ export class ActorPayloadMaterializer {
                     command: record.command,
                     subjectCompletion: record.completion,
                     snapshotToken: record.completion.snapshotToken,
-                    childCount: record.completion.subjectCount,
+                    childCount: destinationCount,
                     actorActionProfile:
                         record.command.compiledAbility.actorActionProfile,
                     actorActionProfileId:
@@ -643,7 +695,11 @@ export class ActorPayloadMaterializer {
                         requestFingerprint: result.requestFingerprint ?? null,
                         ready: record,
                         targetFixedTick: tick,
-                        coordinator
+                        coordinator,
+                        subjectCount,
+                        destinationCount,
+                        copiesPerSubject,
+                        modifierSetFingerprint
                     });
                     this.inFlight.set(transactionId, inFlight);
                     if (!this.abilityRuntime.markGpuMaterializationPending(
@@ -992,7 +1048,8 @@ export class ActorPayloadMaterializer {
             state,
             subjectCount: record.ready.completion.subjectCount,
             destinationCount: completion.destinationCount
-                ?? completion.createdCount ?? record.ready.completion.subjectCount,
+                ?? completion.createdCount ?? record.destinationCount
+                ?? record.ready.completion.subjectCount,
             copiesPerSubject: completion.copiesPerSubject
                 ?? record.ready.command.copiesPerSubject ?? 1,
             modifierSetFingerprint: completion.modifierSetFingerprint

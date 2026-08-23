@@ -68,6 +68,29 @@ function createCoreDiagnosticStatus(coreIntegrity) {
     });
 }
 
+function createModifierDiagnosticStatus(wordStatus, towerStatus) {
+    const outcome = wordStatus?.lastExecutionOutcome ?? null;
+    return Object.freeze({
+        modifierSetFingerprint: normalizeDiagnosticCount(
+            outcome?.modifierSetFingerprint
+        ),
+        modifierStackCount: normalizeDiagnosticCount(
+            outcome?.modifierStackCount
+        ),
+        copiesPerSubject: outcome
+            ? Math.max(1, normalizeDiagnosticCount(outcome.copiesPerSubject))
+            : 1,
+        effectiveGeneratedCount: normalizeDiagnosticCount(
+            outcome?.effectiveGeneratedCount ?? outcome?.generatedCount
+        ),
+        resultingTowerCount: normalizeDiagnosticCount(
+            towerStatus?.livingTowerCount
+        ),
+        lastModifierOutcome: outcome?.lastModifierOutcome
+            ?? outcome?.code ?? null
+    });
+}
+
 function createRunOutcomeDiagnosticStatus(runOutcome) {
     if (!runOutcome) {
         return Object.freeze({
@@ -567,11 +590,15 @@ export class GameSystem {
      */
     getGameplayStatus() {
         const hostileAttackStatus = this.getHostileAttackStatus();
+        const towerStatus = createTowerDiagnosticStatus(
+            this.getTowerCombatStatus()
+        );
+        const wordStatus = this.wordSystem?.getStatusView() ?? null;
         return Object.freeze({
             fixedTick: this.fixedTick,
             sessionMode: this.sessionMode,
             recoveryRequired: this.isGpuWorldRecoveryRequired(),
-            tower: createTowerDiagnosticStatus(this.getTowerCombatStatus()),
+            tower: towerStatus,
             towerCreation: this.getTowerCreationStatus(),
             core: createCoreDiagnosticStatus(this.coreIntegrity),
             outcome: createRunOutcomeDiagnosticStatus(this.runOutcome),
@@ -590,7 +617,11 @@ export class GameSystem {
             gold: this.getGold(),
             bounty: this.getBountyRewardStatus(),
             hostiles: this.getHostileParticipationStatus(),
-            words: this.wordSystem?.getStatusView() ?? null,
+            words: wordStatus,
+            modifiers: createModifierDiagnosticStatus(
+                wordStatus,
+                towerStatus
+            ),
             wave: createWaveDiagnosticStatus(
                 this.objectSystem?.getEnemyWaveStatus?.() ?? null
             )

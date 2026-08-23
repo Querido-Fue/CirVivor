@@ -42,6 +42,7 @@ import {
 
 const DEFAULT_HISTORY_CAPACITY = 65_536;
 const TOWER_CREATION_TERMINAL_RECEIPT_KIND = 'tower-creation-terminal';
+const UINT32_MAX = 0xffffffff;
 
 const REQUIRED_BACKEND_METHODS = Object.freeze([
     'canStageTowerCreation',
@@ -75,6 +76,17 @@ function requireFinitePosition(source, label) {
         throw new TypeError(`${label}에는 유한한 x/y가 필요합니다.`);
     }
     return Object.freeze({ x, y });
+}
+
+function countModifierStacks(command) {
+    const entries = command?.compiledAbility?.modifierSet?.canonicalEntries;
+    if (!Array.isArray(entries)) return 0;
+    return entries.reduce((total, entry) => (
+        total + requirePositiveSafeInteger(
+            entry?.stackCount,
+            'modifierSet.canonicalEntries.stackCount'
+        )
+    ), 0);
 }
 
 function normalizeRequest(source = {}) {
@@ -134,13 +146,37 @@ function normalizeGpuSubjectActorActionRequest(source = {}) {
         || completion.snapshotFingerprint <= 0) {
         throw new RangeError('R5 Tower request snapshot completion이 정확하지 않습니다.');
     }
+    const subjectCount = requirePositiveSafeInteger(
+        completion.subjectCount,
+        'subjectCount'
+    );
+    const copiesPerSubject = requirePositiveSafeInteger(
+        command.copiesPerSubject ?? 1,
+        'copiesPerSubject'
+    );
+    if (copiesPerSubject > UINT32_MAX
+        || subjectCount > Math.floor(UINT32_MAX / copiesPerSubject)) {
+        throw new RangeError('R7 Tower destination cardinality가 uint32를 넘습니다.');
+    }
+    const destinationCount = subjectCount * copiesPerSubject;
     const childCount = requirePositiveSafeInteger(
-        source.childCount ?? completion.subjectCount,
+        source.childCount ?? destinationCount,
         'childCount'
     );
-    if (childCount !== completion.subjectCount) {
-        throw new RangeError('R5 Tower childCount는 frozen Subject count여야 합니다.');
+    if (childCount !== destinationCount) {
+        throw new RangeError(
+            'R7 Tower childCount는 frozen Subject count × copies여야 합니다.'
+        );
     }
+    const modifierSetFingerprint = Number(
+        command.modifierSetFingerprint ?? 0
+    );
+    if (!Number.isSafeInteger(modifierSetFingerprint)
+        || modifierSetFingerprint < 0
+        || modifierSetFingerprint > UINT32_MAX) {
+        throw new RangeError('R7 Tower modifierSetFingerprint가 유효하지 않습니다.');
+    }
+    const modifierStackCount = countModifierStacks(command);
     const requestedFixedTick = requirePositiveTick(
         source.requestedFixedTick ?? source.targetFixedTick
             ?? command.targetFixedTick
@@ -192,6 +228,11 @@ function normalizeGpuSubjectActorActionRequest(source = {}) {
         mode: TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION,
         transactionId,
         childCount,
+        subjectCount,
+        destinationCount,
+        copiesPerSubject,
+        modifierSetFingerprint,
+        modifierStackCount,
         requestedFixedTick,
         executionId: command.executionId,
         executionOrdinal: command.executionOrdinal,
@@ -411,6 +452,11 @@ export class TowerCreationCoordinator {
                 === TOWER_CREATION_COORDINATOR_MODE.GPU_SUBJECT_ACTOR_ACTION
                 ? request.actorActionProfileFingerprint
                 : 0,
+            subjectCount: request.subjectCount ?? 0,
+            destinationCount: request.destinationCount ?? request.childCount,
+            copiesPerSubject: request.copiesPerSubject ?? 1,
+            modifierSetFingerprint: request.modifierSetFingerprint ?? 0,
+            modifierStackCount: request.modifierStackCount ?? 0,
             stage: 'received',
             receipt: null
         };
@@ -440,6 +486,11 @@ export class TowerCreationCoordinator {
             actorActionProfileFingerprint:
                 entry.actorActionProfileFingerprint,
             childCount: request.childCount,
+            subjectCount: entry.subjectCount,
+            destinationCount: entry.destinationCount,
+            copiesPerSubject: entry.copiesPerSubject,
+            modifierSetFingerprint: entry.modifierSetFingerprint,
+            modifierStackCount: entry.modifierStackCount,
             requestedFixedTick: request.requestedFixedTick,
             capacity,
             recoveryRequired: false
@@ -884,7 +935,7 @@ export class TowerCreationCoordinator {
         const snapshotBinding = this.abilitySubjectSnapshotRuntime
             .getSnapshotGpuBinding(request.snapshotToken);
         const exactSnapshot = snapshotBinding
-            && snapshotBinding.subjectCount === request.childCount
+            && snapshotBinding.subjectCount === request.subjectCount
             && snapshotBinding.executionOrdinal === request.executionOrdinal
             && snapshotBinding.commandFingerprint === request.command.fingerprint
             && snapshotBinding.snapshotFingerprint
@@ -904,6 +955,18 @@ export class TowerCreationCoordinator {
         }
         const sourceRecords = this.towerGroupState.getTowerRecords()
             .filter((record) => record.alive);
+        if (sourceRecords.length === 0
+            || sourceRecords.some((record) => !record.exactGpuBinding)) {
+            this.queued = null;
+            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
+                request.snapshotToken
+            );
+            return this.#publishTerminal(terminalResult(
+                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
+                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
+                { transactionId: request.transactionId, sourceTick: tick }
+            ));
+        }
         const plan = this.towerGroupState.planCreation({
             transactionId: request.transactionId,
             childCount: request.childCount
@@ -918,23 +981,6 @@ export class TowerCreationCoordinator {
                 transactionId: request.transactionId,
                 sourceTick: tick
             }));
-        }
-        if (sourceRecords.length === 0
-            || sourceRecords.some((record) => !record.exactGpuBinding)) {
-            this.towerGroupState.rejectCreation(
-                plan,
-                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
-                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED
-            );
-            this.queued = null;
-            this.abilitySubjectSnapshotRuntime.releaseSnapshot(
-                request.snapshotToken
-            );
-            return this.#publishTerminal(terminalResult(
-                TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED,
-                TOWER_CREATION_REASON.SOURCE_STATE_CHANGED,
-                { transactionId: request.transactionId, sourceTick: tick }
-            ));
         }
         const capacityFailure = this.#preflightCapacity(
             sourceRecords.length + request.childCount,
@@ -1119,9 +1165,11 @@ export class TowerCreationCoordinator {
                 destinationSlot: prelease.slots[index],
                 destinationEntityId: handle.entityId,
                 destinationIncarnation: handle.incarnation,
-                snapshotRank: index,
+                snapshotRank: Math.floor(index / request.copiesPerSubject),
                 destinationRank: index,
-                baselineFlags: 0
+                baselineFlags: 0,
+                copyIndex: index % request.copiesPerSubject,
+                copiesPerSubject: request.copiesPerSubject
             })
         )));
         const placementStage = this.actorActionPlacementRuntime.stage({
@@ -1219,6 +1267,11 @@ export class TowerCreationCoordinator {
             pending: true,
             phase: 'actor-action-placement',
             sourceTick: tick,
+            subjectCount: request.subjectCount,
+            destinationCount: request.destinationCount,
+            copiesPerSubject: request.copiesPerSubject,
+            modifierSetFingerprint: request.modifierSetFingerprint,
+            modifierStackCount: request.modifierStackCount,
             requestFingerprint: this.transactionEntries.get(
                 request.transactionId
             )?.requestFingerprint ?? null,
@@ -1338,7 +1391,19 @@ export class TowerCreationCoordinator {
                 === pending.request.command.fingerprint
             && completion.snapshotFingerprint
                 === pending.request.snapshotFingerprint
-            && completion.subjectCount === pending.request.childCount
+            && (completion.subjectCount
+                ?? (pending.request.copiesPerSubject === 1
+                    ? pending.request.subjectCount
+                    : null)) === pending.request.subjectCount
+            && (completion.destinationCount
+                ?? (pending.request.copiesPerSubject === 1
+                    ? completion.subjectCount
+                    : null))
+                === pending.request.destinationCount
+            && (completion.copiesPerSubject ?? 1)
+                === pending.request.copiesPerSubject
+            && (completion.modifierSetFingerprint ?? 0)
+                === pending.request.modifierSetFingerprint
             && completion.actorActionProfileFingerprint
                 === pending.request.actorActionProfileFingerprint
             && sameProtocol(completion, pending.protocol);
@@ -1390,7 +1455,16 @@ export class TowerCreationCoordinator {
         const placementBinding = this.actorActionPlacementRuntime
             .getPlacementGpuBinding(completion.placementToken);
         const exactBinding = placementBinding
-            && placementBinding.subjectCount === pending.request.childCount
+            && placementBinding.subjectCount === pending.request.subjectCount
+            && (placementBinding.destinationCount
+                ?? (pending.request.copiesPerSubject === 1
+                    ? placementBinding.subjectCount
+                    : null))
+                === pending.request.destinationCount
+            && (placementBinding.copiesPerSubject ?? 1)
+                === pending.request.copiesPerSubject
+            && (placementBinding.modifierSetFingerprint ?? 0)
+                === pending.request.modifierSetFingerprint
             && placementBinding.executionOrdinal
                 === pending.request.executionOrdinal
             && placementBinding.commandFingerprint
@@ -1427,6 +1501,14 @@ export class TowerCreationCoordinator {
             phase: 'actor-action-placement-ready',
             transactionId: pending.request.transactionId,
             sourceTick: tick,
+            subjectCount: pending.request.subjectCount,
+            destinationCount: pending.request.destinationCount,
+            copiesPerSubject: pending.request.copiesPerSubject,
+            modifierSetFingerprint:
+                pending.request.modifierSetFingerprint,
+            modifierStackCount: pending.request.modifierStackCount,
+            destinationFingerprint: completion.destinationFingerprint,
+            placementFingerprint: completion.placementFingerprint,
             requestFingerprint: this.transactionEntries.get(
                 pending.request.transactionId
             )?.requestFingerprint ?? null,
@@ -1546,9 +1628,28 @@ export class TowerCreationCoordinator {
         const requestFingerprint = this.transactionEntries.get(
             pending.request.transactionId
         )?.requestFingerprint;
+        const childDescriptorFingerprint
+            = fingerprintGpuTowerCreationTransaction(
+                'tower-child-descriptor.r7',
+                ...pending.recoveryDescriptors.flatMap((descriptor) => [
+                    descriptor.policyId,
+                    descriptor.logicalTowerOrdinal,
+                    descriptor.mapRecoveryAnchorId,
+                    descriptor.mapLatticeVersion,
+                    descriptor.anchorPosition.x,
+                    descriptor.anchorPosition.y
+                ])
+            );
         const transactionFingerprint = fingerprintGpuTowerCreationTransaction(
             plan.fingerprint,
             requestFingerprint,
+            pending.request.modifierSetFingerprint,
+            pending.request.copiesPerSubject,
+            pending.request.destinationCount,
+            pending.request.snapshotFingerprint,
+            placementBinding.placementFingerprint,
+            childDescriptorFingerprint,
+            pending.request.requestedFixedTick,
             tick,
             plan.sourceGroupRevision,
             plan.targetGroupRevision,
@@ -1571,6 +1672,11 @@ export class TowerCreationCoordinator {
             placementFingerprint: placementBinding.placementFingerprint,
             actorActionProfileFingerprint:
                 pending.request.actorActionProfileFingerprint,
+            subjectCount: pending.request.subjectCount,
+            destinationCount: pending.request.destinationCount,
+            copiesPerSubject: pending.request.copiesPerSubject,
+            modifierSetFingerprint:
+                pending.request.modifierSetFingerprint,
             sourceAbilityCode: pending.request.command.compiledAbilityCode,
             sourceExecutionFingerprint:
                 pending.request.command.executionIdFingerprint,
@@ -1642,6 +1748,7 @@ export class TowerCreationCoordinator {
             spawnIntents: Object.freeze(spawnIntents),
             childAbilityMetadata: Object.freeze(childAbilityMetadata),
             actorAction,
+            childDescriptorFingerprint,
             transactionFingerprint,
             stageReceipt: staged
         });
@@ -1651,6 +1758,14 @@ export class TowerCreationCoordinator {
             pending: true,
             phase: 'tower-creation',
             requestFingerprint,
+            subjectCount: pending.request.subjectCount,
+            destinationCount: pending.request.destinationCount,
+            copiesPerSubject: pending.request.copiesPerSubject,
+            modifierSetFingerprint:
+                pending.request.modifierSetFingerprint,
+            modifierStackCount: pending.request.modifierStackCount,
+            destinationFingerprint: placementBinding.destinationFingerprint,
+            placementFingerprint: placementBinding.placementFingerprint,
             capacity: this.#getCapacityStatus(0),
             recoveryRequired: false
         });
@@ -1680,6 +1795,12 @@ export class TowerCreationCoordinator {
                     transactionId: this.queued.transactionId,
                     mode: this.queued.mode,
                     childCount: this.queued.childCount,
+                    subjectCount: this.queued.subjectCount ?? 0,
+                    destinationCount:
+                        this.queued.destinationCount ?? this.queued.childCount,
+                    copiesPerSubject: this.queued.copiesPerSubject ?? 1,
+                    modifierSetFingerprint:
+                        this.queued.modifierSetFingerprint ?? 0,
                     requestedFixedTick: this.queued.requestedFixedTick
                 })
                 : null,
@@ -1689,6 +1810,13 @@ export class TowerCreationCoordinator {
                     mode: this.pending.request.mode,
                     phase: this.pending.phase ?? 'tower-creation',
                     childCount: this.pending.request.childCount,
+                    subjectCount: this.pending.request.subjectCount ?? 0,
+                    destinationCount: this.pending.request.destinationCount
+                        ?? this.pending.request.childCount,
+                    copiesPerSubject:
+                        this.pending.request.copiesPerSubject ?? 1,
+                    modifierSetFingerprint:
+                        this.pending.request.modifierSetFingerprint ?? 0,
                     sourceTick: this.pending.stageReceipt.sourceTick,
                     transactionFingerprint:
                         this.pending.transactionFingerprint
@@ -1846,7 +1974,7 @@ export class TowerCreationCoordinator {
             this.snapshotTokenIds.set(request.snapshotToken, snapshotTokenId);
         }
         return JSON.stringify({
-            version: 'tower-creation-request-v2',
+            version: 'tower-creation-request-v3',
             mode: request.mode,
             transactionId: request.transactionId,
             executionId: request.executionId,
@@ -1854,7 +1982,11 @@ export class TowerCreationCoordinator {
             commandFingerprint: request.command.fingerprint,
             snapshotTokenId,
             snapshotFingerprint: request.snapshotFingerprint,
-            subjectCount: request.childCount,
+            subjectCount: request.subjectCount,
+            destinationCount: request.destinationCount,
+            copiesPerSubject: request.copiesPerSubject,
+            modifierSetFingerprint: request.modifierSetFingerprint,
+            modifierStackCount: request.modifierStackCount,
             actorActionProfileId: request.actorActionProfileId,
             actorActionProfileFingerprint:
                 request.actorActionProfileFingerprint,
@@ -1976,6 +2108,19 @@ export class TowerCreationCoordinator {
                 === pending.request.command.fingerprint
             && completion.snapshotFingerprint
                 === pending.request.snapshotFingerprint
+            && (completion.subjectCount
+                ?? (pending.request.copiesPerSubject === 1
+                    ? pending.request.subjectCount
+                    : null)) === pending.request.subjectCount
+            && (completion.destinationCount
+                ?? (pending.request.copiesPerSubject === 1
+                    ? completion.childCount
+                    : null))
+                === pending.request.destinationCount
+            && (completion.copiesPerSubject ?? 1)
+                === pending.request.copiesPerSubject
+            && (completion.modifierSetFingerprint ?? 0)
+                === pending.request.modifierSetFingerprint
             && completion.placementFingerprint
                 === pending.placementBinding.placementFingerprint
             && completion.actorActionProfileFingerprint
@@ -2049,6 +2194,26 @@ export class TowerCreationCoordinator {
                         pending.request.actorActionProfileId,
                     actorActionProfileFingerprint:
                         pending.request.actorActionProfileFingerprint,
+                    modifierSetFingerprint:
+                        pending.request.modifierSetFingerprint,
+                    modifierStackCount:
+                        pending.request.modifierStackCount,
+                    copiesPerSubject: pending.request.copiesPerSubject,
+                    subjectCount: pending.request.subjectCount,
+                    destinationCount: pending.request.destinationCount,
+                    sourceSubjectRank: Math.floor(
+                        index / pending.request.copiesPerSubject
+                    ),
+                    copyIndex: index % pending.request.copiesPerSubject,
+                    destinationRank: index,
+                    destinationFingerprint:
+                        pending.placementBinding.destinationFingerprint,
+                    placementFingerprint:
+                        pending.placementBinding.placementFingerprint,
+                    childDescriptorFingerprint:
+                        pending.childDescriptorFingerprint,
+                    requestedFixedTick:
+                        pending.request.requestedFixedTick,
                     recoveryPlacementDescriptor:
                         pending.recoveryDescriptors[index]
                 })
@@ -2078,6 +2243,26 @@ export class TowerCreationCoordinator {
                         pending.request.actorActionProfileId,
                     actorActionProfileFingerprint:
                         pending.request.actorActionProfileFingerprint,
+                    modifierSetFingerprint:
+                        pending.request.modifierSetFingerprint,
+                    modifierStackCount:
+                        pending.request.modifierStackCount,
+                    copiesPerSubject: pending.request.copiesPerSubject,
+                    subjectCount: pending.request.subjectCount,
+                    destinationCount: pending.request.destinationCount,
+                    sourceSubjectRank: Math.floor(
+                        index / pending.request.copiesPerSubject
+                    ),
+                    copyIndex: index % pending.request.copiesPerSubject,
+                    destinationRank: index,
+                    destinationFingerprint:
+                        pending.placementBinding.destinationFingerprint,
+                    placementFingerprint:
+                        pending.placementBinding.placementFingerprint,
+                    childDescriptorFingerprint:
+                        pending.childDescriptorFingerprint,
+                    requestedFixedTick:
+                        pending.request.requestedFixedTick,
                     recoveryPlacementPolicyId:
                         pending.recoveryDescriptors[index].policyId,
                     recoveryLogicalTowerOrdinal:
@@ -2177,6 +2362,22 @@ export class TowerCreationCoordinator {
                 actorActionProfileFingerprint: actorMode
                     ? pending.request.actorActionProfileFingerprint
                     : 0,
+                subjectCount: actorMode ? pending.request.subjectCount : 0,
+                destinationCount: actorMode
+                    ? pending.request.destinationCount
+                    : pending.handles.length,
+                copiesPerSubject: actorMode
+                    ? pending.request.copiesPerSubject
+                    : 1,
+                modifierSetFingerprint: actorMode
+                    ? pending.request.modifierSetFingerprint
+                    : 0,
+                modifierStackCount: actorMode
+                    ? pending.request.modifierStackCount
+                    : 0,
+                destinationFingerprint: actorMode
+                    ? pending.placementBinding.destinationFingerprint
+                    : 0,
                 placementFingerprint: actorMode
                     ? pending.placementBinding.placementFingerprint
                     : 0,
@@ -2246,6 +2447,15 @@ export class TowerCreationCoordinator {
             )?.requestFingerprint ?? null,
             actorActionProfileFingerprint:
                 pending.request.actorActionProfileFingerprint ?? 0,
+            subjectCount: pending.request.subjectCount ?? 0,
+            destinationCount:
+                pending.request.destinationCount ?? pending.handles.length,
+            copiesPerSubject: pending.request.copiesPerSubject ?? 1,
+            modifierSetFingerprint:
+                pending.request.modifierSetFingerprint ?? 0,
+            modifierStackCount: pending.request.modifierStackCount ?? 0,
+            destinationFingerprint:
+                pending.placementBinding?.destinationFingerprint ?? 0,
             placementFingerprint:
                 pending.placementBinding?.placementFingerprint ?? 0,
             capacity: this.#getCapacityStatus(0)
@@ -2364,6 +2574,25 @@ export class TowerCreationCoordinator {
                 ? this.transactionEntries.get(transactionId)
                     ?.actorActionProfileFingerprint ?? 0
                 : 0,
+            subjectCount: transactionId
+                ? this.transactionEntries.get(transactionId)?.subjectCount ?? 0
+                : 0,
+            destinationCount: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.destinationCount ?? 0
+                : 0,
+            copiesPerSubject: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.copiesPerSubject ?? 1
+                : 1,
+            modifierSetFingerprint: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.modifierSetFingerprint ?? 0
+                : 0,
+            modifierStackCount: transactionId
+                ? this.transactionEntries.get(transactionId)
+                    ?.modifierStackCount ?? 0
+                : 0,
             capacity: this.#getCapacityStatus(0)
         });
         if (transactionId) this.#completeTransaction(transactionId, receipt);
@@ -2383,6 +2612,15 @@ export class TowerCreationCoordinator {
                 requestFingerprint: entry.requestFingerprint,
                 actorActionProfileFingerprint:
                     entry.actorActionProfileFingerprint,
+                subjectCount: terminal.subjectCount ?? entry.subjectCount,
+                destinationCount:
+                    terminal.destinationCount ?? entry.destinationCount,
+                copiesPerSubject:
+                    terminal.copiesPerSubject ?? entry.copiesPerSubject,
+                modifierSetFingerprint: terminal.modifierSetFingerprint
+                    ?? entry.modifierSetFingerprint,
+                modifierStackCount:
+                    terminal.modifierStackCount ?? entry.modifierStackCount,
                 capacity: terminal.capacity ?? this.#getCapacityStatus(0)
             })
             : terminal;

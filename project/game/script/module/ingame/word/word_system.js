@@ -420,6 +420,13 @@ export class WordSystem {
             'completedFixedTick'
         );
         const slot = this.slots.get(slotId);
+        const modifierStackCount = slot.compileResult.compiledAbility
+            ?.modifierSet?.canonicalEntries?.reduce((total, entry) => (
+                total + requirePositiveSafeInteger(
+                    entry.stackCount,
+                    'modifier stackCount'
+                )
+            ), 0) ?? 0;
         const cooldownConsumed = source.cooldownConsumed === true;
         if (cooldownConsumed) {
             slot.nextEligibleFixedTick = Math.max(
@@ -451,6 +458,12 @@ export class WordSystem {
                 source.modifierSetFingerprint ?? 0,
                 'modifierSetFingerprint'
             ),
+            modifierStackCount,
+            effectiveGeneratedCount: requireNonNegativeSafeInteger(
+                source.generatedCount ?? 0,
+                'effectiveGeneratedCount'
+            ),
+            lastModifierOutcome: code,
             cooldownConsumed
         });
         return true;

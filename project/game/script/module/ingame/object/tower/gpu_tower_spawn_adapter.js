@@ -134,6 +134,22 @@ export function createGpuTowerSpawnIntent(options) {
                 creationMetadata.actorActionProfileId,
             actorActionProfileFingerprint:
                 creationMetadata.actorActionProfileFingerprint,
+            modifierSetFingerprint:
+                creationMetadata.modifierSetFingerprint,
+            modifierStackCount: creationMetadata.modifierStackCount,
+            copiesPerSubject: creationMetadata.copiesPerSubject,
+            subjectCount: creationMetadata.subjectCount,
+            destinationCount: creationMetadata.destinationCount,
+            sourceSubjectRank: creationMetadata.sourceSubjectRank,
+            copyIndex: creationMetadata.copyIndex,
+            destinationRank: creationMetadata.destinationRank,
+            destinationFingerprint:
+                creationMetadata.destinationFingerprint,
+            placementFingerprint: creationMetadata.placementFingerprint,
+            childDescriptorFingerprint:
+                creationMetadata.childDescriptorFingerprint,
+            sourceRequestedFixedTick:
+                creationMetadata.requestedFixedTick,
             recoveryPlacementPolicyId:
                 creationMetadata.recoveryPlacementDescriptor.policyId,
             recoveryLogicalTowerOrdinal:

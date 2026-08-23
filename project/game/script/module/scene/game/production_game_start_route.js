@@ -15,7 +15,8 @@ import {
 } from 'data/scene/game/performance_serpentine_wave_data.js';
 import {
     R5_SHOWCASE_SENTENCE_LOADOUT,
-    R6_QA_SENTENCE_LOADOUT
+    R6_QA_SENTENCE_LOADOUT,
+    R7_QA_SENTENCE_LOADOUT
 } from 'data/word/r3_word_catalog_data.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
@@ -32,12 +33,20 @@ export const PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID
     = PERFORMANCE_SERPENTINE_MAP_DATA.id;
 
 export const R6_QA_LAUNCH_ARGUMENT = '--r6-qa';
+export const R7_QA_LAUNCH_ARGUMENT = '--r7-qa';
 
 /** 실제 executable에서만 쓰는 명시적 QA launcher 선택 seam입니다. */
 export function isR6QaLaunchRequested(
     argv = globalThis.nw?.App?.argv ?? []
 ) {
     return Array.isArray(argv) && argv.includes(R6_QA_LAUNCH_ARGUMENT);
+}
+
+/** R7 modifier QA는 exact launcher argument에서만 활성화됩니다. */
+export function isR7QaLaunchRequested(
+    argv = globalThis.nw?.App?.argv ?? []
+) {
+    return Array.isArray(argv) && argv.includes(R7_QA_LAUNCH_ARGUMENT);
 }
 
 function createPlayableSessionOptions(
@@ -95,9 +104,11 @@ function createGameStartOptions(selectedMapId, loadout) {
 export function createProductionGameStartOptions(selectedMapId) {
     return createGameStartOptions(
         selectedMapId,
-        isR6QaLaunchRequested()
-            ? R6_QA_SENTENCE_LOADOUT
-            : R5_SHOWCASE_SENTENCE_LOADOUT
+        isR7QaLaunchRequested()
+            ? R7_QA_SENTENCE_LOADOUT
+            : isR6QaLaunchRequested()
+                ? R6_QA_SENTENCE_LOADOUT
+                : R5_SHOWCASE_SENTENCE_LOADOUT
     );
 }
 
@@ -106,4 +117,11 @@ export function createR6QaGameStartOptions(
     selectedMapId = PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
 ) {
     return createGameStartOptions(selectedMapId, R6_QA_SENTENCE_LOADOUT);
+}
+
+/** Permanent key 없이 실제 GameScene에 R7 modifier 문장을 주입합니다. */
+export function createR7QaGameStartOptions(
+    selectedMapId = PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
+) {
+    return createGameStartOptions(selectedMapId, R7_QA_SENTENCE_LOADOUT);
 }

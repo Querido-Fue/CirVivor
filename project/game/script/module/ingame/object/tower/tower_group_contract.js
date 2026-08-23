@@ -407,6 +407,39 @@ export function freezeTowerCreationMetadata(
             !== recoveryPlacementDescriptor.position.y) {
         throw new RangeError(`${label}의 recovery position/anchor가 다릅니다.`);
     }
+    const copiesPerSubject = requirePositiveSafeInteger(
+        metadata.copiesPerSubject ?? 1,
+        `${label}.copiesPerSubject`
+    );
+    const subjectCount = requirePositiveSafeInteger(
+        metadata.subjectCount ?? 1,
+        `${label}.subjectCount`
+    );
+    if (subjectCount > Math.floor(0xffffffff / copiesPerSubject)) {
+        throw new RangeError(`${label}의 destination cardinality가 uint32를 넘습니다.`);
+    }
+    const destinationCount = requirePositiveSafeInteger(
+        metadata.destinationCount ?? subjectCount * copiesPerSubject,
+        `${label}.destinationCount`
+    );
+    const sourceSubjectRank = requireNonNegativeSafeInteger(
+        metadata.sourceSubjectRank ?? 0,
+        `${label}.sourceSubjectRank`
+    );
+    const copyIndex = requireNonNegativeSafeInteger(
+        metadata.copyIndex ?? 0,
+        `${label}.copyIndex`
+    );
+    const destinationRank = requireNonNegativeSafeInteger(
+        metadata.destinationRank ?? 0,
+        `${label}.destinationRank`
+    );
+    if (destinationCount !== subjectCount * copiesPerSubject
+        || sourceSubjectRank >= subjectCount
+        || copyIndex >= copiesPerSubject
+        || destinationRank !== sourceSubjectRank * copiesPerSubject + copyIndex) {
+        throw new RangeError(`${label}의 modifier destination mapping이 다릅니다.`);
+    }
     const normalized = Object.freeze({
         generation: requireNonNegativeSafeInteger(
             metadata.generation,
@@ -441,6 +474,36 @@ export function freezeTowerCreationMetadata(
         actorActionProfileFingerprint: requirePositiveSafeInteger(
             metadata.actorActionProfileFingerprint,
             `${label}.actorActionProfileFingerprint`
+        ),
+        modifierSetFingerprint: requireNonNegativeSafeInteger(
+            metadata.modifierSetFingerprint ?? 0,
+            `${label}.modifierSetFingerprint`
+        ),
+        modifierStackCount: requireNonNegativeSafeInteger(
+            metadata.modifierStackCount ?? 0,
+            `${label}.modifierStackCount`
+        ),
+        copiesPerSubject,
+        subjectCount,
+        destinationCount,
+        sourceSubjectRank,
+        copyIndex,
+        destinationRank,
+        destinationFingerprint: requireNonNegativeSafeInteger(
+            metadata.destinationFingerprint ?? 0,
+            `${label}.destinationFingerprint`
+        ),
+        placementFingerprint: requireNonNegativeSafeInteger(
+            metadata.placementFingerprint ?? 0,
+            `${label}.placementFingerprint`
+        ),
+        childDescriptorFingerprint: requireNonNegativeSafeInteger(
+            metadata.childDescriptorFingerprint ?? 0,
+            `${label}.childDescriptorFingerprint`
+        ),
+        requestedFixedTick: requireNonNegativeSafeInteger(
+            metadata.requestedFixedTick ?? 0,
+            `${label}.requestedFixedTick`
         ),
         recoveryPlacementDescriptor
     });
