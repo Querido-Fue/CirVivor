@@ -3,6 +3,9 @@ import {
     PRIMARY_TOWER_LOGICAL_ORDINAL,
     TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
+    TOWER_GROUP_RECORD_STATE,
+    TOWER_MERGE_REASON,
+    TOWER_MERGE_RESULT,
     TOWER_SHARE_SCALE,
     requireLogicalTowerId,
     requireNonNegativeSafeInteger,
@@ -213,6 +216,105 @@ function sumSafeIntegers(records, selector, label) {
     return total;
 }
 
+function normalizeMergeSources(livingRecords) {
+    if (!Array.isArray(livingRecords)) {
+        throw new TypeError('merge livingRecords는 배열이어야 합니다.');
+    }
+    const ids = new Set();
+    const ordinals = new Set();
+    const bindings = new Set();
+    let protocolKey = null;
+    const records = livingRecords.map((record, index) => {
+        const logicalTowerId = requireLogicalTowerId(
+            record?.logicalTowerId,
+            `merge livingRecords[${index}].logicalTowerId`
+        );
+        const logicalTowerOrdinal = requirePositiveSafeInteger(
+            record?.logicalTowerOrdinal,
+            `merge livingRecords[${index}].logicalTowerOrdinal`
+        );
+        if (ids.has(logicalTowerId) || ordinals.has(logicalTowerOrdinal)) {
+            throw new Error('merge source logical identity/ordinal은 고유해야 합니다.');
+        }
+        ids.add(logicalTowerId);
+        ordinals.add(logicalTowerOrdinal);
+        if (record?.state !== undefined
+            && record.state !== TOWER_GROUP_RECORD_STATE.LIVING) {
+            throw new Error('merge source는 LIVING record여야 합니다.');
+        }
+        const shareUnits = requireShareUnits(
+            record?.shareUnits,
+            `merge livingRecords[${index}].shareUnits`
+        );
+        const currentHpFixedPoint = requireNonNegativeSafeInteger(
+            record?.currentHpFixedPoint,
+            `merge livingRecords[${index}].currentHpFixedPoint`
+        );
+        const maxHpFixedPoint = requireNonNegativeSafeInteger(
+            record?.maxHpFixedPoint,
+            `merge livingRecords[${index}].maxHpFixedPoint`
+        );
+        const powerFixedPoint = requireNonNegativeSafeInteger(
+            record?.powerFixedPoint,
+            `merge livingRecords[${index}].powerFixedPoint`
+        );
+        if (shareUnits <= 0 || currentHpFixedPoint <= 0
+            || maxHpFixedPoint <= 0
+            || currentHpFixedPoint > maxHpFixedPoint) {
+            throw new Error('merge source stat은 positive living 범위여야 합니다.');
+        }
+        const binding = record?.exactGpuBinding ?? null;
+        if (binding !== null) {
+            const entityId = requirePositiveSafeInteger(
+                binding.entityId,
+                `merge livingRecords[${index}].exactGpuBinding.entityId`
+            );
+            const incarnation = requirePositiveSafeInteger(
+                binding.incarnation,
+                `merge livingRecords[${index}].exactGpuBinding.incarnation`
+            );
+            const sessionGeneration = requirePositiveSafeInteger(
+                binding.sessionGeneration,
+                `merge livingRecords[${index}].exactGpuBinding.sessionGeneration`
+            );
+            const deviceGeneration = requireNonNegativeSafeInteger(
+                binding.deviceGeneration,
+                `merge livingRecords[${index}].exactGpuBinding.deviceGeneration`
+            );
+            const authoritativeEpoch = requireNonNegativeSafeInteger(
+                binding.authoritativeEpoch,
+                `merge livingRecords[${index}].exactGpuBinding.authoritativeEpoch`
+            );
+            const exactKey = `${entityId}:${incarnation}`;
+            if (bindings.has(exactKey)) {
+                throw new Error('merge source exact GPU binding은 고유해야 합니다.');
+            }
+            bindings.add(exactKey);
+            const nextProtocolKey = [
+                sessionGeneration,
+                deviceGeneration,
+                authoritativeEpoch
+            ].join(':');
+            if (protocolKey !== null && protocolKey !== nextProtocolKey) {
+                throw new Error('merge source GPU protocol은 하나여야 합니다.');
+            }
+            protocolKey = nextProtocolKey;
+        }
+        return {
+            logicalTowerId,
+            logicalTowerOrdinal,
+            shareUnits,
+            currentHpFixedPoint,
+            maxHpFixedPoint,
+            powerFixedPoint,
+            exactGpuBinding: binding
+        };
+    });
+    return records.sort((left, right) => (
+        left.logicalTowerOrdinal - right.logicalTowerOrdinal
+    ));
+}
+
 function freezeRejectedPlan(result, reason, extra = {}) {
     return Object.freeze({
         accepted: false,
@@ -420,6 +522,86 @@ export class TowerShareLedger {
             lostShareUnits: this.lostShareUnits,
             totalLivingCurrentHp,
             allocations: Object.freeze(allocations)
+        });
+    }
+
+    /** 모든 living Tower를 한 survivor로 합치는 side-effect-free 정수 plan입니다. */
+    planMerge(livingRecords, survivorLogicalTowerId) {
+        this.#assertUsable();
+        const living = normalizeMergeSources(livingRecords);
+        if (living.length < 2) {
+            return freezeRejectedPlan(
+                TOWER_MERGE_RESULT.REJECTED_INSUFFICIENT_SUBJECTS,
+                TOWER_MERGE_REASON.INSUFFICIENT_SUBJECTS,
+                {
+                    sourceCount: living.length,
+                    lostShareUnits: this.lostShareUnits
+                }
+            );
+        }
+        const survivorId = requireLogicalTowerId(
+            survivorLogicalTowerId,
+            'merge survivorLogicalTowerId'
+        );
+        const survivor = living.find((record) => (
+            record.logicalTowerId === survivorId
+        ));
+        if (!survivor) {
+            throw new Error('merge survivor는 source snapshot 구성원이어야 합니다.');
+        }
+
+        const livingShareUnits = sumSafeIntegers(
+            living,
+            (record) => record.shareUnits,
+            'merge shareUnits'
+        );
+        if (livingShareUnits + this.lostShareUnits !== this.scale) {
+            throw new Error('Tower Share invariant가 merge plan 전에 깨졌습니다.');
+        }
+        const maxHpFixedPoint = sumSafeIntegers(
+            living,
+            (record) => record.maxHpFixedPoint,
+            'merge maxHpFixedPoint'
+        );
+        const currentHpTotal = sumSafeIntegers(
+            living,
+            (record) => record.currentHpFixedPoint,
+            'merge currentHpFixedPoint'
+        );
+        const powerFixedPoint = sumSafeIntegers(
+            living,
+            (record) => record.powerFixedPoint,
+            'merge powerFixedPoint'
+        );
+        const currentHpFixedPoint = Math.min(
+            currentHpTotal,
+            maxHpFixedPoint
+        );
+        const sources = Object.freeze(living.map((record) => Object.freeze({
+            logicalTowerId: record.logicalTowerId,
+            logicalTowerOrdinal: record.logicalTowerOrdinal,
+            shareUnits: record.shareUnits,
+            currentHpFixedPoint: record.currentHpFixedPoint,
+            maxHpFixedPoint: record.maxHpFixedPoint,
+            powerFixedPoint: record.powerFixedPoint,
+            survivor: record.logicalTowerId === survivorId
+        })));
+        return Object.freeze({
+            accepted: true,
+            result: null,
+            reason: null,
+            sourceCount: living.length,
+            survivorLogicalTowerId: survivorId,
+            survivorLogicalTowerOrdinal: survivor.logicalTowerOrdinal,
+            livingShareUnits,
+            lostShareUnits: this.lostShareUnits,
+            currentHpFixedPoint,
+            maxHpFixedPoint,
+            powerFixedPoint,
+            sources,
+            consumedLogicalTowerIds: Object.freeze(sources
+                .filter((record) => !record.survivor)
+                .map((record) => record.logicalTowerId))
         });
     }
 

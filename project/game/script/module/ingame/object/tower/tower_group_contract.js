@@ -1,3 +1,7 @@
+import {
+    normalizeTowerGroupOperationProfile
+} from 'ingame/contract/tower_group_operation_contract.js';
+
 const GPU_RESERVED_U32_SENTINEL = 0xffffffff;
 
 export const TOWER_SHARE_SCALE = 1_000_000_000;
@@ -7,7 +11,8 @@ export const PRIMARY_TOWER_LOGICAL_ORDINAL = 1;
 export const TOWER_GROUP_RECORD_STATE = Object.freeze({
     PENDING: 'PENDING',
     LIVING: 'LIVING',
-    DEAD: 'DEAD'
+    DEAD: 'DEAD',
+    MERGED: 'MERGED'
 });
 
 export const TOWER_CREATION_COORDINATOR_MODE = Object.freeze({
@@ -35,17 +40,39 @@ export const TOWER_CREATION_REASON = Object.freeze({
     NON_VIABLE_DERIVED_HEALTH: 'NON_VIABLE_DERIVED_HEALTH',
     NON_VIABLE_DERIVED_CURRENT_HP: 'NON_VIABLE_DERIVED_CURRENT_HP',
     CREATION_TRANSACTION_PENDING: 'CREATION_TRANSACTION_PENDING',
+    MERGE_TRANSACTION_PENDING: 'MERGE_TRANSACTION_PENDING',
     DUPLICATE_TRANSACTION: 'DUPLICATE_TRANSACTION',
     TRANSACTION_FINGERPRINT_MISMATCH: 'TRANSACTION_FINGERPRINT_MISMATCH',
     SOURCE_STATE_CHANGED: 'SOURCE_STATE_CHANGED',
     DESCRIPTOR_INVALID: 'DESCRIPTOR_INVALID'
 });
 
+export const TOWER_MERGE_RESULT = Object.freeze({
+    COMMITTED: 'COMMITTED',
+    REJECTED_INSUFFICIENT_SUBJECTS: 'REJECTED_INSUFFICIENT_SUBJECTS',
+    REJECTED_SOURCE_CHANGED: 'REJECTED_SOURCE_CHANGED',
+    REJECTED_CONFLICTING_TRANSACTION: 'REJECTED_CONFLICTING_TRANSACTION',
+    REJECTED: 'REJECTED',
+    PROTOCOL_FAILURE: 'PROTOCOL_FAILURE'
+});
+
+export const TOWER_MERGE_REASON = Object.freeze({
+    INSUFFICIENT_SUBJECTS: 'INSUFFICIENT_SUBJECTS',
+    CREATION_TRANSACTION_PENDING: 'CREATION_TRANSACTION_PENDING',
+    MERGE_TRANSACTION_PENDING: 'MERGE_TRANSACTION_PENDING',
+    TRANSACTION_FINGERPRINT_MISMATCH: 'TRANSACTION_FINGERPRINT_MISMATCH',
+    SOURCE_CHANGED: 'SOURCE_CHANGED',
+    INVALID_REQUEST: 'INVALID_REQUEST',
+    REJECTED: 'REJECTED',
+    DESTROYED: 'DESTROYED'
+});
+
 export const TOWER_COMBAT_FACT_TYPE = Object.freeze({
     DAMAGE_APPLIED: 'TowerDamageApplied',
     DIED: 'TowerDied',
     SHARE_LOST: 'TowerShareLost',
-    NO_LIVING_TOWERS: 'NoLivingTowers'
+    NO_LIVING_TOWERS: 'NoLivingTowers',
+    MERGED: 'TowerMerged'
 });
 
 export function requirePositiveSafeInteger(value, label) {
@@ -95,6 +122,60 @@ export function requireTransactionId(value, label = 'transactionId') {
         throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
     }
     return value;
+}
+
+function requireNonEmptyString(value, label) {
+    if (typeof value !== 'string' || value.length === 0) {
+        throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
+    }
+    return value;
+}
+
+/** R6 compiled group-operation에서 CPU Merge planner가 소유할 identity만 복제합니다. */
+export function freezeTowerMergeOperationIdentity(
+    source,
+    label = 'towerMergeOperation'
+) {
+    const profile = normalizeTowerGroupOperationProfile(
+        source?.groupOperationProfile,
+        `${label}.groupOperationProfile`
+    );
+    if (source?.operationKind !== profile.operationKind
+        || source?.actionCode !== profile.actionCode
+        || source?.groupOperationProfileId !== profile.id
+        || source?.groupOperationProfileFingerprint
+            !== profile.towerGroupOperationProfileFingerprint
+        || source?.subjectSelector?.code !== profile.subjectSelectorCode
+        || source?.subjectSelector?.snapshotPolicy
+            !== profile.subjectSnapshotPolicy
+        || source?.payloadAbsent !== true
+        || source?.executionPolicy?.atomic !== true
+        || source?.generatedBodyCount !== profile.generatedBodyCount) {
+        throw new RangeError(
+            `${label}의 compiled group-operation identity가 profile과 다릅니다.`
+        );
+    }
+    return Object.freeze({
+        schemaVersion: requirePositiveSafeInteger(
+            source.schemaVersion,
+            `${label}.schemaVersion`
+        ),
+        protocolVersion: requirePositiveSafeInteger(
+            source.protocolVersion,
+            `${label}.protocolVersion`
+        ),
+        compiledAbilityId: requireNonEmptyString(
+            source.compiledAbilityId,
+            `${label}.compiledAbilityId`
+        ),
+        operationKind: profile.operationKind,
+        actionCode: profile.actionCode,
+        groupOperationProfileId: profile.id,
+        groupOperationProfileFingerprint:
+            profile.towerGroupOperationProfileFingerprint,
+        subjectSelectorCode: profile.subjectSelectorCode,
+        subjectSnapshotPolicy: profile.subjectSnapshotPolicy
+    });
 }
 
 export function requireTowerGroupRecordState(

@@ -10,10 +10,13 @@ import {
     TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
     TOWER_GROUP_RECORD_STATE,
+    TOWER_MERGE_REASON,
+    TOWER_MERGE_RESULT,
     TOWER_SHARE_SCALE,
     createTowerLogicalId,
     freezeExactTowerHandle,
     freezeTowerCreationMetadata,
+    freezeTowerMergeOperationIdentity,
     freezeTowerRecoverySpawnDescriptor,
     normalizeTowerGpuProtocol,
     requireLogicalTowerId,
@@ -28,6 +31,7 @@ import {
 import { TowerShareLedger } from './tower_share_ledger.js';
 
 const DEFAULT_HISTORY_CAPACITY = 65536;
+const DEFAULT_MERGE_HISTORY_CAPACITY = 1024;
 const EMPTY_FACTS = Object.freeze([]);
 
 function handleKey(handle) {
@@ -81,6 +85,39 @@ function freezeFactProtocol(event) {
 }
 
 function createRecord(source) {
+    const state = requireTowerGroupRecordState(source.state);
+    const mergedIntoLogicalTowerId = source.mergedIntoLogicalTowerId ?? null;
+    const mergedTransactionId = source.mergedTransactionId ?? null;
+    const mergedPlanFingerprint = source.mergedPlanFingerprint ?? null;
+    const mergedAtFixedTick = source.mergedAtFixedTick ?? null;
+    if (state === TOWER_GROUP_RECORD_STATE.MERGED) {
+        requireLogicalTowerId(
+            mergedIntoLogicalTowerId,
+            'towerRecord.mergedIntoLogicalTowerId'
+        );
+        requireTransactionId(
+            mergedTransactionId,
+            'towerRecord.mergedTransactionId'
+        );
+        requireTransactionId(
+            mergedPlanFingerprint,
+            'towerRecord.mergedPlanFingerprint'
+        );
+        requirePositiveSafeInteger(
+            mergedAtFixedTick,
+            'towerRecord.mergedAtFixedTick'
+        );
+        if (source.shareUnits !== 0 || source.currentHpFixedPoint !== 0
+            || source.maxHpFixedPoint !== 0 || source.powerFixedPoint !== 0
+            || source.exactGpuBinding !== null) {
+            throw new Error('MERGED Tower record는 stat/binding을 소유할 수 없습니다.');
+        }
+    } else if (mergedIntoLogicalTowerId !== null
+        || mergedTransactionId !== null
+        || mergedPlanFingerprint !== null
+        || mergedAtFixedTick !== null) {
+        throw new Error('MERGED가 아닌 Tower record에는 merge lineage를 둘 수 없습니다.');
+    }
     return Object.freeze({
         logicalTowerId: requireLogicalTowerId(source.logicalTowerId),
         logicalTowerOrdinal: requirePositiveSafeInteger(
@@ -108,8 +145,12 @@ function createRecord(source) {
             source.creationMetadata,
             'towerRecord.creationMetadata'
         ),
-        state: requireTowerGroupRecordState(source.state),
-        exactGpuBinding: source.exactGpuBinding ?? null
+        state,
+        exactGpuBinding: source.exactGpuBinding ?? null,
+        mergedIntoLogicalTowerId,
+        mergedTransactionId,
+        mergedPlanFingerprint,
+        mergedAtFixedTick
     });
 }
 
@@ -174,6 +215,87 @@ function fingerprintLivingStructure(records) {
     return hash.toString(16).padStart(8, '0');
 }
 
+function normalizeMergeRequest(source = {}) {
+    const expectedPlanFingerprint = source.fingerprint === undefined
+        || source.fingerprint === null
+        ? null
+        : requireTransactionId(
+            source.fingerprint,
+            'towerMergeRequest.fingerprint'
+        );
+    return Object.freeze({
+        transactionId: requireTransactionId(source.transactionId),
+        compiledOperation: freezeTowerMergeOperationIdentity(
+            source.compiledOperation,
+            'towerMergeRequest.compiledOperation'
+        ),
+        requestedFixedTick: requirePositiveSafeInteger(
+            source.requestedFixedTick,
+            'towerMergeRequest.requestedFixedTick'
+        ),
+        expectedPlanFingerprint
+    });
+}
+
+function fingerprintMergeRequest(request) {
+    return JSON.stringify({
+        version: 'tower-merge-request-v1',
+        transactionId: request.transactionId,
+        compiledOperation: request.compiledOperation,
+        requestedFixedTick: request.requestedFixedTick
+    });
+}
+
+function fingerprintMergePlan(source) {
+    const canonical = JSON.stringify({
+        version: 'tower-merge-plan-v1',
+        transactionId: source.request.transactionId,
+        compiledOperation: source.request.compiledOperation,
+        requestedFixedTick: source.request.requestedFixedTick,
+        sourceGroupRevision: source.sourceGroupRevision,
+        sourceStateRevision: source.sourceStateRevision,
+        sourcePrimaryLogicalTowerId: source.sourcePrimaryLogicalTowerId,
+        sourceFingerprint: source.sourceFingerprint,
+        sourceStructureFingerprint: source.sourceStructureFingerprint,
+        survivorLogicalTowerId: source.arithmetic.survivorLogicalTowerId,
+        sources: source.livingRecords.map((record) => ({
+            logicalTowerId: record.logicalTowerId,
+            logicalTowerOrdinal: record.logicalTowerOrdinal,
+            shareUnits: record.shareUnits,
+            currentHpFixedPoint: record.currentHpFixedPoint,
+            maxHpFixedPoint: record.maxHpFixedPoint,
+            powerFixedPoint: record.powerFixedPoint,
+            exactGpuBinding: record.exactGpuBinding
+                ? {
+                    entityId: record.exactGpuBinding.entityId,
+                    incarnation: record.exactGpuBinding.incarnation,
+                    sessionGeneration:
+                        record.exactGpuBinding.sessionGeneration,
+                    deviceGeneration:
+                        record.exactGpuBinding.deviceGeneration,
+                    authoritativeEpoch:
+                        record.exactGpuBinding.authoritativeEpoch
+                }
+                : null
+        }))
+    });
+    return [
+        hashText(0x811c9dc5, canonical),
+        hashText(0x9e3779b9, canonical)
+    ].map((value) => value.toString(16).padStart(8, '0')).join('');
+}
+
+function freezeMergeRejection(result, reason, extra = {}) {
+    return Object.freeze({
+        accepted: false,
+        result,
+        reason,
+        recoveryRequired: false,
+        mutationCount: 0,
+        ...extra
+    });
+}
+
 function freezeRejection(result, reason, extra = {}) {
     return Object.freeze({
         accepted: false,
@@ -192,6 +314,9 @@ export class TowerGroupState {
     #records;
     #bindingToLogicalId;
     #pendingCreation;
+    #pendingMerge;
+    #mergeTransactions;
+    #completedMergeTransactionOrder;
     #knownEventKeys;
     #eventKeyHistory;
     #eventKeyHead;
@@ -234,6 +359,10 @@ export class TowerGroupState {
             options.creationHistoryCapacity ?? DEFAULT_HISTORY_CAPACITY,
             'Tower creation history capacity'
         );
+        this.mergeHistoryCapacity = requirePositiveSafeInteger(
+            options.mergeHistoryCapacity ?? DEFAULT_MERGE_HISTORY_CAPACITY,
+            'Tower merge history capacity'
+        );
         this.ledger = new TowerShareLedger({
             runBaseMaxHpFixedPoint: this.runBaseMaxHpFixedPoint,
             runBasePowerFixedPoint: this.runBasePowerFixedPoint
@@ -252,6 +381,9 @@ export class TowerGroupState {
         this.#records = new Map([[initialRecord.logicalTowerId, initialRecord]]);
         this.#bindingToLogicalId = new Map();
         this.#pendingCreation = null;
+        this.#pendingMerge = null;
+        this.#mergeTransactions = new Map();
+        this.#completedMergeTransactionOrder = [];
         this.#knownEventKeys = new Set();
         this.#eventKeyHistory = [];
         this.#eventKeyHead = 0;
@@ -270,6 +402,7 @@ export class TowerGroupState {
         this.lastCommittedDeath = null;
         this.lastCommittedFacts = EMPTY_FACTS;
         this.lastCreation = null;
+        this.lastMerge = null;
         this.destroyed = false;
     }
 
@@ -340,6 +473,13 @@ export class TowerGroupState {
                 TOWER_CREATION_RESULT.PROTOCOL_FAILURE,
                 TOWER_CREATION_REASON.DUPLICATE_TRANSACTION,
                 { transactionId, duplicate: true }
+            );
+        }
+        if (publishPending && this.#pendingMerge) {
+            return freezeRejection(
+                TOWER_CREATION_RESULT.REJECTED_CAPACITY,
+                TOWER_CREATION_REASON.MERGE_TRANSACTION_PENDING,
+                { transactionId }
             );
         }
         if (publishPending && this.#pendingCreation) {
@@ -666,6 +806,275 @@ export class TowerGroupState {
         return this.lastCreation;
     }
 
+    planMerge(source = {}) {
+        this.#assertUsable();
+        let request;
+        try {
+            request = normalizeMergeRequest(source);
+        } catch (error) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.INVALID_REQUEST,
+                { detail: error?.message ?? String(error) }
+            );
+        }
+        return this.#createMergePlan(request, true);
+    }
+
+    /** UI/QA가 runtime과 동일한 산술을 mutation 없이 조회하는 pure seam입니다. */
+    previewMerge(source = {}) {
+        if (this.destroyed) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.DESTROYED
+            );
+        }
+        let request;
+        try {
+            request = normalizeMergeRequest({
+                ...source,
+                transactionId: source.transactionId ?? 'tower-merge-preview'
+            });
+        } catch (error) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.INVALID_REQUEST,
+                { detail: error?.message ?? String(error) }
+            );
+        }
+        return this.#buildMergePlan(request).receipt;
+    }
+
+    /** Pending 중 구조는 고정하고 non-lethal current HP만 다시 합산합니다. */
+    refreshPendingMerge(source = {}) {
+        this.#assertUsable();
+        const pending = this.#pendingMerge;
+        const plan = source.plan ?? source;
+        if (!pending || plan !== pending.plan) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.SOURCE_CHANGED
+            );
+        }
+        const livingRecords = this.#getLivingRecords();
+        if (this.groupRevision !== plan.sourceGroupRevision
+            || this.primaryLogicalTowerId
+                !== plan.sourcePrimaryLogicalTowerId
+            || fingerprintLivingStructure(livingRecords)
+                !== plan.sourceStructureFingerprint) {
+            return this.#rejectPendingMergeSourceChanged(plan);
+        }
+        if (this.stateRevision === plan.sourceStateRevision
+            && fingerprintLivingRecords(livingRecords)
+                === plan.sourceFingerprint) {
+            return plan;
+        }
+        let rebuilt;
+        try {
+            rebuilt = this.#buildMergePlan(pending.request);
+        } catch {
+            return this.#rejectPendingMergeSourceChanged(plan);
+        }
+        if (!rebuilt.receipt.accepted) {
+            return this.#rejectPendingMergeSourceChanged(plan);
+        }
+        this.#pendingMerge = {
+            request: pending.request,
+            requestFingerprint: pending.requestFingerprint,
+            plan: rebuilt.receipt,
+            plannedSurvivor: rebuilt.plannedSurvivor,
+            livingRecords: rebuilt.livingRecords
+        };
+        const entry = this.#mergeTransactions.get(plan.transactionId);
+        entry.planFingerprint = rebuilt.receipt.fingerprint;
+        entry.receipt = rebuilt.receipt;
+        return rebuilt.receipt;
+    }
+
+    commitMerge(source = {}) {
+        if (this.destroyed) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.DESTROYED
+            );
+        }
+        const plan = source.plan ?? source;
+        const transactionId = plan?.transactionId;
+        const entry = typeof transactionId === 'string'
+            ? this.#mergeTransactions.get(transactionId)
+            : null;
+        if (!this.#pendingMerge) {
+            if (entry?.stage === 'completed'
+                && plan?.fingerprint === entry.planFingerprint) {
+                return entry.receipt;
+            }
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                { transactionId: transactionId ?? null }
+            );
+        }
+        const pending = this.#pendingMerge;
+        if (plan !== pending.plan) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                { transactionId: transactionId ?? null }
+            );
+        }
+        const livingRecords = this.#getLivingRecords();
+        if (this.groupRevision !== plan.sourceGroupRevision
+            || this.stateRevision !== plan.sourceStateRevision
+            || this.primaryLogicalTowerId
+                !== plan.sourcePrimaryLogicalTowerId
+            || fingerprintLivingRecords(livingRecords)
+                !== plan.sourceFingerprint) {
+            return this.#rejectPendingMergeSourceChanged(plan);
+        }
+
+        const survivorId = plan.survivor.logicalTowerId;
+        const lineage = Object.freeze(pending.livingRecords
+            .filter((record) => record.logicalTowerId !== survivorId)
+            .map((record) => Object.freeze({
+                logicalTowerId: record.logicalTowerId,
+                logicalTowerOrdinal: record.logicalTowerOrdinal,
+                mergedIntoLogicalTowerId: survivorId,
+                transactionId: plan.transactionId,
+                planFingerprint: plan.fingerprint,
+                requestedFixedTick: plan.requestedFixedTick,
+                shareUnits: record.shareUnits,
+                currentHpFixedPoint: record.currentHpFixedPoint,
+                maxHpFixedPoint: record.maxHpFixedPoint,
+                powerFixedPoint: record.powerFixedPoint,
+                exactGpuBinding: record.exactGpuBinding
+            })));
+        this.#records.set(survivorId, pending.plannedSurvivor);
+        for (const record of pending.livingRecords) {
+            if (record.logicalTowerId === survivorId) continue;
+            if (record.exactGpuBinding) {
+                this.#bindingToLogicalId.delete(
+                    handleKey(record.exactGpuBinding)
+                );
+            }
+            this.#lethalDamageByLogicalId.delete(record.logicalTowerId);
+            this.#records.set(record.logicalTowerId, createRecord({
+                ...record,
+                shareUnits: 0,
+                currentHpFixedPoint: 0,
+                maxHpFixedPoint: 0,
+                powerFixedPoint: 0,
+                state: TOWER_GROUP_RECORD_STATE.MERGED,
+                exactGpuBinding: null,
+                mergedIntoLogicalTowerId: survivorId,
+                mergedTransactionId: plan.transactionId,
+                mergedPlanFingerprint: plan.fingerprint,
+                mergedAtFixedTick: plan.requestedFixedTick
+            }));
+        }
+        this.livingTowerCount = 1;
+        this.primaryLogicalTowerId = survivorId;
+        this.groupRevision = plan.targetGroupRevision;
+        this.stateRevision++;
+        if (this.#bindingToLogicalId.size === 0) {
+            this.activeProtocol = null;
+        }
+        const fact = Object.freeze({
+            type: TOWER_COMBAT_FACT_TYPE.MERGED,
+            transactionId: plan.transactionId,
+            planFingerprint: plan.fingerprint,
+            requestedFixedTick: plan.requestedFixedTick,
+            operationIdentity: plan.operationIdentity,
+            sourceCount: plan.sourceCount,
+            consumedCount: lineage.length,
+            sourceLogicalTowerIds: Object.freeze(plan.sources.map(
+                (record) => record.logicalTowerId
+            )),
+            survivorLogicalTowerId: survivorId,
+            survivorLogicalTowerOrdinal:
+                plan.survivor.logicalTowerOrdinal,
+            survivorExactGpuBinding:
+                plan.survivor.exactGpuBinding,
+            shareUnits: plan.survivor.shareUnits,
+            currentHpFixedPoint: plan.survivor.currentHpFixedPoint,
+            maxHpFixedPoint: plan.survivor.maxHpFixedPoint,
+            powerFixedPoint: plan.survivor.powerFixedPoint,
+            lostShareUnits: plan.lostShareUnits,
+            groupRevision: this.groupRevision,
+            stateRevision: this.stateRevision,
+            lineage
+        });
+        const receipt = Object.freeze({
+            accepted: true,
+            result: TOWER_MERGE_RESULT.COMMITTED,
+            reason: null,
+            recoveryRequired: false,
+            mutationCount: plan.sourceCount,
+            transactionId: plan.transactionId,
+            requestFingerprint: plan.requestFingerprint,
+            fingerprint: plan.fingerprint,
+            sourceCount: plan.sourceCount,
+            consumedCount: lineage.length,
+            survivorLogicalTowerId: survivorId,
+            groupRevision: this.groupRevision,
+            stateRevision: this.stateRevision,
+            lostShareUnits: plan.lostShareUnits,
+            lineage,
+            fact
+        });
+        this.#pendingMerge = null;
+        this.lastMerge = receipt;
+        this.lastCommittedFacts = Object.freeze([fact]);
+        return this.#completeMergeTransaction(entry, receipt);
+    }
+
+    rejectMerge(
+        source = {},
+        reason = TOWER_MERGE_REASON.REJECTED,
+        result = TOWER_MERGE_RESULT.REJECTED
+    ) {
+        if (this.destroyed) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.DESTROYED
+            );
+        }
+        const plan = source.plan ?? source;
+        const entry = typeof plan?.transactionId === 'string'
+            ? this.#mergeTransactions.get(plan.transactionId)
+            : null;
+        if (!this.#pendingMerge) {
+            if (entry?.stage === 'completed'
+                && plan?.fingerprint === entry.planFingerprint) {
+                return entry.receipt;
+            }
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH
+            );
+        }
+        if (plan !== this.#pendingMerge.plan) {
+            return freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                { transactionId: plan?.transactionId ?? null }
+            );
+        }
+        this.#pendingMerge = null;
+        const receipt = freezeMergeRejection(
+            Object.values(TOWER_MERGE_RESULT).includes(result)
+                ? result
+                : TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+            reason,
+            {
+                transactionId: plan.transactionId,
+                requestFingerprint: plan.requestFingerprint,
+                fingerprint: plan.fingerprint
+            }
+        );
+        this.lastMerge = receipt;
+        return this.#completeMergeTransaction(entry, receipt);
+    }
+
     bindGpuBody(logicalTowerId, handle, protocol) {
         this.#assertUsable();
         const id = requireLogicalTowerId(logicalTowerId);
@@ -950,13 +1359,28 @@ export class TowerGroupState {
                     fingerprint: this.#pendingCreation.plan.fingerprint
                 })
                 : null,
+            pendingMerge: this.#pendingMerge
+                ? Object.freeze({
+                    transactionId:
+                        this.#pendingMerge.plan.transactionId,
+                    sourceCount: this.#pendingMerge.plan.sourceCount,
+                    survivorLogicalTowerId:
+                        this.#pendingMerge.plan.survivor.logicalTowerId,
+                    requestedFixedTick:
+                        this.#pendingMerge.plan.requestedFixedTick,
+                    fingerprint: this.#pendingMerge.plan.fingerprint
+                })
+                : null,
             lastCommittedDamage: this.lastCommittedDamage,
             lastCommittedDeath: this.lastCommittedDeath,
             lastCommittedFacts: this.lastCommittedFacts,
             lastCreation: this.lastCreation,
+            lastMerge: this.lastMerge,
             rememberedEventCount: this.#knownEventKeys.size,
             rememberedCreationTransactionCount:
                 this.#knownCreationTransactionIds.size,
+            rememberedMergeTransactionCount: this.#mergeTransactions.size,
+            mergeHistoryCapacity: this.mergeHistoryCapacity,
             destroyed: this.destroyed
         });
     }
@@ -968,6 +1392,8 @@ export class TowerGroupState {
         const ordinals = new Set();
         const bindings = new Set();
         let livingCount = 0;
+        let deadCount = 0;
+        let mergedCount = 0;
         let deadShareUnits = 0;
         for (const record of records) {
             if (ids.has(record.logicalTowerId)) {
@@ -1002,10 +1428,22 @@ export class TowerGroupState {
                     violations.push(`living-non-viable:${record.logicalTowerId}`);
                 }
             } else if (record.state === TOWER_GROUP_RECORD_STATE.DEAD) {
+                deadCount++;
                 deadShareUnits += record.shareUnits;
                 if (record.currentHpFixedPoint !== 0
                     || record.exactGpuBinding !== null) {
                     violations.push(`dead-state:${record.logicalTowerId}`);
+                }
+            } else if (record.state === TOWER_GROUP_RECORD_STATE.MERGED) {
+                mergedCount++;
+                if (record.shareUnits !== 0
+                    || record.currentHpFixedPoint !== 0
+                    || record.maxHpFixedPoint !== 0
+                    || record.powerFixedPoint !== 0
+                    || record.exactGpuBinding !== null
+                    || !record.mergedIntoLogicalTowerId
+                    || !this.#records.has(record.mergedIntoLogicalTowerId)) {
+                    violations.push(`merged-state:${record.logicalTowerId}`);
                 }
             } else {
                 violations.push(`published-pending:${record.logicalTowerId}`);
@@ -1042,14 +1480,19 @@ export class TowerGroupState {
         if (bindings.size !== this.#bindingToLogicalId.size) {
             violations.push('binding-index-size');
         }
+        if (this.#pendingCreation && this.#pendingMerge) {
+            violations.push('creation-merge-mutual-exclusion');
+        }
         return Object.freeze({
             valid: violations.length === 0,
             violations: Object.freeze(violations),
             ...shareAudit,
             towerRecordCount: records.length,
             livingTowerCount: livingCount,
-            deadTowerCount: records.length - livingCount,
-            pendingCreationCount: this.#pendingCreation ? 1 : 0
+            deadTowerCount: deadCount,
+            mergedTowerCount: mergedCount,
+            pendingCreationCount: this.#pendingCreation ? 1 : 0,
+            pendingMergeCount: this.#pendingMerge ? 1 : 0
         });
     }
 
@@ -1063,13 +1506,278 @@ export class TowerGroupState {
         this.#eventKeyHead = 0;
         this.#knownCreationTransactionIds.clear();
         this.#creationTransactionOrder.length = 0;
+        this.#mergeTransactions.clear();
+        this.#completedMergeTransactionOrder.length = 0;
         this.#lethalDamageByLogicalId.clear();
         this.#pendingCreation = null;
+        this.#pendingMerge = null;
         this.activeProtocol = null;
         this.primaryLogicalTowerId = null;
         this.livingTowerCount = 0;
         this.lastCommittedFacts = EMPTY_FACTS;
+        this.lastMerge = null;
         this.ledger.destroy();
+    }
+
+    #createMergePlan(request, publishPending) {
+        const requestFingerprint = fingerprintMergeRequest(request);
+        if (publishPending) {
+            const existing = this.#mergeTransactions.get(
+                request.transactionId
+            );
+            if (existing) {
+                if (existing.requestFingerprint !== requestFingerprint
+                    || (request.expectedPlanFingerprint !== null
+                        && request.expectedPlanFingerprint
+                            !== existing.planFingerprint)) {
+                    return freezeMergeRejection(
+                        TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                        TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                        {
+                            transactionId: request.transactionId,
+                            requestFingerprint,
+                            expectedRequestFingerprint:
+                                existing.requestFingerprint,
+                            planFingerprint:
+                                request.expectedPlanFingerprint,
+                            expectedPlanFingerprint: existing.planFingerprint
+                        }
+                    );
+                }
+                if (existing.stage === 'completed') {
+                    return existing.receipt;
+                }
+                const activePlan = existing.receipt;
+                const livingRecords = this.#getLivingRecords();
+                if (this.#pendingMerge?.plan === activePlan
+                    && this.groupRevision
+                        === activePlan.sourceGroupRevision
+                    && this.stateRevision
+                        === activePlan.sourceStateRevision
+                    && this.primaryLogicalTowerId
+                        === activePlan.sourcePrimaryLogicalTowerId
+                    && fingerprintLivingRecords(livingRecords)
+                        === activePlan.sourceFingerprint) {
+                    return activePlan;
+                }
+                return freezeMergeRejection(
+                    TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                    TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                    {
+                        transactionId: request.transactionId,
+                        requestFingerprint,
+                        expectedPlanFingerprint: existing.planFingerprint
+                    }
+                );
+            }
+        }
+
+        const built = this.#buildMergePlan(request);
+        if (!publishPending) return built.receipt;
+        const entry = {
+            transactionId: request.transactionId,
+            requestFingerprint,
+            planFingerprint: built.receipt.fingerprint ?? null,
+            stage: 'received',
+            receipt: null
+        };
+        this.#mergeTransactions.set(request.transactionId, entry);
+        if (request.expectedPlanFingerprint !== null
+            && request.expectedPlanFingerprint !== entry.planFingerprint) {
+            const receipt = freezeMergeRejection(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                TOWER_MERGE_REASON.TRANSACTION_FINGERPRINT_MISMATCH,
+                {
+                    transactionId: request.transactionId,
+                    requestFingerprint,
+                    planFingerprint: request.expectedPlanFingerprint,
+                    expectedPlanFingerprint: entry.planFingerprint
+                }
+            );
+            this.lastMerge = receipt;
+            return this.#completeMergeTransaction(entry, receipt);
+        }
+        if (this.#pendingCreation) {
+            const receipt = freezeMergeRejection(
+                TOWER_MERGE_RESULT.REJECTED_CONFLICTING_TRANSACTION,
+                TOWER_MERGE_REASON.CREATION_TRANSACTION_PENDING,
+                {
+                    transactionId: request.transactionId,
+                    requestFingerprint,
+                    fingerprint: entry.planFingerprint
+                }
+            );
+            this.lastMerge = receipt;
+            return this.#completeMergeTransaction(entry, receipt);
+        }
+        if (this.#pendingMerge) {
+            const receipt = freezeMergeRejection(
+                TOWER_MERGE_RESULT.REJECTED_CONFLICTING_TRANSACTION,
+                TOWER_MERGE_REASON.MERGE_TRANSACTION_PENDING,
+                {
+                    transactionId: request.transactionId,
+                    requestFingerprint,
+                    fingerprint: entry.planFingerprint
+                }
+            );
+            this.lastMerge = receipt;
+            return this.#completeMergeTransaction(entry, receipt);
+        }
+        if (!built.receipt.accepted) {
+            entry.receipt = built.receipt;
+            this.lastMerge = built.receipt;
+            return this.#completeMergeTransaction(entry, built.receipt);
+        }
+        entry.stage = 'pending';
+        entry.receipt = built.receipt;
+        this.#pendingMerge = {
+            request,
+            requestFingerprint,
+            plan: built.receipt,
+            plannedSurvivor: built.plannedSurvivor,
+            livingRecords: built.livingRecords
+        };
+        return built.receipt;
+    }
+
+    #buildMergePlan(request) {
+        const requestFingerprint = fingerprintMergeRequest(request);
+        const livingRecords = this.#getLivingRecords();
+        let arithmetic;
+        try {
+            arithmetic = this.ledger.planMerge(
+                livingRecords,
+                this.primaryLogicalTowerId
+            );
+        } catch (error) {
+            return {
+                receipt: freezeMergeRejection(
+                    TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                    TOWER_MERGE_REASON.SOURCE_CHANGED,
+                    {
+                        transactionId: request.transactionId,
+                        requestFingerprint,
+                        detail: error?.message ?? String(error)
+                    }
+                ),
+                plannedSurvivor: null,
+                livingRecords
+            };
+        }
+        const sourceGroupRevision = this.groupRevision;
+        const sourceStateRevision = this.stateRevision;
+        const sourcePrimaryLogicalTowerId = this.primaryLogicalTowerId;
+        const sourceFingerprint = fingerprintLivingRecords(livingRecords);
+        const sourceStructureFingerprint = fingerprintLivingStructure(
+            livingRecords
+        );
+        const fingerprint = fingerprintMergePlan({
+            request,
+            sourceGroupRevision,
+            sourceStateRevision,
+            sourcePrimaryLogicalTowerId,
+            sourceFingerprint,
+            sourceStructureFingerprint,
+            arithmetic,
+            livingRecords
+        });
+        if (!arithmetic.accepted) {
+            return {
+                receipt: freezeMergeRejection(
+                    arithmetic.result,
+                    arithmetic.reason,
+                    {
+                        transactionId: request.transactionId,
+                        requestFingerprint,
+                        fingerprint,
+                        requestedFixedTick: request.requestedFixedTick,
+                        operationIdentity: request.compiledOperation,
+                        sourceCount: arithmetic.sourceCount,
+                        lostShareUnits: arithmetic.lostShareUnits
+                    }
+                ),
+                plannedSurvivor: null,
+                livingRecords
+            };
+        }
+        const survivor = livingRecords.find((record) => (
+            record.logicalTowerId === arithmetic.survivorLogicalTowerId
+        ));
+        const plannedSurvivor = createRecord({
+            ...survivor,
+            shareUnits: arithmetic.livingShareUnits,
+            currentHpFixedPoint: arithmetic.currentHpFixedPoint,
+            maxHpFixedPoint: arithmetic.maxHpFixedPoint,
+            powerFixedPoint: arithmetic.powerFixedPoint,
+            state: TOWER_GROUP_RECORD_STATE.LIVING
+        });
+        const sourceViews = Object.freeze(livingRecords.map(freezeRecordView));
+        const plan = Object.freeze({
+            accepted: true,
+            result: null,
+            reason: null,
+            recoveryRequired: false,
+            transactionId: request.transactionId,
+            requestFingerprint,
+            fingerprint,
+            requestedFixedTick: request.requestedFixedTick,
+            operationIdentity: request.compiledOperation,
+            sourceGroupRevision,
+            sourceStateRevision,
+            targetGroupRevision: sourceGroupRevision + 1,
+            sourcePrimaryLogicalTowerId,
+            sourceFingerprint,
+            sourceStructureFingerprint,
+            sourceCount: arithmetic.sourceCount,
+            sources: sourceViews,
+            survivor: freezeRecordView(plannedSurvivor),
+            consumed: Object.freeze(sourceViews.filter((record) => (
+                record.logicalTowerId
+                    !== arithmetic.survivorLogicalTowerId
+            ))),
+            livingShareUnits: arithmetic.livingShareUnits,
+            lostShareUnits: arithmetic.lostShareUnits,
+            currentHpFixedPoint: arithmetic.currentHpFixedPoint,
+            maxHpFixedPoint: arithmetic.maxHpFixedPoint,
+            powerFixedPoint: arithmetic.powerFixedPoint
+        });
+        return { receipt: plan, plannedSurvivor, livingRecords };
+    }
+
+    #rejectPendingMergeSourceChanged(plan) {
+        const entry = this.#mergeTransactions.get(plan.transactionId);
+        this.#pendingMerge = null;
+        const receipt = freezeMergeRejection(
+            TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED,
+            TOWER_MERGE_REASON.SOURCE_CHANGED,
+            {
+                transactionId: plan.transactionId,
+                requestFingerprint: plan.requestFingerprint,
+                fingerprint: plan.fingerprint,
+                sourceGroupRevision: plan.sourceGroupRevision,
+                sourceStateRevision: plan.sourceStateRevision
+            }
+        );
+        this.lastMerge = receipt;
+        return this.#completeMergeTransaction(entry, receipt);
+    }
+
+    #completeMergeTransaction(entry, receipt) {
+        if (!entry) return receipt;
+        if (entry.stage !== 'completed') {
+            this.#completedMergeTransactionOrder.push(entry.transactionId);
+        }
+        entry.stage = 'completed';
+        entry.receipt = receipt;
+        while (this.#completedMergeTransactionOrder.length
+            > this.mergeHistoryCapacity) {
+            const retired = this.#completedMergeTransactionOrder.shift();
+            const retiredEntry = this.#mergeTransactions.get(retired);
+            if (retiredEntry?.stage === 'completed') {
+                this.#mergeTransactions.delete(retired);
+            }
+        }
+        return receipt;
     }
 
     #getLivingRecords() {
@@ -1126,5 +1834,7 @@ export {
     TOWER_CREATION_REASON,
     TOWER_CREATION_RESULT,
     TOWER_GROUP_RECORD_STATE,
+    TOWER_MERGE_REASON,
+    TOWER_MERGE_RESULT,
     TOWER_SHARE_SCALE
 };
