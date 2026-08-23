@@ -350,28 +350,29 @@ test('Modifier Word shape는 실행 함수와 Entity/Verb field를 허용하지 
     }), /runtimeSupport/);
 });
 
-test('R7 modifier fixtures는 immutable schema지만 Turn 1 compiler 경계에서는 계속 차단된다', () => {
-    const fixtures = [
+test('R7 modifier fixtures는 immutable schema이고 ActorAction compile 경계로 연결된다', () => {
+    const actorFixtures = [
         R7_TOWER_SHOOTS_ENEMIES_TWICE_SENTENCE,
         R7_TOWER_SHOOTS_TOWERS_TWICE_SENTENCE,
         R7_ENEMIES_THROW_ENEMIES_TWICE_SENTENCE,
         R7_TOWER_SUMMONS_ENEMIES_TWICE_SENTENCE,
-        R7_TOWER_SHOOTS_ENEMIES_TWICE_TWICE_SENTENCE,
-        R7_TOWERS_MERGE_TWICE_SENTENCE
+        R7_TOWER_SHOOTS_ENEMIES_TWICE_TWICE_SENTENCE
     ];
     const compiler = new SentenceCompiler({
         wordDefinitionsById: R7_WORD_DEFINITION_BY_ID,
         wordInstancesById: R7_WORD_INSTANCE_BY_ID,
         protocol: R7_WORD_PROTOCOL_DATA
     });
-    for (const fixture of fixtures) {
+    for (const fixture of actorFixtures) {
         assert.strictEqual(R7_SENTENCE_DEFINITION_BY_ID[fixture.id], fixture);
-        assert.equal(
-            compiler.tryCompile(fixture).code,
-            SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER
-        );
+        assert.equal(compiler.tryCompile(fixture).code, 'VALID');
         assertDeepFrozen(fixture);
     }
+    assert.equal(
+        compiler.tryCompile(R7_TOWERS_MERGE_TWICE_SENTENCE).code,
+        SENTENCE_COMPILE_ERROR_CODE.UNSUPPORTED_MODIFIER_FOR_OPERATION
+    );
+    assertDeepFrozen(R7_TOWERS_MERGE_TWICE_SENTENCE);
     assert.equal(
         R7_TOWERS_MERGE_TWICE_SENTENCE.payloadWordInstanceId,
         null
@@ -391,7 +392,7 @@ test('R7 modifier fixtures는 immutable schema지만 Turn 1 compiler 경계에�
     ]);
     assert.equal(
         compiler.tryCompile(sameInstanceDuplicate).code,
-        SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER
+        SENTENCE_COMPILE_ERROR_CODE.DUPLICATE_MODIFIER_INSTANCE
     );
 });
 

@@ -5,6 +5,9 @@ import {
 import {
     actorActionProfileFingerprint as computeActorActionProfileFingerprint
 } from './actor_action_contract.js';
+import {
+    computeModifierSetFingerprint
+} from './sentence_modifier_contract.js';
 
 export const ABILITY_ENTITY_METADATA_ABI_VERSION = 1;
 export const ABILITY_EXECUTION_COMMAND_ABI_VERSION = 2;
@@ -290,6 +293,63 @@ export function normalizeAbilityExecutionCommand(command) {
             );
         }
     }
+    const modifierDeclared = Object.hasOwn(compiledAbility, 'modifierSet')
+        || Object.hasOwn(compiledAbility, 'modifierSetFingerprint')
+        || Object.hasOwn(compiledAbility, 'executionShape');
+    if (towerGroupMerge && modifierDeclared) {
+        throw new RangeError('Tower Merge command에는 Modifier를 사용할 수 없습니다.');
+    }
+    let modifierSetFingerprint = 0;
+    let copiesPerSubject = 1;
+    if (modifierDeclared) {
+        const modifierSet = requireRecord(
+            compiledAbility.modifierSet,
+            'compiledAbility.modifierSet'
+        );
+        const canonicalModifierSetFingerprint
+            = computeModifierSetFingerprint(modifierSet);
+        modifierSetFingerprint = requireUint32(
+            compiledAbility.modifierSetFingerprint,
+            'compiledAbility.modifierSetFingerprint',
+            { positive: true }
+        );
+        if (modifierSet.modifierSetFingerprint !== modifierSetFingerprint
+            || canonicalModifierSetFingerprint !== modifierSetFingerprint) {
+            throw new RangeError(
+                'compiledAbility ModifierSet fingerprint가 다릅니다.'
+            );
+        }
+        const executionShape = requireRecord(
+            compiledAbility.executionShape,
+            'compiledAbility.executionShape'
+        );
+        copiesPerSubject = requireUint32(
+            executionShape.copiesPerSubject,
+            'compiledAbility.executionShape.copiesPerSubject',
+            { positive: true }
+        );
+        if (modifierSet.copiesPerSubject !== copiesPerSubject) {
+            throw new RangeError(
+                'compiledAbility ModifierSet copiesPerSubject가 다릅니다.'
+            );
+        }
+        const commandModifierSetFingerprint = requireUint32(
+            command.modifierSetFingerprint ?? modifierSetFingerprint,
+            'modifierSetFingerprint',
+            { positive: true }
+        );
+        const commandCopiesPerSubject = requireUint32(
+            command.copiesPerSubject ?? copiesPerSubject,
+            'copiesPerSubject',
+            { positive: true }
+        );
+        if (commandModifierSetFingerprint !== modifierSetFingerprint
+            || commandCopiesPerSubject !== copiesPerSubject) {
+            throw new RangeError(
+                'ability command ModifierSet execution shape가 다릅니다.'
+            );
+        }
+    }
     const payloadCode = towerGroupMerge
         ? 0
         : requireUint32(compiledAbility.payloadCode, 'payloadCode');
@@ -299,31 +359,50 @@ export function normalizeAbilityExecutionCommand(command) {
             compiledAbility.targetPolicyCode,
             'targetPolicyCode'
         );
-    const compiledAbilityCode = fingerprintAbilityProtocol(
-        compiledAbility.compiledAbilityId,
-        compiledAbility.schemaVersion,
-        compiledAbility.protocolVersion,
-        semanticProfileFingerprint
-    );
-    const executionFingerprint = requireUint32(
-        command.fingerprint ?? fingerprintAbilityProtocol(
-            ABILITY_EXECUTION_COMMAND_ABI_VERSION,
-            executionId,
-            executionOrdinal,
-            targetFixedTick,
-            compiledAbilityCode,
-            selectorCode,
-            selector.nounMask,
-            selector.teamId,
-            compiledAbility.actionCode,
-            payloadCode,
-            targetPolicyCode,
+    const compiledAbilityCode = modifierDeclared
+        ? fingerprintAbilityProtocol(
+            compiledAbility.compiledAbilityId,
+            compiledAbility.schemaVersion,
+            compiledAbility.protocolVersion,
             semanticProfileFingerprint,
-            subjectLimit,
-            generationLimit,
-            aimPoint.x,
-            aimPoint.y
-        ),
+            modifierSetFingerprint,
+            copiesPerSubject
+        )
+        : fingerprintAbilityProtocol(
+            compiledAbility.compiledAbilityId,
+            compiledAbility.schemaVersion,
+            compiledAbility.protocolVersion,
+            semanticProfileFingerprint
+        );
+    const canonicalExecutionFingerprint = fingerprintAbilityProtocol(
+        ABILITY_EXECUTION_COMMAND_ABI_VERSION,
+        executionId,
+        executionOrdinal,
+        targetFixedTick,
+        compiledAbilityCode,
+        selectorCode,
+        selector.nounMask,
+        selector.teamId,
+        compiledAbility.actionCode,
+        payloadCode,
+        targetPolicyCode,
+        semanticProfileFingerprint,
+        subjectLimit,
+        generationLimit,
+        aimPoint.x,
+        aimPoint.y,
+        ...(modifierDeclared
+            ? [modifierSetFingerprint, copiesPerSubject]
+            : [])
+    );
+    if (modifierDeclared && command.fingerprint !== undefined
+        && command.fingerprint !== canonicalExecutionFingerprint) {
+        throw new RangeError(
+            'ability command execution fingerprint가 ModifierSet과 다릅니다.'
+        );
+    }
+    const executionFingerprint = requireUint32(
+        command.fingerprint ?? canonicalExecutionFingerprint,
         'fingerprint',
         { positive: true }
     );
@@ -332,7 +411,13 @@ export function normalizeAbilityExecutionCommand(command) {
         compiledAbility,
         compiledAbilityCode,
         executionId,
-        executionIdFingerprint: fingerprintAbilityProtocol(executionId),
+        executionIdFingerprint: modifierDeclared
+            ? fingerprintAbilityProtocol(
+                executionId,
+                modifierSetFingerprint,
+                copiesPerSubject
+            )
+            : fingerprintAbilityProtocol(executionId),
         executionOrdinal,
         targetFixedTick,
         selectorCode,
@@ -351,6 +436,12 @@ export function normalizeAbilityExecutionCommand(command) {
                 actorActionProfileFingerprint:
                     semanticProfileFingerprint
             }),
+        ...(modifierDeclared
+            ? {
+                modifierSetFingerprint,
+                copiesPerSubject
+            }
+            : {}),
         aimPoint,
         subjectLimit,
         generationLimit,

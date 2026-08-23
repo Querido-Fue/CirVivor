@@ -10,6 +10,10 @@ import {
     R6_TOWER_GROUP_OPERATION_PROFILE_BY_ACTION_CODE
 } from 'data/word/r6_tower_group_operation_profile_data.js';
 import {
+    R7_SENTENCE_MODIFIER_PROFILE_BY_CODE,
+    R7_SENTENCE_MODIFIER_PROFILE_BY_ID
+} from 'data/word/r7_sentence_modifier_profile_data.js';
+import {
     actorActionProfileFingerprint as computeActorActionProfileFingerprint
 } from '../contract/actor_action_contract.js';
 import {
@@ -29,6 +33,10 @@ import {
     normalizeSentenceDefinition,
     normalizeSentenceRuntimePhase
 } from '../contract/word_sentence_contract.js';
+import {
+    SentenceModifierResolutionError,
+    resolveSentenceModifiers
+} from './sentence_modifier_resolver.js';
 
 const COMPILED_ABILITY_SCHEMA_VERSION = 1;
 
@@ -135,6 +143,16 @@ export class SentenceCompiler {
                 ?? R6_TOWER_GROUP_OPERATION_PROFILE_BY_ACTION_CODE,
             'towerGroupOperationProfilesByActionCode'
         );
+        this.modifierProfilesById = requireCatalog(
+            options.modifierProfilesById
+                ?? R7_SENTENCE_MODIFIER_PROFILE_BY_ID,
+            'modifierProfilesById'
+        );
+        this.modifierProfilesByCode = requireCatalog(
+            options.modifierProfilesByCode
+                ?? R7_SENTENCE_MODIFIER_PROFILE_BY_CODE,
+            'modifierProfilesByCode'
+        );
         this.protocol = normalizeProtocolData(
             options.protocol ?? R6_WORD_PROTOCOL_DATA
         );
@@ -228,13 +246,6 @@ export class SentenceCompiler {
                 error.message
             );
         }
-        if (sentence.modifierWordInstanceIds.length > 0) {
-            throw new SentenceCompileError(
-                SENTENCE_COMPILE_ERROR_CODE.UNKNOWN_MODIFIER,
-                'R3에서는 modifier runtime을 지원하지 않습니다.'
-            );
-        }
-
         if (subjectDefinition.kind !== WORD_KIND.ENTITY
             || !hasRole(subjectDefinition, WORD_GRAMMATICAL_ROLE.SUBJECT)
             || !subjectDefinition.subject) {
@@ -325,9 +336,16 @@ export class SentenceCompiler {
             );
         }
 
+        const modifierSet = sentence.modifierWordInstanceIds.length === 0
+            ? null
+            : this.#resolveModifierSet(sentence, {
+                actionCode: verbDefinition.actionCode,
+                payloadCode: payloadDefinition.payload.payloadCode,
+                operationKind: null
+            });
         const previewFormulaId = payloadDefinition.payload.previewFormulaId
             ?? this.protocol.previewFormulaId;
-        const semanticKey = [
+        const semanticKeyParts = [
             COMPILED_ABILITY_SCHEMA_VERSION,
             this.protocol.abiVersion,
             subjectDefinition.id,
@@ -363,16 +381,36 @@ export class SentenceCompiler {
             this.protocol.generatedBodyBudget,
             this.protocol.generationLimit,
             previewFormulaId
-        ].join('|');
+        ];
+        if (modifierSet !== null) {
+            semanticKeyParts.push(
+                'r7-modifier-set',
+                modifierSet.modifierSetFingerprint,
+                modifierSet.copiesPerSubject,
+                ...modifierSet.authoredModifierWordInstanceIds
+            );
+        }
+        const semanticKey = semanticKeyParts.join('|');
         const cached = this.cache.get(semanticKey);
         if (cached) {
             return cached;
         }
 
         const preservesR3ExecutionIdentity
-            = verbDefinition.actionCode === SENTENCE_ACTION_CODE.SHOOT
+            = modifierSet === null
+                && verbDefinition.actionCode === SENTENCE_ACTION_CODE.SHOOT
                 && payloadDefinition.id === WORD_DEFINITION_ID.ENEMY;
-        const compiledAbilityId = preservesR3ExecutionIdentity
+        const compiledAbilityId = modifierSet !== null
+            ? [
+                'compiled-ability.r7',
+                subjectDefinition.id,
+                verbDefinition.id,
+                payloadDefinition.id,
+                actorActionProfile.id,
+                `modifier${modifierSet.modifierSetFingerprint}`,
+                `abi${this.protocol.abiVersion}`
+            ].join(':')
+            : preservesR3ExecutionIdentity
             ? [
                 'compiled-ability.r3',
                 subjectDefinition.id,
@@ -414,6 +452,16 @@ export class SentenceCompiler {
                 generatedSubjectsJoinCurrentExecution: false,
                 acceptedSnapshotSurvivesSourceDeath: true
             }),
+            ...(modifierSet === null
+                ? {}
+                : {
+                    modifierSet,
+                    modifierSetFingerprint:
+                        modifierSet.modifierSetFingerprint,
+                    executionShape: Object.freeze({
+                        copiesPerSubject: modifierSet.copiesPerSubject
+                    })
+                }),
             cooldownTicks: this.protocol.cooldownTicks,
             budgets: Object.freeze({
                 subjectCount: this.protocol.subjectBudget,
@@ -424,7 +472,13 @@ export class SentenceCompiler {
             displaySentenceData: Object.freeze({
                 subjectWordDefinitionId: subjectDefinition.id,
                 verbWordDefinitionId: verbDefinition.id,
-                payloadWordDefinitionId: payloadDefinition.id
+                payloadWordDefinitionId: payloadDefinition.id,
+                ...(modifierSet === null
+                    ? {}
+                    : {
+                        modifierWordDefinitionIds:
+                            modifierSet.authoredModifierWordDefinitionIds
+                    })
             })
         });
         this.cache.set(semanticKey, compiledAbility);
@@ -463,6 +517,13 @@ export class SentenceCompiler {
                 SENTENCE_COMPILE_ERROR_CODE.WRONG_WORD_KIND,
                 'Tower-group operation Subject/profile identity가 일치하지 않습니다.'
             );
+        }
+        if (sentence.modifierWordInstanceIds.length > 0) {
+            this.#resolveModifierSet(sentence, {
+                actionCode: verbDefinition.actionCode,
+                payloadCode: null,
+                operationKind: profile.operationKind
+            });
         }
 
         const semanticKey = [
@@ -553,6 +614,27 @@ export class SentenceCompiler {
         });
         this.cache.set(semanticKey, compiledAbility);
         return compiledAbility;
+    }
+
+    #resolveModifierSet(sentence, semanticContext) {
+        try {
+            return resolveSentenceModifiers({
+                modifierWordInstanceIds: sentence.modifierWordInstanceIds,
+                wordInstancesById: this.wordInstancesById,
+                wordDefinitionsById: this.wordDefinitionsById,
+                modifierProfilesById: this.modifierProfilesById,
+                modifierProfilesByCode: this.modifierProfilesByCode,
+                baseCompiledSemanticContext: {
+                    ...semanticContext,
+                    generatedBodyBudget: this.protocol.generatedBodyBudget
+                }
+            });
+        } catch (error) {
+            if (error instanceof SentenceModifierResolutionError) {
+                throw new SentenceCompileError(error.code, error.message);
+            }
+            throw error;
+        }
     }
 
     /** 예외를 immutable validation result로 바꿉니다. */

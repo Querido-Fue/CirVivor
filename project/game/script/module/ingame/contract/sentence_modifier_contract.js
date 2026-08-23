@@ -60,6 +60,12 @@ const ACTOR_PAYLOAD_CODES = new Set([
 const PROFILE_ID_BY_MODIFIER_CODE = new Map([
     [SENTENCE_MODIFIER_CODE.TWICE, MODIFIER_PROFILE_ID.TWICE]
 ]);
+const APPLICATION_PHASE_ORDER = new Map(
+    Object.values(MODIFIER_APPLICATION_PHASE).map((phase, index) => [
+        phase,
+        index
+    ])
+);
 
 function snapshotDataRecord(value, keys, label) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -334,4 +340,101 @@ export function normalizeModifierProfile(source, label = 'modifierProfile') {
 /** 모든 semantic ModifierProfile field를 포함하는 canonical uint32 identity입니다. */
 export function modifierProfileFingerprint(source, label = 'modifierProfile') {
     return normalizeModifierProfile(source, label).modifierProfileFingerprint;
+}
+
+function requireModifierSetEntry(entry, index, label) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+        throw new TypeError(`${label}.canonicalEntries[${index}]은 object여야 합니다.`);
+    }
+    const modifierCode = entry.modifierCode;
+    const definitionId = entry.definitionId;
+    const profileId = entry.profileId;
+    const applicationPhase = entry.applicationPhase;
+    if (typeof modifierCode !== 'number'
+        || !Number.isSafeInteger(modifierCode)
+        || !MODIFIER_CODES.has(modifierCode)
+        || typeof definitionId !== 'string' || definitionId.length === 0
+        || typeof profileId !== 'string' || !PROFILE_IDS.has(profileId)
+        || typeof applicationPhase !== 'string'
+        || !APPLICATION_PHASES.has(applicationPhase)) {
+        throw new RangeError(
+            `${label}.canonicalEntries[${index}] identity가 올바르지 않습니다.`
+        );
+    }
+    return {
+        modifierCode,
+        definitionId,
+        profileId,
+        profileFingerprint: requirePositiveUint32(
+            entry.profileFingerprint,
+            `${label}.canonicalEntries[${index}].profileFingerprint`
+        ),
+        stackCount: requirePositiveUint32(
+            entry.stackCount,
+            `${label}.canonicalEntries[${index}].stackCount`
+        ),
+        applicationPhase,
+        priority: requirePositiveUint32(
+            entry.priority,
+            `${label}.canonicalEntries[${index}].priority`
+        )
+    };
+}
+
+function compareModifierSetEntries(left, right) {
+    const phaseDelta = APPLICATION_PHASE_ORDER.get(left.applicationPhase)
+        - APPLICATION_PHASE_ORDER.get(right.applicationPhase);
+    if (phaseDelta !== 0) return phaseDelta;
+    if (left.priority !== right.priority) {
+        return left.priority - right.priority;
+    }
+    return left.definitionId < right.definitionId
+        ? -1
+        : left.definitionId > right.definitionId
+            ? 1
+            : 0;
+}
+
+/** Canonical entry와 파생 cardinality만 포함하는 ModifierSet identity입니다. */
+export function computeModifierSetFingerprint(
+    modifierSet,
+    label = 'modifierSet'
+) {
+    if (!modifierSet || typeof modifierSet !== 'object'
+        || Array.isArray(modifierSet)) {
+        throw new TypeError(`${label}은 object여야 합니다.`);
+    }
+    if (!Array.isArray(modifierSet.canonicalEntries)
+        || modifierSet.canonicalEntries.length === 0) {
+        throw new RangeError(`${label}.canonicalEntries가 비어 있습니다.`);
+    }
+    const copiesPerSubject = requirePositiveUint32(
+        modifierSet.copiesPerSubject,
+        `${label}.copiesPerSubject`
+    );
+    const entries = modifierSet.canonicalEntries.map(
+        (entry, index) => requireModifierSetEntry(entry, index, label)
+    );
+    for (let index = 1; index < entries.length; index++) {
+        if (compareModifierSetEntries(entries[index - 1], entries[index]) > 0) {
+            throw new RangeError(
+                `${label}.canonicalEntries 순서가 canonical이 아닙니다.`
+            );
+        }
+    }
+    let hash = hashString(FNV_OFFSET_BASIS, 'sentence-modifier-set.r7');
+    hash = hashWord(hash, entries.length);
+    for (const entry of entries) {
+        hash = hashWord(hash, entry.modifierCode);
+        hash = hashString(hash, entry.definitionId);
+        hash = hashString(hash, entry.profileId);
+        hash = hashWord(hash, entry.profileFingerprint);
+        hash = hashWord(hash, entry.stackCount);
+        hash = hashString(hash, entry.applicationPhase);
+        hash = hashWord(hash, entry.priority);
+    }
+    hash = hashWord(hash, copiesPerSubject);
+    return hash === 0 || hash === UINT32_MAX
+        ? FNV_OFFSET_BASIS
+        : hash >>> 0;
 }

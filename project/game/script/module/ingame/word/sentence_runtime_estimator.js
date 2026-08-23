@@ -13,7 +13,12 @@ import {
 import {
     TOWER_GROUP_OPERATION_KIND
 } from '../contract/tower_group_operation_contract.js';
-import { evaluateActorPayloadCapacity } from './actor_payload_budget.js';
+import {
+    evaluateActorPayloadCapacity,
+    evaluateActorPayloadCardinality
+} from './actor_payload_budget.js';
+
+const TOWER_ACTOR_CAPACITY = 256;
 
 function nonNegativeInteger(value, fallback = 0) {
     const number = Number(value);
@@ -93,7 +98,11 @@ export class SentenceRuntimeEstimator {
 
     estimate(compiledAbility, slotView = {}) {
         if (this.destroyed || !compiledAbility) return null;
-        const runtime = this.getRuntimeState(compiledAbility) ?? {};
+        const runtimeSource = this.getRuntimeState(compiledAbility);
+        const runtimeAvailable = runtimeSource !== null
+            && runtimeSource !== undefined
+            && typeof runtimeSource === 'object';
+        const runtime = runtimeAvailable ? runtimeSource : {};
         if (compiledAbility.operationKind
             === TOWER_GROUP_OPERATION_KIND.MERGE) {
             return this.#estimateTowerMerge(
@@ -103,6 +112,23 @@ export class SentenceRuntimeEstimator {
             );
         }
         const actorAction = createActorActionPreview(compiledAbility);
+        const modifierDeclared = Object.hasOwn(compiledAbility, 'modifierSet')
+            || Object.hasOwn(compiledAbility, 'modifierSetFingerprint')
+            || Object.hasOwn(compiledAbility, 'executionShape');
+        const modifierSet = compiledAbility.modifierSet;
+        const rawCopiesPerSubject
+            = compiledAbility.executionShape?.copiesPerSubject;
+        const modifierShapeSupported = !modifierDeclared
+            || (modifierSet && typeof modifierSet === 'object'
+                && Number.isSafeInteger(rawCopiesPerSubject)
+                && rawCopiesPerSubject > 0
+                && rawCopiesPerSubject <= 0xffffffff
+                && modifierSet.copiesPerSubject === rawCopiesPerSubject
+                && modifierSet.modifierSetFingerprint
+                    === compiledAbility.modifierSetFingerprint);
+        const copiesPerSubject = modifierShapeSupported && modifierDeclared
+            ? rawCopiesPerSubject
+            : 1;
         const selectorCode = compiledAbility.subjectSelector?.code;
         const towerCount = readNonNegativeInteger(runtime.livingTowerCount);
         const hostileCount = readNonNegativeInteger(
@@ -152,12 +178,29 @@ export class SentenceRuntimeEstimator {
         const generatedBodyBudget = nonNegativeInteger(
             compiledAbility.budgets?.generatedBodyCount
         );
-        const capacity = evaluateActorPayloadCapacity({
-            requiredBodies: eligibleSubjectCount,
-            registryAvailable: nonNegativeInteger(runtime.registryAvailable),
-            bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
-            generatedBodyBudget
-        });
+        const capacity = modifierDeclared && modifierShapeSupported
+            ? evaluateActorPayloadCardinality({
+                subjectCount: eligibleSubjectCount,
+                copiesPerSubject,
+                registryAvailable: nonNegativeInteger(
+                    runtime.registryAvailable
+                ),
+                bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
+                generatedBodyBudget
+            })
+            : evaluateActorPayloadCapacity({
+                requiredBodies: eligibleSubjectCount,
+                registryAvailable: nonNegativeInteger(
+                    runtime.registryAvailable
+                ),
+                bodyAvailable: nonNegativeInteger(runtime.bodyAvailable),
+                generatedBodyBudget
+            });
+        const effectiveGeneratedCount = modifierDeclared
+            ? modifierShapeSupported
+                ? capacity.effectiveGeneratedCount
+                : 0
+            : previewSubjectCount;
         const liveHostileActorCount = nonNegativeInteger(
             runtime.liveHostileActorCount
         );
@@ -182,30 +225,38 @@ export class SentenceRuntimeEstimator {
             ?? ACTOR_PAYLOAD_CODE.ENEMY;
         const towerPayload = payloadCode === ACTOR_PAYLOAD_CODE.TOWER;
         const resultingHostileCount = hostileBefore
-            + (towerPayload ? 0 : previewSubjectCount);
+            + (towerPayload ? 0 : effectiveGeneratedCount);
         const resultingTowerCount = towerCount.value
-            + (towerPayload ? previewSubjectCount : 0);
+            + (towerPayload ? effectiveGeneratedCount : 0);
         const dangerous = towerPayload
-            ? previewSubjectCount > 0
+            ? effectiveGeneratedCount > 0
             : resultingHostileCount > dangerThreshold;
-        let executionDisabledReason = !actorAction
-            ? 'RUNTIME_UNAVAILABLE'
-            : !countExact
-            ? 'SUBJECT_COUNT_NOT_EXACT'
-            : rawSubjectCount === 0
-                || (generationEligibilityExact
-                    && eligibleSubjectCount === 0)
-                ? 'ZERO_SUBJECT'
-                : subjectBudgetExceeded
-                    ? 'SUBJECT_BUDGET_EXCEEDED'
-                    : cooldownRemainingTicks > 0
-                        ? 'COOLDOWN_ACTIVE'
-                        : !capacity.valid
-                            ? 'DESTINATION_CAPACITY_EXCEEDED'
-                            : null;
+        let executionDisabledReason = null;
+        if (modifierDeclared && !runtimeAvailable) {
+            executionDisabledReason = 'RUNTIME_UNAVAILABLE';
+        } else if (modifierDeclared && !modifierShapeSupported) {
+            executionDisabledReason = 'UNSUPPORTED_MODIFIER';
+        } else if (!actorAction) {
+            executionDisabledReason = 'RUNTIME_UNAVAILABLE';
+        } else if (!countExact) {
+            executionDisabledReason = 'SUBJECT_COUNT_NOT_EXACT';
+        } else if (rawSubjectCount === 0
+            || (generationEligibilityExact && eligibleSubjectCount === 0)) {
+            executionDisabledReason = 'ZERO_SUBJECT';
+        } else if (subjectBudgetExceeded) {
+            executionDisabledReason = 'SUBJECT_BUDGET_EXCEEDED';
+        } else if (cooldownRemainingTicks > 0) {
+            executionDisabledReason = 'COOLDOWN_ACTIVE';
+        } else if (!capacity.valid) {
+            executionDisabledReason = capacity.reason
+                ?? 'DESTINATION_CAPACITY_EXCEEDED';
+        } else if (modifierDeclared && towerPayload
+            && resultingTowerCount > TOWER_ACTOR_CAPACITY) {
+            executionDisabledReason = 'TOWER_CAPACITY_EXCEEDED';
+        }
         let towerCreationPreview = null;
         if (towerPayload && executionDisabledReason === null
-            && previewSubjectCount > 0) {
+            && effectiveGeneratedCount > 0) {
             if (!countExact) {
                 executionDisabledReason = 'SUBJECT_COUNT_NOT_EXACT';
             } else if (!this.previewTowerCreation) {
@@ -213,7 +264,7 @@ export class SentenceRuntimeEstimator {
             } else {
                 try {
                     towerCreationPreview = this.previewTowerCreation({
-                        childCount: previewSubjectCount
+                        childCount: effectiveGeneratedCount
                     });
                 } catch {
                     towerCreationPreview = null;
@@ -257,6 +308,14 @@ export class SentenceRuntimeEstimator {
             generationLimit: nonNegativeInteger(
                 compiledAbility.budgets?.generation
             ),
+            ...(modifierDeclared
+                ? {
+                    modifierSetFingerprint:
+                        compiledAbility.modifierSetFingerprint ?? null,
+                    copiesPerSubject,
+                    effectiveGeneratedCount
+                }
+                : {}),
             generationEligibilityExact,
             eligibleSubjectCountExact:
                 countExact && generationEligibilityExact,
@@ -267,25 +326,28 @@ export class SentenceRuntimeEstimator {
             subjectBudget,
             countExact,
             subjectCount: previewSubjectCount,
-            newEnemyCount: towerPayload ? 0 : previewSubjectCount,
-            newTowerCount: towerPayload ? previewSubjectCount : 0,
+            newEnemyCount: towerPayload ? 0 : effectiveGeneratedCount,
+            newTowerCount: towerPayload ? effectiveGeneratedCount : 0,
             currentTowerCount: towerCount.value,
             resultingTowerCount,
             resultingHostileCount,
             potentialBounty: towerPayload
                 ? 0
-                : previewSubjectCount * bountyPerEnemy,
+                : effectiveGeneratedCount * bountyPerEnemy,
             siegeWeightBefore,
             siegeWeightAfter:
                 siegeWeightBefore + (towerPayload
                     ? 0
-                    : previewSubjectCount * siegeWeightPerEnemy),
+                    : effectiveGeneratedCount * siegeWeightPerEnemy),
             requiredBodies: capacity.requiredBodies,
             requiredTowers: towerPayload ? capacity.requiredBodies : 0,
             availableBodies: capacity.availableBodies,
             registryAvailable: capacity.registryAvailable,
             bodyAvailable: capacity.bodyAvailable,
-            cooldownTicks: compiledAbility.cooldownTicks,
+            cooldownTicks: modifierDeclared
+                && executionDisabledReason !== null
+                ? 0
+                : compiledAbility.cooldownTicks,
             cooldownRemainingTicks,
             allegiance: Object.freeze({
                 teamId: allegianceTeamId,
@@ -319,7 +381,12 @@ export class SentenceRuntimeEstimator {
                     && generationEligibilityExact
                 : null,
             placementExact: false,
-            previewExact: false,
+            previewExact: modifierDeclared
+                ? executionDisabledReason === null
+                    && countExact
+                    && generationEligibilityExact
+                    && (!towerPayload || towerCreationPreview !== null)
+                : false,
             dangerous,
             warningCode: dangerous
                 ? towerPayload
