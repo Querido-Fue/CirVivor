@@ -63,6 +63,15 @@ import {
     GpuTowerCreationRuntime
 } from '../../physics/gpu/gpu_tower_creation_runtime.js';
 import {
+    GPU_TOWER_MERGE_RECORD_ROLE
+} from '../../physics/gpu/gpu_tower_merge_abi.js';
+import {
+    GpuTowerMergeRuntime
+} from '../../physics/gpu/gpu_tower_merge_runtime.js';
+import {
+    GpuTowerTransactionRuntimeMux
+} from '../../physics/gpu/gpu_tower_transaction_runtime_mux.js';
+import {
     GpuTowerTargetQueryRuntime
 } from '../../physics/gpu/gpu_tower_target_query_runtime.js';
 import {
@@ -71,6 +80,7 @@ import {
 } from '../../physics/gpu/gpu_tower_creation_abi.js';
 import {
     GPU_ABILITY_SUBJECT_SNAPSHOT_ABI,
+    clearGpuAbilityEntityMetadata,
     writeGpuAbilityEntityMetadata
 } from '../../physics/gpu/gpu_ability_subject_snapshot_abi.js';
 import {
@@ -78,6 +88,9 @@ import {
     GPU_CIRCLE_BODY_META,
     GPU_CIRCLE_BODY_SIMULATION_FLAG
 } from '../../physics/gpu/gpu_circle_body_abi.js';
+import {
+    GPU_FIXED_PRIMITIVE_ABI
+} from '../../physics/gpu/gpu_fixed_primitive_abi.js';
 import {
     SENTENCE_ACTION_CODE
 } from '../../contract/word_sentence_contract.js';
@@ -90,6 +103,9 @@ import {
 import {
     createGpuEnemySpawnIntent
 } from './gpu_enemy_spawn_adapter.js';
+import {
+    TOWER_MERGE_LIFECYCLE_DISPOSITION
+} from '../tower/tower_group_contract.js';
 
 const SOURCE_GRID_TO_SDF_CELL_RATIO = 12 / 8;
 const SOURCE_WORLD_UNIT_TO_SDF_CELL_RATIO = 1 / 8;
@@ -258,6 +274,8 @@ export class EnemySimulationBackend {
         this.towerGroupReadbackSlotCount = options.towerGroupReadbackSlotCount;
         this.towerCreationReadbackSlotCount
             = options.towerCreationReadbackSlotCount;
+        this.towerMergeReadbackSlotCount
+            = options.towerMergeReadbackSlotCount;
         this.sessionGeneration = requirePositiveSafeInteger(
             options.sessionGeneration ?? 1,
             'sessionGeneration'
@@ -302,12 +320,24 @@ export class EnemySimulationBackend {
             recordCapacity: this.towerGroupMemberCapacity,
             readbackSlotCount: this.towerCreationReadbackSlotCount
         });
+        this.towerMergeRuntime = new GpuTowerMergeRuntime({
+            bodyCapacity: this.capacity,
+            recordCapacity: Math.min(this.towerGroupMemberCapacity, 256),
+            readbackSlotCount: this.towerMergeReadbackSlotCount
+        });
+        this.towerTransactionRuntime = new GpuTowerTransactionRuntimeMux(
+            this.towerCreationRuntime,
+            this.towerMergeRuntime
+        );
         this.towerTargetQueryRuntime = new GpuTowerTargetQueryRuntime({
             capacity: this.capacity
         });
         this.towerCreationBodyPreleases = new Map();
         this.towerCreationPreleaseHighWater = 0;
         this.towerCreationFailure = null;
+        this.towerMergeTransactions = new Map();
+        this.towerMergeCommittedCleanups = new Map();
+        this.towerMergeFailure = null;
         this.actorPayloadBodyPreleases = new Map();
         this.actorPayloadPreleaseHighWater = 0;
         this.actorPayloadPreleaseFailure = null;
@@ -2018,7 +2048,10 @@ export class EnemySimulationBackend {
     canStageTowerCreation() {
         return this.#ensureTowerCreationRuntime()
             && this.towerCreationRuntime.canAccept()
-            && this.towerCreationBodyPreleases.size === 0;
+            && this.towerTransactionRuntime.canStageCreation()
+            && this.towerCreationBodyPreleases.size === 0
+            && this.towerMergeTransactions.size === 0
+            && this.towerMergeCommittedCleanups.size === 0;
     }
 
     /** Registry reservation과 같은 rank의 dead/invisible Tower body를 0/N prelease합니다. */
@@ -2031,7 +2064,10 @@ export class EnemySimulationBackend {
             throw new TypeError('Tower creation handles/spawnIntents rank가 필요합니다.');
         }
         if (!this.#ensureTowerCreationRuntime()
-            || !this.towerCreationRuntime.canAccept()) {
+            || !this.towerCreationRuntime.canAccept()
+            || !this.towerTransactionRuntime.canStageCreation()
+            || this.towerMergeTransactions.size > 0
+            || this.towerMergeCommittedCleanups.size > 0) {
             return Object.freeze({
                 accepted: false,
                 reason: 'tower-creation-program-capacity',
@@ -2696,6 +2732,488 @@ export class EnemySimulationBackend {
         });
     }
 
+    canStageTowerMerge() {
+        return this.#ensureTowerMergeRuntime()
+            && this.towerMergeRuntime.canAccept()
+            && this.towerTransactionRuntime.canStageMerge()
+            && this.towerMergeTransactions.size === 0
+            && this.towerMergeCommittedCleanups.size === 0
+            && this.towerCreationBodyPreleases.size === 0;
+    }
+
+    /** CPU TowerGroup plan을 exact stable slots의 한 GPU N→1 program으로 stage합니다. */
+    stageTowerMergeTransaction(request = {}) {
+        const plan = request.plan;
+        if (!plan?.accepted
+            || !Array.isArray(plan.sources)
+            || !Array.isArray(plan.consumed)
+            || plan.sources.length < 2
+            || plan.sources.length > 256
+            || plan.sources.length !== plan.sourceCount
+            || plan.consumed.length !== plan.sourceCount - 1
+            || !plan.survivor?.exactGpuBinding) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-plan-contract',
+                recoveryRequired: false
+            });
+        }
+        if (!this.canStageTowerMerge()) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-program-capacity',
+                recoveryRequired: this.towerMergeRuntime.requiresRecovery()
+            });
+        }
+        const sourceTick = Number(request.sourceTick);
+        if (!Number.isSafeInteger(sourceTick) || sourceTick <= 0) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-source-tick',
+                recoveryRequired: false
+            });
+        }
+        const protocol = this.getEventProtocolState();
+        const survivorLogicalTowerId = plan.survivor.logicalTowerId;
+        const records = [];
+        const targetMembers = [];
+        try {
+            for (let rank = 0; rank < plan.sources.length; rank++) {
+                const source = plan.sources[rank];
+                const binding = source.exactGpuBinding;
+                if (!binding
+                    || binding.sessionGeneration !== protocol.sessionGeneration
+                    || binding.deviceGeneration !== protocol.deviceGeneration
+                    || binding.authoritativeEpoch !== protocol.authoritativeEpoch) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'tower-merge-source-changed',
+                        recoveryRequired: false
+                    });
+                }
+                const exact = this.simulation.resolveExactBodySlot(binding);
+                if (!exact) {
+                    return Object.freeze({
+                        accepted: false,
+                        reason: 'tower-merge-source-changed',
+                        recoveryRequired: false
+                    });
+                }
+                const survivor = source.logicalTowerId
+                    === survivorLogicalTowerId;
+                records.push(Object.freeze({
+                    slot: exact.slot,
+                    entityId: exact.handle.entityId,
+                    incarnation: exact.handle.incarnation,
+                    logicalTowerOrdinal: source.logicalTowerOrdinal,
+                    expectedCurrentHpFixedPoint:
+                        source.currentHpFixedPoint,
+                    sourceShareUnits: source.shareUnits,
+                    sourceMaxHpFixedPoint: source.maxHpFixedPoint,
+                    sourcePowerFixedPoint: source.powerFixedPoint,
+                    sourceGroupRevision: plan.sourceGroupRevision,
+                    sourceFlags: GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
+                        | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING,
+                    sourceRosterRank: rank,
+                    role: survivor
+                        ? GPU_TOWER_MERGE_RECORD_ROLE.SURVIVOR
+                        : GPU_TOWER_MERGE_RECORD_ROLE.CONSUMED,
+                    targetCurrentHpFixedPoint: survivor
+                        ? plan.survivor.currentHpFixedPoint
+                        : 0,
+                    targetShareUnits: survivor
+                        ? plan.survivor.shareUnits
+                        : 0,
+                    targetMaxHpFixedPoint: survivor
+                        ? plan.survivor.maxHpFixedPoint
+                        : 0,
+                    targetPowerFixedPoint: survivor
+                        ? plan.survivor.powerFixedPoint
+                        : 0
+                }));
+                if (survivor) {
+                    targetMembers.push(Object.freeze({
+                        slot: exact.slot,
+                        entityId: exact.handle.entityId,
+                        incarnation: exact.handle.incarnation,
+                        logicalTowerOrdinal: source.logicalTowerOrdinal,
+                        shareUnits: plan.survivor.shareUnits,
+                        maxHpFixedPoint: plan.survivor.maxHpFixedPoint,
+                        powerFixedPoint: plan.survivor.powerFixedPoint,
+                        flags: GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
+                            | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING
+                    }));
+                }
+            }
+            if (targetMembers.length !== 1) {
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'tower-merge-survivor-identity',
+                    recoveryRequired: false
+                });
+            }
+            const transition = this.towerGroupRuntime.prepareRosterTransition({
+                transactionId: plan.transactionId,
+                groupRevision: plan.targetGroupRevision,
+                members: targetMembers,
+                protocol
+            });
+            if (transition.source.memberCount !== plan.sourceCount
+                || transition.target.memberCount !== 1) {
+                this.towerGroupRuntime.finalizeRosterTransition(
+                    plan.transactionId,
+                    false
+                );
+                return Object.freeze({
+                    accepted: false,
+                    reason: 'tower-merge-source-changed',
+                    recoveryRequired: false
+                });
+            }
+            const staged = this.towerMergeRuntime.stage({
+                transactionId: plan.transactionId,
+                planFingerprint: plan.fingerprint,
+                sourceTick,
+                sourceGroupRevision: plan.sourceGroupRevision,
+                targetGroupRevision: plan.targetGroupRevision,
+                sourceRosterFingerprint: transition.source.fingerprint,
+                targetRosterFingerprint: transition.target.fingerprint,
+                records,
+                protocol
+            });
+            if (staged?.accepted !== true) {
+                this.towerGroupRuntime.finalizeRosterTransition(
+                    plan.transactionId,
+                    false
+                );
+                return staged;
+            }
+            this.towerMergeTransactions.set(plan.transactionId, {
+                transactionId: plan.transactionId,
+                planFingerprint: plan.fingerprint,
+                plan,
+                records: Object.freeze(records),
+                protocol,
+                state: 'staged'
+            });
+            return Object.freeze({
+                ...staged,
+                sourceRosterFingerprint: transition.source.fingerprint,
+                targetRosterFingerprint: transition.target.fingerprint
+            });
+        } catch (error) {
+            try {
+                this.towerGroupRuntime.finalizeRosterTransition(
+                    plan.transactionId,
+                    false
+                );
+            } catch { /* transition was not prepared */ }
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-stage-contract',
+                failure: Object.freeze({
+                    name: String(error?.name ?? 'Error'),
+                    message: String(error?.message ?? error)
+                }),
+                recoveryRequired: false
+            });
+        }
+    }
+
+    drainCompletedTowerMergeTransactions(out = []) {
+        return this.towerMergeRuntime.drainCompleted(out);
+    }
+
+    /** Authentic GPU aggregate 뒤 host mirrors를 seal하고 cleanup token을 발행합니다. */
+    finalizeTowerMergeTransaction(request = {}) {
+        const transactionId = String(request.transactionId ?? '');
+        const transaction = this.towerMergeTransactions.get(transactionId);
+        if (!transaction
+            || transaction.state !== 'staged'
+            || transaction.planFingerprint !== request.planFingerprint) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-transaction-token',
+                committed: false,
+                requiresRecovery: false
+            });
+        }
+        if (request.committed !== true) {
+            const transition = this.towerGroupRuntime
+                .finalizeRosterTransition(transactionId, false);
+            this.towerMergeTransactions.delete(transactionId);
+            const recoveryRequired = request.recoveryRequired === true
+                || transition?.accepted !== true;
+            if (recoveryRequired) {
+                this.towerMergeFailure = Object.freeze({
+                    stage: 'tower-merge-rejected-rollback',
+                    message: 'Tower merge rejection rollback/protocol이 실패했습니다.'
+                });
+            }
+            this.#syncState();
+            return Object.freeze({
+                accepted: transition?.accepted === true,
+                committed: false,
+                requiresRecovery: recoveryRequired
+            });
+        }
+
+        const exactRecords = transaction.records.every((record) => {
+            const exact = this.simulation.resolveExactBodySlot({
+                entityId: record.entityId,
+                incarnation: record.incarnation
+            });
+            return exact?.slot === record.slot
+                && this.simulation.slotActive[record.slot] === 1;
+        });
+        if (!exactRecords) {
+            this.towerMergeFailure = Object.freeze({
+                stage: 'tower-merge-host-identity',
+                message: 'Committed Tower merge source stable slot이 다릅니다.'
+            });
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                committed: false,
+                requiresRecovery: true
+            });
+        }
+        try {
+            const transition = this.towerGroupRuntime
+                .finalizeRosterTransition(transactionId, true);
+            if (transition?.accepted !== true) {
+                throw new Error('Tower merge roster transition commit이 실패했습니다.');
+            }
+            const simulationLayout = GPU_CIRCLE_BODY_ABI.SIMULATION;
+            const physicsLayout = GPU_CIRCLE_BODY_ABI.PHYSICS;
+            const controlLayout = GPU_FIXED_PRIMITIVE_ABI.BODY_CONTROL_STATE;
+            const metadataLayout
+                = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.ENTITY_METADATA;
+            const simulationView = new DataView(
+                this.simulation.hostStorage.simulationBuffer
+            );
+            const physicsView = new DataView(
+                this.simulation.hostStorage.physicsBuffer
+            );
+            const metadataView = new DataView(
+                this.abilitySubjectSnapshotRuntime.metadataBytes
+            );
+            const consumed = [];
+            let survivor = null;
+            for (const record of transaction.records) {
+                const simulationOffset = record.slot * simulationLayout.STRIDE;
+                if (record.role === GPU_TOWER_MERGE_RECORD_ROLE.SURVIVOR) {
+                    simulationView.setInt32(
+                        simulationOffset + simulationLayout.HEALTH,
+                        record.targetCurrentHpFixedPoint | 0,
+                        LITTLE_ENDIAN
+                    );
+                    const metadataOffset = record.slot * metadataLayout.STRIDE;
+                    if (metadataView.getUint32(
+                        metadataOffset + metadataLayout.ABI_VERSION,
+                        LITTLE_ENDIAN
+                    ) !== 0) {
+                        metadataView.setUint32(
+                            metadataOffset
+                                + metadataLayout.POWER_FIXED_POINT,
+                            record.targetPowerFixedPoint,
+                            LITTLE_ENDIAN
+                        );
+                    }
+                    survivor = record;
+                    continue;
+                }
+                const flags = simulationView.getUint32(
+                    simulationOffset + simulationLayout.FLAGS,
+                    LITTLE_ENDIAN
+                ) & ~(
+                    GPU_CIRCLE_BODY_SIMULATION_FLAG.ALIVE
+                    | GPU_CIRCLE_BODY_SIMULATION_FLAG.CONTROLLED_THIS_TICK
+                );
+                simulationView.setUint32(
+                    simulationOffset + simulationLayout.FLAGS,
+                    flags,
+                    LITTLE_ENDIAN
+                );
+                const physicsOffset = record.slot * physicsLayout.STRIDE;
+                physicsView.setUint32(
+                    physicsOffset + physicsLayout.PHYSICAL_META,
+                    0,
+                    LITTLE_ENDIAN
+                );
+                physicsView.setUint32(
+                    physicsOffset + physicsLayout.INTERACTION_META,
+                    0,
+                    LITTLE_ENDIAN
+                );
+                new Uint8Array(
+                    this.simulation.hostBodyControlStates,
+                    record.slot * controlLayout.STRIDE,
+                    controlLayout.STRIDE
+                ).fill(0);
+                clearGpuAbilityEntityMetadata(
+                    this.abilitySubjectSnapshotRuntime.metadataBytes,
+                    this.capacity,
+                    record.slot
+                );
+                consumed.push(Object.freeze({
+                    slot: record.slot,
+                    handle: Object.freeze({
+                        entityId: record.entityId,
+                        incarnation: record.incarnation
+                    })
+                }));
+            }
+            if (!survivor || consumed.length !== transaction.records.length - 1) {
+                throw new Error('Tower merge survivor/consumed host cardinality가 다릅니다.');
+            }
+            const cleanupToken = Object.freeze({});
+            this.towerMergeCommittedCleanups.set(cleanupToken, {
+                transactionId,
+                planFingerprint: transaction.planFingerprint,
+                survivor: Object.freeze({
+                    slot: survivor.slot,
+                    handle: Object.freeze({
+                        entityId: survivor.entityId,
+                        incarnation: survivor.incarnation
+                    })
+                }),
+                consumed: Object.freeze(consumed)
+            });
+            this.towerMergeTransactions.delete(transactionId);
+            this.#syncState();
+            return Object.freeze({
+                accepted: true,
+                committed: true,
+                cleanupToken,
+                survivorHandle: this.towerMergeCommittedCleanups
+                    .get(cleanupToken).survivor.handle,
+                consumedHandles: Object.freeze(consumed.map(
+                    ({ handle }) => handle
+                )),
+                roster: transition.roster,
+                requiresRecovery: false
+            });
+        } catch (error) {
+            this.towerMergeFailure = Object.freeze({
+                stage: 'tower-merge-host-commit',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                committed: false,
+                failure: this.towerMergeFailure,
+                requiresRecovery: true
+            });
+        }
+    }
+
+    /** GPU references가 끝난 owner boundary에서 consumed exact slots만 회수합니다. */
+    cleanupTowerMergeTransaction(cleanupToken) {
+        const cleanup = this.towerMergeCommittedCleanups.get(cleanupToken);
+        if (!cleanup) {
+            return Object.freeze({
+                accepted: false,
+                reason: 'tower-merge-cleanup-token',
+                cleanedCount: 0,
+                requiresRecovery: false
+            });
+        }
+        const exact = cleanup.consumed.every((entry) => {
+            const resolved = this.simulation.resolveExactBodySlot(entry.handle);
+            return resolved?.slot === entry.slot
+                && this.simulation.slotActive[entry.slot] === 1;
+        });
+        if (!exact) {
+            this.towerMergeFailure = Object.freeze({
+                stage: 'tower-merge-cleanup-identity',
+                message: 'Tower merge consumed stable slot이 cleanup 전에 달라졌습니다.'
+            });
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                cleanedCount: 0,
+                failure: this.towerMergeFailure,
+                requiresRecovery: true
+            });
+        }
+        try {
+            const handles = cleanup.consumed.map(({ handle }) => handle);
+            const result = this.simulation.despawnBodies(handles);
+            const clean = result?.removed === handles.length
+                && result?.rejected === 0
+                && handles.every((handle) => !this.simulation.hasBody(handle));
+            if (!clean) {
+                throw new Error('Tower merge consumed body를 전량 회수하지 못했습니다.');
+            }
+            this.towerMergeCommittedCleanups.delete(cleanupToken);
+            this.#syncState();
+            return Object.freeze({
+                accepted: true,
+                transactionId: cleanup.transactionId,
+                planFingerprint: cleanup.planFingerprint,
+                cleanedCount: handles.length,
+                handles: Object.freeze(handles),
+                disposition: TOWER_MERGE_LIFECYCLE_DISPOSITION,
+                deathEventCount: 0,
+                rewardMutationCount: 0,
+                requiresRecovery: false
+            });
+        } catch (error) {
+            this.towerMergeFailure = Object.freeze({
+                stage: 'tower-merge-cleanup',
+                name: String(error?.name ?? 'Error'),
+                message: String(error?.message ?? error)
+            });
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                cleanedCount: 0,
+                failure: this.towerMergeFailure,
+                requiresRecovery: true
+            });
+        }
+    }
+
+    cancelAllTowerMerges(reason = 'cancelled') {
+        const runtime = this.towerMergeRuntime.cancelPending(reason);
+        let cancelledCount = 0;
+        let cleanedCount = 0;
+        let requiresRecovery = runtime?.recoveryRequired === true;
+        for (const [transactionId] of [...this.towerMergeTransactions]) {
+            const transition = this.towerGroupRuntime
+                .finalizeRosterTransition(transactionId, false);
+            if (transition?.accepted === true) cancelledCount++;
+            else requiresRecovery = true;
+            this.towerMergeTransactions.delete(transactionId);
+        }
+        for (const token of [...this.towerMergeCommittedCleanups.keys()]) {
+            const cleanup = this.cleanupTowerMergeTransaction(token);
+            cleanedCount += cleanup?.cleanedCount ?? 0;
+            requiresRecovery ||= cleanup?.requiresRecovery === true;
+        }
+        return Object.freeze({
+            cancelledCount,
+            cleanedCount,
+            reason: String(reason || 'cancelled'),
+            requiresRecovery
+        });
+    }
+
+    getTowerMergeRuntimeStatus() {
+        return Object.freeze({
+            ...this.towerMergeRuntime.getStatus(),
+            transactionCount: this.towerMergeTransactions.size,
+            committedCleanupCount: this.towerMergeCommittedCleanups.size,
+            failure: this.towerMergeFailure
+                ?? this.towerMergeRuntime.getStatus().failure,
+            requiresRecovery: this.towerMergeFailure !== null
+                || this.towerMergeRuntime.requiresRecovery()
+        });
+    }
+
     /**
      * @param {number} delta - 초 단위 fixed delta입니다.
      * @param {number} [sourceTick] - 이 submit을 소유하는 권위 fixed tick입니다.
@@ -2829,6 +3347,7 @@ export class EnemySimulationBackend {
                 actorTransits: this.getActorTransitRuntimeStatus(),
                 towerGroup: this.towerGroupRuntime.getStatus(),
                 towerCreation: this.getTowerCreationRuntimeStatus(),
+                towerMerge: this.getTowerMergeRuntimeStatus(),
                 towerTargetQuery: this.towerTargetQueryRuntime.getStatus()
             } : {}),
             gpu
@@ -2895,8 +3414,10 @@ export class EnemySimulationBackend {
             || this.actorTransitRuntime.requiresRecovery()
             || this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
+            || this.towerMergeRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
             || this.towerCreationFailure !== null
+            || this.towerMergeFailure !== null
             || this.actorPayloadPreleaseFailure !== null;
     }
 
@@ -2910,6 +3431,7 @@ export class EnemySimulationBackend {
         this.cancelAllActorActionPlacements('destroyed');
         this.actorTransitRuntime.cancelAll('destroyed');
         this.cancelAllTowerCreations('destroyed');
+        this.cancelAllTowerMerges('destroyed');
         this.actorPayloadMaterializationRuntime.destroy();
         this.actorActionPlacementRuntime.destroy();
         this.actorTransitRuntime.destroy();
@@ -2918,6 +3440,7 @@ export class EnemySimulationBackend {
         this.actorTransitCompletionQueues.clear();
         this.abilitySubjectSnapshotRuntime.destroy();
         this.simulation?.attachTowerCreationRuntime?.(null);
+        this.towerMergeRuntime.destroy();
         this.towerCreationRuntime.destroy();
         this.simulation?.attachTowerTargetQueryRuntime?.(null);
         this.towerTargetQueryRuntime.destroy();
@@ -2971,8 +3494,10 @@ export class EnemySimulationBackend {
             || this.actorActionPlacementRuntime.getStatus().failure !== null
             || this.actorTransitRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
+            || this.towerMergeRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
-            || this.towerCreationFailure !== null) {
+            || this.towerCreationFailure !== null
+            || this.towerMergeFailure !== null) {
             this.state = 'gpu-requires-rebuild';
             return;
         }
@@ -3149,7 +3674,60 @@ export class EnemySimulationBackend {
                 return false;
             }
         }
-        simulation.attachTowerCreationRuntime(this.towerCreationRuntime);
+        simulation.attachTowerCreationRuntime(this.towerTransactionRuntime);
+        return true;
+    }
+
+    #ensureTowerMergeRuntime() {
+        if (this.destroyed || !this.simulation) return false;
+        if (!this.#ensureTowerGroupRuntime()
+            || !this.#ensureAbilitySubjectSnapshotRuntime()) {
+            return false;
+        }
+        const simulation = this.simulation;
+        const groupResources = this.towerGroupRuntime.getCreationResources?.();
+        const abilityMetadata = this.abilitySubjectSnapshotRuntime
+            .buffers?.metadata;
+        if (!groupResources?.members
+            || !groupResources?.roster
+            || !abilityMetadata
+            || !simulation.device
+            || !simulation.buffers?.physics
+            || !simulation.buffers.simulation
+            || !simulation.buffers.bodyControlStates) {
+            return false;
+        }
+        const protocol = simulation.getEventProtocolState();
+        const resources = {
+            physics: simulation.buffers.physics,
+            simulation: simulation.buffers.simulation,
+            bodyControlStates: simulation.buffers.bodyControlStates,
+            abilityMetadata,
+            members: groupResources.members,
+            roster: groupResources.roster
+        };
+        const status = this.towerMergeRuntime.getStatus();
+        const alreadyCurrent = status.state === 'ready'
+            && this.towerMergeRuntime.device === simulation.device
+            && status.sessionGeneration === protocol.sessionGeneration
+            && status.deviceGeneration === protocol.deviceGeneration
+            && status.authoritativeEpoch === protocol.authoritativeEpoch
+            && Object.entries(resources).every(
+                ([key, buffer]) => this.towerMergeRuntime.resources?.[key]
+                    === buffer
+            );
+        if (!alreadyCurrent) {
+            try {
+                this.towerMergeRuntime.initialize(
+                    simulation.device,
+                    resources,
+                    protocol
+                );
+            } catch {
+                return false;
+            }
+        }
+        simulation.attachTowerCreationRuntime(this.towerTransactionRuntime);
         return true;
     }
 

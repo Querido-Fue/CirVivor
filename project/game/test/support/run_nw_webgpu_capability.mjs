@@ -40,6 +40,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'data/object/tower/the_tower_data.js',
     'data/word/r3_word_catalog_data.js',
     'data/word/r5_actor_action_profile_data.js',
+    'data/word/r6_tower_group_operation_profile_data.js',
     'data/scene/game/corridor_eight_map_data.js',
     'data/scene/game/corridor_eight_wave_01_data.js',
     'data/scene/game/cork_dual_route_map_data.js',
@@ -67,6 +68,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/enemy_route_closure_contract.js',
     'module/ingame/contract/route_availability_contract.js',
     'module/ingame/contract/run_outcome_contract.js',
+    'module/ingame/contract/tower_group_operation_contract.js',
     'module/ingame/game_world_session_mode.js',
     'module/ingame/flow/authored_wave_timeline_contract.js',
     'module/ingame/flow/wave_director.js',
@@ -146,6 +148,10 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/physics/gpu/gpu_tower_group_abi.js',
     'module/ingame/physics/gpu/gpu_tower_group_runtime.js',
     'module/ingame/physics/gpu/gpu_tower_group_shaders.js',
+    'module/ingame/physics/gpu/gpu_tower_merge_abi.js',
+    'module/ingame/physics/gpu/gpu_tower_merge_runtime.js',
+    'module/ingame/physics/gpu/gpu_tower_merge_shaders.js',
+    'module/ingame/physics/gpu/gpu_tower_transaction_runtime_mux.js',
     'module/ingame/physics/gpu/gpu_tower_creation_abi.js',
     'module/ingame/physics/gpu/gpu_tower_creation_runtime.js',
     'module/ingame/physics/gpu/gpu_tower_creation_shaders.js',
@@ -2546,6 +2552,90 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && result.requestedMaxStorageBuffersPerShaderStage === 9
             && result.adapterMaxStorageBuffersPerShaderStage >= 9
             && result.deviceMaxStorageBuffersPerShaderStage >= 9;
+    } else if (fixtureStage === 'r6-tower-merge') {
+        fixture = result?.r6TowerMerge;
+        const cases = fixture?.cases ?? [];
+        const sourceChanged = fixture?.sourceChanged;
+        const malformed = fixture?.malformedProgram;
+        const capacity = fixture?.capacity;
+        const oldProtocol = fixture?.oldProtocol;
+        const lifecycle = fixture?.lifecycle;
+        const targeting = fixture?.targeting;
+        scenarioValid = fixture?.scenario
+                === 'atomic-gpu-tower-n-to-one-merge'
+            && cases.map(({ sourceCount }) => sourceCount).join(',')
+                === '2,64,256'
+            && cases.every((entry) => (
+                entry.bodyAbiVersion === 10
+                && entry.committed === true
+                && entry.status === 2
+                && entry.validatedCount === entry.sourceCount
+                && entry.appliedCount === entry.sourceCount
+                && entry.consumedCount === entry.sourceCount - 1
+                && entry.exactSurvivorHandle === true
+                && entry.exactPoseVelocityPreserved === true
+                && entry.temporaryPreviousPositionPreserved === true
+                && entry.survivorCurrentHpFixedPoint > 0
+                && entry.survivorMaxHpFixedPoint
+                    >= entry.survivorCurrentHpFixedPoint
+                && entry.survivorPowerFixedPoint > 0
+                && entry.survivorShareUnits > 0
+                && entry.targetGroupRevision === 12
+                && entry.survivorOnlyRoster === true
+                && entry.consumedHiddenCount === entry.sourceCount - 1
+                && entry.consumedNoncontrolledCount
+                    === entry.sourceCount - 1
+                && entry.consumedMetadataClearedCount
+                    === entry.sourceCount - 1
+                && entry.consumedMemberClearedCount
+                    === entry.sourceCount - 1
+                && entry.projectileUnchanged === true
+                && entry.effectPlaneUnchanged === true
+                && entry.capacityRejectionReason
+                    === 'tower-merge-program-capacity'
+                && entry.capacityRecoveryRequired === false
+                && entry.aggregateReadbackBytes === 112
+                && entry.perTowerCpuCommandCount === 0
+                && entry.fullBodyReadbackCount === 0
+                && entry.storageMaximum === 9
+                && entry.requiresRecovery === false
+            ))
+            && ['death', 'aba'].every((key) => (
+                sourceChanged?.[key]?.rejectedSourceChanged === true
+                && sourceChanged[key].committed === false
+                && sourceChanged[key].appliedCount === 0
+                && sourceChanged[key].externalStateChangedOnlyByFixture === true
+                && sourceChanged[key].mergeMutationCount === 0
+                && sourceChanged[key].requiresRecovery === false
+            ))
+            && malformed?.protocolFailure === true
+            && malformed.committed === false
+            && malformed.appliedCount === 0
+            && malformed.mergeMutationCount === 0
+            && malformed.requiresRecovery === true
+            && capacity?.rejectionReason === 'tower-merge-program-capacity'
+            && capacity.retryable === true
+            && capacity.cancelledCount === 1
+            && capacity.mergeMutationCount === 0
+            && capacity.requiresRecovery === false
+            && oldProtocol?.oldCompletionPublishedCount === 0
+            && oldProtocol.freshBuffersUnchanged === true
+            && oldProtocol.freshSessionGeneration === 72
+            && oldProtocol.freshDeviceGeneration === 20
+            && oldProtocol.requiresRecovery === false
+            && lifecycle?.consumedDisposition === 'TOWER_MERGED'
+            && lifecycle.deathEventCount === 0
+            && lifecycle.lostEventCount === 0
+            && lifecycle.goldEventCount === 0
+            && lifecycle.rewardReceiptCount === 0
+            && lifecycle.replayCommitCount === 1
+            && targeting?.consumedExactHandleInvalid === true
+            && targeting.survivorOnlyRoster === true
+            && targeting.hostileRetargetAuthority === 'tower-group-roster'
+            && fixture.storageMaximum === 9
+            && result.requestedMaxStorageBuffersPerShaderStage === 9
+            && result.adapterMaxStorageBuffersPerShaderStage >= 9
+            && result.deviceMaxStorageBuffersPerShaderStage >= 9;
     } else if (fixtureStage === 'enemy-cork-route-closure') {
         fixture = result?.productionEnemyCorkRouteClosure;
         const lifecycle = fixture?.lifecycle;
@@ -2822,6 +2912,7 @@ function assertFixtureStageResult(result) {
         || fixtureStage === 'enemy-octagon-directional-defense'
         || fixtureStage === 'enemy-ring-projectile-capture'
         || fixtureStage === 'enemy-cork-route-closure'
+        || fixtureStage === 'r6-tower-merge'
     ) {
         assertDedicatedFixtureResult(result, fixtureStage);
         return;
@@ -2920,7 +3011,9 @@ async function prepareHarnessApp(
         'utf8'
     );
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
-    const runnerFileName = fixtureStage === 'tower-group-target-query'
+    const runnerFileName = fixtureStage === 'r6-tower-merge'
+        ? 'tower_merge_runner.js'
+        : fixtureStage === 'tower-group-target-query'
         ? 'tower_group_target_query_runner.js'
         : fixtureStage === 'r5-actor-verbs'
             ? 'r5_actor_verbs_bootstrap.js'
@@ -2955,7 +3048,8 @@ async function prepareHarnessApp(
     }
     const productionDirectory = path.join(appDirectory, 'production');
     await fs.mkdir(productionDirectory, { recursive: true });
-    if (fixtureStage === 'post-r5-live-bugfix') {
+    if (fixtureStage === 'post-r5-live-bugfix'
+        || fixtureStage === 'r6-tower-merge') {
         await linkRuntimeDirectory(
             gameScriptDirectory,
             path.join(productionDirectory, 'script')
@@ -3012,6 +3106,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'tower_group_target_query_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'tower_merge_runner.js'
             )),
             fs.access(path.join(
                 harnessDirectory,

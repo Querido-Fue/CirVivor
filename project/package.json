@@ -16,6 +16,7 @@
         "test:webgpu:r3-enemy-word": "node game/test/support/run_nw_r3_enemy_word.mjs",
         "test:webgpu:r4-tower-group": "node game/test/support/run_nw_r4_tower_group.mjs",
         "test:webgpu:r5-actor-verbs": "node game/test/support/run_nw_r5_actor_verbs.mjs",
+        "test:webgpu:r6-tower-merge": "node game/test/support/run_nw_r6_tower_merge.mjs",
         "test:webgpu:post-r5-live": "node game/test/support/run_nw_post_r5_live_bugfix.mjs",
         "test:title-gpu:smoke": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke",
         "test:title-gpu:qa": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile qa --keep-run-directory",

@@ -67,6 +67,9 @@ export const TOWER_MERGE_REASON = Object.freeze({
     DESTROYED: 'DESTROYED'
 });
 
+/** Death/reward 경로와 분리된 exact Tower merge cleanup disposition입니다. */
+export const TOWER_MERGE_LIFECYCLE_DISPOSITION = 'TOWER_MERGED';
+
 export const TOWER_COMBAT_FACT_TYPE = Object.freeze({
     DAMAGE_APPLIED: 'TowerDamageApplied',
     DIED: 'TowerDied',
