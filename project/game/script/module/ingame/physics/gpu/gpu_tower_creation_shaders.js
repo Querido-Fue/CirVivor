@@ -511,8 +511,6 @@ fn validate_program_header() -> u32 {
                 != METADATA_COMMIT_ABI
             || program.subject_count == 0u
             || program.copies_per_subject == 0u
-            || program.subject_count
-                > 0xffffffffu / program.copies_per_subject
             || program.child_count
                 != program.subject_count * program.copies_per_subject)) {
         errors |= ERROR_PROGRAM_INVALID;

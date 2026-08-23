@@ -113,7 +113,23 @@ function isExplicitTowerCreationTerminalReceipt(source) {
         && TOWER_CREATION_TERMINAL_RESULTS.has(source.result);
 }
 
+function readTowerReceiptCardinality(completion, record) {
+    const legacyR5 = record.copiesPerSubject === 1
+        && record.modifierSetFingerprint === 0;
+    return Object.freeze({
+        subjectCount: completion.subjectCount
+            ?? (legacyR5 ? record.subjectCount : null),
+        destinationCount: completion.destinationCount
+            ?? (legacyR5 ? record.destinationCount : null),
+        copiesPerSubject: completion.copiesPerSubject
+            ?? (legacyR5 ? 1 : null),
+        modifierSetFingerprint: completion.modifierSetFingerprint
+            ?? (legacyR5 ? 0 : null)
+    });
+}
+
 function findTowerReceiptMismatchField(completion, record) {
+    const cardinality = readTowerReceiptCardinality(completion, record);
     if (completion.transactionId !== record.transactionId) {
         return 'transactionId';
     }
@@ -125,16 +141,16 @@ function findTowerReceiptMismatchField(completion, record) {
         !== record.ready.command.actorActionProfileFingerprint) {
         return 'actorActionProfileFingerprint';
     }
-    if (completion.subjectCount !== record.subjectCount) {
+    if (cardinality.subjectCount !== record.subjectCount) {
         return 'subjectCount';
     }
-    if (completion.destinationCount !== record.destinationCount) {
+    if (cardinality.destinationCount !== record.destinationCount) {
         return 'destinationCount';
     }
-    if (completion.copiesPerSubject !== record.copiesPerSubject) {
+    if (cardinality.copiesPerSubject !== record.copiesPerSubject) {
         return 'copiesPerSubject';
     }
-    if (completion.modifierSetFingerprint
+    if (cardinality.modifierSetFingerprint
         !== record.modifierSetFingerprint) {
         return 'modifierSetFingerprint';
     }
@@ -398,15 +414,19 @@ export class ActorPayloadMaterializer {
         const ready = record.ready;
         const expectedProfileFingerprint
             = ready.command.actorActionProfileFingerprint;
+        const cardinality = readTowerReceiptCardinality(
+            completion,
+            record
+        );
         const exact = completion.transactionId === record.transactionId
             && (record.requestFingerprint === null
                 || completion.requestFingerprint === record.requestFingerprint)
             && completion.actorActionProfileFingerprint
                 === expectedProfileFingerprint
-            && completion.subjectCount === record.subjectCount
-            && completion.destinationCount === record.destinationCount
-            && completion.copiesPerSubject === record.copiesPerSubject
-            && completion.modifierSetFingerprint
+            && cardinality.subjectCount === record.subjectCount
+            && cardinality.destinationCount === record.destinationCount
+            && cardinality.copiesPerSubject === record.copiesPerSubject
+            && cardinality.modifierSetFingerprint
                 === record.modifierSetFingerprint;
         if (!exact) {
             this.recoveryRequired = true;

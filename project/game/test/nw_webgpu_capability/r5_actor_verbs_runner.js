@@ -480,16 +480,19 @@ function createHarness(
             options.actorPayloadCommandCapacity,
         actorPayloadReadbackSlotCount:
             options.actorPayloadReadbackSlotCount,
-        actorActionPlacementCommandCapacity: 4,
+        actorActionPlacementCommandCapacity:
+            options.actorActionPlacementCommandCapacity ?? 4,
         actorActionPlacementSubjectCapacity: 256,
         actorActionPlacementDestinationCapacity:
             options.actorActionPlacementDestinationCapacity ?? 1_000,
-        actorActionPlacementReadbackSlotCount: 3,
+        actorActionPlacementReadbackSlotCount:
+            options.actorActionPlacementReadbackSlotCount ?? 3,
         actorTransitReadbackSlotCount:
             options.actorTransitReadbackSlotCount,
         towerGroupMemberCapacity: Math.min(capacity, 256),
         towerGroupReadbackSlotCount: 3,
-        towerCreationReadbackSlotCount: 3
+        towerCreationReadbackSlotCount:
+            options.towerCreationReadbackSlotCount ?? 3
     });
     endpoint.init(navigationSource);
     assert(coreCleanupBinding !== null, 'Core cleanup binding missing');
