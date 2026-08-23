@@ -9,10 +9,14 @@ import {
     GAMEPLAY_TEAM_ID
 } from 'ingame/contract/gameplay_team_contract.js';
 import {
+    R7_TWICE_MODIFIER_PROFILE
+} from 'data/word/r7_sentence_modifier_profile_data.js';
+import {
     ACTOR_PAYLOAD_CODE,
     ABILITY_SLOT_ID,
     GAMEPLAY_NOUN_MASK,
     SENTENCE_ACTION_CODE,
+    SENTENCE_MODIFIER_CODE,
     SENTENCE_PAYLOAD_REQUIREMENT,
     SUBJECT_SELECTOR_CODE,
     WORD_DEFINITION_ID,
@@ -38,6 +42,9 @@ export const R5_WORD_PROTOCOL_DATA = R3_WORD_PROTOCOL_DATA;
 
 /** R6 group operation은 기존 cooldown/Subject budget ABI를 그대로 사용합니다. */
 export const R6_WORD_PROTOCOL_DATA = R5_WORD_PROTOCOL_DATA;
+
+/** R7 modifier grammar foundation은 R6 word protocol layout을 변경하지 않습니다. */
+export const R7_WORD_PROTOCOL_DATA = R6_WORD_PROTOCOL_DATA;
 
 export const TOWER_ENTITY_WORD_DEFINITION = normalizeWordDefinition({
     id: WORD_DEFINITION_ID.TOWER,
@@ -168,6 +175,22 @@ export const MERGE_VERB_WORD_DEFINITION = normalizeWordDefinition({
     payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
 });
 
+export const TWICE_MODIFIER_WORD_DEFINITION = normalizeWordDefinition({
+    id: WORD_DEFINITION_ID.TWICE,
+    kind: WORD_KIND.MODIFIER,
+    roles: [WORD_GRAMMATICAL_ROLE.MODIFIER],
+    display: {
+        english: { singular: 'twice', plural: 'twice' },
+        korean: { singular: '두 배로', plural: '두 배로' }
+    },
+    shopEligible: true,
+    modifier: {
+        modifierCode: SENTENCE_MODIFIER_CODE.TWICE,
+        profileId: R7_TWICE_MODIFIER_PROFILE.id,
+        runtimeSupport: WORD_RUNTIME_SUPPORT.R7
+    }
+});
+
 export const R3_WORD_DEFINITIONS = Object.freeze([
     TOWER_ENTITY_WORD_DEFINITION,
     ENEMY_ENTITY_WORD_DEFINITION,
@@ -196,6 +219,15 @@ export const R6_WORD_DEFINITIONS = Object.freeze([
 
 export const R6_WORD_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
     R6_WORD_DEFINITIONS.map((definition) => [definition.id, definition])
+));
+
+export const R7_WORD_DEFINITIONS = Object.freeze([
+    ...R6_WORD_DEFINITIONS,
+    TWICE_MODIFIER_WORD_DEFINITION
+]);
+
+export const R7_WORD_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
+    R7_WORD_DEFINITIONS.map((definition) => [definition.id, definition])
 ));
 
 /** R8 shop transaction 전에도 normal offer semantics를 공유하는 bounded catalog view입니다. */
@@ -257,6 +289,21 @@ export const R6_MERGE_WORD_INSTANCE = normalizeWordInstance({
     definitionId: WORD_DEFINITION_ID.MERGE
 });
 
+export const R7_TWICE_WORD_INSTANCE_1 = normalizeWordInstance({
+    id: 'word-instance.r7.twice.1',
+    definitionId: WORD_DEFINITION_ID.TWICE
+});
+
+export const R7_TWICE_WORD_INSTANCE_2 = normalizeWordInstance({
+    id: 'word-instance.r7.twice.2',
+    definitionId: WORD_DEFINITION_ID.TWICE
+});
+
+export const R7_TWICE_WORD_INSTANCE_3 = normalizeWordInstance({
+    id: 'word-instance.r7.twice.3',
+    definitionId: WORD_DEFINITION_ID.TWICE
+});
+
 export const R3_WORD_INSTANCES = Object.freeze([
     R3_TOWER_WORD_INSTANCE,
     R3_ENEMY_WORD_INSTANCE,
@@ -285,6 +332,17 @@ export const R6_WORD_INSTANCES = Object.freeze([
 
 export const R6_WORD_INSTANCE_BY_ID = Object.freeze(Object.fromEntries(
     R6_WORD_INSTANCES.map((instance) => [instance.id, instance])
+));
+
+export const R7_WORD_INSTANCES = Object.freeze([
+    ...R6_WORD_INSTANCES,
+    R7_TWICE_WORD_INSTANCE_1,
+    R7_TWICE_WORD_INSTANCE_2,
+    R7_TWICE_WORD_INSTANCE_3
+]);
+
+export const R7_WORD_INSTANCE_BY_ID = Object.freeze(Object.fromEntries(
+    R7_WORD_INSTANCES.map((instance) => [instance.id, instance])
 ));
 
 export const R3_TOWER_SHOOTS_ENEMY_SENTENCE = normalizeSentenceDefinition({
@@ -355,6 +413,78 @@ export const R6_SENTENCE_DEFINITIONS = Object.freeze([
 
 export const R6_SENTENCE_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
     R6_SENTENCE_DEFINITIONS.map((sentence) => [sentence.id, sentence])
+));
+
+export const R7_TOWER_SHOOTS_ENEMIES_TWICE_SENTENCE
+    = normalizeSentenceDefinition({
+        id: 'sentence.r7.tower-shoots-enemies-twice',
+        subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+        verbWordInstanceId: R3_SHOOT_WORD_INSTANCE.id,
+        payloadWordInstanceId: R3_ENEMY_WORD_INSTANCE.id,
+        modifierWordInstanceIds: [R7_TWICE_WORD_INSTANCE_1.id]
+    });
+
+export const R7_TOWER_SHOOTS_TOWERS_TWICE_SENTENCE
+    = normalizeSentenceDefinition({
+        id: 'sentence.r7.tower-shoots-towers-twice',
+        subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+        verbWordInstanceId: R3_SHOOT_WORD_INSTANCE.id,
+        payloadWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+        modifierWordInstanceIds: [R7_TWICE_WORD_INSTANCE_1.id]
+    });
+
+export const R7_ENEMIES_THROW_ENEMIES_TWICE_SENTENCE
+    = normalizeSentenceDefinition({
+        id: 'sentence.r7.enemies-throw-enemies-twice',
+        subjectWordInstanceId: R3_ENEMY_WORD_INSTANCE.id,
+        verbWordInstanceId: R5_THROW_WORD_INSTANCE.id,
+        payloadWordInstanceId: R3_ENEMY_WORD_INSTANCE.id,
+        modifierWordInstanceIds: [R7_TWICE_WORD_INSTANCE_1.id]
+    });
+
+export const R7_TOWER_SUMMONS_ENEMIES_TWICE_SENTENCE
+    = normalizeSentenceDefinition({
+        id: 'sentence.r7.tower-summons-enemies-twice',
+        subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+        verbWordInstanceId: R5_SUMMON_WORD_INSTANCE.id,
+        payloadWordInstanceId: R3_ENEMY_WORD_INSTANCE.id,
+        modifierWordInstanceIds: [R7_TWICE_WORD_INSTANCE_1.id]
+    });
+
+export const R7_TOWER_SHOOTS_ENEMIES_TWICE_TWICE_SENTENCE
+    = normalizeSentenceDefinition({
+        id: 'sentence.r7.tower-shoots-enemies-twice-twice',
+        subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+        verbWordInstanceId: R3_SHOOT_WORD_INSTANCE.id,
+        payloadWordInstanceId: R3_ENEMY_WORD_INSTANCE.id,
+        modifierWordInstanceIds: [
+            R7_TWICE_WORD_INSTANCE_1.id,
+            R7_TWICE_WORD_INSTANCE_2.id
+        ]
+    });
+
+export const R7_TOWERS_MERGE_TWICE_SENTENCE = normalizeSentenceDefinition({
+    id: 'sentence.r7.towers-merge-twice',
+    subjectWordInstanceId: R3_TOWER_WORD_INSTANCE.id,
+    verbWordInstanceId: R6_MERGE_WORD_INSTANCE.id,
+    payloadWordInstanceId: null,
+    modifierWordInstanceIds: [R7_TWICE_WORD_INSTANCE_1.id]
+}, 'R7 Towers Merge Twice sentence', {
+    payloadRequirement: SENTENCE_PAYLOAD_REQUIREMENT.FORBIDDEN
+});
+
+export const R7_SENTENCE_DEFINITIONS = Object.freeze([
+    ...R6_SENTENCE_DEFINITIONS,
+    R7_TOWER_SHOOTS_ENEMIES_TWICE_SENTENCE,
+    R7_TOWER_SHOOTS_TOWERS_TWICE_SENTENCE,
+    R7_ENEMIES_THROW_ENEMIES_TWICE_SENTENCE,
+    R7_TOWER_SUMMONS_ENEMIES_TWICE_SENTENCE,
+    R7_TOWER_SHOOTS_ENEMIES_TWICE_TWICE_SENTENCE,
+    R7_TOWERS_MERGE_TWICE_SENTENCE
+]);
+
+export const R7_SENTENCE_DEFINITION_BY_ID = Object.freeze(Object.fromEntries(
+    R7_SENTENCE_DEFINITIONS.map((sentence) => [sentence.id, sentence])
 ));
 
 /** Production showcase에서만 주입하는 R3 문장 loadout입니다. */

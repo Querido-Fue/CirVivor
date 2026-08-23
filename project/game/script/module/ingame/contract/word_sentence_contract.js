@@ -13,24 +13,28 @@ export const WORD_DEFINITION_ID = Object.freeze({
     THROW: 'verb.throw',
     EMIT: 'verb.emit',
     SUMMON: 'verb.summon',
-    MERGE: 'verb.merge'
+    MERGE: 'verb.merge',
+    TWICE: 'modifier.twice'
 });
 
 export const WORD_KIND = Object.freeze({
     ENTITY: 'entity',
-    VERB: 'verb'
+    VERB: 'verb',
+    MODIFIER: 'modifier'
 });
 
 export const WORD_GRAMMATICAL_ROLE = Object.freeze({
     SUBJECT: 'subject',
-    PAYLOAD: 'payload'
+    PAYLOAD: 'payload',
+    MODIFIER: 'modifier'
 });
 
 export const WORD_RUNTIME_SUPPORT = Object.freeze({
     R3: 'r3',
     FUTURE_R5: 'future-r5',
     R5: 'r5',
-    R6: 'r6'
+    R6: 'r6',
+    R7: 'r7'
 });
 
 /** Verb별 Payload slot 존재 조건을 고정하는 좁은 문법 계약입니다. */
@@ -64,6 +68,11 @@ export const SENTENCE_ACTION_CODE = Object.freeze({
     EMIT: 3,
     SUMMON: 4,
     MERGE: 5
+});
+
+/** Sentence modifier profile과 WordDefinition이 공유하는 append-only code입니다. */
+export const SENTENCE_MODIFIER_CODE = Object.freeze({
+    TWICE: 1
 });
 
 export const ACTOR_PAYLOAD_CODE = Object.freeze({
@@ -118,6 +127,7 @@ const PAYLOAD_REQUIREMENT_VALUES = new Set(
 );
 const SUBJECT_SELECTOR_VALUES = new Set(Object.values(SUBJECT_SELECTOR_CODE));
 const ACTION_CODE_VALUES = new Set(Object.values(SENTENCE_ACTION_CODE));
+const MODIFIER_CODE_VALUES = new Set(Object.values(SENTENCE_MODIFIER_CODE));
 const PAYLOAD_CODE_VALUES = new Set(Object.values(ACTOR_PAYLOAD_CODE));
 const SLOT_ID_VALUES = new Set(ABILITY_SLOT_IDS);
 const PHASE_VALUES = new Set(Object.values(SENTENCE_RUNTIME_PHASE));
@@ -267,6 +277,36 @@ function freezePayloadDefinition(payload, label) {
     });
 }
 
+function freezeModifierDefinition(modifier, label) {
+    requireRecord(modifier, label);
+    requireKnownKeys(
+        modifier,
+        new Set(['modifierCode', 'profileId', 'runtimeSupport']),
+        label
+    );
+    const modifierCode = modifier.modifierCode;
+    if (typeof modifierCode !== 'number'
+        || !Number.isSafeInteger(modifierCode)
+        || !MODIFIER_CODE_VALUES.has(modifierCode)) {
+        throw new RangeError(`${label}.modifierCode가 알려지지 않았습니다.`);
+    }
+    const runtimeSupport = requireNonEmptyString(
+        modifier.runtimeSupport,
+        `${label}.runtimeSupport`
+    );
+    if (runtimeSupport !== WORD_RUNTIME_SUPPORT.R7) {
+        throw new RangeError(`${label}.runtimeSupport는 R7이어야 합니다.`);
+    }
+    return Object.freeze({
+        modifierCode,
+        profileId: requireNonEmptyString(
+            modifier.profileId,
+            `${label}.profileId`
+        ),
+        runtimeSupport
+    });
+}
+
 /**
  * data-owned WordDefinition을 불변 typed record로 정규화합니다.
  * Display form은 semantic fields와 별도 보관됩니다.
@@ -283,6 +323,7 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
             'shopEligible',
             'subject',
             'payload',
+            'modifier',
             'actionCode',
             'payloadRequirement'
         ]),
@@ -308,6 +349,36 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
         roles.push(role);
     }
 
+    const hasSubject = Object.hasOwn(definition, 'subject');
+    const hasPayload = Object.hasOwn(definition, 'payload');
+    const hasModifier = Object.hasOwn(definition, 'modifier');
+    const hasActionCode = Object.hasOwn(definition, 'actionCode');
+    const hasPayloadRequirement = Object.hasOwn(
+        definition,
+        'payloadRequirement'
+    );
+    if (kind === WORD_KIND.MODIFIER) {
+        if (roles.length !== 1
+            || roles[0] !== WORD_GRAMMATICAL_ROLE.MODIFIER
+            || !hasModifier
+            || hasSubject
+            || hasPayload
+            || hasActionCode
+            || hasPayloadRequirement) {
+            throw new RangeError(`${label} Modifier Word 구조가 올바르지 않습니다.`);
+        }
+        return Object.freeze({
+            id,
+            kind,
+            roles: Object.freeze(roles),
+            display: freezeDisplayForms(definition.display, `${label}.display`),
+            shopEligible: definition.shopEligible === true,
+            modifier: freezeModifierDefinition(
+                definition.modifier,
+                `${label}.modifier`
+            )
+        });
+    }
     const subject = freezeSubjectDefinition(definition.subject, `${label}.subject`);
     const payload = freezePayloadDefinition(definition.payload, `${label}.payload`);
     const rawActionCode = definition.actionCode;
@@ -329,6 +400,9 @@ export function normalizeWordDefinition(definition, label = 'wordDefinition') {
     if (payloadRequirement !== null
         && !PAYLOAD_REQUIREMENT_VALUES.has(payloadRequirement)) {
         throw new RangeError(`${label}.payloadRequirement가 알려지지 않았습니다.`);
+    }
+    if (hasModifier) {
+        throw new RangeError(`${label} Entity/Verb Word에는 modifier를 둘 수 없습니다.`);
     }
     if (kind === WORD_KIND.ENTITY) {
         if (actionCode !== null || payloadRequirement !== null) {

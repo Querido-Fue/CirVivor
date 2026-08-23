@@ -73,7 +73,8 @@ test('R3 stable WordDefinition/WordInstance와 Enemy normal catalog metadata가 
         THROW: 'verb.throw',
         EMIT: 'verb.emit',
         SUMMON: 'verb.summon',
-        MERGE: 'verb.merge'
+        MERGE: 'verb.merge',
+        TWICE: 'modifier.twice'
     });
     assert.equal(R3_TOWER_WORD_INSTANCE.definitionId, WORD_DEFINITION_ID.TOWER);
     assert.equal(R3_SHOOT_WORD_INSTANCE.definitionId, WORD_DEFINITION_ID.SHOOT);
