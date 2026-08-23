@@ -41,8 +41,10 @@ const {
 } = await loadGameModule('ingame/object/world_registry.js');
 const {
     PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
+    R6_QA_LAUNCH_ARGUMENT,
     createProductionGameStartOptions,
-    createR6QaGameStartOptions
+    createR6QaGameStartOptions,
+    isR6QaLaunchRequested
 } = await loadGameModule('scene/game/production_game_start_route.js');
 
 const PROTOCOL = Object.freeze({
@@ -219,6 +221,9 @@ function createPreviewFixture(count) {
 }
 
 test('R6 QA launcher만 Merge slot을 주입하고 preview는 exact scalar plan을 노출한다', () => {
+    assert.equal(isR6QaLaunchRequested([R6_QA_LAUNCH_ARGUMENT]), true);
+    assert.equal(isR6QaLaunchRequested([]), false);
+    assert.equal(isR6QaLaunchRequested(['--r6-qa-extra']), false);
     const production = createProductionGameStartOptions(
         PRODUCTION_STAGE_ONE_SELECTION_MAP_ID
     );

@@ -458,6 +458,52 @@ export class GpuTowerMergeRuntime {
         return true;
     }
 
+    /**
+     * 동일한 merge transaction을 prepare/seal/apply 세 pass로 나눠 encode합니다.
+     * 각 pass descriptor에 timestampWrites를 주입할 수 있으며, 세 pass는 하나의
+     * command encoder/queue submission 안에서 순서를 유지하므로 transaction의
+     * all-or-none 경계는 encode()와 같습니다.
+     */
+    encodeStagePasses(encoder, sourceTick, passDescriptors = {}) {
+        const tick = requirePositiveInteger(
+            sourceTick,
+            'Tower merge stage encode tick'
+        );
+        if (!encoder || typeof encoder.beginComputePass !== 'function'
+            || this.pending?.state !== 'staged'
+            || this.pending.envelope.sourceTick !== tick) {
+            throw new Error('Tower merge stage encode 순서가 유효하지 않습니다.');
+        }
+        const recordWorkgroups = Math.ceil(
+            this.pending.envelope.sourceCount / GPU_TOWER_MERGE_WORKGROUP_SIZE
+        );
+        const stages = [
+            ['prepare', [
+                [this.pipelines.clear, 1],
+                [this.pipelines.validate, recordWorkgroups]
+            ]],
+            ['seal', [[this.pipelines.seal, 1]]],
+            ['apply', [
+                [this.pipelines.apply, recordWorkgroups],
+                [this.pipelines.finalize, 1]
+            ]]
+        ];
+        for (const [stageName, dispatches] of stages) {
+            const pass = encoder.beginComputePass({
+                label: `cirvivor-gpu-tower-merge-${stageName}-${tick}`,
+                ...(passDescriptors[stageName] ?? {})
+            });
+            for (const [pipeline, workgroups] of dispatches) {
+                pass.setPipeline(pipeline);
+                pass.setBindGroup(0, this.bindGroup);
+                pass.dispatchWorkgroups(workgroups);
+            }
+            pass.end();
+        }
+        this.pending.state = 'encoded';
+        return true;
+    }
+
     encodeReadback(encoder, sourceTick) {
         const tick = requirePositiveInteger(sourceTick, 'Tower merge copy tick');
         if (!encoder || typeof encoder.copyBufferToBuffer !== 'function'

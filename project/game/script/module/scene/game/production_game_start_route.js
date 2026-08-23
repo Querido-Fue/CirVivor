@@ -31,6 +31,15 @@ export const PRODUCTION_PERFORMANCE_SELECTION_MAP_ID
 export const PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID
     = PERFORMANCE_SERPENTINE_MAP_DATA.id;
 
+export const R6_QA_LAUNCH_ARGUMENT = '--r6-qa';
+
+/** 실제 executable에서만 쓰는 명시적 QA launcher 선택 seam입니다. */
+export function isR6QaLaunchRequested(
+    argv = globalThis.nw?.App?.argv ?? []
+) {
+    return Array.isArray(argv) && argv.includes(R6_QA_LAUNCH_ARGUMENT);
+}
+
 function createPlayableSessionOptions(
     mapData,
     waveDefinition,
@@ -86,7 +95,9 @@ function createGameStartOptions(selectedMapId, loadout) {
 export function createProductionGameStartOptions(selectedMapId) {
     return createGameStartOptions(
         selectedMapId,
-        R5_SHOWCASE_SENTENCE_LOADOUT
+        isR6QaLaunchRequested()
+            ? R6_QA_SENTENCE_LOADOUT
+            : R5_SHOWCASE_SENTENCE_LOADOUT
     );
 }
 

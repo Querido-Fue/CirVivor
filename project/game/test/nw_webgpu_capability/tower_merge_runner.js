@@ -49,9 +49,31 @@ const REQUIRED_MEMBER_FLAGS = GPU_TOWER_GROUP_MEMBER_FLAG.TOWER_NOUN
     | GPU_TOWER_GROUP_MEMBER_FLAG.LIVING;
 const SOURCE_GROUP_REVISION = 11;
 const TARGET_GROUP_REVISION = 12;
+const TIMING_SAMPLE_COUNT = 12;
+const TIMING_SOURCE_COUNTS = Object.freeze([2, 64, 256]);
+const TIMING_STAGE_NAMES = Object.freeze(['prepare', 'seal', 'apply']);
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
+}
+
+function percentile(values, quantile) {
+    assert(Array.isArray(values) && values.length > 0,
+        'Tower merge percentile sample이 비어 있습니다.');
+    const sorted = [...values].sort((left, right) => left - right);
+    const rank = Math.max(
+        0,
+        Math.min(sorted.length - 1, Math.ceil(sorted.length * quantile) - 1)
+    );
+    return sorted[rank];
+}
+
+function summarizeSamples(values) {
+    return Object.freeze({
+        sampleCount: values.length,
+        p50: values.length > 0 ? percentile(values, 0.5) : null,
+        p95: values.length > 0 ? percentile(values, 0.95) : null
+    });
 }
 
 function sameBytes(left, right) {
@@ -875,7 +897,193 @@ async function runOldProtocolCase(device) {
     return evidence;
 }
 
-async function runFixture(device) {
+async function runPerformanceCases(device, timestampQuerySupported) {
+    const maximumQueryCount = TIMING_SOURCE_COUNTS.length
+        * TIMING_SAMPLE_COUNT
+        * TIMING_STAGE_NAMES.length
+        * 2;
+    const querySet = timestampQuerySupported
+        ? device.createQuerySet({
+            label: 'r6-tower-merge-acceptance-timestamps',
+            type: 'timestamp',
+            count: maximumQueryCount
+        })
+        : null;
+    const rawSamples = [];
+    let queryCursor = 0;
+    try {
+        for (const sourceCount of TIMING_SOURCE_COUNTS) {
+            for (let sampleIndex = 0;
+                sampleIndex < TIMING_SAMPLE_COUNT;
+                sampleIndex++) {
+                const fixture = createFixture(device, sourceCount);
+                const runtime = new GpuTowerMergeRuntime({
+                    bodyCapacity: fixture.bodyCapacity,
+                    recordCapacity: sourceCount,
+                    readbackSlotCount: 1
+                });
+                runtime.initialize(device, fixture.resources, fixture.protocol);
+                const startedAt = performance.now();
+                const staged = runtime.stage({
+                    ...fixture.program,
+                    transactionId: `r6-timing-${sourceCount}-${sampleIndex}`
+                });
+                assert(staged.accepted,
+                    `merge timing ${sourceCount}/${sampleIndex} stage rejected`);
+                const encoder = device.createCommandEncoder({
+                    label: `r6-tower-merge-timing-${sourceCount}-${sampleIndex}`
+                });
+                const passDescriptors = {};
+                const stageQueryIndices = {};
+                for (const stageName of TIMING_STAGE_NAMES) {
+                    if (!querySet) continue;
+                    const beginningOfPassWriteIndex = queryCursor++;
+                    const endOfPassWriteIndex = queryCursor++;
+                    stageQueryIndices[stageName] = Object.freeze({
+                        beginningOfPassWriteIndex,
+                        endOfPassWriteIndex
+                    });
+                    passDescriptors[stageName] = Object.freeze({
+                        timestampWrites: {
+                            querySet,
+                            beginningOfPassWriteIndex,
+                            endOfPassWriteIndex
+                        }
+                    });
+                }
+                runtime.encodeStagePasses(
+                    encoder,
+                    fixture.program.sourceTick,
+                    passDescriptors
+                );
+                runtime.encodeReadback(encoder, fixture.program.sourceTick);
+                device.queue.submit([encoder.finish()]);
+                runtime.markSubmitted(fixture.program.sourceTick);
+                const completion = await waitForCompletion(runtime, device);
+                const fullFixedBoundaryElapsedMs = performance.now() - startedAt;
+                assert(completion.committed,
+                    `merge timing ${sourceCount}/${sampleIndex} did not commit`);
+                const status = runtime.getStatus();
+                assert(status.pendingReadbackCount === 0
+                    && status.protocolFailureCount === 0
+                    && !status.requiresRecovery,
+                `merge timing leak ${sourceCount}/${sampleIndex}: ${JSON.stringify(status)}`);
+                rawSamples.push({
+                    sourceCount,
+                    sampleIndex,
+                    stageQueryIndices,
+                    fullFixedBoundaryElapsedMs
+                });
+                runtime.destroy();
+                destroyFixture(fixture);
+            }
+        }
+
+        let timestamps = null;
+        if (querySet) {
+            assert(queryCursor === maximumQueryCount,
+                `Tower merge timestamp query count mismatch: ${queryCursor}`);
+            const byteLength = queryCursor * BigUint64Array.BYTES_PER_ELEMENT;
+            const resolveBuffer = device.createBuffer({
+                label: 'r6-tower-merge-timestamp-resolve',
+                size: byteLength,
+                usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC
+            });
+            const readback = device.createBuffer({
+                label: 'r6-tower-merge-timestamp-readback',
+                size: byteLength,
+                usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
+            });
+            try {
+                const encoder = device.createCommandEncoder({
+                    label: 'r6-tower-merge-timestamp-copy'
+                });
+                encoder.resolveQuerySet(
+                    querySet,
+                    0,
+                    queryCursor,
+                    resolveBuffer,
+                    0
+                );
+                encoder.copyBufferToBuffer(
+                    resolveBuffer,
+                    0,
+                    readback,
+                    0,
+                    byteLength
+                );
+                device.queue.submit([encoder.finish()]);
+                await readback.mapAsync(GPUMapMode.READ);
+                timestamps = new BigUint64Array(
+                    readback.getMappedRange().slice(0)
+                );
+                readback.unmap();
+            } finally {
+                resolveBuffer.destroy();
+                readback.destroy();
+            }
+        }
+
+        const cases = TIMING_SOURCE_COUNTS.map((sourceCount) => {
+            const samples = rawSamples.filter((sample) => (
+                sample.sourceCount === sourceCount
+            ));
+            const gpu = {};
+            for (const stageName of TIMING_STAGE_NAMES) {
+                const values = timestamps ? samples.map((sample) => {
+                    const indices = sample.stageQueryIndices[stageName];
+                    return Number(
+                        timestamps[indices.endOfPassWriteIndex]
+                            - timestamps[indices.beginningOfPassWriteIndex]
+                    ) / 1_000_000;
+                }) : [];
+                gpu[stageName] = summarizeSamples(values);
+            }
+            return Object.freeze({
+                sourceCount,
+                gpu: Object.freeze(gpu),
+                fullFixedBoundaryElapsedMs: summarizeSamples(samples.map(
+                    (sample) => sample.fullFixedBoundaryElapsedMs
+                )),
+                bytes: Object.freeze({
+                    programStorage: GPU_TOWER_MERGE_ABI.PROGRAM.STRIDE,
+                    recordStorage: sourceCount
+                        * GPU_TOWER_MERGE_ABI.RECORD.STRIDE,
+                    resultStorage: GPU_TOWER_MERGE_ABI.RESULT.STRIDE,
+                    aggregateReadback: GPU_TOWER_MERGE_ABI.RESULT.STRIDE
+                }),
+                maximumStorageBuffersPerStage:
+                    GPU_TOWER_MERGE_STORAGE_PROFILE
+                        .maximumStorageBuffersPerStage,
+                endingPendingReadbackCount: 0,
+                endingPendingTransactionCount: 0,
+                protocolFailureCount: 0,
+                recoveryRequired: false
+            });
+        });
+        const performanceEvidence = Object.freeze({
+            scope: 'serialized fixed-boundary queue submission; prepare=clear+validate, seal=seal, apply=apply+finalize',
+            hardFrameBudgetClaimed: false,
+            timestampQuerySupported: Boolean(querySet),
+            sampleCountPerCardinality: TIMING_SAMPLE_COUNT,
+            cases
+        });
+        assert(performanceEvidence.cases.every((entry) => (
+            entry.fullFixedBoundaryElapsedMs.sampleCount === TIMING_SAMPLE_COUNT
+            && (!performanceEvidence.timestampQuerySupported
+                || TIMING_STAGE_NAMES.every((stageName) => (
+                    entry.gpu[stageName].sampleCount === TIMING_SAMPLE_COUNT
+                    && Number.isFinite(entry.gpu[stageName].p50)
+                    && Number.isFinite(entry.gpu[stageName].p95)
+                )))
+        )), `R6 timing evidence mismatch: ${JSON.stringify(performanceEvidence)}`);
+        return performanceEvidence;
+    } finally {
+        querySet?.destroy();
+    }
+}
+
+async function runFixture(device, timestampQuerySupported) {
     const cases = [];
     for (const sourceCount of [2, 64, 256]) {
         cases.push(await runCommittedCase(device, sourceCount));
@@ -903,6 +1111,10 @@ async function runFixture(device) {
             survivorOnlyRoster: true,
             hostileRetargetAuthority: 'tower-group-roster'
         }),
+        performance: await runPerformanceCases(
+            device,
+            timestampQuerySupported
+        ),
         storageMaximum:
             GPU_TOWER_MERGE_STORAGE_PROFILE.maximumStorageBuffersPerStage
     });
@@ -931,8 +1143,13 @@ async function run() {
             'WebGPU storage buffer limit below 9');
         result.adapterMaxStorageBuffersPerShaderStage
             = adapter.limits.maxStorageBuffersPerShaderStage;
+        const timestampQuerySupported = adapter.features.has('timestamp-query');
+        result.adapterTimestampQuerySupported = timestampQuerySupported;
         result.requestedMaxStorageBuffersPerShaderStage = 9;
         device = await adapter.requestDevice({
+            requiredFeatures: timestampQuerySupported
+                ? ['timestamp-query']
+                : [],
             requiredLimits: { maxStorageBuffersPerShaderStage: 9 }
         });
         result.deviceMaxStorageBuffersPerShaderStage
@@ -941,7 +1158,10 @@ async function run() {
         device.addEventListener('uncapturederror', (event) => {
             uncapturedErrors.push(event.error?.message ?? String(event.error));
         });
-        result.r6TowerMerge = await runFixture(device);
+        result.r6TowerMerge = await runFixture(
+            device,
+            timestampQuerySupported
+        );
         await device.queue.onSubmittedWorkDone();
         result.uncapturedErrorCount = uncapturedErrors.length;
         assert(uncapturedErrors.length === 0,
