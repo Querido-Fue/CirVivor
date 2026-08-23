@@ -7,6 +7,9 @@ import {
     normalizeAbilityExecutionCommand
 } from '../../contract/ability_execution_contract.js';
 import {
+    TOWER_GROUP_OPERATION_KIND
+} from '../../contract/tower_group_operation_contract.js';
+import {
     GPU_ABILITY_SUBJECT_SNAPSHOT_ABI,
     GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION,
     ABILITY_ENTITY_METADATA_ABI_VERSION,
@@ -15,6 +18,7 @@ import {
     ABILITY_SUBJECT_SNAPSHOT_STATUS,
     clearGpuAbilityEntityMetadata,
     readGpuAbilitySubjectAggregate,
+    readGpuAbilitySubjectIdentities,
     writeGpuAbilityEntityMetadata,
     writeGpuAbilityExecutionCommand
 } from './gpu_ability_subject_snapshot_abi.js';
@@ -33,11 +37,18 @@ const AGGREGATE_WORD_COUNT
     = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.AGGREGATE.STRIDE / 4;
 const SNAPSHOT_WORD_COUNT
     = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE / 4;
+const IDENTITY_WORD_COUNT
+    = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.IDENTITY_RECORD.STRIDE / 4;
 const COMMAND_WORD_COUNT
     = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.COMMAND.STRIDE / 4;
 const INVALID_INDEX = 0xffffffff;
 const LITTLE_ENDIAN = true;
 const PIPELINES_BY_DEVICE = new WeakMap();
+
+function requiresTowerMergeExactIdentityReadback(command) {
+    return command?.compiledAbility?.operationKind
+        === TOWER_GROUP_OPERATION_KIND.MERGE;
+}
 
 export const GPU_ABILITY_SUBJECT_SNAPSHOT_WGSL = /* wgsl */`
 struct BodyCounts {
@@ -165,6 +176,7 @@ const SNAPSHOT_ABI_VERSION: u32 = ${GPU_ABILITY_SUBJECT_SNAPSHOT_ABI_VERSION}u;
 const COMMAND_WORD_COUNT: u32 = ${COMMAND_WORD_COUNT}u;
 const AGGREGATE_WORD_COUNT: u32 = ${AGGREGATE_WORD_COUNT}u;
 const SNAPSHOT_WORD_COUNT: u32 = ${SNAPSHOT_WORD_COUNT}u;
+const IDENTITY_WORD_COUNT: u32 = ${IDENTITY_WORD_COUNT}u;
 const ALIVE_FLAG: u32 = ${GPU_CIRCLE_BODY_META.ALIVE_BIT}u;
 const TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
 const TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
@@ -249,6 +261,14 @@ fn write_snapshot(base: u32, body_slot: u32, ordinal: u32) {
     }
 }
 
+fn write_identity(base: u32, body_slot: u32, ordinal: u32) {
+    let simulation = &simulations.values[body_slot];
+    let record_base = base + ordinal * IDENTITY_WORD_COUNT;
+    atomicStore(&output.values[record_base], body_slot);
+    atomicStore(&output.values[record_base + 1u], simulation.entity_id);
+    atomicStore(&output.values[record_base + 2u], simulation.incarnation);
+}
+
 @compute @workgroup_size(1)
 fn snapshot_subjects(@builtin(global_invocation_id) gid: vec3u) {
     let command_index = gid.x;
@@ -268,6 +288,7 @@ fn snapshot_subjects(@builtin(global_invocation_id) gid: vec3u) {
     let snapshot_capacity = command_word(command_index, 20u);
     let aggregate_base = command_word(command_index, 21u);
     let snapshot_base = command_word(command_index, 22u);
+    let identity_base = command_word(command_index, 23u);
 
     for (var word = 0u; word < AGGREGATE_WORD_COUNT; word++) {
         store_aggregate(aggregate_base, word, 0u);
@@ -338,6 +359,7 @@ fn snapshot_subjects(@builtin(global_invocation_id) gid: vec3u) {
         fingerprint = hash_word(fingerprint, simulation.incarnation);
         if (ordinal < snapshot_capacity) {
             write_snapshot(snapshot_base, body_slot, ordinal);
+            write_identity(identity_base, body_slot, ordinal);
         }
     }
     store_aggregate(aggregate_base, 9u, demand);
@@ -456,7 +478,8 @@ function sameResources(left, right) {
 }
 
 /**
- * GPU-only subject record와 aggregate-only readback ring을 소유합니다.
+ * GPU-only subject record와 aggregate readback ring을 소유합니다. Tower Merge만
+ * bounded identity triple을 함께 읽고, 다른 Ability는 aggregate-only를 유지합니다.
  * Snapshot token은 후속 payload pass가 release할 때까지 output slot을 고정합니다.
  */
 export class GpuAbilitySubjectSnapshotRuntime {
@@ -489,8 +512,12 @@ export class GpuAbilitySubjectSnapshotRuntime {
         this.snapshotRegionByteSize = this.commandCapacity
             * this.subjectCapacity
             * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.SNAPSHOT_RECORD.STRIDE;
+        this.identityRegionByteSize = this.commandCapacity
+            * this.subjectCapacity
+            * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.IDENTITY_RECORD.STRIDE;
         this.outputByteSize = this.aggregateRegionByteSize
-            + this.snapshotRegionByteSize;
+            + this.snapshotRegionByteSize
+            + this.identityRegionByteSize;
         this.metadataBytes = new ArrayBuffer(
             this.capacity
                 * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.ENTITY_METADATA.STRIDE
@@ -530,6 +557,9 @@ export class GpuAbilitySubjectSnapshotRuntime {
         this.ringDeferredCount = 0;
         this.aggregateReadbackByteSize
             = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.AGGREGATE.STRIDE;
+        this.maximumReadbackByteSize = this.aggregateReadbackByteSize
+            + this.subjectCapacity
+                * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.IDENTITY_RECORD.STRIDE;
     }
 
     initialize(device, resources, protocol = {}) {
@@ -629,8 +659,8 @@ export class GpuAbilitySubjectSnapshotRuntime {
             (_, index) => ({
                 buffer: createBuffer(
                     device,
-                    `cirvivor-gpu-ability-subject-aggregate-readback-${index}`,
-                    this.aggregateReadbackByteSize,
+                    `cirvivor-gpu-ability-subject-readback-${index}`,
+                    this.maximumReadbackByteSize,
                     usage.COPY_DST | usage.MAP_READ
                 ),
                 inFlight: false,
@@ -790,6 +820,12 @@ export class GpuAbilitySubjectSnapshotRuntime {
             const aggregateWordOffset = claim.outputSlot * AGGREGATE_WORD_COUNT;
             const snapshotWordOffset = this.aggregateRegionByteSize / 4
                 + claim.outputSlot * this.subjectCapacity * SNAPSHOT_WORD_COUNT;
+            const identityWordOffset = (
+                this.aggregateRegionByteSize + this.snapshotRegionByteSize
+            ) / 4 + claim.outputSlot
+                * this.subjectCapacity * IDENTITY_WORD_COUNT;
+            const exactIdentityReadback
+                = requiresTowerMergeExactIdentityReadback(claim.command);
             const envelope = Object.freeze({
                 command: claim.command,
                 sourceTick: tick,
@@ -799,7 +835,16 @@ export class GpuAbilitySubjectSnapshotRuntime {
                 resourceLease: this.resourceLease,
                 outputSlot: claim.outputSlot,
                 aggregateWordOffset,
-                snapshotWordOffset
+                snapshotWordOffset,
+                identityWordOffset,
+                exactIdentityReadback,
+                exactIdentityCapacity: claim.command.subjectLimit,
+                readbackByteLength: this.aggregateReadbackByteSize
+                    + (exactIdentityReadback
+                        ? claim.command.subjectLimit
+                            * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI
+                                .IDENTITY_RECORD.STRIDE
+                        : 0)
             });
             claim.envelope = envelope;
             claim.readback.envelope = envelope;
@@ -812,7 +857,8 @@ export class GpuAbilitySubjectSnapshotRuntime {
                     outputSlot: claim.outputSlot,
                     snapshotCapacity: this.subjectCapacity,
                     aggregateWordOffset,
-                    snapshotWordOffset
+                    snapshotWordOffset,
+                    identityWordOffset
                 }
             );
         }
@@ -844,6 +890,17 @@ export class GpuAbilitySubjectSnapshotRuntime {
                     0,
                     this.aggregateReadbackByteSize
                 );
+                if (claim.envelope.exactIdentityReadback) {
+                    encoder.copyBufferToBuffer(
+                        this.buffers.output,
+                        claim.envelope.identityWordOffset * 4,
+                        claim.readback.buffer,
+                        this.aggregateReadbackByteSize,
+                        claim.envelope.exactIdentityCapacity
+                            * GPU_ABILITY_SUBJECT_SNAPSHOT_ABI
+                                .IDENTITY_RECORD.STRIDE
+                    );
+                }
             }
             this.device.queue.submit([encoder.finish()]);
             this.lastSubmittedTick = Math.max(this.lastSubmittedTick, tick);
@@ -965,7 +1022,9 @@ export class GpuAbilitySubjectSnapshotRuntime {
             subjectCapacity: this.subjectCapacity,
             readbackSlotCount: this.readbackSlotCount,
             aggregateReadbackByteSize: this.aggregateReadbackByteSize,
+            maximumReadbackByteSize: this.maximumReadbackByteSize,
             outputByteSize: this.outputByteSize,
+            identityRegionByteSize: this.identityRegionByteSize,
             storageBindingCount:
                 GPU_ABILITY_SUBJECT_SNAPSHOT_STORAGE_BINDING_COUNT,
             pendingCommandCount: this.pendingCommands.length,
@@ -981,7 +1040,8 @@ export class GpuAbilitySubjectSnapshotRuntime {
             lastSubmittedTick: this.lastSubmittedTick,
             lastCompletedTick: this.lastCompletedTick,
             requiresRecovery: this.requiresRecovery(),
-            subjectReadbackPolicy: 'aggregate-only'
+            subjectReadbackPolicy:
+                'aggregate-only-except-tower-merge-exact-identity'
         });
     }
 
@@ -1021,7 +1081,11 @@ export class GpuAbilitySubjectSnapshotRuntime {
 
     #beginReadback(slot) {
         const envelope = slot.envelope;
-        slot.buffer.mapAsync(this.mapReadMode).then(() => {
+        slot.buffer.mapAsync(
+            this.mapReadMode,
+            0,
+            envelope.readbackByteLength
+        ).then(() => {
             const authentic = !this.destroyed
                 && this.state === 'ready'
                 && slot.inFlight
@@ -1033,7 +1097,10 @@ export class GpuAbilitySubjectSnapshotRuntime {
                 return;
             }
             try {
-                const copied = slot.buffer.getMappedRange().slice(0);
+                const copied = slot.buffer.getMappedRange(
+                    0,
+                    envelope.readbackByteLength
+                ).slice(0);
                 const aggregate = readGpuAbilitySubjectAggregate(copied);
                 const command = envelope.command;
                 const exactEnvelope = aggregate.sessionGeneration
@@ -1051,12 +1118,26 @@ export class GpuAbilitySubjectSnapshotRuntime {
                     throw new RangeError('ability aggregate provenance가 command와 다릅니다.');
                 }
                 let snapshotToken = null;
+                let subjectIdentities = null;
                 if (aggregate.status
                     === ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE) {
                     if (aggregate.subjectCount <= 0
                         || aggregate.subjectCount !== aggregate.capacityDemand
                         || aggregate.errorFlags !== 0) {
                         throw new RangeError('complete ability aggregate count가 잘못됐습니다.');
+                    }
+                    if (envelope.exactIdentityReadback) {
+                        subjectIdentities = readGpuAbilitySubjectIdentities(
+                            copied,
+                            aggregate.subjectCount,
+                            {
+                                byteOffset: this.aggregateReadbackByteSize,
+                                bodyCapacity: this.capacity,
+                                commandFingerprint: command.fingerprint,
+                                snapshotFingerprint:
+                                    aggregate.snapshotFingerprint
+                            }
+                        );
                     }
                     snapshotToken = Object.freeze({});
                     this.snapshotRecords.set(snapshotToken, Object.freeze({
@@ -1068,6 +1149,11 @@ export class GpuAbilitySubjectSnapshotRuntime {
                     this.retainedSnapshotTokens.add(snapshotToken);
                 } else {
                     this.freeOutputSlots.push(envelope.outputSlot);
+                    if (envelope.exactIdentityReadback
+                        && aggregate.status
+                            === ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT) {
+                        subjectIdentities = Object.freeze([]);
+                    }
                 }
                 if (aggregate.status
                     === ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT) {
@@ -1086,6 +1172,9 @@ export class GpuAbilitySubjectSnapshotRuntime {
                     targetFixedTick: command.targetFixedTick,
                     compiledAbilityCode: command.compiledAbilityCode,
                     snapshotToken,
+                    ...(subjectIdentities !== null
+                        ? { subjectIdentities }
+                        : {}),
                     reason: null
                 }));
                 this.completedExecutionCount++;

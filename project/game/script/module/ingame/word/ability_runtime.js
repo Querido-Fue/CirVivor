@@ -8,6 +8,11 @@ import {
 import {
     TOWER_GROUP_OPERATION_KIND
 } from '../contract/tower_group_operation_contract.js';
+import {
+    sealTowerMergeIdentityProof,
+    sameTowerMergeIdentityProof,
+    towerMergeSnapshotMatchesIdentityProof
+} from '../contract/tower_merge_identity_proof_contract.js';
 
 const MAX_EXECUTION_HISTORY = 128;
 
@@ -125,6 +130,10 @@ export class AbilityRuntime {
         }
         this.wordSystem = options.wordSystem;
         this.endpoint = assertEndpoint(options.endpoint);
+        this.towerMergeIdentityProofProvider
+            = typeof options.towerMergeIdentityProofProvider === 'function'
+                ? options.towerMergeIdentityProofProvider
+                : null;
         this.nextExecutionOrdinal = requirePositiveSafeInteger(
             options.initialExecutionOrdinal ?? 1,
             'initialExecutionOrdinal'
@@ -222,13 +231,76 @@ export class AbilityRuntime {
                         ? 0xffffffff
                         : request.compiledAbility.budgets.generation
                 });
-                record = Object.freeze({ request, command });
+                let towerMergeIdentityProof = null;
+                let proofRejection = null;
+                if (isTowerMergeExecution({ request })) {
+                    try {
+                        const capture = this.towerMergeIdentityProofProvider?.({
+                            request,
+                            command
+                        }) ?? null;
+                        if (capture?.accepted === true && capture.proof) {
+                            towerMergeIdentityProof
+                                = sealTowerMergeIdentityProof(capture.proof);
+                        } else {
+                            proofRejection = capture ?? Object.freeze({
+                                outcomeCode:
+                                    ABILITY_EXECUTION_OUTCOME_CODE
+                                        .RUNTIME_UNAVAILABLE,
+                                recoveryRequired: false,
+                                reason: 'tower-merge-identity-provider-unavailable'
+                            });
+                        }
+                    } catch (error) {
+                        proofRejection = Object.freeze({
+                            outcomeCode:
+                                ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                            recoveryRequired: true,
+                            reason: 'tower-merge-identity-proof-contract',
+                            failure: Object.freeze({
+                                name: String(error?.name ?? 'Error'),
+                                message: String(error?.message ?? error)
+                            })
+                        });
+                    }
+                }
+                record = Object.freeze({
+                    request,
+                    command,
+                    towerMergeIdentityProof
+                });
                 deferred.record = record;
                 this.#transitionExecution(
                     record,
                     ABILITY_EXECUTION_STATE.REQUESTED,
                     tick
                 );
+                if (proofRejection) {
+                    this.deferredActivationRequests.splice(index, 1);
+                    this.nextExecutionOrdinal++;
+                    rejectedCount++;
+                    if (proofRejection.recoveryRequired === true) {
+                        this.recoveryRequired = true;
+                        this.failure = Object.freeze({
+                            code: proofRejection.reason
+                                ?? 'tower-merge-identity-proof-failed',
+                            message: 'Tower Merge execution-start identity proof를 봉인하지 못했습니다.',
+                            detail: proofRejection.failure ?? null
+                        });
+                    }
+                    this.#recordTerminalOutcome(
+                        record,
+                        proofRejection.outcomeCode
+                            ?? ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED,
+                        tick,
+                        {
+                            subjectCount: proofRejection.subjectCount ?? 0,
+                            capacityDemand: 0,
+                            generatedCount: 0
+                        }
+                    );
+                    continue;
+                }
             }
             const command = record.command;
             const receipt = this.endpoint.requestAbilityExecutionCommand(command);
@@ -282,7 +354,7 @@ export class AbilityRuntime {
         });
     }
 
-    /** Endpoint의 aggregate-only completion을 exact command와 대조합니다. */
+    /** Endpoint completion을 exact command 및 Merge identity proof와 대조합니다. */
     observeCompletedSubjectSnapshots(currentFixedTick) {
         const tick = requirePositiveSafeInteger(
             currentFixedTick,
@@ -327,6 +399,46 @@ export class AbilityRuntime {
                     record,
                     ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
                     tick,
+                    completion
+                );
+                continue;
+            }
+            const mergeIdentityExact = !isTowerMergeExecution(record)
+                || ![
+                    ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE,
+                    ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT
+                ].includes(completion.status)
+                || towerMergeSnapshotMatchesIdentityProof(
+                    record.towerMergeIdentityProof,
+                    completion
+                );
+            if (!mergeIdentityExact) {
+                let released = true;
+                if (completion.snapshotToken) {
+                    released = this.endpoint.releaseAbilitySubjectSnapshot(
+                        completion.snapshotToken
+                    );
+                }
+                this.inFlightByExecutionId.delete(command.executionId);
+                observedCount++;
+                if (!released) {
+                    this.recoveryRequired = true;
+                    this.failure = Object.freeze({
+                        code: 'ability-merge-source-changed-release-failed',
+                        message: 'SOURCE_CHANGED Merge snapshot token을 release하지 못했습니다.'
+                    });
+                    this.#recordTerminalOutcome(
+                        record,
+                        ABILITY_EXECUTION_OUTCOME_CODE.PROTOCOL_REJECTED,
+                        completion.sourceTick || tick,
+                        completion
+                    );
+                    continue;
+                }
+                this.#recordTerminalOutcome(
+                    record,
+                    ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED,
+                    completion.sourceTick || tick,
                     completion
                 );
                 continue;
@@ -389,7 +501,9 @@ export class AbilityRuntime {
                 const ready = Object.freeze({
                     request: record.request,
                     command,
-                    completion
+                    completion,
+                    towerMergeIdentityProof:
+                        record.towerMergeIdentityProof
                 });
                 if (isTowerMergeExecution(record)) {
                     this.readyTowerMergeSnapshots.push(ready);
@@ -499,8 +613,19 @@ export class AbilityRuntime {
     }
 
     /** Merge coordinator가 token을 CPU plan으로 봉인한 뒤 terminal만 기다립니다. */
-    markTowerMergePending(record, fixedTick) {
+    markTowerMergePending(record, fixedTick, coordinatorReceipt = null) {
         if (!record?.completion?.snapshotToken || this.destroyed) return false;
+        if (!sameTowerMergeIdentityProof(
+            record.towerMergeIdentityProof,
+            coordinatorReceipt?.executionStartIdentityProof
+        )) {
+            this.recoveryRequired = true;
+            this.failure = Object.freeze({
+                code: 'ability-merge-identity-proof-not-sealed',
+                message: 'Tower Merge pending transaction에 exact proof가 봉인되지 않았습니다.'
+            });
+            return false;
+        }
         if (!this.endpoint.releaseAbilitySubjectSnapshot(
             record.completion.snapshotToken
         )) {

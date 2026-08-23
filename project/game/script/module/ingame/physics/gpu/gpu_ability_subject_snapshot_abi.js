@@ -4,6 +4,9 @@ import {
     ABILITY_SUBJECT_SNAPSHOT_ERROR_FLAG,
     ABILITY_SUBJECT_SNAPSHOT_STATUS
 } from '../../contract/ability_execution_contract.js';
+import {
+    computeTowerMergeSnapshotIdentityFingerprint
+} from '../../contract/tower_merge_identity_proof_contract.js';
 import { GPU_CIRCLE_BODY_ABI_VERSION } from './gpu_circle_body_abi.js';
 
 const LITTLE_ENDIAN = true;
@@ -51,7 +54,7 @@ export const GPU_ABILITY_SUBJECT_SNAPSHOT_ABI = Object.freeze({
         SNAPSHOT_CAPACITY: 80,
         AGGREGATE_WORD_OFFSET: 84,
         SNAPSHOT_WORD_OFFSET: 88,
-        RESERVED: 92
+        IDENTITY_WORD_OFFSET: 92
     }),
     AGGREGATE: Object.freeze({
         STRIDE: 64,
@@ -102,6 +105,12 @@ export const GPU_ABILITY_SUBJECT_SNAPSHOT_ABI = Object.freeze({
         FLOW_SPEED: 100,
         ROUTE_META: 104,
         ROUTE_PROFILE_CODE: 108
+    }),
+    IDENTITY_RECORD: Object.freeze({
+        STRIDE: 12,
+        PRIVATE_SLOT: 0,
+        ENTITY_ID: 4,
+        INCARNATION: 8
     })
 });
 
@@ -212,7 +221,7 @@ export function writeGpuAbilityExecutionCommand(
         [layout.SNAPSHOT_CAPACITY, output.snapshotCapacity],
         [layout.AGGREGATE_WORD_OFFSET, output.aggregateWordOffset],
         [layout.SNAPSHOT_WORD_OFFSET, output.snapshotWordOffset],
-        [layout.RESERVED, 0]
+        [layout.IDENTITY_WORD_OFFSET, output.identityWordOffset]
     ];
     for (const [fieldOffset, value] of uintValues) {
         view.setUint32(
@@ -286,6 +295,93 @@ export function readGpuAbilitySubjectAggregate(buffer) {
         throw new RangeError('ability aggregate ABI/status가 올바르지 않습니다.');
     }
     return result;
+}
+
+/** Tower Merge 전용 bounded identity-only readback을 exact 원소 배열로 해석합니다. */
+export function readGpuAbilitySubjectIdentities(
+    buffer,
+    subjectCount,
+    options = {}
+) {
+    if (!(buffer instanceof ArrayBuffer) && !ArrayBuffer.isView(buffer)) {
+        throw new TypeError('ability subject identity readback이 필요합니다.');
+    }
+    const source = buffer instanceof ArrayBuffer
+        ? buffer
+        : buffer.buffer.slice(
+            buffer.byteOffset,
+            buffer.byteOffset + buffer.byteLength
+        );
+    const count = requireUint32(subjectCount, 'ability subject identity count');
+    const byteOffset = requireUint32(
+        options.byteOffset
+            ?? GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.AGGREGATE.STRIDE,
+        'ability subject identity byteOffset'
+    );
+    const bodyCapacity = requireUint32(
+        options.bodyCapacity,
+        'ability subject identity bodyCapacity'
+    );
+    const layout = GPU_ABILITY_SUBJECT_SNAPSHOT_ABI.IDENTITY_RECORD;
+    if (bodyCapacity === 0
+        || byteOffset + count * layout.STRIDE > source.byteLength) {
+        throw new RangeError('ability subject identity readback 범위가 짧습니다.');
+    }
+    const view = new DataView(source);
+    const identities = [];
+    const slots = new Set();
+    const handles = new Set();
+    for (let index = 0; index < count; index++) {
+        const offset = byteOffset + index * layout.STRIDE;
+        const privateSlot = view.getUint32(
+            offset + layout.PRIVATE_SLOT,
+            LITTLE_ENDIAN
+        );
+        const entityId = view.getUint32(
+            offset + layout.ENTITY_ID,
+            LITTLE_ENDIAN
+        );
+        const incarnation = view.getUint32(
+            offset + layout.INCARNATION,
+            LITTLE_ENDIAN
+        );
+        const handle = `${entityId}:${incarnation}`;
+        if (privateSlot >= bodyCapacity
+            || entityId === 0
+            || incarnation === 0
+            || slots.has(privateSlot)
+            || handles.has(handle)) {
+            throw new RangeError('ability subject exact identity가 중복되거나 잘못됐습니다.');
+        }
+        slots.add(privateSlot);
+        handles.add(handle);
+        identities.push(Object.freeze({
+            privateSlot,
+            entityId,
+            incarnation
+        }));
+    }
+    for (let index = 1; index < identities.length; index++) {
+        if (identities[index - 1].privateSlot >= identities[index].privateSlot) {
+            throw new RangeError('ability subject exact identity slot 순서가 다릅니다.');
+        }
+    }
+    const commandFingerprint = requireUint32(
+        options.commandFingerprint,
+        'ability subject identity commandFingerprint'
+    );
+    const snapshotFingerprint = requireUint32(
+        options.snapshotFingerprint,
+        'ability subject identity snapshotFingerprint'
+    );
+    if (commandFingerprint === 0
+        || computeTowerMergeSnapshotIdentityFingerprint(
+            commandFingerprint,
+            identities
+        ) !== snapshotFingerprint) {
+        throw new RangeError('ability subject exact identity fingerprint가 다릅니다.');
+    }
+    return Object.freeze(identities);
 }
 
 export {

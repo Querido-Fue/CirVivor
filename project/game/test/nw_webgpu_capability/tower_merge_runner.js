@@ -780,6 +780,67 @@ async function runSourceChangedCase(device, mutation) {
     return evidence;
 }
 
+async function runLiveDamageCase(device) {
+    const fixture = createFixture(device, 2);
+    const runtime = new GpuTowerMergeRuntime({
+        bodyCapacity: fixture.bodyCapacity,
+        recordCapacity: 2,
+        readbackSlotCount: 1
+    });
+    runtime.initialize(device, fixture.resources, fixture.protocol);
+    const staged = runtime.stage({
+        ...fixture.program,
+        transactionId: 'r6-same-tick-live-damage'
+    });
+    assert(staged.accepted, 'same-tick live damage stage rejected');
+    const damageFixedPoint = 137;
+    const damagedSlot = 1;
+    const healthOffset = damagedSlot
+        * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+        + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH;
+    device.queue.writeBuffer(
+        fixture.resources.simulation,
+        healthOffset,
+        new Int32Array([
+            fixture.sources[damagedSlot].health - damageFixedPoint
+        ])
+    );
+    encodeAndSubmit(runtime, device, fixture.program.sourceTick);
+    const completion = await waitForCompletion(runtime, device);
+    const expectedTargetHp = fixture.target.currentHpFixedPoint
+        - damageFixedPoint;
+    assert(completion.committed
+        && !completion.recoveryRequired
+        && completion.targetCurrentHpFixedPoint === expectedTargetHp
+        && completion.evidence.appliedCount === 2,
+    `same-tick live damage completion mismatch: ${JSON.stringify(completion)}`);
+    const actual = await readBuffers(device, allBuffers(fixture));
+    const simulation = new DataView(actual.simulation);
+    const survivorHp = simulation.getInt32(
+        fixture.survivor.slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE
+            + GPU_CIRCLE_BODY_ABI.SIMULATION.HEALTH,
+        true
+    );
+    assert(survivorHp === expectedTargetHp,
+        `same-tick live damage survivor HP mismatch: ${survivorHp}`);
+    const status = runtime.getStatus();
+    const evidence = Object.freeze({
+        committed: completion.committed,
+        stagedTargetCurrentHpFixedPoint:
+            fixture.target.currentHpFixedPoint,
+        damageFixedPoint,
+        gpuTargetCurrentHpFixedPoint:
+            completion.targetCurrentHpFixedPoint,
+        survivorCurrentHpFixedPoint: survivorHp,
+        appliedCount: completion.evidence.appliedCount,
+        executionOrder: status.executionOrder,
+        requiresRecovery: status.requiresRecovery
+    });
+    runtime.destroy();
+    destroyFixture(fixture);
+    return evidence;
+}
+
 async function runMalformedProgramCase(device) {
     const fixture = createFixture(device, 2);
     const runtime = new GpuTowerMergeRuntime({
@@ -1095,6 +1156,7 @@ async function runFixture(device, timestampQuerySupported) {
             death: await runSourceChangedCase(device, 'death'),
             aba: await runSourceChangedCase(device, 'aba')
         }),
+        sameTickDamage: await runLiveDamageCase(device),
         malformedProgram: await runMalformedProgramCase(device),
         capacity: await runCapacityCase(device),
         oldProtocol: await runOldProtocolCase(device),

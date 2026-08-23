@@ -85,6 +85,12 @@ import {
 import {
     R5_SHOOT_ACTOR_ACTION_PROFILE
 } from './production/script/data/word/r5_actor_action_profile_data.js';
+import {
+    R6_TOWERS_MERGE_SENTENCE
+} from './production/script/data/word/r3_word_catalog_data.js';
+import {
+    SentenceCompiler
+} from './production/script/module/ingame/word/sentence_compiler.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const CAPACITY = 8;
@@ -100,6 +106,9 @@ const PROTOCOL = Object.freeze({
     deviceGeneration: 1,
     authoritativeEpoch: 1
 });
+const R6_MERGE_OPERATION = new SentenceCompiler().compile(
+    R6_TOWERS_MERGE_SENTENCE
+);
 
 function assert(condition, message) {
     if (!condition) throw new Error(message);
@@ -1177,16 +1186,57 @@ async function runR3TowerSubjectAfterSplit(
         const status = runtime.getStatus();
         assert(status.storageBindingCount <= 9,
             `${label} R3 Q storage exceeded`);
-        assert(status.subjectReadbackPolicy === 'aggregate-only',
+        assert(status.subjectReadbackPolicy
+                === 'aggregate-only-except-tower-merge-exact-identity',
             `${label} R3 Q readback policy mismatch`);
-        runtime.releaseSnapshot(completion.snapshotToken);
+        assert(runtime.releaseSnapshot(completion.snapshotToken) === true,
+            `${label} R3 Q snapshot release failed`);
+
+        const mergeStaged = runtime.stageExecution({
+            compiledAbility: R6_MERGE_OPERATION,
+            executionId: `${label}-r6-merge-identity`,
+            executionOrdinal: 2,
+            targetFixedTick: 302,
+            aimPoint: { x: 0, y: 0 }
+        });
+        assert(mergeStaged.accepted === true,
+            `${label} R6 Merge subject stage failed: ${JSON.stringify(mergeStaged)}`);
+        const mergeSubmitted = runtime.submitPendingForFixedTick(302);
+        assert(mergeSubmitted.submittedCount === 1,
+            `${label} R6 Merge subject submit failed: ${JSON.stringify(mergeSubmitted)}`);
+        const mergeCompletion = await waitForSubjectCompletion(
+            runtime,
+            device,
+            `${label}-r6-merge-identity`
+        );
+        assert(mergeCompletion.status
+                === ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE,
+            `${label} R6 Merge subject status: ${JSON.stringify(mergeCompletion)}`);
+        assert(mergeCompletion.subjectCount === records.length
+            && mergeCompletion.subjectIdentities?.length === records.length,
+        `${label} R6 Merge exact identity cardinality mismatch`);
+        assert(mergeCompletion.subjectIdentities.every((identity, slot) => {
+            const record = records[slot];
+            const handle = handlesByLogicalId.get(record.logicalTowerId);
+            return identity.privateSlot === slot
+                && identity.entityId === handle.entityId
+                && identity.incarnation === handle.incarnation;
+        }), `${label} R6 Merge exact identity mismatch`);
+        assert(runtime.releaseSnapshot(mergeCompletion.snapshotToken) === true,
+            `${label} R6 Merge snapshot release failed`);
+        const mergeStatus = runtime.getStatus();
         return Object.freeze({
             subjectCount: completion.subjectCount,
             capacityDemand: completion.capacityDemand,
             aggregateReadbackBytes: status.aggregateReadbackByteSize,
+            mergeExactIdentityCount:
+                mergeCompletion.subjectIdentities.length,
+            mergeMaximumReadbackBytes:
+                mergeStatus.maximumReadbackByteSize,
+            mergeExactIdentityReadback: true,
             storageMaximum: status.storageBindingCount,
             subjectReadbackPolicy: status.subjectReadbackPolicy,
-            protocolRejectedCount: status.protocolRejectedCount
+            protocolRejectedCount: mergeStatus.protocolRejectedCount
         });
     } finally {
         runtime.destroy();

@@ -4,6 +4,12 @@ import {
     TOWER_MERGE_RESULT,
     requirePositiveSafeInteger
 } from './tower_group_contract.js';
+import {
+    captureTowerMergeIdentityProof,
+    sealTowerMergeIdentityProof,
+    sameTowerMergeIdentityProof,
+    towerMergePlanMatchesIdentityProof
+} from '../../contract/tower_merge_identity_proof_contract.js';
 
 const DEFAULT_HISTORY_CAPACITY = 1024;
 
@@ -15,7 +21,9 @@ const REQUIRED_BACKEND_METHODS = Object.freeze([
     'cleanupTowerMergeTransaction',
     'cancelAllTowerMerges',
     'getTowerMergeRuntimeStatus',
-    'getEventProtocolState'
+    'getEventProtocolState',
+    'getTowerGroupRuntimeStatus',
+    'resolveExactAbilityBodySlot'
 ]);
 
 const REQUIRED_REGISTRY_METHODS = Object.freeze([
@@ -62,8 +70,8 @@ function terminalReceipt(result, reason, source = {}) {
 }
 
 /**
- * CPU TowerGroup plan, one GPU merge program, exact body cleanup, registry 제거,
- * ledger commit을 owner fixed boundary에서 직렬화합니다.
+ * CPU TowerGroup plan, one GPU merge program, CPU durable ledger commit,
+ * backend finalize, exact body cleanup, registry 제거를 owner fixed boundary에서 직렬화합니다.
  */
 export class TowerMergeCoordinator {
     constructor(options = {}) {
@@ -74,7 +82,8 @@ export class TowerMergeCoordinator {
             'refreshPendingMerge',
             'commitMerge',
             'rejectMerge',
-            'getTowerRecords'
+            'getTowerRecords',
+            'getStatus'
         ]) {
             if (typeof state?.[method] !== 'function') {
                 throw new TypeError(`TowerMergeCoordinator state.${method}()가 필요합니다.`);
@@ -112,6 +121,56 @@ export class TowerMergeCoordinator {
         this.cleanupCount = 0;
     }
 
+    /** Ability activation 순간의 CPU/GPU Tower exact roster를 immutable proof로 봉인합니다. */
+    captureExecutionStartIdentityProof(command = {}) {
+        if (this.destroyed || this.failure) {
+            return Object.freeze({
+                accepted: false,
+                outcomeCode: 'PROTOCOL_REJECTED',
+                recoveryRequired: true,
+                reason: this.destroyed
+                    ? TOWER_MERGE_REASON.DESTROYED
+                    : 'RECOVERY_REQUIRED',
+                proof: null
+            });
+        }
+        try {
+            const proof = captureTowerMergeIdentityProof({
+                towerGroupState: this.towerGroupState,
+                backend: this.backend,
+                commandFingerprint:
+                    command.fingerprint ?? command.commandFingerprint
+            });
+            return Object.freeze({
+                accepted: true,
+                outcomeCode: null,
+                recoveryRequired: false,
+                reason: null,
+                proof
+            });
+        } catch (error) {
+            const runtime = this.backend.getTowerMergeRuntimeStatus?.() ?? null;
+            const recoveryRequired = runtime?.requiresRecovery === true;
+            return Object.freeze({
+                accepted: false,
+                outcomeCode: recoveryRequired
+                    ? 'PROTOCOL_REJECTED'
+                    : 'SOURCE_CHANGED',
+                recoveryRequired,
+                reason: recoveryRequired
+                    ? 'tower-merge-identity-runtime-failure'
+                    : TOWER_MERGE_REASON.SOURCE_CHANGED,
+                subjectCount: this.towerGroupState
+                    .getStatus().livingTowerCount,
+                proof: null,
+                failure: freezeFailure(
+                    'tower-merge-execution-start-identity',
+                    error
+                )
+            });
+        }
+    }
+
     requestTowerMerge(source = {}) {
         if (this.destroyed || this.failure) {
             return terminalReceipt(
@@ -123,29 +182,85 @@ export class TowerMergeCoordinator {
             );
         }
         this.requestedCount++;
+        const transactionId = typeof source?.transactionId === 'string'
+            ? source.transactionId
+            : null;
+        let executionStartIdentityProof;
+        try {
+            executionStartIdentityProof = sealTowerMergeIdentityProof(
+                source.executionStartIdentityProof
+            );
+        } catch (error) {
+            const receipt = terminalReceipt(
+                TOWER_MERGE_RESULT.PROTOCOL_FAILURE,
+                'EXECUTION_START_IDENTITY_PROOF_INVALID',
+                {
+                    transactionId,
+                    failure: freezeFailure(
+                        'tower-merge-execution-start-proof-contract',
+                        error
+                    )
+                }
+            );
+            this.protocolFailureCount++;
+            this.lastResult = receipt;
+            return receipt;
+        }
+        const known = transactionId ? this.history.get(transactionId) : null;
+        if (known) {
+            if (sameTowerMergeIdentityProof(
+                executionStartIdentityProof,
+                known.executionStartIdentityProof
+            )) {
+                this.replayedCount++;
+                return known.receipt;
+            }
+            const receipt = terminalReceipt(
+                TOWER_MERGE_RESULT.REJECTED_CONFLICTING_TRANSACTION,
+                TOWER_MERGE_REASON.SOURCE_CHANGED,
+                { transactionId }
+            );
+            this.rejectedCount++;
+            this.lastResult = receipt;
+            return receipt;
+        }
+        const currentIdentity = this.captureExecutionStartIdentityProof({
+            fingerprint: executionStartIdentityProof.commandFingerprint
+        });
+        if (currentIdentity.accepted !== true
+            || !sameTowerMergeIdentityProof(
+                executionStartIdentityProof,
+                currentIdentity.proof
+            )) {
+            const protocolFailure = currentIdentity.recoveryRequired === true;
+            const receipt = terminalReceipt(
+                protocolFailure
+                    ? TOWER_MERGE_RESULT.PROTOCOL_FAILURE
+                    : TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED,
+                protocolFailure
+                    ? currentIdentity.reason
+                    : TOWER_MERGE_REASON.SOURCE_CHANGED,
+                {
+                    transactionId,
+                    failure: currentIdentity.failure ?? null
+                }
+            );
+            if (protocolFailure) this.protocolFailureCount++;
+            else this.rejectedCount++;
+            this.#remember(
+                transactionId,
+                null,
+                receipt,
+                executionStartIdentityProof
+            );
+            this.lastResult = receipt;
+            return receipt;
+        }
         let plan;
         try {
             plan = this.towerGroupState.planMerge(source);
         } catch (error) {
             return this.#latchProtocolFailure('tower-merge-plan', error);
-        }
-        const transactionId = plan?.transactionId
-            ?? source?.transactionId
-            ?? null;
-        const known = typeof transactionId === 'string'
-            ? this.history.get(transactionId)
-            : null;
-        if (known) {
-            if (plan === known.plan
-                || (plan?.fingerprint
-                    && plan.fingerprint === known.plan?.fingerprint)) {
-                this.replayedCount++;
-                return known.receipt;
-            }
-            if (plan?.result === TOWER_MERGE_RESULT.PROTOCOL_FAILURE) {
-                this.protocolFailureCount++;
-            }
-            return plan;
         }
         if (plan?.accepted !== true) {
             const receipt = terminalReceipt(
@@ -154,7 +269,36 @@ export class TowerMergeCoordinator {
                 { ...plan }
             );
             this.rejectedCount++;
-            this.#remember(transactionId, plan, receipt);
+            this.#remember(
+                transactionId,
+                plan,
+                receipt,
+                executionStartIdentityProof
+            );
+            this.lastResult = receipt;
+            return receipt;
+        }
+        if (!towerMergePlanMatchesIdentityProof(
+            executionStartIdentityProof,
+            plan
+        )) {
+            const rejected = this.towerGroupState.rejectMerge(
+                plan,
+                TOWER_MERGE_REASON.SOURCE_CHANGED,
+                TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED
+            );
+            const receipt = terminalReceipt(
+                rejected.result,
+                rejected.reason,
+                { ...rejected }
+            );
+            this.rejectedCount++;
+            this.#remember(
+                transactionId,
+                plan,
+                receipt,
+                executionStartIdentityProof
+            );
             this.lastResult = receipt;
             return receipt;
         }
@@ -170,12 +314,18 @@ export class TowerMergeCoordinator {
                 { ...rejected }
             );
             this.rejectedCount++;
-            this.#remember(transactionId, plan, receipt);
+            this.#remember(
+                transactionId,
+                plan,
+                receipt,
+                executionStartIdentityProof
+            );
             this.lastResult = receipt;
             return receipt;
         }
         const receipt = Object.freeze({
             ...plan,
+            executionStartIdentityProof,
             pending: true,
             staged: false,
             terminal: false,
@@ -183,11 +333,20 @@ export class TowerMergeCoordinator {
         });
         this.pending = {
             plan,
+            stagedPlan: null,
+            executionStartIdentityProof,
             protocol: null,
             stageReceipt: null,
-            phase: 'planned'
+            phase: 'planned',
+            cpuCommitted: false,
+            cpuCommitReceipt: null
         };
-        this.#remember(transactionId, plan, receipt);
+        this.#remember(
+            transactionId,
+            plan,
+            receipt,
+            executionStartIdentityProof
+        );
         this.lastResult = receipt;
         return receipt;
     }
@@ -302,6 +461,7 @@ export class TowerMergeCoordinator {
         }
         this.pending.protocol = protocol;
         this.pending.stageReceipt = staged;
+        this.pending.stagedPlan = refreshed;
         this.pending.phase = 'gpu-staged';
         this.stagedCount++;
         const receipt = this.#pendingReceipt();
@@ -332,21 +492,25 @@ export class TowerMergeCoordinator {
         }
         const completion = completions[0];
         const pending = this.pending;
+        const stagedPlan = pending.stagedPlan;
         const authentic = tick > pending.stageReceipt.sourceTick
-            && completion?.transactionId === pending.plan.transactionId
-            && completion.planFingerprint === pending.plan.fingerprint
+            && stagedPlan?.accepted === true
+            && completion?.transactionId === stagedPlan.transactionId
+            && completion.planFingerprint === stagedPlan.fingerprint
             && completion.sourceTick === pending.stageReceipt.sourceTick
-            && completion.sourceCount === pending.plan.sourceCount
+            && completion.sourceCount === stagedPlan.sourceCount
             && sameProtocol(completion, pending.protocol)
             && completion.survivorHandle?.entityId
-                === pending.plan.survivor.exactGpuBinding.entityId
+                === stagedPlan.survivor.exactGpuBinding.entityId
             && completion.survivorHandle?.incarnation
-                === pending.plan.survivor.exactGpuBinding.incarnation;
+                === stagedPlan.survivor.exactGpuBinding.incarnation;
         if (!authentic || completion.recoveryRequired === true) {
             try {
                 this.backend.finalizeTowerMergeTransaction({
-                    transactionId: pending.plan.transactionId,
-                    planFingerprint: pending.plan.fingerprint,
+                    transactionId: stagedPlan?.transactionId
+                        ?? pending.plan.transactionId,
+                    planFingerprint: stagedPlan?.fingerprint
+                        ?? pending.plan.fingerprint,
                     committed: false,
                     recoveryRequired: true
                 });
@@ -356,21 +520,45 @@ export class TowerMergeCoordinator {
                 completion
             );
         }
-        if (completion.rejectedSourceChanged === true) {
-            const backend = this.backend.finalizeTowerMergeTransaction({
-                transactionId: pending.plan.transactionId,
-                planFingerprint: pending.plan.fingerprint,
-                committed: false,
-                recoveryRequired: false
-            });
-            const ledger = this.towerGroupState.rejectMerge(
-                pending.plan,
-                TOWER_MERGE_REASON.SOURCE_CHANGED,
-                TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED
+        const refreshed = this.towerGroupState.refreshPendingMerge(
+            pending.plan
+        );
+        if (refreshed?.accepted === true) {
+            pending.plan = refreshed;
+            const entry = this.history.get(refreshed.transactionId);
+            if (entry) entry.plan = refreshed;
+        } else if (completion.committed === true) {
+            return this.#latchProtocolFailure(
+                'tower-merge-committed-after-cpu-source-change',
+                Object.freeze({ completion, refreshed })
             );
+        }
+        if (completion.rejectedSourceChanged === true) {
+            let backend;
+            try {
+                backend = this.backend.finalizeTowerMergeTransaction({
+                    transactionId: stagedPlan.transactionId,
+                    planFingerprint: stagedPlan.fingerprint,
+                    committed: false,
+                    recoveryRequired: false
+                });
+            } catch (error) {
+                return this.#latchProtocolFailure(
+                    'tower-merge-rejection-rollback',
+                    error
+                );
+            }
+            const ledger = refreshed?.accepted === true
+                ? this.towerGroupState.rejectMerge(
+                    refreshed,
+                    TOWER_MERGE_REASON.SOURCE_CHANGED,
+                    TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED
+                )
+                : refreshed;
             if (backend?.accepted !== true
                 || backend?.requiresRecovery === true
-                || ledger?.result === TOWER_MERGE_RESULT.PROTOCOL_FAILURE) {
+                || ledger?.result
+                    !== TOWER_MERGE_RESULT.REJECTED_SOURCE_CHANGED) {
                 return this.#latchProtocolFailure(
                     'tower-merge-rejection-rollback',
                     backend?.failure ?? ledger
@@ -389,14 +577,31 @@ export class TowerMergeCoordinator {
             this.#complete(receipt);
             return receipt;
         }
-        if (completion.committed !== true) {
+        if (completion.committed !== true || refreshed?.accepted !== true) {
             return this.#latchProtocolFailure(
                 'tower-merge-unknown-completion',
                 completion
             );
         }
+        if (completion.targetCurrentHpFixedPoint
+                !== refreshed.survivor.currentHpFixedPoint
+            || completion.targetCurrentHpFixedPoint <= 0
+            || completion.targetCurrentHpFixedPoint
+                > stagedPlan.survivor.currentHpFixedPoint) {
+            return this.#latchProtocolFailure(
+                'tower-merge-live-health-mismatch',
+                Object.freeze({
+                    gpuTargetCurrentHpFixedPoint:
+                        completion.targetCurrentHpFixedPoint,
+                    cpuTargetCurrentHpFixedPoint:
+                        refreshed.survivor.currentHpFixedPoint,
+                    stagedTargetCurrentHpFixedPoint:
+                        stagedPlan.survivor.currentHpFixedPoint
+                })
+            );
+        }
 
-        const consumedHandles = pending.plan.consumed.map(
+        const consumedHandles = refreshed.consumed.map(
             (record) => record.exactGpuBinding
         );
         if (consumedHandles.some((handle) => !this.registry.has(handle))) {
@@ -405,12 +610,42 @@ export class TowerMergeCoordinator {
                 new Error('consumed exact registry identity가 stale입니다.')
             );
         }
-        const finalized = this.backend.finalizeTowerMergeTransaction({
-            transactionId: pending.plan.transactionId,
-            planFingerprint: pending.plan.fingerprint,
-            committed: true,
-            recoveryRequired: false
-        });
+        let ledger;
+        try {
+            ledger = this.towerGroupState.commitMerge(refreshed);
+        } catch (error) {
+            return this.#latchProtocolFailure(
+                'tower-merge-ledger-commit',
+                error
+            );
+        }
+        pending.cpuCommitted = ledger?.accepted === true
+            && ledger.result === TOWER_MERGE_RESULT.COMMITTED;
+        pending.cpuCommitReceipt = pending.cpuCommitted ? ledger : null;
+        if (ledger?.accepted !== true
+            || ledger.result !== TOWER_MERGE_RESULT.COMMITTED
+            || ledger.consumedCount !== consumedHandles.length) {
+            return this.#latchProtocolFailure(
+                'tower-merge-ledger-commit',
+                ledger
+            );
+        }
+        let finalized;
+        try {
+            finalized = this.backend.finalizeTowerMergeTransaction({
+                transactionId: stagedPlan.transactionId,
+                planFingerprint: stagedPlan.fingerprint,
+                targetCurrentHpFixedPoint:
+                    refreshed.survivor.currentHpFixedPoint,
+                committed: true,
+                recoveryRequired: false
+            });
+        } catch (error) {
+            return this.#latchProtocolFailure(
+                'tower-merge-backend-finalize',
+                error
+            );
+        }
         if (finalized?.accepted !== true
             || finalized?.committed !== true
             || !finalized.cleanupToken) {
@@ -419,9 +654,17 @@ export class TowerMergeCoordinator {
                 finalized?.failure ?? finalized
             );
         }
-        const cleanup = this.backend.cleanupTowerMergeTransaction(
-            finalized.cleanupToken
-        );
+        let cleanup;
+        try {
+            cleanup = this.backend.cleanupTowerMergeTransaction(
+                finalized.cleanupToken
+            );
+        } catch (error) {
+            return this.#latchProtocolFailure(
+                'tower-merge-body-cleanup',
+                error
+            );
+        }
         if (cleanup?.accepted !== true
             || cleanup.cleanedCount !== consumedHandles.length
             || cleanup.disposition !== TOWER_MERGE_LIFECYCLE_DISPOSITION) {
@@ -432,7 +675,16 @@ export class TowerMergeCoordinator {
         }
         const cleanupReceipts = [];
         for (const handle of consumedHandles) {
-            if (!this.registry.remove(handle)) {
+            let removed = false;
+            try {
+                removed = this.registry.remove(handle);
+            } catch (error) {
+                return this.#latchProtocolFailure(
+                    'tower-merge-registry-cleanup',
+                    error
+                );
+            }
+            if (!removed) {
                 return this.#latchProtocolFailure(
                     'tower-merge-registry-cleanup',
                     new Error(`registry remove failed: ${exactHandleKey(handle)}`)
@@ -446,16 +698,7 @@ export class TowerMergeCoordinator {
                 disposition: TOWER_MERGE_LIFECYCLE_DISPOSITION,
                 deathEventCount: 0,
                 rewardMutationCount: 0
-            }));
-        }
-        const ledger = this.towerGroupState.commitMerge(pending.plan);
-        if (ledger?.accepted !== true
-            || ledger.result !== TOWER_MERGE_RESULT.COMMITTED
-            || ledger.consumedCount !== consumedHandles.length) {
-            return this.#latchProtocolFailure(
-                'tower-merge-ledger-commit',
-                ledger
-            );
+                }));
         }
         const receipt = terminalReceipt(
             TOWER_MERGE_RESULT.COMMITTED,
@@ -468,6 +711,9 @@ export class TowerMergeCoordinator {
                 sourceTick: completion.sourceTick,
                 submittedTick: completion.submittedTick,
                 cleanupFixedTick: tick,
+                stagedPlanFingerprint: stagedPlan.fingerprint,
+                targetCurrentHpFixedPoint:
+                    refreshed.survivor.currentHpFixedPoint,
                 disposition: TOWER_MERGE_LIFECYCLE_DISPOSITION,
                 cleanupReceipts: Object.freeze(cleanupReceipts),
                 survivorHandle: completion.survivorHandle,
@@ -492,9 +738,14 @@ export class TowerMergeCoordinator {
             pending: this.pending ? Object.freeze({
                 transactionId: this.pending.plan.transactionId,
                 planFingerprint: this.pending.plan.fingerprint,
+                stagedPlanFingerprint:
+                    this.pending.stagedPlan?.fingerprint ?? null,
+                executionStartIdentityProofFingerprint:
+                    this.pending.executionStartIdentityProof.proofFingerprint,
                 sourceCount: this.pending.plan.sourceCount,
                 phase: this.pending.phase,
-                sourceTick: this.pending.stageReceipt?.sourceTick ?? 0
+                sourceTick: this.pending.stageReceipt?.sourceTick ?? 0,
+                cpuCommitted: this.pending.cpuCommitted
             }) : null,
             requestedCount: this.requestedCount,
             stagedCount: this.stagedCount,
@@ -578,6 +829,8 @@ export class TowerMergeCoordinator {
         if (!this.pending) return this.lastResult;
         return Object.freeze({
             ...this.pending.plan,
+            executionStartIdentityProof:
+                this.pending.executionStartIdentityProof,
             pending: true,
             staged: this.pending.phase === 'gpu-staged',
             terminal: false,
@@ -588,11 +841,20 @@ export class TowerMergeCoordinator {
         });
     }
 
-    #remember(transactionId, plan, receipt) {
+    #remember(
+        transactionId,
+        plan,
+        receipt,
+        executionStartIdentityProof
+    ) {
         if (typeof transactionId !== 'string' || transactionId.length === 0) {
             return;
         }
-        this.history.set(transactionId, { plan, receipt });
+        this.history.set(transactionId, {
+            plan,
+            receipt,
+            executionStartIdentityProof
+        });
         this.historyOrder.push(transactionId);
         while (this.historyOrder.length > this.historyCapacity) {
             const retired = this.historyOrder.shift();
@@ -619,13 +881,15 @@ export class TowerMergeCoordinator {
             try {
                 this.backend.cancelAllTowerMerges(stage);
             } catch { /* recovery latch */ }
-            try {
-                this.towerGroupState.rejectMerge(
-                    pending.plan,
-                    TOWER_MERGE_REASON.SOURCE_CHANGED,
-                    TOWER_MERGE_RESULT.PROTOCOL_FAILURE
-                );
-            } catch { /* recovery latch */ }
+            if (pending.cpuCommitted !== true) {
+                try {
+                    this.towerGroupState.rejectMerge(
+                        pending.plan,
+                        TOWER_MERGE_REASON.SOURCE_CHANGED,
+                        TOWER_MERGE_RESULT.PROTOCOL_FAILURE
+                    );
+                } catch { /* recovery latch */ }
+            }
         }
         this.failure = freezeFailure(stage, evidence);
         this.protocolFailureCount++;
@@ -635,6 +899,9 @@ export class TowerMergeCoordinator {
             {
                 transactionId: pending?.plan.transactionId ?? null,
                 planFingerprint: pending?.plan.fingerprint ?? null,
+                cpuCommitted: pending?.cpuCommitted === true,
+                durableMutationCount:
+                    pending?.cpuCommitReceipt?.mutationCount ?? 0,
                 failure: this.failure
             }
         );

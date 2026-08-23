@@ -342,7 +342,18 @@ export class GameObjectSystem {
         this.abilityRuntime = this.wordSystem
             ? new AbilityRuntime({
                 wordSystem: this.wordSystem,
-                endpoint: this.enemySimulationEndpoint
+                endpoint: this.enemySimulationEndpoint,
+                towerMergeIdentityProofProvider: ({ command }) => (
+                    this.towerMergeCoordinator
+                        ?.captureExecutionStartIdentityProof(command)
+                    ?? Object.freeze({
+                        accepted: false,
+                        outcomeCode:
+                            ABILITY_EXECUTION_OUTCOME_CODE.RUNTIME_UNAVAILABLE,
+                        recoveryRequired: false,
+                        reason: 'tower-merge-runtime-unavailable'
+                    })
+                )
             })
             : null;
         this.actorPayloadMaterializer = this.abilityRuntime
@@ -3141,7 +3152,9 @@ export class GameObjectSystem {
             'cleanupTowerMergeTransaction',
             'cancelAllTowerMerges',
             'getTowerMergeRuntimeStatus',
-            'getEventProtocolState'
+            'getEventProtocolState',
+            'getTowerGroupRuntimeStatus',
+            'resolveExactAbilityBodySlot'
         ];
         if (!backend || !registry || requiredBackendMethods.some((method) => (
             typeof backend[method] !== 'function'
@@ -4171,33 +4184,13 @@ export class GameObjectSystem {
                 rejectedCount++;
                 continue;
             }
-            const livingTowerCount = this.towerCombatRoster
-                ?.getTowerGroupState?.()
-                ?.getLivingTowerCount?.() ?? 0;
-            if (livingTowerCount !== Number(record.completion.subjectCount)) {
-                if (!this.abilityRuntime.rejectSnapshotExecution(
-                    record,
-                    ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED,
-                    {
-                        completedFixedTick: proposedFixedTick,
-                        generatedCount: 0
-                    }
-                )) {
-                    return Object.freeze({
-                        acceptedCount,
-                        rejectedCount,
-                        recoveryRequired: true,
-                        reason: 'merge-execution-start-source-mismatch'
-                    });
-                }
-                rejectedCount++;
-                continue;
-            }
             const receipt = this.towerMergeCoordinator.requestTowerMerge({
                 transactionId: record.command.executionId,
                 compiledOperation: record.request.compiledAbility,
                 requestedFixedTick:
-                    record.completion.sourceTick || proposedFixedTick
+                    record.completion.sourceTick || proposedFixedTick,
+                executionStartIdentityProof:
+                    record.towerMergeIdentityProof
             });
             if (receipt?.terminal === true) {
                 const code = receipt.result
@@ -4236,7 +4229,8 @@ export class GameObjectSystem {
             if (receipt?.pending !== true
                 || !this.abilityRuntime.markTowerMergePending(
                     record,
-                    proposedFixedTick
+                    proposedFixedTick,
+                    receipt
                 )) {
                 this.towerMergeCoordinator.cancelPending(
                     'ability-merge-pending-transition-failed'

@@ -96,7 +96,7 @@ export const GPU_TOWER_MERGE_ABI = Object.freeze({
         APPLIED_COUNT: 104,
         SURVIVOR_ENTITY_ID: 108,
         SURVIVOR_INCARNATION: 112,
-        RESERVED_0: 116,
+        LIVE_CURRENT_HP_SUM: 116,
         RESERVED_1: 120,
         RESERVED_2: 124
     }),
@@ -152,7 +152,7 @@ export const GPU_TOWER_MERGE_ABI = Object.freeze({
         COMMITTED_COUNT: 96,
         CONSUMED_COUNT: 100,
         RESULT_FINGERPRINT: 104,
-        RESERVED: 108
+        TARGET_CURRENT_HP_FIXED_POINT: 108
     })
 });
 
@@ -640,7 +640,8 @@ function resultFingerprint(result) {
         result.survivorIncarnation,
         result.survivorSlot,
         result.committedCount,
-        result.consumedCount
+        result.consumedCount,
+        result.targetCurrentHpFixedPoint
     ]) {
         hash = hashWord(hash, word);
     }
@@ -714,7 +715,10 @@ export function readGpuTowerMergeResult(buffer) {
         committedCount: view.getUint32(r.COMMITTED_COUNT, LITTLE_ENDIAN),
         consumedCount: view.getUint32(r.CONSUMED_COUNT, LITTLE_ENDIAN),
         resultFingerprint: view.getUint32(r.RESULT_FINGERPRINT, LITTLE_ENDIAN),
-        reserved: view.getUint32(r.RESERVED, LITTLE_ENDIAN)
+        targetCurrentHpFixedPoint: view.getUint32(
+            r.TARGET_CURRENT_HP_FIXED_POINT,
+            LITTLE_ENDIAN
+        )
     };
     return Object.freeze({
         ...result,

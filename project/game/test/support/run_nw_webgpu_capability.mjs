@@ -69,6 +69,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/contract/route_availability_contract.js',
     'module/ingame/contract/run_outcome_contract.js',
     'module/ingame/contract/tower_group_operation_contract.js',
+    'module/ingame/contract/tower_merge_identity_proof_contract.js',
     'module/ingame/game_world_session_mode.js',
     'module/ingame/flow/authored_wave_timeline_contract.js',
     'module/ingame/flow/wave_director.js',
@@ -2556,6 +2557,7 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
         fixture = result?.r6TowerMerge;
         const cases = fixture?.cases ?? [];
         const sourceChanged = fixture?.sourceChanged;
+        const sameTickDamage = fixture?.sameTickDamage;
         const malformed = fixture?.malformedProgram;
         const capacity = fixture?.capacity;
         const oldProtocol = fixture?.oldProtocol;
@@ -2608,6 +2610,17 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
                 && sourceChanged[key].mergeMutationCount === 0
                 && sourceChanged[key].requiresRecovery === false
             ))
+            && sameTickDamage?.committed === true
+            && sameTickDamage.damageFixedPoint === 137
+            && sameTickDamage.gpuTargetCurrentHpFixedPoint
+                === sameTickDamage.stagedTargetCurrentHpFixedPoint
+                    - sameTickDamage.damageFixedPoint
+            && sameTickDamage.survivorCurrentHpFixedPoint
+                === sameTickDamage.gpuTargetCurrentHpFixedPoint
+            && sameTickDamage.appliedCount === 2
+            && sameTickDamage.executionOrder
+                === 'post-contact-damage-death-same-encoder'
+            && sameTickDamage.requiresRecovery === false
             && malformed?.protocolFailure === true
             && malformed.committed === false
             && malformed.appliedCount === 0

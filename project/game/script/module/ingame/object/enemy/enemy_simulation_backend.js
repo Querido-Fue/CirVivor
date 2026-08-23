@@ -2958,6 +2958,30 @@ export class EnemySimulationBackend {
             });
         }
 
+        const survivorRecord = transaction.records.find((record) => (
+            record.role === GPU_TOWER_MERGE_RECORD_ROLE.SURVIVOR
+        ));
+        const targetCurrentHpFixedPoint = Number(
+            request.targetCurrentHpFixedPoint
+        );
+        if (!survivorRecord
+            || !Number.isSafeInteger(targetCurrentHpFixedPoint)
+            || targetCurrentHpFixedPoint <= 0
+            || targetCurrentHpFixedPoint
+                > survivorRecord.targetCurrentHpFixedPoint
+            || targetCurrentHpFixedPoint
+                > survivorRecord.targetMaxHpFixedPoint) {
+            this.towerMergeFailure = Object.freeze({
+                stage: 'tower-merge-live-health-contract',
+                message: 'Committed Tower merge live HP evidence가 잘못됐습니다.'
+            });
+            this.#syncState();
+            return Object.freeze({
+                accepted: false,
+                committed: false,
+                requiresRecovery: true
+            });
+        }
         const exactRecords = transaction.records.every((record) => {
             const exact = this.simulation.resolveExactBodySlot({
                 entityId: record.entityId,
@@ -3005,7 +3029,7 @@ export class EnemySimulationBackend {
                 if (record.role === GPU_TOWER_MERGE_RECORD_ROLE.SURVIVOR) {
                     simulationView.setInt32(
                         simulationOffset + simulationLayout.HEALTH,
-                        record.targetCurrentHpFixedPoint | 0,
+                        targetCurrentHpFixedPoint | 0,
                         LITTLE_ENDIAN
                     );
                     const metadataOffset = record.slot * metadataLayout.STRIDE;
@@ -3092,6 +3116,7 @@ export class EnemySimulationBackend {
                     ({ handle }) => handle
                 )),
                 roster: transition.roster,
+                targetCurrentHpFixedPoint,
                 requiresRecovery: false
             });
         } catch (error) {

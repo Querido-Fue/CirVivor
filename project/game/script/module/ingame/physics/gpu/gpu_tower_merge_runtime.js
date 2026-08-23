@@ -142,7 +142,8 @@ function getPipelines(device, stage) {
 }
 
 /**
- * Tower N→1 merge 하나를 main fixed encoder 안에서 all-or-none으로 수행합니다.
+ * Tower N→1 merge 하나를 main fixed encoder의 damage/death pass 뒤에서
+ * all-or-none으로 수행합니다.
  * CPU에는 112-byte aggregate만 되돌리며 body/member 본문은 읽지 않습니다.
  */
 export class GpuTowerMergeRuntime {
@@ -440,21 +441,10 @@ export class GpuTowerMergeRuntime {
             || this.pending.envelope.sourceTick !== tick) {
             throw new Error('Tower merge encode 순서가 유효하지 않습니다.');
         }
-        const recordWorkgroups = Math.ceil(
-            this.pending.envelope.sourceCount / GPU_TOWER_MERGE_WORKGROUP_SIZE
-        );
-        for (const [pipeline, workgroups] of [
-            [this.pipelines.clear, 1],
-            [this.pipelines.validate, recordWorkgroups],
-            [this.pipelines.seal, 1],
-            [this.pipelines.apply, recordWorkgroups],
-            [this.pipelines.finalize, 1]
-        ]) {
-            pass.setPipeline(pipeline);
-            pass.setBindGroup(0, this.bindGroup);
-            pass.dispatchWorkgroups(workgroups);
-        }
-        this.pending.state = 'encoded';
+        // Simulation main pass가 contact/damage/mark-dead까지 끝난 뒤 같은 encoder의
+        // encodeReadback()이 별도 Merge pass를 엽니다. 여기서는 fixed hook의 exact
+        // tick 소유권만 봉인합니다.
+        this.pending.state = 'deferred-after-damage';
         return true;
     }
 
@@ -507,9 +497,36 @@ export class GpuTowerMergeRuntime {
     encodeReadback(encoder, sourceTick) {
         const tick = requirePositiveInteger(sourceTick, 'Tower merge copy tick');
         if (!encoder || typeof encoder.copyBufferToBuffer !== 'function'
-            || this.pending?.state !== 'encoded'
+            || !['deferred-after-damage', 'encoded'].includes(
+                this.pending?.state
+            )
             || this.pending.envelope.sourceTick !== tick) {
             throw new Error('Tower merge readback copy 순서가 유효하지 않습니다.');
+        }
+        if (this.pending.state === 'deferred-after-damage') {
+            if (typeof encoder.beginComputePass !== 'function') {
+                throw new Error('Tower merge deferred compute pass encoder가 없습니다.');
+            }
+            const recordWorkgroups = Math.ceil(
+                this.pending.envelope.sourceCount
+                    / GPU_TOWER_MERGE_WORKGROUP_SIZE
+            );
+            const pass = encoder.beginComputePass({
+                label: `cirvivor-gpu-tower-merge-post-damage-${tick}`
+            });
+            for (const [pipeline, workgroups] of [
+                [this.pipelines.clear, 1],
+                [this.pipelines.validate, recordWorkgroups],
+                [this.pipelines.seal, 1],
+                [this.pipelines.apply, recordWorkgroups],
+                [this.pipelines.finalize, 1]
+            ]) {
+                pass.setPipeline(pipeline);
+                pass.setBindGroup(0, this.bindGroup);
+                pass.dispatchWorkgroups(workgroups);
+            }
+            pass.end();
+            this.pending.state = 'encoded';
         }
         encoder.copyBufferToBuffer(
             this.buffers.result,
@@ -611,6 +628,7 @@ export class GpuTowerMergeRuntime {
             metadataReceiptReadbackBytes: 0,
             perTowerCpuCommandCount: 0,
             fullBodyReadbackCount: 0,
+            executionOrder: 'post-contact-damage-death-same-encoder',
             storageProfile: GPU_TOWER_MERGE_STORAGE_PROFILE,
             requiresRecovery: this.state === 'failed'
         });
@@ -677,7 +695,6 @@ export class GpuTowerMergeRuntime {
                 const provenanceMatches = result.abiVersion
                         === GPU_TOWER_MERGE_ABI_VERSION
                     && result.resultFingerprintValid
-                    && result.reserved === 0
                     && sameProtocol(result, envelope)
                     && result.sourceTick === envelope.sourceTick
                     && result.sourceCount === envelope.sourceCount
@@ -699,7 +716,11 @@ export class GpuTowerMergeRuntime {
                         === envelope.survivorEntityId
                     && result.survivorIncarnation
                         === envelope.survivorIncarnation
-                    && result.survivorSlot === envelope.survivorSlot;
+                    && result.survivorSlot === envelope.survivorSlot
+                    && result.targetCurrentHpFixedPoint
+                        <= envelope.targetCurrentHpFixedPoint
+                    && result.targetCurrentHpFixedPoint
+                        <= envelope.targetMaxHpFixedPoint;
                 const committedCounts = result.status
                         !== GPU_TOWER_MERGE_STATUS.COMMITTED
                     || (result.errorFlags === 0
@@ -707,7 +728,8 @@ export class GpuTowerMergeRuntime {
                         && result.appliedCount === envelope.sourceCount
                         && result.committedCount === 1
                         && result.consumedCount
-                            === envelope.sourceCount - 1);
+                            === envelope.sourceCount - 1
+                        && result.targetCurrentHpFixedPoint > 0);
                 const rejectedCounts = result.status
                         !== GPU_TOWER_MERGE_STATUS.REJECTED_SOURCE_CHANGED
                     || (result.appliedCount === 0
@@ -745,6 +767,9 @@ export class GpuTowerMergeRuntime {
                     }),
                     sourceIdentityFingerprint:
                         envelope.sourceIdentityFingerprint,
+                    targetCurrentHpFixedPoint: protocolFailure
+                        ? 0
+                        : result.targetCurrentHpFixedPoint,
                     committed: !protocolFailure
                         && result.status === GPU_TOWER_MERGE_STATUS.COMMITTED,
                     rejectedSourceChanged: !protocolFailure
@@ -787,6 +812,7 @@ export class GpuTowerMergeRuntime {
                     submittedTick: envelope.sourceTick,
                     sourceCount: envelope.sourceCount,
                     consumedCount: 0,
+                    targetCurrentHpFixedPoint: 0,
                     committed: false,
                     rejectedSourceChanged: false,
                     protocolFailure: true,

@@ -175,7 +175,7 @@ struct TowerMergeProgram {
     applied_count: atomic<u32>,
     survivor_entity_id: u32,
     survivor_incarnation: u32,
-    reserved_0: u32,
+    live_current_hp_sum: atomic<u32>,
     reserved_1: u32,
     reserved_2: u32,
 }
@@ -231,7 +231,7 @@ struct TowerMergeResult {
     committed_count: u32,
     consumed_count: u32,
     result_fingerprint: u32,
-    reserved: u32,
+    target_current_hp_fixed_point: u32,
 }
 
 struct PhysicsBuffer { values: array<BodyPhysics> }
@@ -414,6 +414,7 @@ fn compute_result_fingerprint() -> u32 {
     hash = hash_word(hash, result.survivor_slot);
     hash = hash_word(hash, result.committed_count);
     hash = hash_word(hash, result.consumed_count);
+    hash = hash_word(hash, result.target_current_hp_fixed_point);
     return nonzero_hash(hash);
 }
 
@@ -492,6 +493,7 @@ fn clear_merge() {
     atomicStore(&program.error_flags, 0u);
     atomicStore(&program.validated_count, 0u);
     atomicStore(&program.applied_count, 0u);
+    atomicStore(&program.live_current_hp_sum, 0u);
     result = TowerMergeResult(
         0u, 0u, 0u, STATUS_EMPTY, 0u,
         0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u,
@@ -539,6 +541,7 @@ fn validate_sources(@builtin(global_invocation_id) global_id: vec3u) {
     let member = members.values[record.slot];
     let physical = physics.values[record.slot];
     let metadata = ability_metadata.values[record.slot];
+    let live_current_hp = atomicLoad(&simulations.values[record.slot].health);
     let member_matches = member.entity_id == record.entity_id
         && member.incarnation == record.incarnation
         && member.logical_ordinal == record.logical_ordinal
@@ -553,8 +556,8 @@ fn validate_sources(@builtin(global_invocation_id) global_id: vec3u) {
     let body_matches = simulations.values[record.slot].entity_id
             == record.entity_id
         && simulations.values[record.slot].incarnation == record.incarnation
-        && atomicLoad(&simulations.values[record.slot].health)
-            == record.expected_current_hp_fixed_point
+        && live_current_hp > 0
+        && live_current_hp <= record.expected_current_hp_fixed_point
         && record.expected_current_hp_fixed_point > 0
         && (atomicLoad(&simulations.values[record.slot].flags)
             & BODY_FLAG_ALIVE) != 0u
@@ -570,6 +573,7 @@ fn validate_sources(@builtin(global_invocation_id) global_id: vec3u) {
         atomicOr(&program.error_flags, ERROR_SOURCE_CHANGED);
         return;
     }
+    atomicAdd(&program.live_current_hp_sum, u32(live_current_hp));
     atomicAdd(&program.validated_count, 1u);
 }
 
@@ -577,12 +581,17 @@ fn validate_sources(@builtin(global_invocation_id) global_id: vec3u) {
 fn seal_merge() {
     let errors = atomicLoad(&program.error_flags);
     let validated = atomicLoad(&program.validated_count);
+    let live_current_hp_sum = atomicLoad(&program.live_current_hp_sum);
     if ((errors & HARD_ERROR_MASK) != 0u) {
         atomicStore(&program.status, STATUS_PROTOCOL_FAILURE);
         return;
     }
     if ((errors & ERROR_SOURCE_CHANGED) != 0u
-        || validated != program.source_count) {
+        || validated != program.source_count
+        || live_current_hp_sum == 0u
+        || live_current_hp_sum > program.target_current_hp_fixed_point
+        || live_current_hp_sum > program.target_max_hp_fixed_point) {
+        atomicOr(&program.error_flags, ERROR_SOURCE_CHANGED);
         atomicStore(&program.status, STATUS_REJECTED_SOURCE_CHANGED);
         return;
     }
@@ -602,7 +611,7 @@ fn apply_merge(@builtin(global_invocation_id) global_id: vec3u) {
     if (record.role == ROLE_SURVIVOR) {
         atomicStore(
             &simulations.values[slot].health,
-            bitcast<i32>(record.target_current_hp_fixed_point)
+            bitcast<i32>(atomicLoad(&program.live_current_hp_sum))
         );
         members.values[slot] = TowerMemberState(
             record.entity_id,
@@ -713,7 +722,8 @@ fn finalize_merge() {
     result.survivor_slot = survivor.slot;
     result.committed_count = committed_count;
     result.consumed_count = consumed_count;
-    result.reserved = 0u;
+    result.target_current_hp_fixed_point
+        = atomicLoad(&program.live_current_hp_sum);
     result.result_fingerprint = compute_result_fingerprint();
 }
 `;

@@ -34,6 +34,13 @@ const {
     TowerGroupState
 } = await loadGameModule('ingame/object/tower/tower_group_state.js');
 const {
+    TOWER_MERGE_IDENTITY_PROOF_ABI_VERSION,
+    computeTowerMergeSnapshotIdentityFingerprint,
+    sealTowerMergeIdentityProof
+} = await loadGameModule(
+    'ingame/contract/tower_merge_identity_proof_contract.js'
+);
+const {
     TowerMergeCoordinator
 } = await loadGameModule('ingame/object/tower/tower_merge_coordinator.js');
 const {
@@ -56,6 +63,40 @@ const MERGE_OPERATION = new SentenceCompiler().compile(
     R6_TOWERS_MERGE_SENTENCE
 );
 
+function createIdentitySubjects(count, offset = 0) {
+    return Object.freeze(Array.from({ length: count }, (_, index) => (
+        Object.freeze({
+            privateSlot: 10 + offset + index,
+            entityId: 100 + offset + index,
+            incarnation: 1
+        })
+    )));
+}
+
+function createTowerMergeIdentityProof(command, identities, protocol) {
+    const subjectCount = identities.length;
+    const subjects = identities.map((identity, index) => Object.freeze({
+        ...protocol,
+        subjectCount,
+        ...identity,
+        logicalTowerId: `tower:${identity.entityId}`,
+        logicalTowerOrdinal: index + 1
+    }));
+    return sealTowerMergeIdentityProof({
+        abiVersion: TOWER_MERGE_IDENTITY_PROOF_ABI_VERSION,
+        commandFingerprint: command.fingerprint,
+        ...protocol,
+        groupRevision: 1,
+        rosterFingerprint: 0x5000 + subjectCount,
+        subjectCount,
+        snapshotFingerprint: computeTowerMergeSnapshotIdentityFingerprint(
+            command.fingerprint,
+            subjects
+        ),
+        subjects
+    });
+}
+
 function assertDeepFrozen(value, visited = new Set()) {
     if (!value || typeof value !== 'object' || visited.has(value)) return;
     visited.add(value);
@@ -73,6 +114,29 @@ class FakeAbilityEndpoint {
         this.snapshotTokens = new Set();
         this.cancelled = 0;
         this.nextReceipt = null;
+        this.towerMergeSubjects = createIdentitySubjects(2);
+    }
+
+    configureTowerMergeSubjects(subjects) {
+        this.towerMergeSubjects = typeof subjects === 'number'
+            ? createIdentitySubjects(subjects)
+            : Object.freeze(subjects.map((subject) => Object.freeze({
+                privateSlot: subject.privateSlot,
+                entityId: subject.entityId,
+                incarnation: subject.incarnation
+            })));
+    }
+
+    getTowerMergeIdentityProof(command) {
+        return createTowerMergeIdentityProof(
+            command,
+            this.towerMergeSubjects,
+            {
+                sessionGeneration: this.sessionGeneration,
+                deviceGeneration: PROTOCOL.deviceGeneration,
+                authoritativeEpoch: PROTOCOL.authoritativeEpoch
+            }
+        );
     }
 
     requestAbilityExecutionCommand(command) {
@@ -91,10 +155,20 @@ class FakeAbilityEndpoint {
         return out;
     }
 
-    complete(command, subjectCount, status = null) {
+    complete(command, subjectCount, status = null, subjects = null) {
         const resolvedStatus = status ?? (subjectCount === 0
             ? ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT
             : ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE);
+        const subjectIdentities = resolvedStatus
+                === ABILITY_SUBJECT_SNAPSHOT_STATUS.ZERO_SUBJECT
+            ? Object.freeze([])
+            : Object.freeze((subjects ?? this.towerMergeSubjects).map(
+                (subject) => Object.freeze({
+                    privateSlot: subject.privateSlot,
+                    entityId: subject.entityId,
+                    incarnation: subject.incarnation
+                })
+            ));
         const snapshotToken = resolvedStatus
                 === ABILITY_SUBJECT_SNAPSHOT_STATUS.COMPLETE
             && subjectCount > 0
@@ -110,7 +184,15 @@ class FakeAbilityEndpoint {
             status: resolvedStatus,
             subjectCount,
             capacityDemand: subjectCount,
-            snapshotFingerprint: 0x9000 + command.executionOrdinal,
+            sessionGeneration: this.sessionGeneration,
+            deviceGeneration: PROTOCOL.deviceGeneration,
+            authoritativeEpoch: PROTOCOL.authoritativeEpoch,
+            snapshotFingerprint:
+                computeTowerMergeSnapshotIdentityFingerprint(
+                    command.fingerprint,
+                    subjectIdentities
+                ),
+            subjectIdentities,
             snapshotToken,
             requiresRecovery: false
         }));
@@ -161,11 +243,29 @@ class PreviewMergeBackend {
         });
     }
     getEventProtocolState() { return PROTOCOL; }
+    getTowerGroupRuntimeStatus() {
+        return Object.freeze({
+            ...PROTOCOL,
+            groupRevision: 1,
+            rosterMemberCount: 0,
+            rosterFingerprint: 0,
+            pendingRosterTransition: null,
+            requiresRecovery: false
+        });
+    }
+    resolveExactAbilityBodySlot() { return null; }
 }
 
 function createAbilityHarness(endpoint = new FakeAbilityEndpoint()) {
     const wordSystem = new WordSystem({ loadout: R6_QA_SENTENCE_LOADOUT });
-    const abilityRuntime = new AbilityRuntime({ wordSystem, endpoint });
+    const abilityRuntime = new AbilityRuntime({
+        wordSystem,
+        endpoint,
+        towerMergeIdentityProofProvider: ({ command }) => Object.freeze({
+            accepted: true,
+            proof: endpoint.getTowerMergeIdentityProof(command)
+        })
+    });
     return { wordSystem, abilityRuntime, endpoint };
 }
 
@@ -176,6 +276,7 @@ function destroyAbilityHarness(harness) {
 
 function requestMergeSnapshot(harness, tick, subjectCount) {
     const { wordSystem, abilityRuntime, endpoint } = harness;
+    endpoint.configureTowerMergeSubjects(subjectCount);
     wordSystem.beginFixedTick(tick);
     const activation = wordSystem.requestSlotActivation(
         ABILITY_SLOT_ID.SHIFT,
@@ -332,6 +433,54 @@ test('0/1 Tower snapshot은 authentic INSUFFICIENT_SUBJECTS이고 cooldown을 �
     }
 });
 
+test('execution-start A,B가 completion 전 A,C로 같은 수 교체되면 mutation 없이 SOURCE_CHANGED다', () => {
+    const harness = createAbilityHarness();
+    const activationSubjects = Object.freeze([
+        Object.freeze({ privateSlot: 10, entityId: 100, incarnation: 1 }),
+        Object.freeze({ privateSlot: 11, entityId: 101, incarnation: 1 })
+    ]);
+    const replacementSubjects = Object.freeze([
+        activationSubjects[0],
+        Object.freeze({ privateSlot: 12, entityId: 102, incarnation: 1 })
+    ]);
+    harness.endpoint.configureTowerMergeSubjects(activationSubjects);
+    harness.wordSystem.beginFixedTick(7);
+    assert.equal(harness.wordSystem.requestSlotActivation(
+        ABILITY_SLOT_ID.SHIFT,
+        { targetFixedTick: 7 }
+    ).code, ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+    assert.equal(harness.abilityRuntime.stageForFixedTick({
+        targetFixedTick: 7
+    }).acceptedCount, 1);
+    const command = harness.endpoint.requests.at(-1);
+    harness.endpoint.complete(command, 2, null, replacementSubjects);
+    const observation = harness.abilityRuntime
+        .observeCompletedSubjectSnapshots(8);
+
+    assert.equal(observation.readyTowerMergeCount, 0);
+    assert.equal(harness.abilityRuntime
+        .drainReadyTowerMergeSnapshots([]).length, 0);
+    assert.equal(harness.endpoint.snapshotTokens.size, 0);
+    assert.equal(harness.abilityRuntime.getStatus().activeExecutions.length, 0);
+    assert.equal(
+        harness.abilityRuntime.getStatus().lastExecutionState.state,
+        ABILITY_EXECUTION_STATE.SOURCE_CHANGED
+    );
+    assert.equal(
+        harness.wordSystem.getStatusView().lastExecutionOutcome.code,
+        ABILITY_EXECUTION_OUTCOME_CODE.SOURCE_CHANGED
+    );
+    assert.equal(
+        harness.wordSystem.getStatusView().lastExecutionOutcome
+            .cooldownConsumed,
+        false
+    );
+    assert.equal(harness.wordSystem.getSlotView(ABILITY_SLOT_ID.SHIFT)
+        .cooldown.nextEligibleFixedTick, 0);
+    assert.equal(harness.abilityRuntime.requiresRecovery(), false);
+    destroyAbilityHarness(harness);
+});
+
 test('Merge stage receipt는 nonterminal이고 authentic COMMITTED terminal만 exact 1회 cooldown을 소비한다', () => {
     const harness = createAbilityHarness();
     const { observation } = requestMergeSnapshot(harness, 10, 2);
@@ -339,7 +488,9 @@ test('Merge stage receipt는 nonterminal이고 authentic COMMITTED terminal만 e
     assert.equal(harness.abilityRuntime.drainReadySnapshots([]).length, 0);
     const [ready] = harness.abilityRuntime
         .drainReadyTowerMergeSnapshots([]);
-    assert.equal(harness.abilityRuntime.markTowerMergePending(ready, 11), true);
+    assert.equal(harness.abilityRuntime.markTowerMergePending(ready, 11, {
+        executionStartIdentityProof: ready.towerMergeIdentityProof
+    }), true);
     assert.equal(harness.endpoint.snapshotTokens.size, 0);
     assert.equal(harness.wordSystem.getStatusView().lastExecutionOutcome, null);
     assert.equal(
@@ -381,6 +532,31 @@ test('Merge stage receipt는 nonterminal이고 authentic COMMITTED terminal만 e
     assert.equal(harness.wordSystem.requestSlotActivation(
         ABILITY_SLOT_ID.SHIFT
     ).code, ABILITY_ACTIVATION_RESULT_CODE.REQUESTED);
+    destroyAbilityHarness(harness);
+});
+
+test('pending transaction에 다른 exact proof가 오면 snapshot token을 release하지 않는다', () => {
+    const harness = createAbilityHarness();
+    requestMergeSnapshot(harness, 14, 2);
+    const [ready] = harness.abilityRuntime
+        .drainReadyTowerMergeSnapshots([]);
+    const differentProof = createTowerMergeIdentityProof(
+        ready.command,
+        createIdentitySubjects(2, 20),
+        {
+            sessionGeneration: harness.endpoint.sessionGeneration,
+            deviceGeneration: PROTOCOL.deviceGeneration,
+            authoritativeEpoch: PROTOCOL.authoritativeEpoch
+        }
+    );
+    assert.equal(harness.abilityRuntime.markTowerMergePending(ready, 15, {
+        executionStartIdentityProof: differentProof
+    }), false);
+    assert.equal(harness.endpoint.snapshotTokens.size, 1);
+    assert.equal(harness.abilityRuntime.requiresRecovery(), true);
+    assert.equal(harness.endpoint.releaseAbilitySubjectSnapshot(
+        ready.completion.snapshotToken
+    ), true);
     destroyAbilityHarness(harness);
 });
 
@@ -437,7 +613,8 @@ test('source-changed와 recovery replacement cancel은 terminal이지만 cooldow
         .drainReadyTowerMergeSnapshots([]);
     assert.equal(sourceChanged.abilityRuntime.markTowerMergePending(
         changedReady,
-        21
+        21,
+        { executionStartIdentityProof: changedReady.towerMergeIdentityProof }
     ), true);
     assert.equal(sourceChanged.abilityRuntime.rejectSnapshotExecution(
         changedReady,
@@ -465,7 +642,8 @@ test('source-changed와 recovery replacement cancel은 terminal이지만 cooldow
         .drainReadyTowerMergeSnapshots([]);
     assert.equal(recovery.abilityRuntime.markTowerMergePending(
         pending,
-        31
+        31,
+        { executionStartIdentityProof: pending.towerMergeIdentityProof }
     ), true);
     const replacement = new FakeAbilityEndpoint(42);
     assert.equal(recovery.abilityRuntime.resetGpuBinding(replacement), true);
