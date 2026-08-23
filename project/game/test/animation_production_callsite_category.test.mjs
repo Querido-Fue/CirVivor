@@ -23,6 +23,10 @@ const EXPECTED_CALLERS = Object.freeze({
     }),
     'module/overlay/_base_overlay.js': Object.freeze({ category: 'UI', count: 4 }),
     'module/overlay/_overlay_session.js': Object.freeze({ category: 'UI', count: 1 }),
+    'module/scene/game/shop/shop_overlay_renderer.js': Object.freeze({
+        category: 'UI',
+        count: 1
+    }),
     'module/scene/title/_title_loading_sequence.js': Object.freeze({
         category: 'EFFECT',
         count: 1
@@ -137,7 +141,7 @@ function countMatches(source, pattern) {
     return Array.from(source.matchAll(pattern)).length;
 }
 
-test('production animation ingress는 정확히 UI 13 / GAME_MECHANIC 2 / EFFECT 4로 분류된다', async () => {
+test('production animation ingress는 정확히 UI 14 / GAME_MECHANIC 2 / EFFECT 4로 분류된다', async () => {
     const files = await collectJavaScriptFiles(SCRIPT_ROOT);
     const actualCallers = new Map();
     for (const filePath of files) {
@@ -194,8 +198,8 @@ test('production animation ingress는 정확히 UI 13 / GAME_MECHANIC 2 / EFFECT
         totalIngressCount += expectation.count;
     }
 
-    assert.equal(totalIngressCount, 19);
-    assert.deepEqual(categoryTotals, { UI: 13, GAME_MECHANIC: 2, EFFECT: 4 });
+    assert.equal(totalIngressCount, 20);
+    assert.deepEqual(categoryTotals, { UI: 14, GAME_MECHANIC: 2, EFFECT: 4 });
 });
 
 test('AnimationSystem은 Save를 import하지 않고 SystemHandler가 hidden setting live resolver만 주입한다', async () => {

@@ -4,6 +4,9 @@ import { releaseUIItem } from 'ui/_ui_pool.js';
 import { LayoutHandler } from 'ui/layout/_layout_handler.js';
 import { PositioningHandler } from 'ui/layout/_positioning_handler.js';
 import { TYPOGRAPHY } from 'ui/style/typography.js';
+import {
+    createShopOverlayRenderer
+} from '../shop/shop_overlay_renderer.js';
 
 const STATUS_LAYER = 'ui';
 const STATUS_X_PARENT_PERCENT = 3;
@@ -68,7 +71,7 @@ function createCoreStatusText(status) {
  * @description 한 GameSystem의 pooled UI presentation만 소유하고 gameplay authority는 보관하지 않습니다.
  */
 export class GameSceneStatusRenderer {
-    constructor() {
+    constructor(options = {}) {
         this.layoutParent = {
             layer: STATUS_LAYER,
             uiScale: 1,
@@ -88,7 +91,18 @@ export class GameSceneStatusRenderer {
         this.dynamicItems = null;
         this.towerCommand = null;
         this.coreCommand = null;
+        this.shopOverlayRenderer = createShopOverlayRenderer({
+            inputSource: options.inputSource,
+            animationPort: options.animationPort,
+            settingsSource: options.settingsSource
+        });
         this.destroyed = false;
+    }
+
+    /** SHOP presentation input을 variable frame에서만 갱신합니다. */
+    update(status, viewport = {}, frameDelta = 0) {
+        if (this.destroyed) return false;
+        return this.shopOverlayRenderer.update(status, viewport, frameDelta);
     }
 
     /**
@@ -118,7 +132,19 @@ export class GameSceneStatusRenderer {
         for (const entry of this.staticItems) {
             render(STATUS_LAYER, entry.item);
         }
+        this.shopOverlayRenderer.draw(status, normalizedViewport);
         return true;
+    }
+
+    /** UI가 생성한 immutable semantic command를 GameSystem에 인계합니다. */
+    drainCommands() {
+        return this.destroyed
+            ? Object.freeze([])
+            : this.shopOverlayRenderer.drainCommands();
+    }
+
+    getShopOverlayStatus() {
+        return this.shopOverlayRenderer?.getStatus?.() ?? null;
     }
 
     /** pooled UI command를 반납합니다. 반복 호출해도 안전합니다. */
@@ -127,6 +153,8 @@ export class GameSceneStatusRenderer {
             return;
         }
         this.destroyed = true;
+        this.shopOverlayRenderer?.destroy?.();
+        this.shopOverlayRenderer = null;
         this.#releaseLayout();
     }
 
@@ -221,6 +249,6 @@ export class GameSceneStatusRenderer {
 }
 
 /** @returns {GameSceneStatusRenderer} 새 GameSystem presentation session입니다. */
-export function createGameSceneStatusRenderer() {
-    return new GameSceneStatusRenderer();
+export function createGameSceneStatusRenderer(options = {}) {
+    return new GameSceneStatusRenderer(options);
 }

@@ -25,6 +25,7 @@ async function createRendererHarness() {
     const layoutCalls = [];
     const positioningCalls = [];
     const releasedItems = [];
+    const shopOverlaySessions = [];
     const colorSchemes = { Game: { Font: '#ddeeff' } };
     const controlToken = Object.freeze({ name: 'CONTROL' });
     let positioningSequence = 0;
@@ -222,6 +223,39 @@ async function createRendererHarness() {
             context,
             'typography.js',
             { TYPOGRAPHY: Object.freeze({ CONTROL: controlToken }) }
+        )],
+        ['../shop/shop_overlay_renderer.js', createSyntheticModule(
+            context,
+            'shop_overlay_renderer.js',
+            {
+                createShopOverlayRenderer(options) {
+                    const session = {
+                        options,
+                        updateCalls: [],
+                        drawCalls: [],
+                        destroyed: false,
+                        update(...args) {
+                            this.updateCalls.push(args);
+                            return true;
+                        },
+                        draw(...args) {
+                            this.drawCalls.push(args);
+                            return false;
+                        },
+                        drainCommands() {
+                            return Object.freeze([{ type: 'REROLL' }]);
+                        },
+                        getStatus() {
+                            return Object.freeze({ destroyed: this.destroyed });
+                        },
+                        destroy() {
+                            this.destroyed = true;
+                        }
+                    };
+                    shopOverlaySessions.push(session);
+                    return session;
+                }
+            }
         )]
     ]);
     await module.link((specifier) => {
@@ -239,7 +273,8 @@ async function createRendererHarness() {
         createRenderer: module.namespace.createGameSceneStatusRenderer,
         layoutCalls,
         positioningCalls,
-        releasedItems
+        releasedItems,
+        shopOverlaySessions
     };
 }
 
@@ -442,4 +477,30 @@ test('유효한 viewport가 없으면 canonical layout과 render command를 생�
     assert.equal(harness.layoutCalls.length, 0);
     assert.equal(harness.positioningCalls.length, 0);
     assert.equal(harness.releasedItems.length, 0);
+});
+
+test('status renderer는 Shop overlay variable update/command/destroy port를 그대로 중계한다', async () => {
+    const harness = await createRendererHarness();
+    const options = Object.freeze({
+        inputSource: Object.freeze({}),
+        animationPort: Object.freeze({}),
+        settingsSource: Object.freeze({})
+    });
+    const renderer = harness.createRenderer(options);
+    const shop = harness.shopOverlaySessions[0];
+    assert.strictEqual(shop.options.inputSource, options.inputSource);
+    assert.strictEqual(shop.options.animationPort, options.animationPort);
+    assert.strictEqual(shop.options.settingsSource, options.settingsSource);
+    const status = createStatus();
+    const viewport = Object.freeze({ ww: 1280, wh: 720 });
+    assert.equal(renderer.update(status, viewport, 0.01), true);
+    assert.equal(shop.updateCalls.length, 1);
+    assert.deepEqual(
+        Array.from(renderer.drainCommands(), (command) => ({ ...command })),
+        [{ type: 'REROLL' }]
+    );
+    assert.equal(renderer.getShopOverlayStatus().destroyed, false);
+    renderer.destroy();
+    assert.equal(shop.destroyed, true);
+    assert.deepEqual(Array.from(renderer.drainCommands()), []);
 });

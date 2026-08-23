@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "surfaceKind": "immutable-layout-and-render-state",
+  "referenceViewport": "1280x720@uiScale1",
+  "surfaces": {
+    "shop.default": "62e8f663a5766d35fc8fc542c17618ee97fcabd49dcef3b3582552f54734766d",
+    "shop.sold-and-disabled": "3a38fad29f34163243bfa1ad231d10ff5c97c56f9280510663647c1c3fffc531",
+    "editor.valid": "722931e063df162d7b6f42a4b0b548e8d019973b80ea60c26ec843df253364ef",
+    "editor.invalid": "809f8494f0fdf9eba324ed6d5e4397b4da1da436a5272f9c312d64e53f7fa55d"
+  }
+}

@@ -108,6 +108,11 @@ export function createGameSceneDependencies() {
         viewportPort: {
             getSnapshot: getGameViewportSnapshot
         },
+        uiSettingsSource: {
+            getTooltipDelaySeconds() {
+                return getSimulationSetting('tooltipDelaySeconds', 0.3);
+            }
+        },
         gameplayStatusRenderPort: GAME_SCENE_STATUS_RENDER_PORT,
         recoveryLogPort: GPU_WORLD_RECOVERY_LOG_PORT,
         worldRenderPort: {

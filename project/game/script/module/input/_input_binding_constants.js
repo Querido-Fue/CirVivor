@@ -15,7 +15,11 @@ export const INPUT_ACTION_IDS = Object.freeze({
     PAUSE: 'pause',
     RELOAD: 'reload',
     DEBUG_PAUSE: 'debugPause',
-    DEBUG_STEP: 'debugStep'
+    DEBUG_STEP: 'debugStep',
+    UI_FOCUS_NEXT: 'uiFocusNext',
+    UI_FOCUS_PREVIOUS: 'uiFocusPrevious',
+    UI_CONFIRM: 'uiConfirm',
+    UI_CANCEL: 'uiCancel'
 });
 
 /**
@@ -35,7 +39,18 @@ export const DEFAULT_KEYBOARD_BINDINGS = Object.freeze({
     [INPUT_ACTION_IDS.PAUSE]: Object.freeze(['KeyP']),
     [INPUT_ACTION_IDS.RELOAD]: Object.freeze(['KeyR']),
     [INPUT_ACTION_IDS.DEBUG_PAUSE]: Object.freeze(['Slash']),
-    [INPUT_ACTION_IDS.DEBUG_STEP]: Object.freeze(['Period'])
+    [INPUT_ACTION_IDS.DEBUG_STEP]: Object.freeze(['Period']),
+    [INPUT_ACTION_IDS.UI_FOCUS_NEXT]: Object.freeze([
+        'Tab',
+        'ArrowRight',
+        'ArrowDown'
+    ]),
+    [INPUT_ACTION_IDS.UI_FOCUS_PREVIOUS]: Object.freeze([
+        'ArrowLeft',
+        'ArrowUp'
+    ]),
+    [INPUT_ACTION_IDS.UI_CONFIRM]: Object.freeze(['Enter', 'Space']),
+    [INPUT_ACTION_IDS.UI_CANCEL]: Object.freeze(['Escape'])
 });
 
 /**

@@ -13,6 +13,7 @@ import {
     SHOP_RUNTIME_PHASE,
     ShopPhaseCoordinator
 } from './flow/shop_phase_coordinator.js';
+import { ShopUiCommandExecutor } from './flow/shop_ui_command_executor.js';
 import { SentenceBoardState } from './word/sentence_board_state.js';
 import { SentenceSlotController } from './word/sentence_slot_controller.js';
 import { WordShopSession } from './word/word_shop_session.js';
@@ -210,7 +211,7 @@ export class GameSystem {
      * @param {{animate:(owner:object,properties:{animationCategory:string})=>object}} dependencies.animationPort - 카테고리 포함 속성을 받는 표현 애니메이션 포트입니다.
      * @param {{getDelta?:()=>number,getFixedDelta:()=>number,getFixedInterpolationAlpha:()=>number}} dependencies.timePort - 시간 포트입니다.
      * @param {{getSnapshot:(out?:object)=>object}} dependencies.viewportPort - 표시 뷰포트 포트입니다.
-     * @param {{draw?:(status:object,viewport:object)=>boolean,destroy?:()=>void,createSession?:()=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
+     * @param {{update?:(status:object,viewport:object,frameDelta:number)=>boolean,draw?:(status:object,viewport:object)=>boolean,drainCommands?:()=>object[],destroy?:()=>void,createSession?:(options:object)=>object}} [dependencies.gameplayStatusRenderPort] - read-only gameplay status 표현 포트 또는 session factory입니다.
      * @param {{drawCircle:(options:object)=>void,drawSquareInstances:(options:object)=>void}} dependencies.worldRenderPort - 월드 렌더 포트입니다.
      * @param {{mapId?:string|null,tileNavigationSource?:object|null,enemyWaveEnabled?:boolean,gameplayWorldActorsEnabled?:boolean,waveDefinition?:object,enemyPresentationProfile?:string,initialCameraZoom?:number,towerMaxHp?:number,coreMaxIntegrity?:number,initialGold?:number,wordSystemOptions?:object,r8ShopOptions?:object}} [options={}] - 세션 시작 옵션입니다.
      */
@@ -236,7 +237,11 @@ export class GameSystem {
         );
         this.gameplayStatusRenderer = (
             this.gameplayStatusRendererOwned
-            ? gameplayStatusRenderPort.createSession()
+            ? gameplayStatusRenderPort.createSession({
+                inputSource: dependencies.inputActionSource,
+                animationPort: dependencies.animationPort,
+                settingsSource: dependencies.uiSettingsSource
+            })
             : gameplayStatusRenderPort ?? null
         );
         this.inputActionMapper = new InputActionMapper();
@@ -272,6 +277,11 @@ export class GameSystem {
             presentationPort: Object.freeze({
                 synchronize: () => this.synchronizePresentation()
             })
+        });
+        this.shopUiCommandExecutor = new ShopUiCommandExecutor({
+            shopSession: this.wordShopSession,
+            sentenceBoard: this.sentenceBoard,
+            phaseCoordinator: this.shopPhaseCoordinator
         });
         this.r8QaAutoOpen = options.r8ShopOptions?.autoOpen === true;
         this.r8QaOpenSourceId = options.r8ShopOptions?.sourceId
@@ -309,6 +319,8 @@ export class GameSystem {
             uiScale: 1
         };
         this.fixedTick = 0;
+        this.shopPointerReleaseRequired = false;
+        this.shopMovementReleaseRequired = false;
         this.entered = false;
         this.destroyed = false;
     }
@@ -406,6 +418,7 @@ export class GameSystem {
                     !== SHOP_RUNTIME_PHASE.COMBAT) {
                 return false;
             }
+            suppressGameplayInput = true;
         } else if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_OPENING) {
             this.shopPhaseCoordinator.progressOpening();
             if (this.shopPhaseCoordinator.getPhase()
@@ -431,10 +444,24 @@ export class GameSystem {
             const moveAction = this.inputActionMapper.mapMoveAction(
                 this.dependencies.inputActionSource
             );
+            if (this.shopMovementReleaseRequired) {
+                if (moveAction.payload.x === 0 && moveAction.payload.y === 0) {
+                    this.shopMovementReleaseRequired = false;
+                } else {
+                    moveAction.payload.x = 0;
+                    moveAction.payload.y = 0;
+                }
+            }
             const primaryPointerFireAction = this.inputActionMapper
                 .mapPrimaryPointerFireAction(
                     this.dependencies.inputActionSource
                 );
+            if (this.shopPointerReleaseRequired) {
+                if (primaryPointerFireAction.payload.pressed !== true) {
+                    this.shopPointerReleaseRequired = false;
+                }
+                primaryPointerFireAction.payload.pressed = false;
+            }
             this.playerControlRouter.dispatch(moveAction);
             this.playerControlRouter.dispatch(primaryPointerFireAction);
             const skillEdgeActions = this.inputActionMapper.mapSkillEdgeActions(
@@ -443,6 +470,8 @@ export class GameSystem {
             for (let index = 0; index < skillEdgeActions.length; index++) {
                 this.playerControlRouter.dispatch(skillEdgeActions[index]);
             }
+        } else {
+            this.#synchronizeSuppressedShopInput();
         }
         const advanced = this.objectSystem.fixedUpdate(
             this.dependencies.timePort.getFixedDelta(),
@@ -462,11 +491,16 @@ export class GameSystem {
         if (!this.entered || this.destroyed) {
             return;
         }
-        const cameraZoomAction = this.inputActionMapper.mapCameraZoomAction(
-            this.dependencies.inputActionSource
-        );
-        if (cameraZoomAction) {
-            this.playerControlRouter.dispatch(cameraZoomAction);
+        const shopPhase = this.shopPhaseCoordinator.getPhase();
+        if (shopPhase === SHOP_RUNTIME_PHASE.COMBAT) {
+            const cameraZoomAction = this.inputActionMapper.mapCameraZoomAction(
+                this.dependencies.inputActionSource
+            );
+            if (cameraZoomAction) {
+                this.playerControlRouter.dispatch(cameraZoomAction);
+            }
+        } else {
+            this.#synchronizeSuppressedShopInput();
         }
         const frameDelta = typeof this.dependencies.timePort.getDelta === 'function'
             ? this.dependencies.timePort.getDelta()
@@ -477,6 +511,14 @@ export class GameSystem {
             this.dependencies.timePort.getFixedDelta()
         );
         this.cameraZoomController.updateFollowTarget();
+        this.gameplayStatusRenderer?.update?.(
+            this.getGameplayStatus(),
+            this.viewportSnapshot,
+            frameDelta
+        );
+        const shopUiCommands = this.gameplayStatusRenderer
+            ?.drainCommands?.() ?? [];
+        this.handleShopUiCommands(shopUiCommands);
     }
 
     /**
@@ -525,6 +567,14 @@ export class GameSystem {
     handleCommands(commands = []) {
         void commands;
         return [];
+    }
+
+    /** Shop overlay semantic command를 CPU run-domain authority에서 실행합니다. */
+    handleShopUiCommands(commands = []) {
+        if (!this.entered || this.destroyed || !this.shopUiCommandExecutor) {
+            return Object.freeze([]);
+        }
+        return this.shopUiCommandExecutor.executeAll(commands);
     }
 
     /**
@@ -671,6 +721,10 @@ export class GameSystem {
         return this.shopPhaseCoordinator?.getStatus() ?? null;
     }
 
+    getShopUiCommandStatus() {
+        return this.shopUiCommandExecutor?.getStatus() ?? null;
+    }
+
     requestShopOpen(source) {
         return this.shopPhaseCoordinator.requestOpen(source);
     }
@@ -736,6 +790,7 @@ export class GameSystem {
             sentenceBoard: this.sentenceBoard?.getStatus() ?? null,
             shop: this.wordShopSession?.getStatus() ?? null,
             shopPhase: this.getShopPhaseStatus(),
+            shopUi: this.getShopUiCommandStatus(),
             bounty: this.getBountyRewardStatus(),
             hostiles: this.getHostileParticipationStatus(),
             words: wordStatus,
@@ -834,6 +889,8 @@ export class GameSystem {
         this.towerGroupState?.destroy();
         this.towerGroupState = null;
         this.runOutcome.destroy();
+        this.shopUiCommandExecutor?.destroy();
+        this.shopUiCommandExecutor = null;
         this.shopPhaseCoordinator?.destroy();
         this.shopPhaseCoordinator = null;
         this.wordShopSession?.destroy();
@@ -847,6 +904,8 @@ export class GameSystem {
         this.wordSystem?.destroy();
         this.wordSystem = null;
         this.fixedTick = 0;
+        this.shopPointerReleaseRequired = false;
+        this.shopMovementReleaseRequired = false;
         this.entered = false;
     }
 
@@ -902,5 +961,27 @@ export class GameSystem {
             recoveryProbationState: recovery?.probation?.state ?? null,
             runDefeated: this.runOutcome.isDefeated()
         });
+    }
+
+    /** SHOP에서 읽은 held 입력이 COMBAT command로 새어 나가지 않게 edge/baseline만 동기화합니다. */
+    #synchronizeSuppressedShopInput() {
+        const moveAction = this.inputActionMapper.mapMoveAction(
+            this.dependencies.inputActionSource
+        );
+        if (moveAction.payload.x !== 0 || moveAction.payload.y !== 0) {
+            this.shopMovementReleaseRequired = true;
+        }
+        const pointerAction = this.inputActionMapper.mapPrimaryPointerFireAction(
+            this.dependencies.inputActionSource
+        );
+        if (pointerAction.payload.pressed === true) {
+            this.shopPointerReleaseRequired = true;
+        }
+        this.inputActionMapper.mapSkillEdgeActions(
+            this.dependencies.inputActionSource
+        );
+        this.inputActionMapper.primeWheelBaseline(
+            this.dependencies.inputActionSource
+        );
     }
 }
