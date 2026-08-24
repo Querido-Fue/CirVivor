@@ -186,6 +186,9 @@ export class SentenceBoardState {
         this.lastReceipt = null;
         this.transactionEntries = new Map();
         this.transactionOrder = [];
+        this.statusRevision = 1;
+        this.statusSnapshotRevision = 0;
+        this.statusSnapshot = null;
         this.destroyed = false;
         const initialValidation = this.validateCommitted();
         if (initialValidation.valid !== true) {
@@ -202,6 +205,7 @@ export class SentenceBoardState {
         this.draftInventoryRevision = inventorySnapshot.revision;
         this.draftRevision++;
         this.lastValidation = null;
+        this.#touchStatus();
         return freezeReceipt({
             accepted: true,
             code: SENTENCE_BOARD_RESULT_CODE.DRAFT_STARTED,
@@ -277,6 +281,7 @@ export class SentenceBoardState {
         this.draftInventoryRevision = null;
         this.draftRevision++;
         this.lastValidation = null;
+        this.#touchStatus();
         return freezeReceipt({
             accepted: true,
             code: SENTENCE_BOARD_RESULT_CODE.DRAFT_DISCARDED,
@@ -298,6 +303,7 @@ export class SentenceBoardState {
             'COMMITTED'
         );
         this.lastCommittedValidation = validation.result;
+        this.#touchStatus();
         return validation.result;
     }
 
@@ -420,7 +426,12 @@ export class SentenceBoardState {
     }
 
     getStatus() {
-        return Object.freeze({
+        if (this.statusSnapshot
+            && this.statusSnapshotRevision === this.statusRevision) {
+            return this.statusSnapshot;
+        }
+        this.statusSnapshot = Object.freeze({
+            revision: this.statusRevision,
             boardRevision: this.destroyed ? 0 : this.boardRevision,
             draftRevision: this.destroyed ? 0 : this.draftRevision,
             inventoryRevision: this.destroyed ? 0 : this.inventoryRevision,
@@ -437,6 +448,8 @@ export class SentenceBoardState {
             transactionHistoryCapacity: this.transactionHistoryCapacity,
             destroyed: this.destroyed
         });
+        this.statusSnapshotRevision = this.statusRevision;
+        return this.statusSnapshot;
     }
 
     destroy() {
@@ -450,6 +463,7 @@ export class SentenceBoardState {
         this.lastReceipt = null;
         this.transactionEntries.clear();
         this.transactionOrder.length = 0;
+        this.#touchStatus();
     }
 
     #validateDraftInternal() {
@@ -473,6 +487,7 @@ export class SentenceBoardState {
             'DRAFT'
         );
         this.lastValidation = validation.result;
+        this.#touchStatus();
         return validation;
     }
 
@@ -563,6 +578,7 @@ export class SentenceBoardState {
         this.draftSlots = normalizeSentenceBoardSlots(nextSlots);
         this.draftRevision++;
         this.lastValidation = null;
+        this.#touchStatus();
         return freezeReceipt({
             accepted: true,
             code: SENTENCE_BOARD_RESULT_CODE.DRAFT_CHANGED,
@@ -595,6 +611,7 @@ export class SentenceBoardState {
             this.transactionEntries.delete(retired);
         }
         this.lastReceipt = receipt;
+        this.#touchStatus();
         return receipt;
     }
 
@@ -616,5 +633,10 @@ export class SentenceBoardState {
             boardRevision: 0,
             mutationCount: 0
         });
+    }
+
+    #touchStatus() {
+        this.statusRevision++;
+        this.statusSnapshot = null;
     }
 }

@@ -27,8 +27,12 @@ import {
     normalizeSentenceDefinition
 } from './production/script/module/ingame/contract/word_sentence_contract.js';
 import {
+    fingerprintUnlockedWordPool,
     WORD_SHOP_RESULT_CODE
 } from './production/script/module/ingame/contract/word_shop_contract.js';
+import {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} from './production/script/module/ingame/contract/shop_runtime_configuration_contract.js';
 import {
     createGpuTowerSpawnIntent
 } from './production/script/module/ingame/object/tower/gpu_tower_spawn_adapter.js';
@@ -735,8 +739,13 @@ async function runShopEditorActual(device) {
     });
     const shop = new WordShopSession({
         commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
         runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
-        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        ),
+        allowEconomicallyRedundantOffers: true
     });
     let harness = createHarness(
         device,

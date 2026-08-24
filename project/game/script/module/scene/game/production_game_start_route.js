@@ -22,6 +22,13 @@ import {
     R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
     R8_WORD_SHOP_BALANCE
 } from 'data/word/r8_word_shop_catalog_data.js';
+import {
+    fingerprintUnlockedWordPool
+} from 'ingame/contract/word_shop_contract.js';
+import {
+    SHOP_RUNTIME_CONFIGURATION_MODE,
+    normalizeShopRuntimeConfiguration
+} from 'ingame/contract/shop_runtime_configuration_contract.js';
 import { TileMap } from 'ingame/map/tile_map.js';
 
 /** 타이틀 맵 선택의 첫 production 카드가 유지하는 preview/selection identity입니다. */
@@ -153,12 +160,37 @@ export function createR8QaGameStartOptions(
         enemyWaveEnabled: false,
         initialGold: R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD,
         r8ShopOptions: Object.freeze({
+            mode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
             autoOpen: true,
             sourceId: 'launcher.--r8-qa',
             runSessionId: 'run.r8.qa',
             runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
             unlockedWordDefinitionIds:
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+            unlockedPoolFingerprint: fingerprintUnlockedWordPool(
                 R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+            ),
+            allowEconomicallyRedundantOffers: true
+        })
+    };
+}
+
+/**
+ * R9/new-run owner가 완전한 production identity를 주입할 public seam입니다.
+ * 이번 단계에서는 auto-open caller나 settlement를 추가하지 않습니다.
+ */
+export function createProductionShopGameStartOptions(
+    selectedMapId,
+    productionRunIdentity
+) {
+    return {
+        ...createGameStartOptions(
+            selectedMapId,
+            R5_SHOWCASE_SENTENCE_LOADOUT
+        ),
+        r8ShopOptions: normalizeShopRuntimeConfiguration({
+            ...productionRunIdentity,
+            mode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
         })
     };
 }

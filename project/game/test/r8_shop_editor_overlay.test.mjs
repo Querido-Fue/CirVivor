@@ -20,6 +20,17 @@ const {
     SHOP_UI_COMMAND_TYPE
 } = await loadGameModule('ingame/contract/shop_ui_command_contract.js');
 const {
+    fingerprintUnlockedWordPool
+} = await loadGameModule('ingame/contract/word_shop_contract.js');
+const {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} = await loadGameModule(
+    'ingame/contract/shop_runtime_configuration_contract.js'
+);
+const {
+    FIXED_STEP_RESULT
+} = await loadGameModule('simulation/fixed_step_result_contract.js');
+const {
     SHOP_RUNTIME_PHASE
 } = await loadGameModule('ingame/flow/shop_phase_coordinator.js');
 const {
@@ -185,16 +196,21 @@ function createHarness(options = {}) {
         initialGold: options.initialGold
             ?? R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD,
         r8ShopOptions: {
+            mode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
             autoOpen: true,
             sourceId: options.sourceId ?? 'test.r8-overlay',
             runSessionId: options.runSessionId ?? 'run.r8-overlay',
             runSeed: options.runSeed ?? R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
-            unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+            unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+            unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+            ),
+            allowEconomicallyRedundantOffers: true
         }
     });
     assert.equal(game.enter(), true);
     assert.equal(game.fixedUpdate(), true);
-    assert.equal(game.fixedUpdate(), false);
+    assert.equal(game.fixedUpdate(), FIXED_STEP_RESULT.COMPLETED);
     assert.equal(game.getShopPhaseStatus().phase, SHOP_RUNTIME_PHASE.SHOP);
     game.update();
     return {
@@ -636,12 +652,17 @@ test('Apply/Continue은 board commit과 SHOP_CLOSING receipt를 거쳐 exact nex
         harness.game.getShopPhaseStatus().phase,
         SHOP_RUNTIME_PHASE.SHOP_CLOSING
     );
-    assert.equal(harness.game.fixedUpdate(), true);
-    assert.equal(harness.game.getFixedTick(), fixedBefore + 1);
+    assert.equal(
+        harness.game.fixedUpdate(),
+        FIXED_STEP_RESULT.COMPLETED
+    );
+    assert.equal(harness.game.getFixedTick(), fixedBefore);
     assert.equal(
         harness.game.getShopPhaseStatus().phase,
         SHOP_RUNTIME_PHASE.COMBAT
     );
+    assert.equal(harness.game.fixedUpdate(), true);
+    assert.equal(harness.game.getFixedTick(), fixedBefore + 1);
     harness.game.destroy();
 });
 
@@ -656,7 +677,10 @@ test('Shop keyboard/pointer held 입력은 Continue 뒤 combat movement/fire로 
     harness.game.requestShopContinue({
         transactionId: 'shop.overlay.no-click.continue'
     });
-    assert.equal(harness.game.fixedUpdate(), true);
+    assert.equal(
+        harness.game.fixedUpdate(),
+        FIXED_STEP_RESULT.COMPLETED
+    );
     assert.equal(tower.position.x, initialX);
     assert.equal(harness.game.fixedUpdate(), true);
     assert.equal(tower.position.x, initialX);

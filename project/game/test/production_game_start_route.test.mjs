@@ -227,6 +227,17 @@ test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene
                 this.setExport('clearSimulationCommands', () => {});
             },
             { context }
+        )],
+        ['simulation/fixed_step_result_contract.js', new vm.SyntheticModule(
+            ['normalizeFixedStepResult'],
+            function initializeFixedStepResult() {
+                this.setExport('normalizeFixedStepResult', (result) => {
+                    if (result === false) return 'DEFERRED_BACKPRESSURE';
+                    if (result === 'INTENTIONAL_PAUSE') return result;
+                    return 'COMPLETED';
+                });
+            },
+            { context }
         )]
     ]);
 

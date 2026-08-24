@@ -97,6 +97,7 @@ export class WordInventoryState {
         this.lastReceipt = null;
         this.acquiredCount = 0;
         this.upgradedCount = 0;
+        this.snapshotCache = null;
         this.destroyed = false;
     }
 
@@ -400,8 +401,13 @@ export class WordInventoryState {
     }
 
     getSnapshot() {
+        const expectedRevision = this.destroyed ? 0 : this.revision;
+        if (this.snapshotCache?.revision === expectedRevision
+            && this.snapshotCache.destroyed === this.destroyed) {
+            return this.snapshotCache;
+        }
         if (this.destroyed) {
-            return Object.freeze({
+            this.snapshotCache = Object.freeze({
                 revision: 0,
                 fingerprint: 0,
                 nextAcquisitionOrdinal: 0,
@@ -410,13 +416,14 @@ export class WordInventoryState {
                 instancesById: Object.freeze({}),
                 destroyed: true
             });
+            return this.snapshotCache;
         }
         const instances = Array.from(this.instancesById.values()).sort(
             (left, right) => left.acquisitionOrdinal - right.acquisitionOrdinal
                 || left.instanceId.localeCompare(right.instanceId)
         );
         const frozenInstances = Object.freeze(instances);
-        return Object.freeze({
+        this.snapshotCache = Object.freeze({
             runSessionId: this.runSessionId,
             revision: this.revision,
             fingerprint: fingerprintWordInventory(instances),
@@ -428,6 +435,7 @@ export class WordInventoryState {
             )),
             destroyed: false
         });
+        return this.snapshotCache;
     }
 
     getStatus() {
@@ -474,6 +482,7 @@ export class WordInventoryState {
         this.acquiredCount = checkpoint.acquiredCount;
         this.upgradedCount = checkpoint.upgradedCount;
         this.preparedPlans = new WeakSet();
+        this.snapshotCache = null;
     }
 
     destroy() {
@@ -484,6 +493,7 @@ export class WordInventoryState {
         this.transactionOrder.length = 0;
         this.preparedPlans = new WeakSet();
         this.lastReceipt = null;
+        this.snapshotCache = null;
     }
 
     #validateOwnedInstanceCatalogBinding(instance) {

@@ -1,6 +1,9 @@
 import { BaseScene } from 'scene/_base_scene.js';
 import { GameSystem } from 'ingame/game_system.js';
 import { createGameSceneDependencies } from './game_scene_dependency_factory.js';
+import {
+    FIXED_STEP_RESULT
+} from 'simulation/fixed_step_result_contract.js';
 
 /**
  * SceneSystem이 사용하는 게임 진입 모드입니다.
@@ -51,8 +54,9 @@ export class GameScene extends BaseScene {
      * @returns {boolean} GameSystem fixed tick이 실제로 전진했는지 여부입니다.
      */
     fixedUpdate() {
-        const advanced = this.gameSystem.fixedUpdate();
-        if (advanced) {
+        const result = this.gameSystem.fixedUpdate();
+        if (result === true || result === undefined
+            || result === FIXED_STEP_RESULT.COMPLETED) {
             const probation = this.gameSystem.getGpuRecoveryStatus?.()
                 ?.probation ?? null;
             if (probation === null
@@ -60,13 +64,25 @@ export class GameScene extends BaseScene {
                 || probation.state === 'PASSED') {
                 this.recoveryRestartGeneration = null;
             }
-            return true;
+            return result;
         }
-        if (this.enemyRecoveryEnabled
+        if ((result === false
+            || result === FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE)
+            && this.enemyRecoveryEnabled
             && this.gameSystem.isEnemySimulationRecoveryRequired()) {
             this.#restartAtSafeWaveBoundary();
         }
-        return false;
+        return result;
+    }
+
+    /** SystemHandler가 Time/Animation/Object fixed pipeline 전에 확인합니다. */
+    getFixedStepDisposition() {
+        return this.gameSystem.getFixedStepDisposition();
+    }
+
+    /** SHOP phase edge 뒤 같은 frame catch-up을 중단하는 revision입니다. */
+    getFixedStepBatchBoundaryRevision() {
+        return this.gameSystem.getFixedStepBatchBoundaryRevision();
     }
 
     /**

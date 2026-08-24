@@ -19,6 +19,13 @@ import { SentenceSlotController } from './word/sentence_slot_controller.js';
 import { WordShopSession } from './word/word_shop_session.js';
 import { WordSystem } from './word/word_system.js';
 import {
+    SHOP_RUNTIME_CONFIGURATION_MODE,
+    normalizeShopRuntimeConfiguration
+} from './contract/shop_runtime_configuration_contract.js';
+import {
+    FIXED_STEP_RESULT
+} from 'simulation/fixed_step_result_contract.js';
+import {
     GAME_WORLD_SESSION_MODE,
     selectGameWorldSessionMode
 } from './game_world_session_mode.js';
@@ -248,8 +255,12 @@ export class GameSystem {
         this.playerControlRouter = new PlayerControlRouter();
         this.wordSystem = new WordSystem(options.wordSystemOptions);
         this.sentenceSlotController = new SentenceSlotController(this.wordSystem);
+        this.shopRuntimeConfiguration = normalizeShopRuntimeConfiguration(
+            options.r8ShopOptions
+        );
         this.runCommerceState = new RunCommerceState({
-            runSessionId: options.r8ShopOptions?.runSessionId,
+            runSessionId: this.shopRuntimeConfiguration.runSessionId
+                ?? 'run.shop.disabled',
             initialGold: options.initialGold ?? 0
         });
         this.wordInventory = this.runCommerceState.inventory;
@@ -258,13 +269,20 @@ export class GameSystem {
         this.sentenceBoard = new SentenceBoardState({
             inventory: this.wordInventory,
             wordSystem: this.wordSystem,
-            initialLoadout: options.r8ShopOptions?.initialLoadout
+            initialLoadout:
+                this.shopRuntimeConfiguration.initialLoadout ?? undefined
         });
         this.wordShopSession = new WordShopSession({
             commerceState: this.runCommerceState,
-            runSeed: options.r8ShopOptions?.runSeed,
+            runtimeMode: this.shopRuntimeConfiguration.mode,
+            runSeed: this.shopRuntimeConfiguration.runSeed,
             unlockedWordDefinitionIds:
-                options.r8ShopOptions?.unlockedWordDefinitionIds
+                this.shopRuntimeConfiguration.unlockedWordDefinitionIds,
+            unlockedPoolFingerprint:
+                this.shopRuntimeConfiguration.unlockedPoolFingerprint,
+            allowEconomicallyRedundantOffers:
+                this.shopRuntimeConfiguration
+                    .allowEconomicallyRedundantOffers
         });
         this.shopPhaseCoordinator = new ShopPhaseCoordinator({
             wordSystem: this.wordSystem,
@@ -276,15 +294,19 @@ export class GameSystem {
             }),
             presentationPort: Object.freeze({
                 synchronize: () => this.synchronizePresentation()
-            })
+            }),
+            shopRuntimeMode: this.shopRuntimeConfiguration.mode,
+            shopConfigured: this.shopRuntimeConfiguration.configured
         });
         this.shopUiCommandExecutor = new ShopUiCommandExecutor({
             shopSession: this.wordShopSession,
             sentenceBoard: this.sentenceBoard,
             phaseCoordinator: this.shopPhaseCoordinator
         });
-        this.r8QaAutoOpen = options.r8ShopOptions?.autoOpen === true;
-        this.r8QaOpenSourceId = options.r8ShopOptions?.sourceId
+        this.r8QaAutoOpen = this.shopRuntimeConfiguration.mode
+            === SHOP_RUNTIME_CONFIGURATION_MODE.QA
+            && this.shopRuntimeConfiguration.autoOpen === true;
+        this.r8QaOpenSourceId = this.shopRuntimeConfiguration.sourceId
             ?? 'launcher.--r8-qa';
         this.coreIntegrity = new CoreIntegrity({
             maxIntegrity: options.coreMaxIntegrity
@@ -320,6 +342,7 @@ export class GameSystem {
         };
         this.frameGameplayStatusSnapshot = null;
         this.fixedTick = 0;
+        this.fixedStepBatchBoundaryRevision = 0;
         this.shopPointerReleaseRequired = false;
         this.shopMovementReleaseRequired = false;
         this.entered = false;
@@ -410,21 +433,20 @@ export class GameSystem {
         let suppressGameplayInput = false;
         const shopPhase = this.shopPhaseCoordinator.getPhase();
         if (shopPhase === SHOP_RUNTIME_PHASE.SHOP) {
-            return false;
+            return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
         }
         if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_CLOSING) {
-            const closing = this.shopPhaseCoordinator.progressClosing();
-            if (closing.accepted !== true
-                || this.shopPhaseCoordinator.getPhase()
-                    !== SHOP_RUNTIME_PHASE.COMBAT) {
-                return false;
+            this.shopPhaseCoordinator.progressClosing();
+            if (this.shopPhaseCoordinator.getPhase() !== shopPhase) {
+                this.fixedStepBatchBoundaryRevision++;
+                return FIXED_STEP_RESULT.COMPLETED;
             }
-            suppressGameplayInput = true;
+            return FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
         } else if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_OPENING) {
             this.shopPhaseCoordinator.progressOpening();
-            if (this.shopPhaseCoordinator.getPhase()
-                === SHOP_RUNTIME_PHASE.SHOP) {
-                return false;
+            if (this.shopPhaseCoordinator.getPhase() !== shopPhase) {
+                this.fixedStepBatchBoundaryRevision++;
+                return FIXED_STEP_RESULT.COMPLETED;
             }
             suppressGameplayInput = this.shopPhaseCoordinator.getPhase()
                 === SHOP_RUNTIME_PHASE.SHOP_OPENING;
@@ -506,9 +528,12 @@ export class GameSystem {
         const frameDelta = typeof this.dependencies.timePort.getDelta === 'function'
             ? this.dependencies.timePort.getDelta()
             : 0;
+        const worldPresentationPaused = shopPhase === SHOP_RUNTIME_PHASE.SHOP;
         this.objectSystem.update(
-            this.dependencies.timePort.getFixedInterpolationAlpha(),
-            frameDelta,
+            worldPresentationPaused
+                ? 1
+                : this.dependencies.timePort.getFixedInterpolationAlpha(),
+            worldPresentationPaused ? 0 : frameDelta,
             this.dependencies.timePort.getFixedDelta()
         );
         this.cameraZoomController.updateFollowTarget();
@@ -732,6 +757,11 @@ export class GameSystem {
         return this.shopPhaseCoordinator;
     }
 
+    /** 현재 세션의 immutable Shop runtime identity/configuration입니다. */
+    getShopRuntimeConfiguration() {
+        return this.shopRuntimeConfiguration;
+    }
+
     getShopPhaseStatus() {
         return this.shopPhaseCoordinator?.getStatus() ?? null;
     }
@@ -822,6 +852,19 @@ export class GameSystem {
     /** @returns {number} 세션 전체가 완료한 fixed tick입니다. */
     getFixedTick() {
         return this.fixedTick;
+    }
+
+    /** fixed pipeline 진입 전 SHOP intentional pause를 게시합니다. */
+    getFixedStepDisposition() {
+        return this.shopPhaseCoordinator?.getPhase()
+            === SHOP_RUNTIME_PHASE.SHOP
+            ? FIXED_STEP_RESULT.INTENTIONAL_PAUSE
+            : FIXED_STEP_RESULT.COMPLETED;
+    }
+
+    /** SHOP opening/closing 경계 뒤 같은 frame catch-up을 끊는 단조 revision입니다. */
+    getFixedStepBatchBoundaryRevision() {
+        return this.fixedStepBatchBoundaryRevision;
     }
 
     /**

@@ -182,6 +182,17 @@ test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출�
             function initGameSystem() { this.setExport('GameSystem', GameSystemStub); },
             { context }
         )],
+        ['simulation/fixed_step_result_contract.js', new vm.SyntheticModule(
+            ['FIXED_STEP_RESULT'],
+            function initFixedStepResult() {
+                this.setExport('FIXED_STEP_RESULT', Object.freeze({
+                    COMPLETED: 'COMPLETED',
+                    DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+                    INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+                }));
+            },
+            { context }
+        )],
         ['./game_scene_dependency_factory.js', new vm.SyntheticModule(
             ['createGameSceneDependencies'],
             function initFactory() {

@@ -277,9 +277,15 @@ test('scene의 명시적 false는 남은 catch-up을 중단하고 완료 fixed s
         }
     };
 
-    const completedFixedStepCount = handler.tick({ fixedStepCount: 3 });
+    const receipt = handler.tick({ fixedStepCount: 3 });
 
-    assert.equal(completedFixedStepCount, 1);
+    assert.deepEqual({ ...receipt }, {
+        requestedFixedStepCount: 3,
+        completedFixedStepCount: 1,
+        deferredBackpressureCount: 2,
+        intentionalPauseCount: 0,
+        consumedFixedStepCount: 1
+    });
     assert.deepEqual(events, [
         'fixed-animation',
         'fixed-object',
@@ -306,7 +312,13 @@ test('release profiler는 GPU 대기 attempt를 deferred로 기록하고 같은 
     handler.frameExecutionPolicy = handler.createPausePolicy({ renderFrame: false });
     handler.sceneSystem.fixedUpdate = () => sceneResults.shift();
 
-    assert.equal(handler.tick({ fixedStepCount: 3 }), 1);
+    assert.deepEqual({ ...handler.tick({ fixedStepCount: 3 }) }, {
+        requestedFixedStepCount: 3,
+        completedFixedStepCount: 1,
+        deferredBackpressureCount: 2,
+        intentionalPauseCount: 0,
+        consumedFixedStepCount: 1
+    });
     assert.deepEqual(fixedStepOutcomes, [
         { completed: true, deferred: false },
         { completed: false, deferred: true }

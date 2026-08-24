@@ -10,6 +10,11 @@ const RUN_DIRECTORY_PREFIX = 'cirvivor-r8-shop-editor-';
 const RUN_TIMEOUT_MS = 600_000;
 const REGRESSION_TIMEOUT_MS = 300_000;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
+const FINAL_RESULT_RELATIVE_PATH = Object.freeze([
+    'logs',
+    'acceptance',
+    'post-r8-shop-editor-result.json'
+]);
 const NW_RUNTIME_ROOT_FILES = Object.freeze([
     'd3dcompiler_47.dll',
     'dxcompiler.dll',
@@ -203,7 +208,7 @@ async function runRegressionGate(projectDirectory, scriptName, label) {
     }
 }
 
-function validateR8Result(result) {
+export function validateR8Result(result) {
     const fixture = result?.r8ShopEditor;
     const warm = result?.performance?.warmSuccessful;
     const requiredScenarios = [
@@ -249,6 +254,11 @@ function validateR8Result(result) {
         && Number.isFinite(warm.placementGpuMs?.p95)
         && Number.isFinite(warm.fullFixedBoundaryWallMs?.p50)
         && Number.isFinite(warm.fullFixedBoundaryWallMs?.p95)
+        && Number.isFinite(warm.overallGpuMs?.p50)
+        && Number.isFinite(warm.overallGpuMs?.p95)
+        && result.performance?.timestampQuerySupported === true
+        && warm.p95WithinBudget === true
+        && result.performance?.productionExposure === 'APPROVED'
         && warm.droppedFixedTimeMs === 0
         && result.uncapturedErrorCount === 0
         && result.deviceLostReason === 'destroyed';
@@ -389,14 +399,25 @@ async function runHarness() {
                 || `R8 NW 실패: exit=${exit.exitCode}, signal=${exit.signal}`);
         }
         validateR8Result(result);
+        const finalResultPath = path.join(
+            projectDirectory,
+            ...FINAL_RESULT_RELATIVE_PATH
+        );
         const combined = Object.freeze({
             ...result,
+            acceptanceEvidencePath: finalResultPath,
             regressionGates: summarizeRegressionEvidence(
                 r6,
                 r7,
                 skipRegressions
             )
         });
+        await fs.mkdir(path.dirname(finalResultPath), { recursive: true });
+        await fs.writeFile(
+            finalResultPath,
+            `${JSON.stringify(combined, null, 2)}\n`,
+            'utf8'
+        );
         console.log(JSON.stringify(combined, null, 2));
         await removeRunDirectory(runDirectory);
         return combined;
@@ -406,7 +427,11 @@ async function runHarness() {
     }
 }
 
-runHarness().catch((error) => {
-    console.error(error?.stack ?? error);
-    process.exitCode = 1;
-});
+const isDirectExecution = process.argv[1]
+    && path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+if (isDirectExecution) {
+    runHarness().catch((error) => {
+        console.error(error?.stack ?? error);
+        process.exitCode = 1;
+    });
+}

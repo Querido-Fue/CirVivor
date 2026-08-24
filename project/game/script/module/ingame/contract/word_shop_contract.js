@@ -6,6 +6,15 @@ import {
 
 export const WORD_SHOP_OFFER_COUNT = 5;
 
+export const WORD_REPEAT_ACQUISITION_POLICY = Object.freeze({
+    UNIQUE: 'UNIQUE',
+    STACKABLE_INSTANCE: 'STACKABLE_INSTANCE'
+});
+
+const WORD_REPEAT_ACQUISITION_POLICIES = new Set(
+    Object.values(WORD_REPEAT_ACQUISITION_POLICY)
+);
+
 export const WORD_SHOP_RESULT_CODE = Object.freeze({
     OPENED: 'OPENED',
     PURCHASED: 'PURCHASED',
@@ -15,6 +24,10 @@ export const WORD_SHOP_RESULT_CODE = Object.freeze({
     REPLAYED: 'REPLAYED',
     TRANSACTION_CONFLICT: 'TRANSACTION_CONFLICT',
     INSUFFICIENT_OFFER_POOL: 'INSUFFICIENT_OFFER_POOL',
+    INSUFFICIENT_MEANINGFUL_OFFER_POOL:
+        'INSUFFICIENT_MEANINGFUL_OFFER_POOL',
+    SHOP_NOT_CONFIGURED: 'SHOP_NOT_CONFIGURED',
+    RUNTIME_IDENTITY_MISMATCH: 'RUNTIME_IDENTITY_MISMATCH',
     UNKNOWN_OFFER: 'UNKNOWN_OFFER',
     SOLD_OFFER: 'SOLD_OFFER',
     STALE_ROW: 'STALE_ROW',
@@ -34,7 +47,8 @@ const CATALOG_KEYS = new Set([
     'rarityId',
     'upgradeProfileId',
     'unlockKey',
-    'shopEligible'
+    'shopEligible',
+    'repeatAcquisitionPolicy'
 ]);
 const OFFER_KEYS = new Set([
     'offerOrdinal',
@@ -81,6 +95,12 @@ export function normalizeWordShopCatalogRecord(
     label = 'wordShopCatalogRecord'
 ) {
     const values = snapshotRecord(source, CATALOG_KEYS, label);
+    const repeatAcquisitionPolicy = values.repeatAcquisitionPolicy;
+    if (!WORD_REPEAT_ACQUISITION_POLICIES.has(repeatAcquisitionPolicy)) {
+        throw new RangeError(
+            `${label}.repeatAcquisitionPolicy가 알려지지 않았습니다.`
+        );
+    }
     return Object.freeze({
         definitionId: requireR8NonEmptyString(
             values.definitionId,
@@ -106,7 +126,8 @@ export function normalizeWordShopCatalogRecord(
             values.unlockKey,
             `${label}.unlockKey`
         ),
-        shopEligible: values.shopEligible === true
+        shopEligible: values.shopEligible === true,
+        repeatAcquisitionPolicy
     });
 }
 

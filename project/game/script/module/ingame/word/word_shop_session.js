@@ -1,5 +1,4 @@
 import {
-    R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
     R8_WORD_SHOP_BALANCE,
     R8_WORD_SHOP_CATALOG
 } from 'data/word/r8_word_shop_catalog_data.js';
@@ -10,6 +9,7 @@ import {
 import {
     WORD_SHOP_OFFER_COUNT,
     WORD_SHOP_RESULT_CODE,
+    WORD_REPEAT_ACQUISITION_POLICY,
     createWordShopOfferId,
     fingerprintUnlockedWordPool,
     fingerprintWordShopCatalog,
@@ -18,6 +18,9 @@ import {
     normalizeWordShopCatalog,
     normalizeWordShopOffer
 } from '../contract/word_shop_contract.js';
+import {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} from '../contract/shop_runtime_configuration_contract.js';
 import {
     requireR8NonEmptyString,
     requireR8NonNegativeSafeInteger
@@ -67,10 +70,17 @@ export class WordShopSession {
             }
         }
         this.commerce = commerce;
-        this.runSeed = requirePositiveUint32(
-            options.runSeed ?? R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
-            'runSeed'
-        );
+        this.runtimeMode = options.runtimeMode
+            ?? SHOP_RUNTIME_CONFIGURATION_MODE.DISABLED;
+        if (!Object.values(SHOP_RUNTIME_CONFIGURATION_MODE)
+            .includes(this.runtimeMode)) {
+            throw new RangeError('WordShopSession runtimeMode가 알려지지 않았습니다.');
+        }
+        this.configured = this.runtimeMode
+            !== SHOP_RUNTIME_CONFIGURATION_MODE.DISABLED;
+        this.runSeed = this.configured
+            ? requirePositiveUint32(options.runSeed, 'runSeed')
+            : null;
         this.catalog = normalizeWordShopCatalog(
             options.catalog ?? R8_WORD_SHOP_CATALOG
         );
@@ -78,11 +88,32 @@ export class WordShopSession {
             this.catalog.map((record) => [record.definitionId, record])
         ));
         this.catalogFingerprint = fingerprintWordShopCatalog(this.catalog);
-        this.defaultUnlockedDefinitionIds = normalizeUnlockedWordPool(
-            options.unlockedWordDefinitionIds
-                ?? R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
-            this.catalogByDefinitionId
-        );
+        this.defaultUnlockedDefinitionIds = this.configured
+            ? normalizeUnlockedWordPool(
+                options.unlockedWordDefinitionIds,
+                this.catalogByDefinitionId
+            )
+            : Object.freeze([]);
+        this.configuredUnlockedPoolFingerprint = this.configured
+            ? requirePositiveUint32(
+                options.unlockedPoolFingerprint,
+                'unlockedPoolFingerprint'
+            )
+            : 0;
+        if (this.configured
+            && fingerprintUnlockedWordPool(this.defaultUnlockedDefinitionIds)
+                !== this.configuredUnlockedPoolFingerprint) {
+            throw new RangeError('configured unlocked pool fingerprint가 일치하지 않습니다.');
+        }
+        this.allowEconomicallyRedundantOffers
+            = options.allowEconomicallyRedundantOffers === true;
+        if (this.allowEconomicallyRedundantOffers
+            && this.runtimeMode
+                !== SHOP_RUNTIME_CONFIGURATION_MODE.QA) {
+            throw new RangeError(
+                'economically redundant offer는 QA mode에서만 허용됩니다.'
+            );
+        }
         this.rerollCost = requireR8NonNegativeSafeInteger(
             options.rerollCost ?? R8_WORD_SHOP_BALANCE.REROLL_COST,
             'rerollCost'
@@ -106,6 +137,8 @@ export class WordShopSession {
         this.rerollOrdinal = 0;
         this.unlockedDefinitionIds = Object.freeze([]);
         this.unlockedPoolFingerprint = 0;
+        this.meaningfulOfferDefinitionIds = Object.freeze([]);
+        this.meaningfulOfferPoolFingerprint = 0;
         this.row = null;
         this.openCount = 0;
         this.purchaseCount = 0;
@@ -115,6 +148,10 @@ export class WordShopSession {
         this.replayCount = 0;
         this.conflictCount = 0;
         this.lastReceipt = null;
+        this.statusRevision = 1;
+        this.statusSnapshotRevision = 0;
+        this.statusSnapshot = null;
+        this.statusSnapshotCommerce = null;
         this.destroyed = false;
     }
 
@@ -131,6 +168,29 @@ export class WordShopSession {
             source.expectedCommerceRevision,
             'shop open expectedCommerceRevision'
         );
+        if (!this.configured) {
+            const requestFingerprint = fingerprintR8Record(
+                'word-shop-open.disabled.r8',
+                {
+                    transactionId,
+                    shopSessionOrdinal,
+                    expectedCommerceRevision,
+                    runtimeMode: this.runtimeMode
+                }
+            );
+            const replay = this.#resolveReplay(
+                transactionId,
+                requestFingerprint
+            );
+            if (replay) return replay;
+            return this.#remember(transactionId, requestFingerprint, {
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.SHOP_NOT_CONFIGURED,
+                transactionId,
+                runtimeMode: this.runtimeMode,
+                mutationCount: 0
+            });
+        }
         const unlockedDefinitionIds = normalizeUnlockedWordPool(
             source.unlockedWordDefinitionIds
                 ?? this.defaultUnlockedDefinitionIds,
@@ -186,13 +246,34 @@ export class WordShopSession {
                 mutationCount: 0
             });
         }
-        if (unlockedDefinitionIds.length < this.offerCount) {
+        if (this.runtimeMode === SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+            && unlockedPoolFingerprint
+                !== this.configuredUnlockedPoolFingerprint) {
             return this.#remember(transactionId, requestFingerprint, {
                 accepted: false,
-                code: WORD_SHOP_RESULT_CODE.INSUFFICIENT_OFFER_POOL,
+                code: WORD_SHOP_RESULT_CODE.RUNTIME_IDENTITY_MISMATCH,
+                transactionId,
+                expectedUnlockedPoolFingerprint:
+                    this.configuredUnlockedPoolFingerprint,
+                unlockedPoolFingerprint,
+                mutationCount: 0
+            });
+        }
+        const meaningfulDefinitionIds
+            = this.#resolveMeaningfulOfferDefinitionIds(
+                unlockedDefinitionIds
+            );
+        if (meaningfulDefinitionIds.length < this.offerCount) {
+            return this.#remember(transactionId, requestFingerprint, {
+                accepted: false,
+                code: this.allowEconomicallyRedundantOffers
+                    ? WORD_SHOP_RESULT_CODE.INSUFFICIENT_OFFER_POOL
+                    : WORD_SHOP_RESULT_CODE
+                        .INSUFFICIENT_MEANINGFUL_OFFER_POOL,
                 transactionId,
                 requiredOfferCount: this.offerCount,
                 unlockedOfferCount: unlockedDefinitionIds.length,
+                meaningfulOfferCount: meaningfulDefinitionIds.length,
                 mutationCount: 0
             });
         }
@@ -200,7 +281,11 @@ export class WordShopSession {
         this.rerollOrdinal = 0;
         this.unlockedDefinitionIds = unlockedDefinitionIds;
         this.unlockedPoolFingerprint = unlockedPoolFingerprint;
-        this.row = this.#createRow(0);
+        this.meaningfulOfferDefinitionIds = meaningfulDefinitionIds;
+        this.meaningfulOfferPoolFingerprint = fingerprintUnlockedWordPool(
+            meaningfulDefinitionIds
+        );
+        this.row = this.#createRow(0, meaningfulDefinitionIds);
         this.active = true;
         this.lastShopSessionOrdinal = shopSessionOrdinal;
         this.openCount++;
@@ -294,7 +379,26 @@ export class WordShopSession {
         const preflight = this.#preflightRowAction(normalized);
         if (preflight) return this.#rememberNormalized(normalized, preflight);
         const nextRerollOrdinal = this.rerollOrdinal + 1;
-        const nextRow = this.#createRow(nextRerollOrdinal);
+        const meaningfulDefinitionIds
+            = this.#resolveMeaningfulOfferDefinitionIds(
+                this.unlockedDefinitionIds
+            );
+        if (meaningfulDefinitionIds.length < this.offerCount) {
+            return this.#rememberNormalized(normalized, {
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE
+                    .INSUFFICIENT_MEANINGFUL_OFFER_POOL,
+                transactionId: normalized.transactionId,
+                requiredOfferCount: this.offerCount,
+                meaningfulOfferCount: meaningfulDefinitionIds.length,
+                gold: this.commerce.getBalance(),
+                mutationCount: 0
+            });
+        }
+        const nextRow = this.#createRow(
+            nextRerollOrdinal,
+            meaningfulDefinitionIds
+        );
         const contextFingerprint = fingerprintR8Record(
             'word-shop-reroll-context.r8',
             {
@@ -317,6 +421,10 @@ export class WordShopSession {
             );
         }
         this.rerollOrdinal = nextRerollOrdinal;
+        this.meaningfulOfferDefinitionIds = meaningfulDefinitionIds;
+        this.meaningfulOfferPoolFingerprint = fingerprintUnlockedWordPool(
+            meaningfulDefinitionIds
+        );
         this.row = nextRow;
         this.rerollCount++;
         return this.#rememberNormalized(normalized, {
@@ -413,8 +521,22 @@ export class WordShopSession {
     }
 
     getStatus() {
-        const inventory = this.commerce.getInventorySnapshot();
-        return Object.freeze({
+        const commerceStatus = this.commerce.getStatus();
+        if (this.statusSnapshot
+            && this.statusSnapshotRevision === this.statusRevision
+            && this.statusSnapshotCommerce === commerceStatus) {
+            return this.statusSnapshot;
+        }
+        const poolSource = this.active
+            ? this.unlockedDefinitionIds
+            : this.defaultUnlockedDefinitionIds;
+        const meaningfulDefinitionIds = this.configured
+            ? this.#resolveMeaningfulOfferDefinitionIds(poolSource)
+            : Object.freeze([]);
+        const snapshot = Object.freeze({
+            revision: this.statusRevision,
+            runtimeMode: this.runtimeMode,
+            configured: this.configured,
             active: this.active,
             runSeed: this.runSeed,
             shopSessionOrdinal: this.shopSessionOrdinal,
@@ -422,12 +544,24 @@ export class WordShopSession {
             catalogFingerprint: this.catalogFingerprint,
             unlockedPoolFingerprint: this.unlockedPoolFingerprint,
             unlockedDefinitionIds: this.unlockedDefinitionIds,
+            configuredUnlockedPoolFingerprint:
+                this.configuredUnlockedPoolFingerprint,
+            allowEconomicallyRedundantOffers:
+                this.allowEconomicallyRedundantOffers,
+            meaningfulOfferPool: Object.freeze({
+                definitionIds: meaningfulDefinitionIds,
+                count: meaningfulDefinitionIds.length,
+                fingerprint: meaningfulDefinitionIds.length === 0
+                    ? 0
+                    : fingerprintUnlockedWordPool(meaningfulDefinitionIds),
+                sufficient: meaningfulDefinitionIds.length >= this.offerCount
+            }),
             offerCount: this.row?.offers.length ?? 0,
             row: this.row,
-            gold: this.commerce.getBalance(),
-            commerceRevision: this.commerce.getRevision(),
-            inventoryRevision: inventory.revision,
-            inventoryFingerprint: inventory.fingerprint,
+            gold: commerceStatus.gold,
+            commerceRevision: commerceStatus.commerceRevision,
+            inventoryRevision: commerceStatus.inventoryRevision,
+            inventoryFingerprint: commerceStatus.inventoryFingerprint,
             continueReady: this.continueReady(),
             openCount: this.openCount,
             purchaseCount: this.purchaseCount,
@@ -441,6 +575,74 @@ export class WordShopSession {
             lastReceipt: this.lastReceipt,
             destroyed: this.destroyed
         });
+        this.statusSnapshot = snapshot;
+        this.statusSnapshotRevision = this.statusRevision;
+        this.statusSnapshotCommerce = commerceStatus;
+        return snapshot;
+    }
+
+    captureAtomicCheckpoint() {
+        if (this.destroyed) {
+            throw new Error('destroyed ShopSession은 checkpoint할 수 없습니다.');
+        }
+        return Object.freeze({
+            owner: this,
+            active: this.active,
+            lastShopSessionOrdinal: this.lastShopSessionOrdinal,
+            shopSessionOrdinal: this.shopSessionOrdinal,
+            rerollOrdinal: this.rerollOrdinal,
+            unlockedDefinitionIds: this.unlockedDefinitionIds,
+            unlockedPoolFingerprint: this.unlockedPoolFingerprint,
+            meaningfulOfferDefinitionIds: this.meaningfulOfferDefinitionIds,
+            meaningfulOfferPoolFingerprint:
+                this.meaningfulOfferPoolFingerprint,
+            row: this.row,
+            openCount: this.openCount,
+            purchaseCount: this.purchaseCount,
+            rerollCount: this.rerollCount,
+            upgradeCount: this.upgradeCount,
+            closeCount: this.closeCount,
+            replayCount: this.replayCount,
+            conflictCount: this.conflictCount,
+            history: new Map(this.history),
+            historyOrder: Array.from(this.historyOrder),
+            lastReceipt: this.lastReceipt,
+            statusRevision: this.statusRevision,
+            statusSnapshot: this.statusSnapshot,
+            statusSnapshotRevision: this.statusSnapshotRevision,
+            statusSnapshotCommerce: this.statusSnapshotCommerce
+        });
+    }
+
+    restoreAtomicCheckpoint(checkpoint) {
+        if (this.destroyed || checkpoint?.owner !== this) {
+            throw new TypeError('이 ShopSession의 atomic checkpoint가 필요합니다.');
+        }
+        this.active = checkpoint.active;
+        this.lastShopSessionOrdinal = checkpoint.lastShopSessionOrdinal;
+        this.shopSessionOrdinal = checkpoint.shopSessionOrdinal;
+        this.rerollOrdinal = checkpoint.rerollOrdinal;
+        this.unlockedDefinitionIds = checkpoint.unlockedDefinitionIds;
+        this.unlockedPoolFingerprint = checkpoint.unlockedPoolFingerprint;
+        this.meaningfulOfferDefinitionIds
+            = checkpoint.meaningfulOfferDefinitionIds;
+        this.meaningfulOfferPoolFingerprint
+            = checkpoint.meaningfulOfferPoolFingerprint;
+        this.row = checkpoint.row;
+        this.openCount = checkpoint.openCount;
+        this.purchaseCount = checkpoint.purchaseCount;
+        this.rerollCount = checkpoint.rerollCount;
+        this.upgradeCount = checkpoint.upgradeCount;
+        this.closeCount = checkpoint.closeCount;
+        this.replayCount = checkpoint.replayCount;
+        this.conflictCount = checkpoint.conflictCount;
+        this.history = new Map(checkpoint.history);
+        this.historyOrder = Array.from(checkpoint.historyOrder);
+        this.lastReceipt = checkpoint.lastReceipt;
+        this.statusRevision = checkpoint.statusRevision;
+        this.statusSnapshot = checkpoint.statusSnapshot;
+        this.statusSnapshotRevision = checkpoint.statusSnapshotRevision;
+        this.statusSnapshotCommerce = checkpoint.statusSnapshotCommerce;
     }
 
     destroy() {
@@ -451,9 +653,10 @@ export class WordShopSession {
         this.history.clear();
         this.historyOrder.length = 0;
         this.lastReceipt = null;
+        this.#touchStatus();
     }
 
-    #createRow(rerollOrdinal) {
+    #createRow(rerollOrdinal, meaningfulDefinitionIds) {
         const seed = createDeterministicShopSeed({
             runSeed: this.runSeed,
             shopSessionOrdinal: this.shopSessionOrdinal,
@@ -462,7 +665,7 @@ export class WordShopSession {
             catalogFingerprint: this.catalogFingerprint
         });
         const rng = new DeterministicShopRng(seed);
-        const candidates = this.unlockedDefinitionIds.map(
+        const candidates = meaningfulDefinitionIds.map(
             (definitionId) => this.catalogByDefinitionId[definitionId]
         );
         const selected = selectWeightedWithoutReplacement(
@@ -616,9 +819,11 @@ export class WordShopSession {
         if (!known) return null;
         if (known.requestFingerprint === requestFingerprint) {
             this.replayCount++;
+            this.#touchStatus();
             return known.receipt;
         }
         this.conflictCount++;
+        this.#touchStatus();
         return freezeReceipt({
             accepted: false,
             code: WORD_SHOP_RESULT_CODE.TRANSACTION_CONFLICT,
@@ -650,6 +855,31 @@ export class WordShopSession {
             this.history.delete(retired);
         }
         this.lastReceipt = receipt;
+        this.#touchStatus();
         return receipt;
+    }
+
+    #resolveMeaningfulOfferDefinitionIds(unlockedDefinitionIds) {
+        if (this.allowEconomicallyRedundantOffers) {
+            return unlockedDefinitionIds;
+        }
+        const ownedDefinitionIds = new Set(
+            this.commerce.getInventorySnapshot().instances.map(
+                (instance) => instance.definitionId
+            )
+        );
+        return Object.freeze(unlockedDefinitionIds.filter((definitionId) => {
+            const policy = this.catalogByDefinitionId[definitionId]
+                ?.repeatAcquisitionPolicy;
+            return policy
+                === WORD_REPEAT_ACQUISITION_POLICY.STACKABLE_INSTANCE
+                || !ownedDefinitionIds.has(definitionId);
+        }));
+    }
+
+    #touchStatus() {
+        this.statusRevision++;
+        this.statusSnapshot = null;
+        this.statusSnapshotCommerce = null;
     }
 }

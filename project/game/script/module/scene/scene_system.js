@@ -6,6 +6,9 @@ import {
 } from './game/production_game_start_route.js';
 import { BenchmarkScene } from './benchmark/_benchmark_scene.js';
 import { clearSimulationCommands } from 'simulation/simulation_command_queue.js';
+import {
+    normalizeFixedStepResult
+} from 'simulation/fixed_step_result_contract.js';
 
 const SCENE_STATES = Object.freeze({
     LOADING: 'loading',
@@ -82,7 +85,26 @@ export class SceneSystem {
      * @returns {*} 활성 씬의 fixedUpdate 반환값입니다.
      */
     fixedUpdate() {
-        return this.#callActiveScene('fixedUpdate');
+        return normalizeFixedStepResult(
+            this.#callActiveScene('fixedUpdate')
+        );
+    }
+
+    /** 활성 scene이 fixed pipeline 진입 전에 게시한 실행 의도입니다. */
+    getFixedStepDisposition() {
+        return normalizeFixedStepResult(
+            this.#callActiveScene('getFixedStepDisposition')
+        );
+    }
+
+    /** SHOP 입·퇴장 경계가 catch-up batch를 끊기 위한 단조 revision입니다. */
+    getFixedStepBatchBoundaryRevision() {
+        const revision = this.#callActiveScene(
+            'getFixedStepBatchBoundaryRevision'
+        );
+        return Number.isSafeInteger(revision) && revision >= 0
+            ? revision
+            : 0;
     }
 
     /**

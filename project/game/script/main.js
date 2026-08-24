@@ -79,7 +79,7 @@ window.addEventListener('resize', () => {
  * @description 게임의 최상위 애플리케이션 클래스입니다.
  * SystemHandler를 통해 게임의 전반적인 상태를 관리하고, 종료 로직을 수행합니다.
  */
-class App {
+export class App {
     /**
      * App 클래스의 생성자입니다.
      * @param {SystemHandler} systemHandler - 게임 시스템들을 관리하는 핸들러 인스턴스
@@ -137,6 +137,10 @@ class App {
         let droppedFixedStepCount = 0;
         let frameDeltaClampLossSeconds = 0;
         let debugFrameMode = 'running';
+        let fixedStepBatchReceipt = normalizeFixedStepBatchReceipt(
+            undefined,
+            0
+        );
         try {
             if (!Number.isFinite(this.lastFrameTimestamp) || this.lastFrameTimestamp <= 0) {
                 this.lastFrameTimestamp = now;
@@ -191,36 +195,50 @@ class App {
             } else {
                 this.accumulatorSeconds = 0;
                 this.fixedStepCatchUpPolicy.reset();
+                fixedAlpha = 1;
             }
 
-            const completedFixedStepCount = this.systemHandler.tick({
+            fixedStepBatchReceipt = normalizeFixedStepBatchReceipt(
+                this.systemHandler.tick({
                 frameDeltaSeconds,
                 previousFrameCpuSeconds: this.lastFrameCpuSeconds,
                 fixedStepSeconds: this.fixedStepSeconds,
                 fixedStepCount,
                 fixedAlpha,
                 debugFrameMode
-            });
+                }),
+                fixedStepCount
+            );
             if (debugFrameMode === 'running') {
-                if (fixedStepCount > 0) {
+                const intentionalPauseActive = !this.systemHandler
+                    .shouldRunFixedStep();
+                if (fixedStepBatchReceipt.intentionalPauseCount > 0
+                    || intentionalPauseActive) {
+                    this.accumulatorSeconds = 0;
+                    this.fixedStepCatchUpPolicy.reset();
+                } else if (fixedStepBatchReceipt.deferredBackpressureCount > 0) {
                     this.accumulatorSeconds = restoreUncompletedFixedStepDebt(
                         this.accumulatorSeconds,
-                        fixedStepCount,
-                        completedFixedStepCount,
+                        fixedStepBatchReceipt.completedFixedStepCount
+                            + fixedStepBatchReceipt.deferredBackpressureCount,
+                        fixedStepBatchReceipt.completedFixedStepCount,
                         this.fixedStepSeconds
                     );
                 }
-                droppedFixedStepCount = countExcessFixedStepDebt(
-                    this.accumulatorSeconds,
-                    this.fixedStepSeconds,
-                    this.maximumRetainedFixedStepDebtSteps
-                );
-                if (droppedFixedStepCount > 0) {
-                    this.accumulatorSeconds = Math.max(
-                        0,
-                        this.accumulatorSeconds
-                            - (droppedFixedStepCount * this.fixedStepSeconds)
+                if (fixedStepBatchReceipt.intentionalPauseCount === 0
+                    && !intentionalPauseActive) {
+                    droppedFixedStepCount = countExcessFixedStepDebt(
+                        this.accumulatorSeconds,
+                        this.fixedStepSeconds,
+                        this.maximumRetainedFixedStepDebtSteps
                     );
+                    if (droppedFixedStepCount > 0) {
+                        this.accumulatorSeconds = Math.max(
+                            0,
+                            this.accumulatorSeconds
+                                - (droppedFixedStepCount * this.fixedStepSeconds)
+                        );
+                    }
                 }
             }
         } catch (e) {
@@ -239,7 +257,8 @@ class App {
                     droppedFixedStepCount,
                     frameDeltaClampLossSeconds,
                     this.fixedStepSeconds,
-                    this.fixedStepCatchUpPolicy.isCpuBound()
+                    this.fixedStepCatchUpPolicy.isCpuBound(),
+                    fixedStepBatchReceipt.intentionalPauseCount
                 );
             }
             const frameMeasureEnd = shouldRecordReleaseFrame
@@ -482,4 +501,49 @@ class App {
         resumeReleaseSimulationProfiler(this.lastFrameTimestamp);
         this.loopRequestId = requestAnimationFrame(this._boundLoop);
     }
+}
+
+function normalizeFixedStepBatchReceipt(source, requestedFixedStepCount) {
+    const requested = Number.isInteger(requestedFixedStepCount)
+        ? Math.max(0, requestedFixedStepCount)
+        : 0;
+    if (typeof source === 'number' && Number.isInteger(source)) {
+        const completed = Math.min(requested, Math.max(0, source));
+        return Object.freeze({
+            requestedFixedStepCount: requested,
+            completedFixedStepCount: completed,
+            deferredBackpressureCount: requested - completed,
+            intentionalPauseCount: 0,
+            consumedFixedStepCount: completed
+        });
+    }
+    if (!source || typeof source !== 'object') {
+        return Object.freeze({
+            requestedFixedStepCount: requested,
+            completedFixedStepCount: requested,
+            deferredBackpressureCount: 0,
+            intentionalPauseCount: 0,
+            consumedFixedStepCount: requested
+        });
+    }
+    const completed = Number.isInteger(source.completedFixedStepCount)
+        ? Math.min(requested, Math.max(0, source.completedFixedStepCount))
+        : 0;
+    const maximumDeferred = requested - completed;
+    const deferred = Number.isInteger(source.deferredBackpressureCount)
+        ? Math.min(maximumDeferred, Math.max(0, source.deferredBackpressureCount))
+        : 0;
+    const intentional = Number.isInteger(source.intentionalPauseCount)
+        ? Math.min(
+            requested - completed - deferred,
+            Math.max(0, source.intentionalPauseCount)
+        )
+        : 0;
+    return Object.freeze({
+        requestedFixedStepCount: requested,
+        completedFixedStepCount: completed,
+        deferredBackpressureCount: deferred,
+        intentionalPauseCount: intentional,
+        consumedFixedStepCount: completed + intentional
+    });
 }

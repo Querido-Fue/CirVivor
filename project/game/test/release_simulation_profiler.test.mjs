@@ -106,6 +106,31 @@ assert.equal(failedProfiler.getSnapshot().totalDeferredFixedStepCount, 1);
 assert.equal(failedProfiler.getSnapshot().totalFailedFixedStepCount, 1);
 assert.ok(Math.abs(failedProfiler.getSnapshot().totalLostSimulationSeconds - fixedStepSeconds) < 1e-9);
 
+const intentionalProfiler = new ReleaseSimulationProfiler({
+    frameCapacity: 8,
+    fixedCapacity: 8,
+    snapshotIntervalMs: 1
+});
+intentionalProfiler.setEnabled(true, 0);
+intentionalProfiler.recordFrame(
+    2,
+    1,
+    0.002,
+    2,
+    0,
+    0,
+    fixedStepSeconds,
+    false,
+    2
+);
+assert.equal(
+    intentionalProfiler.getSnapshot().totalIntentionalPauseFixedStepCount,
+    2
+);
+assert.equal(intentionalProfiler.getSnapshot().totalScheduledFixedStepCount, 0);
+assert.equal(intentionalProfiler.getSnapshot().totalDeferredFixedStepCount, 0);
+assert.equal(intentionalProfiler.getSnapshot().totalLostSimulationSeconds, 0);
+
 assert.equal(failedProfiler.setEnabled(false, 3), false);
 const disabledSnapshot = failedProfiler.getSnapshot();
 const disabledRevision = disabledSnapshot.revision;

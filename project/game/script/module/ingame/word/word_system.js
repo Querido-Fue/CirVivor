@@ -328,6 +328,23 @@ export class WordSystem {
         return true;
     }
 
+    /** ShopPhaseCoordinator의 phase publication용 최소 atomic checkpoint입니다. */
+    captureRuntimePhaseCheckpoint() {
+        if (this.destroyed) {
+            throw new Error('destroyed WordSystem은 phase checkpoint할 수 없습니다.');
+        }
+        return Object.freeze({ owner: this, phase: this.phase });
+    }
+
+    /** fault injection 뒤 phase publication을 직접 되돌립니다. */
+    restoreRuntimePhaseCheckpoint(checkpoint) {
+        if (this.destroyed || checkpoint?.owner !== this) {
+            throw new TypeError('이 WordSystem의 phase checkpoint가 필요합니다.');
+        }
+        this.phase = checkpoint.phase;
+        return true;
+    }
+
     /** GameObject runtime과 같은 selector/capacity 계산을 사용하는 preview port입니다. */
     bindRuntimePreviewProvider(provider = null) {
         if (this.destroyed) return false;

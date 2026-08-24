@@ -75,6 +75,13 @@ await gameSceneModule.link(async (specifier) => {
     const exportsBySpecifier = {
         'scene/_base_scene.js': { BaseScene },
         'ingame/game_system.js': { GameSystem },
+        'simulation/fixed_step_result_contract.js': {
+            FIXED_STEP_RESULT: Object.freeze({
+                COMPLETED: 'COMPLETED',
+                DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+                INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+            })
+        },
         './game_scene_dependency_factory.js': {
             createGameSceneDependencies() {
                 throw new Error('테스트는 명시적 GameScene dependencies를 사용해야 합니다.');
@@ -113,6 +120,17 @@ async function loadGameSceneWithGameSystem(GameSystemClass) {
             ['GameSystem'],
             function initializeGameSystem() {
                 this.setExport('GameSystem', GameSystemClass);
+            },
+            { context }
+        )],
+        ['simulation/fixed_step_result_contract.js', new vm.SyntheticModule(
+            ['FIXED_STEP_RESULT'],
+            function initializeFixedStepResult() {
+                this.setExport('FIXED_STEP_RESULT', Object.freeze({
+                    COMPLETED: 'COMPLETED',
+                    DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+                    INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+                }));
             },
             { context }
         )],

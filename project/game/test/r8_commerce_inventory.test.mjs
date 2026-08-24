@@ -69,6 +69,7 @@ test('R8 starter inventory는 R3 exact instance ID와 immutable fingerprint를 �
     assert.throws(() => {
         snapshot.instancesById[R3_WORD_INSTANCES[0].id] = null;
     }, TypeError);
+    assert.strictEqual(inventory.getSnapshot(), snapshot);
 });
 
 test('R8 inventory acquisition은 run/ordinal/definition ID가 결정적이고 동일 definition을 여러 번 소유한다', () => {

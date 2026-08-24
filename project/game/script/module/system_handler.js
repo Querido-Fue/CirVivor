@@ -90,6 +90,43 @@ const DEBUG_PAUSED_EXECUTION_DISABLE_KEYS = Object.freeze([
     'runSceneUpdate',
     'runSimulationCommandApply'
 ]);
+const FIXED_STEP_RESULT_VALUE = Object.freeze({
+    COMPLETED: 'COMPLETED',
+    DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+    INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+});
+const FIXED_STEP_RESULT_VALUES = new Set(
+    Object.values(FIXED_STEP_RESULT_VALUE)
+);
+
+function normalizeFixedStepResultValue(result) {
+    if (result === true || result === undefined) {
+        return FIXED_STEP_RESULT_VALUE.COMPLETED;
+    }
+    if (result === false) {
+        return FIXED_STEP_RESULT_VALUE.DEFERRED_BACKPRESSURE;
+    }
+    if (FIXED_STEP_RESULT_VALUES.has(result)) {
+        return result;
+    }
+    throw new RangeError(`알려지지 않은 fixed-step 결과입니다: ${String(result)}`);
+}
+
+function createFixedStepBatchReceipt({
+    requestedFixedStepCount,
+    completedFixedStepCount,
+    deferredBackpressureCount,
+    intentionalPauseCount
+}) {
+    return Object.freeze({
+        requestedFixedStepCount,
+        completedFixedStepCount,
+        deferredBackpressureCount,
+        intentionalPauseCount,
+        consumedFixedStepCount:
+            completedFixedStepCount + intentionalPauseCount
+    });
+}
 
 /**
  * @class SystemHandler
@@ -309,7 +346,9 @@ export class SystemHandler {
      * @returns {boolean} 고정 스텝 진행 여부입니다.
      */
     shouldRunFixedStep() {
-        return this.frameExecutionPolicy.runFixedStep === true;
+        return this.frameExecutionPolicy.runFixedStep === true
+            && this.#getFixedStepDisposition()
+                !== FIXED_STEP_RESULT_VALUE.INTENTIONAL_PAUSE;
     }
 
     /**
@@ -334,7 +373,7 @@ export class SystemHandler {
      * @param {number} [frameContext.fixedStepCount] 이번 프레임에 처리할 고정 스텝 횟수입니다.
      * @param {number} [frameContext.fixedAlpha] 렌더 보간 계수(0~1)입니다.
      * @param {'running'|'paused'|'step'} [frameContext.debugFrameMode='running'] 디버그 프레임 제어 상태입니다.
-     * @returns {number} 실제로 완료된 fixed step 수입니다.
+     * @returns {object} 완료/backpressure/의도적 정지를 분리한 batch receipt입니다.
      */
     tick(frameContext = EMPTY_FRAME_CONTEXT) {
         const debugFrameMode = DEBUG_FRAME_MODES.has(frameContext.debugFrameMode)
@@ -381,58 +420,79 @@ export class SystemHandler {
         const shouldMeasureReleaseSimulation = isReleaseSimulationProfilerCollecting()
             && shouldRecordReleaseSimulationForFrameMode(debugFrameMode);
         let completedFixedStepCount = 0;
+        let deferredBackpressureCount = 0;
+        let intentionalPauseCount = 0;
 
         if (fixedStepCount > 0) {
             const fixedTotalStart = beginPerformanceSection();
             for (let i = 0; i < fixedStepCount; i++) {
-                if (!shouldMeasureReleaseSimulation) {
-                    if (timeHandler && typeof timeHandler.updateFixed === 'function') {
-                        const fixedTimeStart = beginPerformanceSection();
-                        timeHandler.updateFixed(fixedStepSeconds);
-                        endPerformanceSection('fixed.time', fixedTimeStart);
-                    }
-                    if (!this.#runFixedStep()) {
-                        break;
-                    }
-                    completedFixedStepCount++;
-                    continue;
+                if (this.#getFixedStepDisposition()
+                    === FIXED_STEP_RESULT_VALUE.INTENTIONAL_PAUSE) {
+                    intentionalPauseCount += fixedStepCount - i;
+                    break;
                 }
 
-                const releaseFixedStart = performance.now();
-                let completedReleaseFixedStep = false;
-                let deferredReleaseFixedStep = false;
+                const boundaryRevisionBefore
+                    = this.#getFixedStepBatchBoundaryRevision();
+                const releaseFixedStart = shouldMeasureReleaseSimulation
+                    ? performance.now()
+                    : 0;
+                let fixedStepResult = null;
                 try {
                     if (timeHandler && typeof timeHandler.updateFixed === 'function') {
                         const fixedTimeStart = beginPerformanceSection();
                         timeHandler.updateFixed(fixedStepSeconds);
                         endPerformanceSection('fixed.time', fixedTimeStart);
                     }
-                    const fixedStepResult = this.#runFixedStep();
-                    completedReleaseFixedStep = fixedStepResult === true;
-                    deferredReleaseFixedStep = fixedStepResult === false;
-                    if (completedReleaseFixedStep) {
-                        completedFixedStepCount++;
-                    }
+                    fixedStepResult = this.#runFixedStep();
                 } finally {
-                    if (shouldMeasureReleaseSimulation) {
+                    if (shouldMeasureReleaseSimulation
+                        && fixedStepResult
+                            !== FIXED_STEP_RESULT_VALUE.INTENTIONAL_PAUSE) {
                         const releaseFixedEnd = performance.now();
                         recordReleaseSimulationFixedStep(
                             releaseFixedEnd,
                             releaseFixedEnd - releaseFixedStart,
-                            completedReleaseFixedStep,
-                            deferredReleaseFixedStep
+                            fixedStepResult
+                                === FIXED_STEP_RESULT_VALUE.COMPLETED,
+                            fixedStepResult
+                                === FIXED_STEP_RESULT_VALUE
+                                    .DEFERRED_BACKPRESSURE
                         );
                     }
                 }
-                if (!completedReleaseFixedStep) {
+
+                if (fixedStepResult === FIXED_STEP_RESULT_VALUE.COMPLETED) {
+                    completedFixedStepCount++;
+                    const boundaryRevisionAfter
+                        = this.#getFixedStepBatchBoundaryRevision();
+                    if (boundaryRevisionAfter !== boundaryRevisionBefore) {
+                        intentionalPauseCount += fixedStepCount - (i + 1);
+                        break;
+                    }
+                    continue;
+                }
+                if (fixedStepResult
+                    === FIXED_STEP_RESULT_VALUE.INTENTIONAL_PAUSE) {
+                    intentionalPauseCount += fixedStepCount - i;
+                } else {
+                    deferredBackpressureCount += fixedStepCount - i;
+                }
+                if (fixedStepResult !== FIXED_STEP_RESULT_VALUE.COMPLETED) {
                     break;
                 }
             }
             endPerformanceSection('frame.fixed.total', fixedTotalStart);
         }
 
+        const fixedPipelinePausedAfterBatch = this.#getFixedStepDisposition()
+            === FIXED_STEP_RESULT_VALUE.INTENTIONAL_PAUSE;
         if (timeHandler && typeof timeHandler.setFixedInterpolationAlpha === 'function') {
-            timeHandler.setFixedInterpolationAlpha(fixedAlpha);
+            timeHandler.setFixedInterpolationAlpha(
+                intentionalPauseCount > 0 || fixedPipelinePausedAfterBatch
+                    ? 1
+                    : fixedAlpha
+            );
         }
 
         if (executionPolicy.renderFrame) {
@@ -504,7 +564,12 @@ export class SystemHandler {
                 }
             }
         }
-        return completedFixedStepCount;
+        return createFixedStepBatchReceipt({
+            requestedFixedStepCount: fixedStepCount,
+            completedFixedStepCount,
+            deferredBackpressureCount,
+            intentionalPauseCount
+        });
     }
 
     /**
@@ -651,7 +716,7 @@ export class SystemHandler {
      * 고정 시간 축에서 animation, object, scene, 선택적 game manager 순서로 갱신합니다.
      * 활성 scene이 `false`를 반환하면 game manager를 진행하지 않습니다.
      * 반환값이 없는 legacy scene은 완료로 취급합니다.
-     * @returns {boolean} fixed step이 실제로 완료되었는지 여부입니다.
+     * @returns {string} 정규화된 fixed-step 결과입니다.
      */
     #runFixedStep() {
         const totalStart = beginPerformanceSection();
@@ -673,9 +738,12 @@ export class SystemHandler {
             const startTime = beginPerformanceSection();
             const sceneFixedUpdateResult = this.sceneSystem.fixedUpdate();
             endPerformanceSection('fixed.scene', startTime);
-            if (sceneFixedUpdateResult === false) {
+            const normalizedResult = normalizeFixedStepResultValue(
+                sceneFixedUpdateResult
+            );
+            if (normalizedResult !== FIXED_STEP_RESULT_VALUE.COMPLETED) {
                 endPerformanceSection('fixed.step.total', totalStart);
-                return false;
+                return normalizedResult;
             }
         }
 
@@ -685,7 +753,23 @@ export class SystemHandler {
             endPerformanceSection('fixed.gameManager', startTime);
         }
         endPerformanceSection('fixed.step.total', totalStart);
-        return true;
+        return FIXED_STEP_RESULT_VALUE.COMPLETED;
+    }
+
+    /** @private */
+    #getFixedStepDisposition() {
+        return normalizeFixedStepResultValue(
+            this.sceneSystem?.getFixedStepDisposition?.()
+        );
+    }
+
+    /** @private */
+    #getFixedStepBatchBoundaryRevision() {
+        const revision = this.sceneSystem
+            ?.getFixedStepBatchBoundaryRevision?.();
+        return Number.isSafeInteger(revision) && revision >= 0
+            ? revision
+            : 0;
     }
 
     /**

@@ -92,6 +92,7 @@ export class ReleaseSimulationProfiler {
         this.totalScheduledFixedStepCount = 0;
         this.totalCompletedFixedStepCount = 0;
         this.totalDeferredFixedStepCount = 0;
+        this.totalIntentionalPauseFixedStepCount = 0;
         this.totalFailedFixedStepCount = 0;
         this.totalDroppedFixedStepCount = 0;
         this.totalDroppedDebtSeconds = 0;
@@ -195,6 +196,7 @@ export class ReleaseSimulationProfiler {
      * @param {number} frameDeltaClampLossSeconds - max frame delta 제한으로 폐기한 시간입니다.
      * @param {number} fixedStepSeconds - fixed tick 단위 시간입니다.
      * @param {boolean} cpuBound - catch-up 정책의 실제 CPU 포화 상태입니다.
+     * @param {number} [intentionalPauseCount=0] - gameplay debt 없이 소비한 예약 수입니다.
      * @returns {void}
      */
     recordFrame(
@@ -205,7 +207,8 @@ export class ReleaseSimulationProfiler {
         droppedFixedStepCount,
         frameDeltaClampLossSeconds,
         fixedStepSeconds,
-        cpuBound
+        cpuBound,
+        intentionalPauseCount = 0
     ) {
         if (!this.isCollecting()) {
             return;
@@ -220,6 +223,10 @@ export class ReleaseSimulationProfiler {
         const safeFrameCpuMs = normalizeNonNegativeNumber(frameCpuMs, 0);
         const safeScheduledCount = normalizeNonNegativeInteger(scheduledFixedStepCount, 0);
         const safeDroppedCount = normalizeNonNegativeInteger(droppedFixedStepCount, 0);
+        const safeIntentionalPauseCount = Math.min(
+            safeScheduledCount,
+            normalizeNonNegativeInteger(intentionalPauseCount, 0)
+        );
         const safeClampLossSeconds = normalizeNonNegativeNumber(frameDeltaClampLossSeconds, 0);
         const safeFixedStepSeconds = normalizePositiveNumber(fixedStepSeconds, this.fixedStepSeconds);
         const isCpuBound = cpuBound === true;
@@ -233,7 +240,10 @@ export class ReleaseSimulationProfiler {
         this.frameSampleCount = Math.min(this.frameCapacity, this.frameSampleCount + 1);
 
         this.totalFrameCount++;
-        this.totalScheduledFixedStepCount += safeScheduledCount;
+        this.totalScheduledFixedStepCount += safeScheduledCount
+            - safeIntentionalPauseCount;
+        this.totalIntentionalPauseFixedStepCount
+            += safeIntentionalPauseCount;
         this.totalDroppedFixedStepCount += safeDroppedCount;
         this.totalDroppedDebtSeconds += safeDroppedCount * safeFixedStepSeconds;
         this.totalFrameDeltaClampLossSeconds += safeClampLossSeconds;
@@ -334,6 +344,8 @@ export class ReleaseSimulationProfiler {
         snapshot.windowDroppedFixedStepCount = this.snapshotWindowDroppedFixedStepCount;
         snapshot.totalDroppedFixedStepCount = this.totalDroppedFixedStepCount;
         snapshot.totalDeferredFixedStepCount = this.totalDeferredFixedStepCount;
+        snapshot.totalIntentionalPauseFixedStepCount
+            = this.totalIntentionalPauseFixedStepCount;
         snapshot.totalFailedFixedStepCount = this.totalFailedFixedStepCount;
         snapshot.totalScheduledFixedStepCount = this.totalScheduledFixedStepCount;
         snapshot.totalCompletedFixedStepCount = this.totalCompletedFixedStepCount;
@@ -497,6 +509,7 @@ export function recordReleaseSimulationFixedStep(
  * @param {number} frameDeltaClampLossSeconds - frame delta clamp 손실 시간입니다.
  * @param {number} fixedStepSeconds - fixed tick 시간입니다.
  * @param {boolean} cpuBound - CPU 포화 상태입니다.
+ * @param {number} [intentionalPauseCount=0] - gameplay debt 없이 소비한 예약 수입니다.
  * @returns {void}
  */
 export function recordReleaseSimulationFrame(
@@ -507,7 +520,8 @@ export function recordReleaseSimulationFrame(
     droppedFixedStepCount,
     frameDeltaClampLossSeconds,
     fixedStepSeconds,
-    cpuBound
+    cpuBound,
+    intentionalPauseCount = 0
 ) {
     releaseSimulationProfiler.recordFrame(
         timestampMs,
@@ -517,7 +531,8 @@ export function recordReleaseSimulationFrame(
         droppedFixedStepCount,
         frameDeltaClampLossSeconds,
         fixedStepSeconds,
-        cpuBound
+        cpuBound,
+        intentionalPauseCount
     );
 }
 
@@ -547,6 +562,7 @@ function createEmptySnapshot() {
         windowDroppedFixedStepCount: 0,
         totalDroppedFixedStepCount: 0,
         totalDeferredFixedStepCount: 0,
+        totalIntentionalPauseFixedStepCount: 0,
         totalFailedFixedStepCount: 0,
         totalScheduledFixedStepCount: 0,
         totalCompletedFixedStepCount: 0,

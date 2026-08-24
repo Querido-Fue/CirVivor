@@ -5,6 +5,7 @@ import {
     R8_WORD_UPGRADE_PROFILE_ID
 } from 'data/word/r8_word_upgrade_profile_data.js';
 import {
+    WORD_REPEAT_ACQUISITION_POLICY,
     WORD_SHOP_OFFER_COUNT,
     normalizeWordShopCatalog
 } from 'ingame/contract/word_shop_contract.js';
@@ -18,7 +19,7 @@ export const R8_WORD_SHOP_BALANCE = Object.freeze({
     QA_INITIAL_GOLD: 100,
     // QA 첫 행에 modifier.twice가 포함되어 exact R8 acceptance route를
     // 입력 순서 변경 없이 수행할 수 있는 결정적 seed입니다.
-    QA_RUN_SEED: 0x8a24c001
+    QA_RUN_SEED: 0x8a24c003
 });
 
 export const R8_WORD_PURCHASE_COST = Object.freeze({
@@ -51,7 +52,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'common',
         upgradeProfileId: null,
         unlockKey: 'unlock.word.entity.tower',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.ENEMY,
@@ -60,7 +62,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'common',
         upgradeProfileId: null,
         unlockKey: 'unlock.word.entity.enemy',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.SHOOT,
@@ -69,7 +72,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'common',
         upgradeProfileId: null,
         unlockKey: 'unlock.verb.shoot',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.THROW,
@@ -78,7 +82,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'common',
         upgradeProfileId: null,
         unlockKey: 'unlock.verb.throw',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.EMIT,
@@ -87,7 +92,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'common',
         upgradeProfileId: null,
         unlockKey: 'unlock.verb.emit',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.SUMMON,
@@ -96,7 +102,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'uncommon',
         upgradeProfileId: null,
         unlockKey: 'unlock.verb.summon',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.MERGE,
@@ -105,7 +112,8 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'uncommon',
         upgradeProfileId: null,
         unlockKey: 'unlock.verb.merge',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy: WORD_REPEAT_ACQUISITION_POLICY.UNIQUE
     },
     {
         definitionId: WORD_DEFINITION_ID.TWICE,
@@ -114,7 +122,9 @@ const CATALOG_SOURCE = Object.freeze([
         rarityId: 'rare',
         upgradeProfileId: R8_WORD_UPGRADE_PROFILE_ID.TWICE,
         unlockKey: 'unlock.modifier.twice',
-        shopEligible: true
+        shopEligible: true,
+        repeatAcquisitionPolicy:
+            WORD_REPEAT_ACQUISITION_POLICY.STACKABLE_INSTANCE
     }
 ]);
 

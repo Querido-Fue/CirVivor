@@ -34,6 +34,17 @@ async function loadActualGameScene() {
             'ingame/game_system.js',
             { GameSystem }
         )],
+        ['simulation/fixed_step_result_contract.js', createSyntheticModule(
+            context,
+            'simulation/fixed_step_result_contract.js',
+            {
+                FIXED_STEP_RESULT: Object.freeze({
+                    COMPLETED: 'COMPLETED',
+                    DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+                    INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+                })
+            }
+        )],
         ['./game_scene_dependency_factory.js', createSyntheticModule(
             context,
             'game_scene_dependency_factory.js',

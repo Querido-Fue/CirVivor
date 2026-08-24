@@ -326,6 +326,13 @@ const dependencyModules = new Map([
         this.setExport('clearSimulationCommands', () => {
             clearSimulationCommandCount++;
         });
+    }, { context })],
+    ['simulation/fixed_step_result_contract.js', new vm.SyntheticModule(['normalizeFixedStepResult'], function init() {
+        this.setExport('normalizeFixedStepResult', (result) => {
+            if (result === false) return 'DEFERRED_BACKPRESSURE';
+            if (result === 'INTENTIONAL_PAUSE') return result;
+            return 'COMPLETED';
+        });
     }, { context })]
 ]);
 

@@ -93,6 +93,7 @@ export class RunCommerceState {
         this.lastReceipt = null;
         this.failure = null;
         this.pendingTransactionCount = 0;
+        this.statusSnapshot = null;
         this.destroyed = false;
     }
 
@@ -378,7 +379,29 @@ export class RunCommerceState {
 
     getStatus() {
         const inventory = this.getInventorySnapshot();
-        return Object.freeze({
+        const cached = this.statusSnapshot;
+        if (cached
+            && cached.gold === this.getBalance()
+            && cached.commerceRevision === this.getRevision()
+            && cached.inventory === inventory
+            && cached.totalCredited === this.totalCredited
+            && cached.totalSpent === this.totalSpent
+            && cached.creditCount === this.creditCount
+            && cached.purchaseCount === this.purchaseCount
+            && cached.upgradeCount === this.upgradeCount
+            && cached.spendCount === this.spendCount
+            && cached.replayCount === this.replayCount
+            && cached.conflictCount === this.conflictCount
+            && cached.pendingTransactionCount === this.pendingTransactionCount
+            && cached.rememberedTransactionCount
+                === this.transactionEntries.size
+            && cached.lastCredit === this.lastCredit
+            && cached.lastReceipt === this.lastReceipt
+            && cached.protocolFailure === this.failure
+            && cached.destroyed === this.destroyed) {
+            return cached;
+        }
+        this.statusSnapshot = Object.freeze({
             gold: this.getBalance(),
             commerceRevision: this.getRevision(),
             inventoryRevision: inventory.revision,
@@ -400,6 +423,7 @@ export class RunCommerceState {
             protocolFailure: this.failure,
             destroyed: this.destroyed
         });
+        return this.statusSnapshot;
     }
 
     destroy() {
@@ -410,6 +434,7 @@ export class RunCommerceState {
         this.inventory.destroy();
         this.lastCredit = null;
         this.lastReceipt = null;
+        this.statusSnapshot = null;
     }
 
     #normalizePurchase(source) {

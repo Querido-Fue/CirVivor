@@ -3,9 +3,9 @@
   "surfaceKind": "immutable-layout-and-render-state",
   "referenceViewport": "1280x720@uiScale1",
   "surfaces": {
-    "shop.default": "ef5d10afd83534e14f2055ad96d1b46f7145db0b4bccf8202d7eb8bbe11fd5a1",
-    "shop.sold-and-disabled": "5b79251a1a29cf5d904983b035636ed48931c28e1fbc7b1bf3be7e5b9548d987",
-    "editor.valid": "1a4d5d659ed8bf3f44db912e76292a2bd7e30a712b6c19bad5b8880e05fd3897",
-    "editor.invalid": "a79a5afecf16aac1889b56c49e17151746e0bef096f7306f704f359775bf8aac"
+    "shop.default": "a9cb01d36598b999aecb14df6da095cbb84ad3b5948ad4f89d379e79a3cfde28",
+    "shop.sold-and-disabled": "d62eef6c4fd73d399a432436ea4822aa8dd67d794a3ff7cbe18424c03c2bcf16",
+    "editor.valid": "49fffbba7434fb39ac00ac4ac2bf9ff99f594eab2eeaac4c252731a76988143b",
+    "editor.invalid": "ebb79c33cd89673f6de9f977d389c4858b9cc69edbe687bdf3c1002246775f0f"
   }
 }

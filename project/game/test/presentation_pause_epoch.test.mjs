@@ -20,6 +20,18 @@ const baseSceneSource = await readFile(
     'utf8'
 );
 
+const FIXED_STEP_RESULT = Object.freeze({
+    COMPLETED: 'COMPLETED',
+    DEFERRED_BACKPRESSURE: 'DEFERRED_BACKPRESSURE',
+    INTENTIONAL_PAUSE: 'INTENTIONAL_PAUSE'
+});
+
+function normalizeFixedStepResult(result) {
+    if (result === true || result === undefined) return FIXED_STEP_RESULT.COMPLETED;
+    if (result === false) return FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+    return result;
+}
+
 function createSyntheticModule(context, exports) {
     const exportNames = Object.keys(exports);
     return new vm.SyntheticModule(exportNames, function initialize() {
@@ -102,6 +114,9 @@ async function loadSceneSystem() {
         })],
         ['simulation/simulation_command_queue.js', createSyntheticModule(context, {
             clearSimulationCommands: () => {}
+        })],
+        ['simulation/fixed_step_result_contract.js', createSyntheticModule(context, {
+            normalizeFixedStepResult
         })]
     ]);
     await module.link((specifier) => dependencies.get(specifier));
@@ -129,6 +144,9 @@ async function loadGameScene(onSynchronize) {
     const dependencies = new Map([
         ['scene/_base_scene.js', createSyntheticModule(context, { BaseScene: BaseSceneStub })],
         ['ingame/game_system.js', createSyntheticModule(context, { GameSystem: GameSystemStub })],
+        ['simulation/fixed_step_result_contract.js', createSyntheticModule(context, {
+            FIXED_STEP_RESULT
+        })],
         ['./game_scene_dependency_factory.js', createSyntheticModule(context, {
             createGameSceneDependencies: () => ({})
         })]

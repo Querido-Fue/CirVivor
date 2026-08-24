@@ -14,7 +14,7 @@ const [hudSource, profilerSource] = await Promise.all([
 ]);
 
 const HUD_EXECUTABLE_SOURCE_HASH = '2c54ec9d3834e6be8f01219f2a9e0d433253e40fba8ecb664fd21eae17ed3c38';
-const PROFILER_EXECUTABLE_SOURCE_HASH = '214d7d97b7b3b928d17f8d27c58a30c9f4607f8aa92ac46971e355c064be3520';
+const PROFILER_EXECUTABLE_SOURCE_HASH = 'ba8247a5ad745317dbd04e5a4b2e040b662e3c56f747a3c7e90174418d70838d';
 
 /**
  * 독립된 줄의 JSDoc을 제거한 production 실행 소스를 해시합니다.
@@ -82,13 +82,13 @@ test('profiler와 HUD의 void 함수 JSDoc은 반환값이 없음을 명시한�
         [profilerSource, 'suspend\\(\\)'],
         [profilerSource, 'resume\\(timestampMs = 0\\)'],
         [profilerSource, 'recordFixedStep\\(timestampMs, durationMs, completed, deferred = false\\)'],
-        [profilerSource, 'recordFrame\\(\\s*timestampMs,[\\s\\S]*?cpuBound\\s*\\)'],
+        [profilerSource, 'recordFrame\\(\\s*timestampMs,[\\s\\S]*?intentionalPauseCount = 0\\s*\\)'],
         [profilerSource, '#publishSnapshot\\(timestampMs\\)'],
         [profilerSource, '#resetSnapshot\\(\\)'],
         [profilerSource, 'export function suspendReleaseSimulationProfiler\\(\\)'],
         [profilerSource, 'export function resumeReleaseSimulationProfiler\\(timestampMs = performance\\.now\\(\\)\\)'],
         [profilerSource, 'export function recordReleaseSimulationFixedStep\\(\\s*timestampMs,[\\s\\S]*?deferred = false\\s*\\)'],
-        [profilerSource, 'export function recordReleaseSimulationFrame\\(\\s*timestampMs,[\\s\\S]*?cpuBound\\s*\\)'],
+        [profilerSource, 'export function recordReleaseSimulationFrame\\(\\s*timestampMs,[\\s\\S]*?intentionalPauseCount = 0\\s*\\)'],
         [profilerSource, 'function sortScratch\\(scratch, count\\)']
     ];
 

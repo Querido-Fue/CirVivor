@@ -25,11 +25,13 @@ export const SHOP_PHASE_RESULT_CODE = Object.freeze({
     OPEN_DEFERRED: 'OPEN_DEFERRED',
     OPENED: 'OPENED',
     OPEN_REJECTED: 'OPEN_REJECTED',
+    SHOP_NOT_CONFIGURED: 'SHOP_NOT_CONFIGURED',
     CONTINUE_BLOCKED_DRAFT: 'CONTINUE_BLOCKED_DRAFT',
     CONTINUE_BLOCKED_COMMERCE: 'CONTINUE_BLOCKED_COMMERCE',
     CONTINUE_BLOCKED_BOARD: 'CONTINUE_BLOCKED_BOARD',
     CLOSE_REQUESTED: 'CLOSE_REQUESTED',
     CLOSED: 'CLOSED',
+    CLOSE_REJECTED: 'CLOSE_REJECTED',
     WRONG_PHASE: 'WRONG_PHASE',
     TRANSACTION_CONFLICT: 'TRANSACTION_CONFLICT',
     DESTROYED: 'DESTROYED'
@@ -154,8 +156,19 @@ function collectOpeningBlockers(snapshot, minimumFixedTick) {
 export class ShopPhaseCoordinator {
     constructor(options = {}) {
         for (const [ownerName, owner, methods] of [
-            ['wordSystem', options.wordSystem, ['setRuntimePhase', 'getStatusView']],
-            ['shopSession', options.shopSession, ['open', 'close', 'getStatus']],
+            ['wordSystem', options.wordSystem, [
+                'setRuntimePhase',
+                'getStatusView',
+                'captureRuntimePhaseCheckpoint',
+                'restoreRuntimePhaseCheckpoint'
+            ]],
+            ['shopSession', options.shopSession, [
+                'open',
+                'close',
+                'getStatus',
+                'captureAtomicCheckpoint',
+                'restoreAtomicCheckpoint'
+            ]],
             ['sentenceBoard', options.sentenceBoard, ['validateCommitted', 'getStatus']],
             ['commerceState', options.commerceState, ['getRevision', 'getStatus']]
         ]) {
@@ -178,6 +191,11 @@ export class ShopPhaseCoordinator {
         this.commerce = options.commerceState;
         this.safeBoundaryPort = options.safeBoundaryPort;
         this.presentationPort = options.presentationPort ?? null;
+        this.shopRuntimeMode = options.shopRuntimeMode ?? 'QA';
+        this.shopConfigured = options.shopConfigured !== false;
+        this.failureInjector = typeof options.failureInjector === 'function'
+            ? options.failureInjector
+            : null;
         this.historyCapacity = requirePositiveSafeInteger(
             options.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
             'shop phase historyCapacity'
@@ -213,6 +231,16 @@ export class ShopPhaseCoordinator {
                 requestFingerprint,
                 this.#destroyedReceipt(request.transactionId)
             );
+        }
+        if (!this.shopConfigured) {
+            return this.#remember(request.transactionId, requestFingerprint, {
+                accepted: false,
+                code: SHOP_PHASE_RESULT_CODE.SHOP_NOT_CONFIGURED,
+                transactionId: request.transactionId,
+                runtimeMode: this.shopRuntimeMode,
+                phase: this.phase,
+                mutationCount: 0
+            });
         }
         if (this.phase === SHOP_RUNTIME_PHASE.SHOP_OPENING
             && this.pendingOpen?.request.transactionId
@@ -289,12 +317,40 @@ export class ShopPhaseCoordinator {
             return receipt;
         }
         const pending = this.pendingOpen;
-        const shopReceipt = this.shopSession.open({
-            transactionId: pending.request.transactionId,
-            shopSessionOrdinal: pending.request.settlementOrdinal,
-            expectedCommerceRevision: this.commerce.getRevision()
-        });
-        if (shopReceipt.code !== WORD_SHOP_RESULT_CODE.OPENED) {
+        const shopCheckpoint = this.shopSession.captureAtomicCheckpoint();
+        const wordCheckpoint
+            = this.wordSystem.captureRuntimePhaseCheckpoint();
+        let shopReceipt = null;
+        let presentationAttempted = false;
+        try {
+            this.failureInjector?.('before-shop-open', pending.request);
+            shopReceipt = this.shopSession.open({
+                transactionId: pending.request.transactionId,
+                shopSessionOrdinal: pending.request.settlementOrdinal,
+                expectedCommerceRevision: this.commerce.getRevision()
+            });
+            if (shopReceipt.code !== WORD_SHOP_RESULT_CODE.OPENED) {
+                throw new Error(`ShopSession open rejected: ${shopReceipt.code}`);
+            }
+            this.failureInjector?.('after-shop-open', pending.request);
+            if (this.wordSystem.setRuntimePhase(SENTENCE_RUNTIME_PHASE.SHOP)
+                !== true) {
+                throw new Error('WordSystem SHOP phase publication에 실패했습니다.');
+            }
+            this.failureInjector?.('after-word-shop', pending.request);
+            presentationAttempted = true;
+            this.presentationPort?.synchronize();
+            this.failureInjector?.('after-presentation-open', pending.request);
+        } catch (error) {
+            this.wordSystem.restoreRuntimePhaseCheckpoint(wordCheckpoint);
+            this.shopSession.restoreAtomicCheckpoint(shopCheckpoint);
+            if (presentationAttempted) {
+                try {
+                    this.presentationPort?.synchronize();
+                } catch {
+                    // authority rollback이 우선이며 다음 정상 frame이 다시 동기화합니다.
+                }
+            }
             this.pendingOpen = null;
             this.phase = SHOP_RUNTIME_PHASE.COMBAT;
             return this.#remember(
@@ -305,16 +361,17 @@ export class ShopPhaseCoordinator {
                     code: SHOP_PHASE_RESULT_CODE.OPEN_REJECTED,
                     transactionId: pending.request.transactionId,
                     shopReceipt,
+                    failure: Object.freeze({
+                        message: error instanceof Error
+                            ? error.message
+                            : String(error)
+                    }),
+                    rolledBack: true,
                     phase: this.phase,
                     mutationCount: 0
                 }
             );
         }
-        if (this.wordSystem.setRuntimePhase(SENTENCE_RUNTIME_PHASE.SHOP)
-            !== true) {
-            throw new Error('WordSystem SHOP phase publication에 실패했습니다.');
-        }
-        this.presentationPort?.synchronize();
         this.pendingOpen = null;
         this.phase = SHOP_RUNTIME_PHASE.SHOP;
         this.openCount++;
@@ -409,23 +466,11 @@ export class ShopPhaseCoordinator {
                 mutationCount: 0
             });
         }
-        const shopReceipt = this.shopSession.close({ transactionId });
-        if (shopReceipt.code !== WORD_SHOP_RESULT_CODE.CLOSED) {
-            return this.#remember(transactionId, requestFingerprint, {
-                accepted: false,
-                code: SHOP_PHASE_RESULT_CODE.CONTINUE_BLOCKED_COMMERCE,
-                transactionId,
-                shopReceipt,
-                phase: this.phase,
-                mutationCount: 0
-            });
-        }
         const receipt = freezeReceipt({
             accepted: true,
             code: SHOP_PHASE_RESULT_CODE.CLOSE_REQUESTED,
             transactionId,
             requestFingerprint,
-            shopReceipt,
             boardValidation,
             phase: SHOP_RUNTIME_PHASE.SHOP_CLOSING,
             mutationCount: 1
@@ -434,7 +479,6 @@ export class ShopPhaseCoordinator {
             transactionId,
             requestFingerprint,
             receipt,
-            shopReceipt,
             boardValidation
         });
         this.phase = SHOP_RUNTIME_PHASE.SHOP_CLOSING;
@@ -455,11 +499,60 @@ export class ShopPhaseCoordinator {
             });
         }
         const pending = this.pendingClose;
-        if (this.wordSystem.setRuntimePhase(SENTENCE_RUNTIME_PHASE.COMBAT)
-            !== true) {
-            throw new Error('WordSystem COMBAT phase publication에 실패했습니다.');
+        const shopCheckpoint = this.shopSession.captureAtomicCheckpoint();
+        const wordCheckpoint
+            = this.wordSystem.captureRuntimePhaseCheckpoint();
+        let shopReceipt = null;
+        let presentationAttempted = false;
+        try {
+            this.failureInjector?.('before-shop-close', pending);
+            shopReceipt = this.shopSession.close({
+                transactionId: pending.transactionId
+            });
+            if (shopReceipt.code !== WORD_SHOP_RESULT_CODE.CLOSED) {
+                throw new Error(`ShopSession close rejected: ${shopReceipt.code}`);
+            }
+            this.failureInjector?.('after-shop-close', pending);
+            if (this.wordSystem.setRuntimePhase(SENTENCE_RUNTIME_PHASE.COMBAT)
+                !== true) {
+                throw new Error('WordSystem COMBAT phase publication에 실패했습니다.');
+            }
+            this.failureInjector?.('after-word-combat', pending);
+            presentationAttempted = true;
+            this.presentationPort?.synchronize();
+            this.failureInjector?.('after-presentation-close', pending);
+        } catch (error) {
+            this.wordSystem.restoreRuntimePhaseCheckpoint(wordCheckpoint);
+            this.shopSession.restoreAtomicCheckpoint(shopCheckpoint);
+            if (presentationAttempted) {
+                try {
+                    this.presentationPort?.synchronize();
+                } catch {
+                    // authority rollback이 우선이며 다음 정상 frame이 다시 동기화합니다.
+                }
+            }
+            this.pendingClose = null;
+            this.phase = SHOP_RUNTIME_PHASE.SHOP;
+            return this.#remember(
+                pending.transactionId,
+                pending.requestFingerprint,
+                {
+                    accepted: false,
+                    code: SHOP_PHASE_RESULT_CODE.CLOSE_REJECTED,
+                    transactionId: pending.transactionId,
+                    shopReceipt,
+                    boardValidation: pending.boardValidation,
+                    failure: Object.freeze({
+                        message: error instanceof Error
+                            ? error.message
+                            : String(error)
+                    }),
+                    rolledBack: true,
+                    phase: this.phase,
+                    mutationCount: 0
+                }
+            );
         }
-        this.presentationPort?.synchronize();
         this.pendingClose = null;
         this.phase = SHOP_RUNTIME_PHASE.COMBAT;
         this.closeCount++;
@@ -470,7 +563,7 @@ export class ShopPhaseCoordinator {
                 accepted: true,
                 code: SHOP_PHASE_RESULT_CODE.CLOSED,
                 transactionId: pending.transactionId,
-                shopReceipt: pending.shopReceipt,
+                shopReceipt,
                 boardValidation: pending.boardValidation,
                 phase: this.phase,
                 mutationCount: 1
@@ -485,6 +578,8 @@ export class ShopPhaseCoordinator {
     getStatus() {
         return Object.freeze({
             phase: this.destroyed ? null : this.phase,
+            runtimeMode: this.shopRuntimeMode,
+            configured: this.shopConfigured,
             pendingOpenRequest: this.pendingOpen?.request ?? null,
             pendingCloseTransactionId:
                 this.pendingClose?.transactionId ?? null,

@@ -12,8 +12,14 @@ const {
     WORD_DEFINITION_ID
 } = await loadGameModule('ingame/contract/word_sentence_contract.js');
 const {
+    fingerprintUnlockedWordPool,
     WORD_SHOP_RESULT_CODE
 } = await loadGameModule('ingame/contract/word_shop_contract.js');
+const {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} = await loadGameModule(
+    'ingame/contract/shop_runtime_configuration_contract.js'
+);
 const {
     RUN_COMMERCE_RESULT_CODE,
     RunCommerceState
@@ -29,8 +35,17 @@ function createOpenShop(options = {}) {
     });
     const shop = new WordShopSession({
         commerceState: commerce,
+        runtimeMode: options.runtimeMode
+            ?? SHOP_RUNTIME_CONFIGURATION_MODE.QA,
         runSeed: options.runSeed ?? 1,
-        unlockedWordDefinitionIds: options.unlockedWordDefinitionIds,
+        unlockedWordDefinitionIds: options.unlockedWordDefinitionIds
+            ?? R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            options.unlockedWordDefinitionIds
+                ?? R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        ),
+        allowEconomicallyRedundantOffers:
+            options.allowEconomicallyRedundantOffers ?? true,
         historyCapacity: options.historyCapacity
     });
     const open = shop.open({
@@ -95,7 +110,13 @@ test('Shop open은 5개 미만 pool을 duplicate로 채우지 않고 명시적�
     });
     const shop = new WordShopSession({
         commerceState: commerce,
-        runSeed: 7
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
+        runSeed: 7,
+        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        ),
+        allowEconomicallyRedundantOffers: true
     });
     const receipt = shop.open({
         transactionId: 'shop.open.small',
@@ -107,6 +128,127 @@ test('Shop open은 5개 미만 pool을 duplicate로 채우지 않고 명시적�
     assert.equal(receipt.code, WORD_SHOP_RESULT_CODE.INSUFFICIENT_OFFER_POOL);
     assert.equal(shop.getStatus().active, false);
     assert.equal(shop.getStatus().offerCount, 0);
+});
+
+test('Production meaningful pool은 owned UNIQUE를 제외하고 twice만 반복 허용한다', () => {
+    const commerce = new RunCommerceState({
+        runSessionId: 'run.production.meaningful',
+        initialGold: 100
+    });
+    const shop = new WordShopSession({
+        commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION,
+        runSeed: 0x10203040,
+        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        )
+    });
+    const opened = shop.open({
+        transactionId: 'production.meaningful.open',
+        shopSessionOrdinal: 1,
+        expectedCommerceRevision: commerce.getRevision()
+    });
+    assert.equal(opened.code, WORD_SHOP_RESULT_CODE.OPENED);
+    const definitions = opened.row.offers.map(({ definitionId }) => definitionId);
+    assert.equal(new Set(definitions).size, 5);
+    assert.equal(definitions.includes(WORD_DEFINITION_ID.TOWER), false);
+    assert.equal(definitions.includes(WORD_DEFINITION_ID.ENEMY), false);
+    assert.equal(definitions.includes(WORD_DEFINITION_ID.SHOOT), false);
+    assert.equal(definitions.includes(WORD_DEFINITION_ID.TWICE), true);
+
+    const uniqueOffer = opened.row.offers.find(
+        ({ definitionId }) => definitionId !== WORD_DEFINITION_ID.TWICE
+    );
+    const purchased = shop.purchaseOffer(rowAction(shop, {
+        transactionId: 'production.meaningful.purchase',
+        offerId: uniqueOffer.offerId
+    }));
+    assert.equal(purchased.accepted, true);
+    const beforeReroll = shop.getStatus();
+    const rejected = shop.reroll(rowAction(shop, {
+        transactionId: 'production.meaningful.reroll'
+    }));
+    const afterReroll = shop.getStatus();
+    assert.equal(
+        rejected.code,
+        WORD_SHOP_RESULT_CODE.INSUFFICIENT_MEANINGFUL_OFFER_POOL
+    );
+    assert.equal(afterReroll.gold, beforeReroll.gold);
+    assert.strictEqual(afterReroll.row, beforeReroll.row);
+    assert.equal(afterReroll.meaningfulOfferPool.count, 4);
+});
+
+test('Production pool 부족과 redundant override는 fail-closed이고 Disabled open은 mutation 0이다', () => {
+    const smallPool = Object.freeze([
+        WORD_DEFINITION_ID.TOWER,
+        WORD_DEFINITION_ID.ENEMY,
+        WORD_DEFINITION_ID.SHOOT,
+        WORD_DEFINITION_ID.MERGE,
+        WORD_DEFINITION_ID.TWICE
+    ]);
+    const commerce = new RunCommerceState({
+        runSessionId: 'run.production.small',
+        initialGold: 100
+    });
+    assert.throws(() => new WordShopSession({
+        commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION,
+        runSeed: 7,
+        unlockedWordDefinitionIds: smallPool,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(smallPool),
+        allowEconomicallyRedundantOffers: true
+    }), /QA mode/u);
+    const production = new WordShopSession({
+        commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION,
+        runSeed: 7,
+        unlockedWordDefinitionIds: smallPool,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(smallPool)
+    });
+    const rejected = production.open({
+        transactionId: 'production.small.open',
+        shopSessionOrdinal: 1,
+        expectedCommerceRevision: commerce.getRevision()
+    });
+    assert.equal(
+        rejected.code,
+        WORD_SHOP_RESULT_CODE.INSUFFICIENT_MEANINGFUL_OFFER_POOL
+    );
+    assert.equal(production.getStatus().active, false);
+    assert.equal(production.getStatus().openCount, 0);
+
+    const disabled = new WordShopSession({ commerceState: commerce });
+    const disabledReceipt = disabled.open({
+        transactionId: 'disabled.open',
+        shopSessionOrdinal: 1,
+        expectedCommerceRevision: commerce.getRevision()
+    });
+    assert.equal(disabledReceipt.code, WORD_SHOP_RESULT_CODE.SHOP_NOT_CONFIGURED);
+    assert.equal(disabledReceipt.mutationCount, 0);
+    assert.equal(disabled.getStatus().active, false);
+});
+
+test('Inventory/Commerce/Shop revision snapshot은 무변경 호출 identity를 재사용한다', () => {
+    const { commerce, shop } = createOpenShop({ runSeed: 0x55667788 });
+    const inventoryLeft = commerce.getInventorySnapshot();
+    const inventoryRight = commerce.getInventorySnapshot();
+    const commerceLeft = commerce.getStatus();
+    const commerceRight = commerce.getStatus();
+    const shopLeft = shop.getStatus();
+    const shopRight = shop.getStatus();
+    assert.strictEqual(inventoryLeft, inventoryRight);
+    assert.strictEqual(commerceLeft, commerceRight);
+    assert.strictEqual(shopLeft, shopRight);
+
+    commerce.credit({
+        transactionId: 'snapshot.credit',
+        amount: 1,
+        fixedTick: 1
+    });
+    assert.notStrictEqual(commerce.getStatus(), commerceLeft);
+    assert.notStrictEqual(shop.getStatus(), shopLeft);
+    assert.strictEqual(commerce.getInventorySnapshot(), inventoryLeft);
 });
 
 test('purchase는 Gold/inventory/sold를 exact commit하고 replay/conflict/stale를 분리한다', () => {

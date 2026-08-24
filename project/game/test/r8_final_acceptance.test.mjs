@@ -12,8 +12,14 @@ const {
     WORD_DEFINITION_ID
 } = await loadGameModule('ingame/contract/word_sentence_contract.js');
 const {
+    fingerprintUnlockedWordPool,
     WORD_SHOP_RESULT_CODE
 } = await loadGameModule('ingame/contract/word_shop_contract.js');
+const {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} = await loadGameModule(
+    'ingame/contract/shop_runtime_configuration_contract.js'
+);
 const {
     RunCommerceState
 } = await loadGameModule('ingame/state/run_commerce_state.js');
@@ -28,8 +34,13 @@ function createQaShop(runSessionId) {
     });
     const shop = new WordShopSession({
         commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
         runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
-        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        ),
+        allowEconomicallyRedundantOffers: true
     });
     const opened = shop.open({
         transactionId: `${runSessionId}.open.1`,

@@ -27,6 +27,17 @@ const {
     WORD_DEFINITION_ID
 } = await loadGameModule('ingame/contract/word_sentence_contract.js');
 const {
+    fingerprintUnlockedWordPool
+} = await loadGameModule('ingame/contract/word_shop_contract.js');
+const {
+    SHOP_RUNTIME_CONFIGURATION_MODE
+} = await loadGameModule(
+    'ingame/contract/shop_runtime_configuration_contract.js'
+);
+const {
+    FIXED_STEP_RESULT
+} = await loadGameModule('simulation/fixed_step_result_contract.js');
+const {
     GameSystem
 } = await loadGameModule('ingame/game_system.js');
 const {
@@ -43,6 +54,7 @@ const {
 } = await loadGameModule('ingame/word/word_system.js');
 const {
     createProductionGameStartOptions,
+    createProductionShopGameStartOptions,
     createR6QaGameStartOptions,
     createR7QaGameStartOptions,
     createR8QaGameStartOptions,
@@ -59,7 +71,7 @@ const FIVE_OFFER_POOL = Object.freeze([
     WORD_DEFINITION_ID.TWICE
 ]);
 
-function createCoordinatorHarness() {
+function createCoordinatorHarness(options = {}) {
     const commerce = new RunCommerceState({
         runSessionId: 'run.phase.coordinator',
         initialGold: 100
@@ -73,8 +85,11 @@ function createCoordinatorHarness() {
     });
     const shop = new WordShopSession({
         commerceState: commerce,
+        runtimeMode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
         runSeed: 101,
-        unlockedWordDefinitionIds: FIVE_OFFER_POOL
+        unlockedWordDefinitionIds: FIVE_OFFER_POOL,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(FIVE_OFFER_POOL),
+        allowEconomicallyRedundantOffers: true
     });
     const safe = {
         fixedTick: 0,
@@ -93,6 +108,7 @@ function createCoordinatorHarness() {
         activeBodyCount: 10000
     };
     let synchronizeCount = 0;
+    let synchronizeFailureCount = 0;
     const coordinator = new ShopPhaseCoordinator({
         wordSystem,
         shopSession: shop,
@@ -106,8 +122,13 @@ function createCoordinatorHarness() {
         presentationPort: {
             synchronize() {
                 synchronizeCount++;
+                if (synchronizeFailureCount > 0) {
+                    synchronizeFailureCount--;
+                    throw new Error('injected:presentation-synchronize');
+                }
             }
-        }
+        },
+        failureInjector: options.failureInjector
     });
     return {
         commerce,
@@ -116,7 +137,10 @@ function createCoordinatorHarness() {
         shop,
         safe,
         coordinator,
-        getSynchronizeCount: () => synchronizeCount
+        getSynchronizeCount: () => synchronizeCount,
+        failNextSynchronize() {
+            synchronizeFailureCount++;
+        }
     };
 }
 
@@ -290,9 +314,11 @@ function createGameSystemDependencies() {
     const keys = Object.create(null);
     const drawCounts = { circles: 0, squares: 0 };
     const wheelTotals = { x: 0, y: 0 };
+    const uiFrameDeltas = [];
     return {
         keys,
         drawCounts,
+        uiFrameDeltas,
         dependencies: {
             inputActionSource: {
                 isPressed(key) {
@@ -341,6 +367,12 @@ function createGameSystemDependencies() {
             worldRenderPort: {
                 drawCircle() { drawCounts.circles++; },
                 drawSquareInstances() { drawCounts.squares++; }
+            },
+            gameplayStatusRenderPort: {
+                update(status, viewport, frameDelta) {
+                    uiFrameDeltas.push(frameDelta);
+                },
+                draw() {}
             }
         }
     };
@@ -351,12 +383,17 @@ test('GameSystem SHOP은 fixed/control/GPU submit을 얼리고 update/draw는 �
     const gameSystem = new GameSystem(harness.dependencies, {
         initialGold: R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD,
         r8ShopOptions: {
+            mode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
             autoOpen: true,
             sourceId: 'test.r8-auto-open',
             runSessionId: 'run.phase.game-system',
             runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
             unlockedWordDefinitionIds:
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+            unlockedPoolFingerprint: fingerprintUnlockedWordPool(
                 R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+            ),
+            allowEconomicallyRedundantOffers: true
         }
     });
     assert.equal(gameSystem.enter(), true);
@@ -369,12 +406,23 @@ test('GameSystem SHOP은 fixed/control/GPU submit을 얼리고 update/draw는 �
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(gameSystem.getFixedTick(), 1);
     assert.equal(tower.position.x, initialTowerX);
-    assert.equal(gameSystem.fixedUpdate(), false);
+    assert.equal(gameSystem.fixedUpdate(), FIXED_STEP_RESULT.COMPLETED);
     assert.equal(gameSystem.getShopPhaseStatus().phase, SHOP_RUNTIME_PHASE.SHOP);
     const submittedAtOpen = backend.getEventProtocolState().submittedTickCount;
+    const originalWorldUpdate = gameSystem.getObjectSystem().update.bind(
+        gameSystem.getObjectSystem()
+    );
+    let worldUpdateArguments = null;
+    gameSystem.getObjectSystem().update = (...args) => {
+        worldUpdateArguments = args;
+        return originalWorldUpdate(...args);
+    };
 
     for (let index = 0; index < 5; index++) {
-        assert.equal(gameSystem.fixedUpdate(), false);
+        assert.equal(
+            gameSystem.fixedUpdate(),
+            FIXED_STEP_RESULT.INTENTIONAL_PAUSE
+        );
     }
     assert.equal(gameSystem.getFixedTick(), 1);
     assert.equal(tower.position.x, initialTowerX);
@@ -389,6 +437,8 @@ test('GameSystem SHOP은 fixed/control/GPU submit을 얼리고 update/draw는 �
     );
 
     gameSystem.update();
+    assert.deepEqual(worldUpdateArguments, [1, 0, 1 / 60]);
+    assert.equal(harness.uiFrameDeltas.at(-1), 1 / 120);
     gameSystem.draw();
     assert.ok(harness.drawCounts.circles > 0);
     assert.ok(harness.drawCounts.squares > 0);
@@ -397,9 +447,11 @@ test('GameSystem SHOP은 fixed/control/GPU submit을 얼리고 update/draw는 �
         transactionId: 'shop.phase.game-system.continue.1'
     });
     assert.equal(close.code, SHOP_PHASE_RESULT_CODE.CLOSE_REQUESTED);
+    assert.equal(gameSystem.fixedUpdate(), FIXED_STEP_RESULT.COMPLETED);
+    assert.equal(gameSystem.getFixedTick(), 1);
+    assert.equal(gameSystem.getShopPhaseStatus().phase, SHOP_RUNTIME_PHASE.COMBAT);
     assert.equal(gameSystem.fixedUpdate(), true);
     assert.equal(gameSystem.getFixedTick(), 2);
-    assert.equal(gameSystem.getShopPhaseStatus().phase, SHOP_RUNTIME_PHASE.COMBAT);
     assert.equal(gameSystem.getGold(), R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD);
     assert.strictEqual(gameSystem.getGoldLedger(), gameSystem.getRunCommerceState());
     gameSystem.destroy();
@@ -428,10 +480,218 @@ test('R8 exact QA route만 data-owned Gold/pool과 auto-open을 추가하고 기
     assert.equal(r8.enemyWaveEnabled, false);
     assert.equal(r8.initialGold, R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD);
     assert.equal(r8.r8ShopOptions.autoOpen, true);
+    assert.equal(r8.r8ShopOptions.mode, SHOP_RUNTIME_CONFIGURATION_MODE.QA);
     assert.deepEqual(
         r8.r8ShopOptions.unlockedWordDefinitionIds,
         R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
     );
+    assert.equal(
+        r8.r8ShopOptions.unlockedPoolFingerprint,
+        fingerprintUnlockedWordPool(R8_ALL_UNLOCKED_WORD_DEFINITION_IDS)
+    );
+    assert.equal(r8.r8ShopOptions.allowEconomicallyRedundantOffers, true);
+});
+
+test('ordinary mode는 Disabled이고 production identity는 네 필드를 모두 요구한다', () => {
+    const harness = createGameSystemDependencies();
+    const ordinaryGame = new GameSystem(harness.dependencies);
+    assert.equal(
+        ordinaryGame.getShopRuntimeConfiguration().mode,
+        SHOP_RUNTIME_CONFIGURATION_MODE.DISABLED
+    );
+    const disabled = ordinaryGame.requestShopOpen(openRequest({
+        transactionId: 'ordinary.shop.open'
+    }));
+    assert.equal(disabled.code, SHOP_PHASE_RESULT_CODE.SHOP_NOT_CONFIGURED);
+    assert.equal(disabled.mutationCount, 0);
+    assert.equal(
+        ordinaryGame.getShopPhaseStatus().phase,
+        SHOP_RUNTIME_PHASE.COMBAT
+    );
+    ordinaryGame.destroy();
+
+    const identity = {
+        runSessionId: 'run.production.explicit',
+        runSeed: 0x12345678,
+        unlockedWordDefinitionIds: R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+        unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+            R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+        )
+    };
+    const production = createProductionShopGameStartOptions(
+        PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
+        identity
+    );
+    assert.equal(
+        production.r8ShopOptions.mode,
+        SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+    );
+    assert.equal(production.r8ShopOptions.autoOpen, false);
+    assert.equal(production.r8ShopOptions.allowEconomicallyRedundantOffers,
+        false);
+    assert.equal(createProductionShopGameStartOptions(
+        PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
+        { ...identity, mode: SHOP_RUNTIME_CONFIGURATION_MODE.QA }
+    ).r8ShopOptions.mode, SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION);
+    for (const forbiddenOptions of [
+        { autoOpen: true },
+        { allowEconomicallyRedundantOffers: true }
+    ]) {
+        assert.throws(() => createProductionShopGameStartOptions(
+            PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
+            { ...identity, ...forbiddenOptions }
+        ));
+    }
+    for (const missingKey of [
+        'runSessionId',
+        'runSeed',
+        'unlockedWordDefinitionIds',
+        'unlockedPoolFingerprint'
+    ]) {
+        const incomplete = { ...identity };
+        delete incomplete[missingKey];
+        assert.throws(() => createProductionShopGameStartOptions(
+            PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
+            incomplete
+        ));
+    }
+});
+
+for (const failureKind of [
+    'shop-open-throw',
+    'shop-open-reject',
+    'word-shop-false',
+    'presentation-open-throw'
+]) {
+    test(`atomic open ${failureKind}는 COMBAT/비활성 상태로 rollback한다`, () => {
+        const harness = createCoordinatorHarness();
+        const commerceBefore = harness.commerce.getStatus();
+        const boardBefore = harness.board.getStatus();
+        if (failureKind === 'shop-open-throw') {
+            harness.shop.open = () => { throw new Error('injected:shop-open'); };
+        } else if (failureKind === 'shop-open-reject') {
+            harness.shop.open = () => Object.freeze({
+                accepted: false,
+                code: 'INJECTED_OPEN_REJECT',
+                mutationCount: 0
+            });
+        } else if (failureKind === 'word-shop-false') {
+            const original = harness.wordSystem.setRuntimePhase.bind(
+                harness.wordSystem
+            );
+            harness.wordSystem.setRuntimePhase = (phase) => (
+                phase === SENTENCE_RUNTIME_PHASE.SHOP
+                    ? false
+                    : original(phase)
+            );
+        } else {
+            harness.failNextSynchronize();
+        }
+        harness.coordinator.requestOpen(openRequest());
+        clearSafeBlockers(harness.safe);
+        const rejected = harness.coordinator.progressOpening();
+        assert.equal(rejected.code, SHOP_PHASE_RESULT_CODE.OPEN_REJECTED);
+        assert.equal(rejected.rolledBack, true);
+        assert.equal(harness.coordinator.getPhase(), SHOP_RUNTIME_PHASE.COMBAT);
+        assert.equal(harness.shop.getStatus().active, false);
+        assert.equal(harness.shop.getStatus().openCount, 0);
+        assert.equal(
+            harness.wordSystem.getStatusView().phase,
+            SENTENCE_RUNTIME_PHASE.COMBAT
+        );
+        assert.equal(harness.commerce.getStatus().gold, commerceBefore.gold);
+        assert.equal(
+            harness.commerce.getStatus().inventoryFingerprint,
+            commerceBefore.inventoryFingerprint
+        );
+        assert.equal(
+            harness.board.getStatus().boardFingerprint,
+            boardBefore.boardFingerprint
+        );
+        assert.strictEqual(
+            harness.coordinator.requestOpen(openRequest()),
+            rejected
+        );
+        const conflict = harness.coordinator.requestOpen(openRequest({
+            sourceId: 'test.conflicting-open'
+        }));
+        assert.equal(conflict.code, SHOP_PHASE_RESULT_CODE.TRANSACTION_CONFLICT);
+    });
+}
+
+for (const failureKind of [
+    'shop-close-throw',
+    'shop-close-reject',
+    'word-combat-false',
+    'presentation-close-throw'
+]) {
+    test(`atomic close ${failureKind}는 SHOP/활성 상태로 rollback한다`, () => {
+        const harness = createCoordinatorHarness();
+        harness.coordinator.requestOpen(openRequest());
+        clearSafeBlockers(harness.safe);
+        harness.coordinator.progressOpening();
+        const shopBefore = harness.shop.getStatus();
+        const commerceBefore = harness.commerce.getStatus();
+        const boardBefore = harness.board.getStatus();
+        if (failureKind === 'shop-close-throw') {
+            harness.shop.close = () => { throw new Error('injected:shop-close'); };
+        } else if (failureKind === 'shop-close-reject') {
+            harness.shop.close = () => Object.freeze({
+                accepted: false,
+                code: 'INJECTED_CLOSE_REJECT',
+                mutationCount: 0
+            });
+        } else if (failureKind === 'word-combat-false') {
+            const original = harness.wordSystem.setRuntimePhase.bind(
+                harness.wordSystem
+            );
+            harness.wordSystem.setRuntimePhase = (phase) => (
+                phase === SENTENCE_RUNTIME_PHASE.COMBAT
+                    ? false
+                    : original(phase)
+            );
+        } else {
+            harness.failNextSynchronize();
+        }
+        const transactionId = `atomic.close.${failureKind}`;
+        const requested = harness.coordinator.requestContinue({ transactionId });
+        assert.equal(requested.code, SHOP_PHASE_RESULT_CODE.CLOSE_REQUESTED);
+        assert.equal(harness.shop.getStatus().active, true);
+        const rejected = harness.coordinator.progressClosing();
+        assert.equal(rejected.code, SHOP_PHASE_RESULT_CODE.CLOSE_REJECTED);
+        assert.equal(rejected.rolledBack, true);
+        assert.equal(harness.coordinator.getPhase(), SHOP_RUNTIME_PHASE.SHOP);
+        assert.equal(harness.shop.getStatus().active, true);
+        assert.equal(harness.shop.getStatus().closeCount, shopBefore.closeCount);
+        assert.strictEqual(harness.shop.getStatus().row, shopBefore.row);
+        assert.equal(
+            harness.wordSystem.getStatusView().phase,
+            SENTENCE_RUNTIME_PHASE.SHOP
+        );
+        assert.equal(harness.commerce.getStatus().gold, commerceBefore.gold);
+        assert.equal(
+            harness.commerce.getStatus().inventoryFingerprint,
+            commerceBefore.inventoryFingerprint
+        );
+        assert.equal(
+            harness.board.getStatus().boardFingerprint,
+            boardBefore.boardFingerprint
+        );
+        assert.strictEqual(
+            harness.coordinator.requestContinue({ transactionId }),
+            rejected
+        );
+    });
+}
+
+test('SentenceBoard status snapshot은 mutation 전 identity를 재사용한다', () => {
+    const harness = createCoordinatorHarness();
+    const first = harness.board.getStatus();
+    assert.strictEqual(harness.board.getStatus(), first);
+    harness.board.beginDraft();
+    const drafted = harness.board.getStatus();
+    assert.notStrictEqual(drafted, first);
+    assert.strictEqual(harness.board.getStatus(), drafted);
 });
 
 test('future Wave settlement port는 typed request만 export하고 WaveDirector caller는 추가하지 않는다', async () => {
