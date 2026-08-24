@@ -356,10 +356,14 @@ function createRenderStyle(definition) {
  * @returns {object} 불변 projectile spawn intent입니다.
  */
 export function createGpuProjectileSpawnIntent(options = {}) {
-    options = materializeGpuPlainDataSnapshot(
+    const snapshot = materializeGpuPlainDataSnapshot(
         options,
         'gpuProjectileSpawnIntent'
     );
+    return createGpuProjectileSpawnIntentFromSnapshot(snapshot);
+}
+
+function createGpuProjectileSpawnIntentFromSnapshot(options) {
     const definition = options.definition;
     if (!definition || typeof definition !== 'object') {
         throw new TypeError('GPU projectile definition이 필요합니다.');
@@ -516,6 +520,10 @@ export function createGpuSelectedTargetProjectileIntent(options = {}) {
         options,
         'gpuSelectedTargetProjectileIntent'
     );
+    return createGpuSelectedTargetProjectileIntentFromSnapshot(snapshot);
+}
+
+function createGpuSelectedTargetProjectileIntentFromSnapshot(snapshot) {
     const sourceHandle = normalizeEntityHandle(
         snapshot.sourceHandle,
         'sourceHandle'
@@ -558,7 +566,7 @@ export function createGpuSelectedTargetProjectileIntent(options = {}) {
         snapshot.attackRangeTiles,
         'attackRangeTiles'
     );
-    const baseDestinationSpawn = createGpuProjectileSpawnIntent({
+    const baseDestinationSpawn = createGpuProjectileSpawnIntentFromSnapshot({
         definition: snapshot.definition,
         position: { x: 0, y: 0 },
         velocity: { x: 0, y: 0 },
@@ -656,6 +664,10 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
         'gpuSelectedTargetProjectileRequest',
         { opaqueKeys: ['endpoint'] }
     );
+    return requestGpuSelectedTargetProjectileFromSnapshot(snapshot);
+}
+
+function requestGpuSelectedTargetProjectileFromSnapshot(snapshot) {
     const { endpoint, ...intentOptions } = snapshot;
     rejectPresentProperties(snapshot, [
         'position',
@@ -682,7 +694,7 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
         snapshot.spawnSequence ?? 0,
         'spawnSequence'
     );
-    const intent = createGpuSelectedTargetProjectileIntent({
+    const intent = createGpuSelectedTargetProjectileIntentFromSnapshot({
         ...intentOptions,
         spawnSequence
     });
@@ -719,11 +731,15 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
  * @returns {object} endpoint.requestSpawn() 결과입니다.
  */
 export function requestGpuProjectileSpawn(options = {}) {
-    options = materializeGpuPlainDataSnapshot(
+    const snapshot = materializeGpuPlainDataSnapshot(
         options,
         'gpuProjectileSpawnRequest',
         { opaqueKeys: ['endpoint'] }
     );
+    return requestGpuProjectileSpawnFromSnapshot(snapshot);
+}
+
+function requestGpuProjectileSpawnFromSnapshot(options) {
     const endpoint = requireEndpoint(options.endpoint);
     const targetFixedTick = requirePositiveSafeInteger(
         options.targetFixedTick,
@@ -733,7 +749,7 @@ export function requestGpuProjectileSpawn(options = {}) {
         options.spawnSequence ?? 0,
         'spawnSequence'
     );
-    const intent = createGpuProjectileSpawnIntent({
+    const intent = createGpuProjectileSpawnIntentFromSnapshot({
         definition: options.definition,
         position: options.position,
         velocity: options.velocity,
@@ -764,11 +780,15 @@ export function requestGpuProjectileSpawn(options = {}) {
  * source-relative mode의 destination position/velocity는 GPU materialization 전용 inert 값입니다.
  */
 export function requestGpuProjectile(options = {}) {
-    options = materializeGpuPlainDataSnapshot(
+    const snapshot = materializeGpuPlainDataSnapshot(
         options,
         'gpuProjectileRequest',
         { opaqueKeys: ['endpoint'] }
     );
+    return requestGpuProjectileFromSnapshot(snapshot);
+}
+
+function requestGpuProjectileFromSnapshot(options) {
     const mode = options.mode ?? GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE;
     if (!Object.values(GPU_PROJECTILE_SPAWN_MODE).includes(mode)) {
         throw new RangeError(`지원하지 않는 GPU projectile spawn mode입니다: ${mode}`);
@@ -794,10 +814,10 @@ export function requestGpuProjectile(options = {}) {
             'targetWorldPosition',
             'cpuTargetPosition'
         ], 'ABSOLUTE');
-        return requestGpuProjectileSpawn(options);
+        return requestGpuProjectileSpawnFromSnapshot(options);
     }
     if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET) {
-        return requestGpuSelectedTargetProjectile(options);
+        return requestGpuSelectedTargetProjectileFromSnapshot(options);
     }
 
     rejectPresentProperties(options, ['position', 'velocity'], mode);
@@ -865,7 +885,7 @@ export function requestGpuProjectile(options = {}) {
     const targetOffset = isTargetEntity
         ? normalizeVector(options.targetOffset ?? { x: 0, y: 0 }, 'targetOffset')
         : null;
-    const destinationSpawn = createGpuProjectileSpawnIntent({
+    const destinationSpawn = createGpuProjectileSpawnIntentFromSnapshot({
         definition: options.definition,
         position: { x: 0, y: 0 },
         velocity: { x: 0, y: 0 },
@@ -961,7 +981,7 @@ export class GpuProjectileSpawnAdapter {
             'gpuProjectileAdapterSpawn',
             { opaqueKeys: ['endpoint'] }
         );
-        return requestGpuProjectileSpawn({
+        return requestGpuProjectileSpawnFromSnapshot({
             ...snapshot,
             endpoint: this.endpoint,
             commandNamespace: snapshot.commandNamespace ?? this.commandNamespace
@@ -976,7 +996,7 @@ export class GpuProjectileSpawnAdapter {
             'gpuProjectileAdapterRequest',
             { opaqueKeys: ['endpoint'] }
         );
-        return requestGpuProjectile({
+        return requestGpuProjectileFromSnapshot({
             ...snapshot,
             endpoint: this.endpoint,
             commandNamespace: snapshot.commandNamespace ?? this.commandNamespace
