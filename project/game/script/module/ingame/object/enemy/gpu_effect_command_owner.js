@@ -313,7 +313,7 @@ function finalizeCompletionFingerprintLane(value) {
  * 그 거대한 문자열을 history에 보존했습니다. 네 독립 lane은 동일 계약 필드를
  * 고정 길이로 보존하면서 정상 completion 경로의 문자열/객체 폭증을 피합니다.
  */
-function createCompletionBatchFingerprint(batch) {
+function createCompletionBatchFingerprintState(batch) {
     const state = [0x811c9dc5, 0x9e3779b9, 0x243f6a88, 0xb7e15162];
     for (const value of [
         0x45464631,
@@ -343,46 +343,87 @@ function createCompletionBatchFingerprint(batch) {
         mixCompletionFingerprint(state, result.appliedCount);
     }
     mixCompletionFingerprint(state, batch.events.length);
-    for (const event of batch.events) {
-        let presenceMask = 0;
-        for (let index = 0;
-            index < COMPLETION_EVENT_FINGERPRINT_FIELDS.length;
-            index++) {
-            if (Object.hasOwn(
-                event ?? {},
-                COMPLETION_EVENT_FINGERPRINT_FIELDS[index]
-            )) {
-                presenceMask |= 1 << index;
-            }
+    return state;
+}
+
+function completionEventPresenceMask(event) {
+    let presenceMask = 0;
+    for (let index = 0;
+        index < COMPLETION_EVENT_FINGERPRINT_FIELDS.length;
+        index++) {
+        if (Object.hasOwn(
+            event ?? {},
+            COMPLETION_EVENT_FINGERPRINT_FIELDS[index]
+        )) {
+            presenceMask |= 1 << index;
         }
-        if (Object.hasOwn(event?.position ?? {}, 'x')) presenceMask |= 1 << 11;
-        if (Object.hasOwn(event?.position ?? {}, 'y')) presenceMask |= 1 << 12;
-        mixCompletionFingerprint(state, 0x45564e54);
-        mixCompletionFingerprint(state, presenceMask);
-        mixCompletionFingerprint(state, event?.type);
-        mixCompletionFingerprint(state, event?.flags ?? 0);
-        mixCompletionFingerprint(state, event?.effectInstanceId);
-        mixCompletionFingerprint(state, event?.instanceIncarnation);
-        mixCompletionFingerprint(state, event?.sourceEntityId);
-        mixCompletionFingerprint(state, event?.sourceIncarnation);
-        mixCompletionFingerprint(state, event?.targetEntityId);
-        mixCompletionFingerprint(state, event?.targetIncarnation);
-        mixCompletionFingerprint(state, event?.effectDefinitionCode);
-        mixCompletionFingerprint(state, event?.valueFixedPoint);
-        mixCompletionFingerprint(
-            state,
-            completionFloat32Bits(event?.position?.x)
-        );
-        mixCompletionFingerprint(
-            state,
-            completionFloat32Bits(event?.position?.y)
-        );
     }
+    if (Object.hasOwn(event?.position ?? {}, 'x')) presenceMask |= 1 << 11;
+    if (Object.hasOwn(event?.position ?? {}, 'y')) presenceMask |= 1 << 12;
+    return presenceMask;
+}
+
+function mixCompletionEventFingerprint(
+    state,
+    presenceMask,
+    type,
+    flags,
+    effectInstanceId,
+    instanceIncarnation,
+    sourceEntityId,
+    sourceIncarnation,
+    targetEntityId,
+    targetIncarnation,
+    effectDefinitionCode,
+    valueFixedPoint,
+    positionX,
+    positionY
+) {
+    mixCompletionFingerprint(state, 0x45564e54);
+    mixCompletionFingerprint(state, presenceMask);
+    mixCompletionFingerprint(state, type);
+    mixCompletionFingerprint(state, flags);
+    mixCompletionFingerprint(state, effectInstanceId);
+    mixCompletionFingerprint(state, instanceIncarnation);
+    mixCompletionFingerprint(state, sourceEntityId);
+    mixCompletionFingerprint(state, sourceIncarnation);
+    mixCompletionFingerprint(state, targetEntityId);
+    mixCompletionFingerprint(state, targetIncarnation);
+    mixCompletionFingerprint(state, effectDefinitionCode);
+    mixCompletionFingerprint(state, valueFixedPoint);
+    mixCompletionFingerprint(state, completionFloat32Bits(positionX));
+    mixCompletionFingerprint(state, completionFloat32Bits(positionY));
+}
+
+function finalizeCompletionFingerprint(state) {
     return state.map((lane) => (
         finalizeCompletionFingerprintLane(lane)
             .toString(16)
             .padStart(8, '0')
     )).join('');
+}
+
+function createCompletionBatchFingerprint(batch) {
+    const state = createCompletionBatchFingerprintState(batch);
+    for (const event of batch.events) {
+        mixCompletionEventFingerprint(
+            state,
+            completionEventPresenceMask(event),
+            event?.type,
+            event?.flags ?? 0,
+            event?.effectInstanceId,
+            event?.instanceIncarnation,
+            event?.sourceEntityId,
+            event?.sourceIncarnation,
+            event?.targetEntityId,
+            event?.targetIncarnation,
+            event?.effectDefinitionCode,
+            event?.valueFixedPoint,
+            event?.position?.x,
+            event?.position?.y
+        );
+    }
+    return finalizeCompletionFingerprint(state);
 }
 
 function createEmptyCompletionSnapshot(
@@ -933,9 +974,9 @@ export class GpuEffectCommandOwner {
                     batch.sourceTick,
                     batch.submittedTick
                 ].join(':');
-                const fingerprint = createCompletionBatchFingerprint(batch);
                 const knownFingerprint = this.knownCompletionBatchFingerprints.get(key);
                 if (knownFingerprint !== undefined) {
+                    const fingerprint = createCompletionBatchFingerprint(batch);
                     if (knownFingerprint !== fingerprint) {
                         throw new RangeError('Effect completion batch replay payload가 충돌합니다.');
                     }
@@ -1046,6 +1087,7 @@ export class GpuEffectCommandOwner {
                     || appliedInstanceCount !== batch.appliedInstanceCount) {
                     throw new RangeError('Effect completion aggregate count가 pulse result와 다릅니다.');
                 }
+                let fingerprint;
                 if (publishCompletionEvents) {
                     const eventCountsByCommandId = new Map(
                         pending.commands.map((command) => [
@@ -1152,9 +1194,10 @@ export class GpuEffectCommandOwner {
                             );
                         }
                     }
+                    fingerprint = createCompletionBatchFingerprint(batch);
                 } else {
-                    this.#validateCompletionEventsWithoutPublication(
-                        batch.events,
+                    fingerprint = this.#validateCompletionEventsWithoutPublication(
+                        batch,
                         pending,
                         batch.pulseResults
                     );
@@ -1736,10 +1779,12 @@ export class GpuEffectCommandOwner {
     }
 
     #validateCompletionEventsWithoutPublication(
-        rawEvents,
+        batch,
         pending,
         pulseResults
     ) {
+        const rawEvents = batch.events;
+        const fingerprintState = createCompletionBatchFingerprintState(batch);
         const commandCount = pending.commands.length;
         const commandIndexBySourceEntityId = new Map();
         for (let index = 0; index < commandCount; index++) {
@@ -1830,13 +1875,29 @@ export class GpuEffectCommandOwner {
                 source.valueFixedPoint,
                 'effectEvent.valueFixedPoint'
             );
-            requireFiniteFloat32(
+            const positionX = requireFiniteFloat32(
                 source.position?.x,
                 'effectEvent.position.x'
             );
-            requireFiniteFloat32(
+            const positionY = requireFiniteFloat32(
                 source.position?.y,
                 'effectEvent.position.y'
+            );
+            mixCompletionEventFingerprint(
+                fingerprintState,
+                completionEventPresenceMask(source),
+                type,
+                flags,
+                effectInstanceId,
+                instanceIncarnation,
+                sourceEntityId,
+                sourceIncarnation,
+                targetEntityId,
+                targetIncarnation,
+                effectDefinitionCode,
+                valueFixedPoint,
+                positionX,
+                positionY
             );
             if (batchInstanceIncarnation === null) {
                 batchInstanceIncarnation = instanceIncarnation;
@@ -1906,6 +1967,7 @@ export class GpuEffectCommandOwner {
                 );
             }
         }
+        return finalizeCompletionFingerprint(fingerprintState);
     }
 
     #cancelForTerminal(finalFixedTick) {
