@@ -318,6 +318,7 @@ export class GameSystem {
             uiOffsetX: 0,
             uiScale: 1
         };
+        this.frameGameplayStatusSnapshot = null;
         this.fixedTick = 0;
         this.shopPointerReleaseRequired = false;
         this.shopMovementReleaseRequired = false;
@@ -511,14 +512,23 @@ export class GameSystem {
             this.dependencies.timePort.getFixedDelta()
         );
         this.cameraZoomController.updateFollowTarget();
-        this.gameplayStatusRenderer?.update?.(
-            this.getGameplayStatus(),
-            this.viewportSnapshot,
-            frameDelta
-        );
-        const shopUiCommands = this.gameplayStatusRenderer
-            ?.drainCommands?.() ?? [];
-        this.handleShopUiCommands(shopUiCommands);
+        const statusRenderer = this.gameplayStatusRenderer;
+        if (statusRenderer) {
+            const gameplayStatus = this.getGameplayStatus();
+            this.frameGameplayStatusSnapshot = gameplayStatus;
+            statusRenderer.update?.(
+                gameplayStatus,
+                this.viewportSnapshot,
+                frameDelta
+            );
+            const shopUiCommands = statusRenderer.drainCommands?.() ?? [];
+            this.handleShopUiCommands(shopUiCommands);
+            if (shopUiCommands.length > 0) {
+                this.frameGameplayStatusSnapshot = null;
+            }
+        } else {
+            this.frameGameplayStatusSnapshot = null;
+        }
     }
 
     /**
@@ -530,10 +540,15 @@ export class GameSystem {
             return;
         }
         this.objectSystem.draw();
-        this.gameplayStatusRenderer?.draw?.(
-            this.getGameplayStatus(),
-            this.viewportSnapshot
-        );
+        const statusRenderer = this.gameplayStatusRenderer;
+        if (statusRenderer) {
+            const gameplayStatus = this.frameGameplayStatusSnapshot
+                ?? this.getGameplayStatus();
+            this.frameGameplayStatusSnapshot = null;
+            statusRenderer.draw?.(gameplayStatus, this.viewportSnapshot);
+        } else {
+            this.frameGameplayStatusSnapshot = null;
+        }
     }
 
     /**
@@ -903,6 +918,7 @@ export class GameSystem {
         this.goldLedger = null;
         this.wordSystem?.destroy();
         this.wordSystem = null;
+        this.frameGameplayStatusSnapshot = null;
         this.fixedTick = 0;
         this.shopPointerReleaseRequired = false;
         this.shopMovementReleaseRequired = false;
