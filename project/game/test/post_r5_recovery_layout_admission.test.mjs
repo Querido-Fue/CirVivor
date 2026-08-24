@@ -176,6 +176,26 @@ assert.match(
     GPU_SPAWN_ADMISSION_SHARED_WGSL,
     /fn spawn_admission_claim\(/
 );
+assert.match(
+    GPU_SPAWN_ADMISSION_SHARED_WGSL,
+    /fn spawn_admission_claim_cooperative\(/
+);
+assert.match(
+    GPU_SPAWN_ADMISSION_SHARED_WGSL,
+    /rank \+= SPAWN_ADMISSION_WORKGROUP_SIZE/
+);
+assert.match(
+    GPU_SPAWN_ADMISSION_SHARED_WGSL,
+    /SPAWN_ADMISSION_REJECT_STATIC_SDF[\s\S]*else if[\s\S]*SPAWN_ADMISSION_REJECT_EXISTING_BODY[\s\S]*else if[\s\S]*SPAWN_ADMISSION_REJECT_SIBLING_BODY[\s\S]*else if[\s\S]*SPAWN_ADMISSION_REJECT_GRID_CELL_CAPACITY/
+);
+for (const source of [
+    GPU_ACTOR_ACTION_SPAWN_ADMISSION_WGSL,
+    GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL
+]) {
+    assert.match(source, /@compute @workgroup_size\(64\)/);
+    assert.match(source, /spawn_admission_claim_cooperative\(/);
+    assert.match(source, /workgroupUniformLoad\(/);
+}
 
 const impossibleSdf = createOpenSdf(2);
 const impossibleGrid = createGpuCollisionGridDescriptor({

@@ -1362,6 +1362,21 @@ struct ActorActionCandidate {
     direction: vec2f,
 }
 
+const SPAWN_ADMISSION_WORKGROUP_SIZE: u32 =
+    ${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE}u;
+const SPAWN_ADMISSION_COOPERATIVE_CELL_CAPACITY: u32 = 64u;
+var<workgroup> spawn_admission_cooperative_rejection: atomic<u32>;
+var<workgroup> spawn_admission_cooperative_cell_claim_counts:
+    array<atomic<u32>, 64>;
+var<workgroup> admission_chosen_attempt: u32;
+var<workgroup> admission_rejection_class: u32;
+var<workgroup> admission_attempted: u32;
+var<workgroup> admission_rank_active: u32;
+var<workgroup> admission_candidate_capacity: u32;
+var<workgroup> admission_candidate_valid: u32;
+var<workgroup> admission_destination_count: u32;
+var<workgroup> admission_program_pending: u32;
+
 fn admission_header(field: u32) -> u32 {
     return admission_program.values[field];
 }
@@ -1714,159 +1729,238 @@ fn enemy_payload_candidate(
     return ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
 }
 
-@compute @workgroup_size(1)
-fn admit_actor_action_spawns() {
-    if (atomicLoad(&admission_output.values[${A.STATUS}u])
-            != ADMISSION_STATUS_PENDING) {
-        return;
+@compute @workgroup_size(${GPU_ACTOR_ACTION_PLACEMENT_WORKGROUP_SIZE})
+fn admit_actor_action_spawns(
+    @builtin(local_invocation_index) lane: u32
+) {
+    if (lane == 0u) {
+        admission_destination_count = admission_header(
+            ${H.DESTINATION_COUNT}u
+        );
+        admission_program_pending = select(
+            0u,
+            1u,
+            atomicLoad(&admission_output.values[${A.STATUS}u])
+                == ADMISSION_STATUS_PENDING
+        );
     }
-    let destination_count = admission_header(${H.DESTINATION_COUNT}u);
+    let destination_count = workgroupUniformLoad(
+        &admission_destination_count
+    );
+    let program_pending = workgroupUniformLoad(
+        &admission_program_pending
+    ) != 0u;
     let tower_payload = admission_header(${H.PAYLOAD_CODE}u)
         == ADMISSION_TOWER_PAYLOAD;
     for (var rank = 0u; rank < destination_count; rank += 1u) {
-        var errors = admission_placement_word(rank, ${P.ERROR_FLAGS}u);
-        if (errors != 0u) {
-            continue;
-        }
-        let destination_slot = admission_placement_word(
-            rank,
-            ${P.DESTINATION_SLOT}u
-        );
-        let radius = spawn_admission_claim_radius(rank);
-        var chosen = ADMISSION_INVALID;
-        var attempted = 0u;
-        var rejection_class = 0u;
-        var selected = ActorActionCandidate(0u, vec2f(0.0), vec2f(1.0, 0.0));
-        let placement_policy = admission_header(${H.PLACEMENT_POLICY_CODE}u);
-        var candidate_capacity = select(
-            ENEMY_SOURCE_RADIAL_ROUNDS * ENEMY_RADIAL_SLOT_COUNT,
-            TOWER_SOURCE_RADIAL_ROUNDS * TOWER_RADIAL_SLOT_COUNT,
-            tower_payload
-        );
-        if (placement_policy == ADMISSION_PLACE_TARGET_LATTICE) {
-            candidate_capacity = select(
-                ENEMY_TARGET_LATTICE_ROUNDS,
-                TOWER_TARGET_LATTICE_ROUNDS,
+        if (lane == 0u) {
+            admission_chosen_attempt = ADMISSION_INVALID;
+            admission_rejection_class = 0u;
+            admission_attempted = 0u;
+            admission_rank_active = select(
+                0u,
+                1u,
+                program_pending && admission_placement_word(
+                    rank,
+                    ${P.ERROR_FLAGS}u
+                ) == 0u
+            );
+            admission_candidate_capacity = select(
+                ENEMY_SOURCE_RADIAL_ROUNDS * ENEMY_RADIAL_SLOT_COUNT,
+                TOWER_SOURCE_RADIAL_ROUNDS * TOWER_RADIAL_SLOT_COUNT,
                 tower_payload
             );
-        }
-        let candidate_seed = admission_candidate_seed(rank);
-        let candidate_offset = select(
-            0u,
-            candidate_seed % candidate_capacity,
-            admission_header(${H.COPIES_PER_SUBJECT}u) > 1u
-        );
-        for (var candidate_attempt = 0u;
-            candidate_attempt < candidate_capacity;
-            candidate_attempt += 1u) {
-            let candidate_index = (candidate_attempt + candidate_offset)
-                % candidate_capacity;
-            var candidate = enemy_payload_candidate(rank, candidate_index);
-            if (tower_payload) {
-                candidate = tower_payload_candidate(rank, candidate_index);
-            }
-            if (candidate.valid == 0u) {
-                break;
-            }
-            attempted += 1u;
-            let verdict = spawn_admission_claim(
-                admission_static_valid(candidate.position, radius),
-                candidate.position,
-                radius,
-                destination_slot,
-                rank
-            );
-            rejection_class |= verdict.rejection_class;
-            if (verdict.accepted != 0u) {
-                chosen = candidate_index;
-                selected = candidate;
-                break;
-            }
-        }
-        if (chosen == ADMISSION_INVALID) {
-            errors |= ADMISSION_ERROR_SDF | ADMISSION_ERROR_GLOBAL;
-            if ((rejection_class & 2u) != 0u) {
-                errors |= ADMISSION_ERROR_EXISTING;
-            }
-            if ((rejection_class & 4u) != 0u) {
-                errors |= ADMISSION_ERROR_SIBLING;
-            }
-            if ((rejection_class & 8u) != 0u) {
-                errors |= ADMISSION_ERROR_CELL;
-            }
-        } else {
-            admission_store_placement(
-                rank,
-                ${P.SPAWN_X}u,
-                bitcast<u32>(selected.position.x)
-            );
-            admission_store_placement(
-                rank,
-                ${P.SPAWN_Y}u,
-                bitcast<u32>(selected.position.y)
-            );
-            admission_store_placement(
-                rank,
-                ${P.DIRECTION_X}u,
-                bitcast<u32>(selected.direction.x)
-            );
-            admission_store_placement(
-                rank,
-                ${P.DIRECTION_Y}u,
-                bitcast<u32>(selected.direction.y)
-            );
-            var velocity = selected.direction
-                * bitcast<f32>(admission_header(${H.LAUNCH_SPEED}u));
-            if (admission_header(${H.TRANSIT_CODE}u)
-                    == ADMISSION_TRANSIT_AIRBORNE) {
-                let landing = vec2f(
-                    bitcast<f32>(admission_placement_word(rank, ${P.TARGET_X}u)),
-                    bitcast<f32>(admission_placement_word(rank, ${P.TARGET_Y}u))
+            if (admission_header(${H.PLACEMENT_POLICY_CODE}u)
+                    == ADMISSION_PLACE_TARGET_LATTICE) {
+                admission_candidate_capacity = select(
+                    ENEMY_TARGET_LATTICE_ROUNDS,
+                    TOWER_TARGET_LATTICE_ROUNDS,
+                    tower_payload
                 );
-                velocity = (landing - selected.position)
-                    * (f32(admission_header(${H.FIXED_HZ}u))
-                        / f32(admission_header(
-                            ${H.TRAVEL_DURATION_FIXED_TICKS}u
-                        )));
+            }
+        }
+        let rank_active = workgroupUniformLoad(
+            &admission_rank_active
+        ) != 0u;
+        let candidate_capacity = workgroupUniformLoad(
+            &admission_candidate_capacity
+        );
+
+        let existing_errors = admission_placement_word(
+            rank,
+            ${P.ERROR_FLAGS}u
+        );
+        if (rank_active) {
+            let destination_slot = admission_placement_word(
+                rank,
+                ${P.DESTINATION_SLOT}u
+            );
+            let radius = spawn_admission_claim_radius(rank);
+            let candidate_offset = select(
+                0u,
+                admission_candidate_seed(rank) % candidate_capacity,
+                admission_header(${H.COPIES_PER_SUBJECT}u) > 1u
+            );
+
+            for (var candidate_attempt = 0u;
+                candidate_attempt < candidate_capacity;
+                candidate_attempt += 1u) {
+                let candidate_index = (candidate_attempt + candidate_offset)
+                    % candidate_capacity;
+                var candidate = enemy_payload_candidate(
+                    rank,
+                    candidate_index
+                );
+                if (tower_payload) {
+                    candidate = tower_payload_candidate(
+                        rank,
+                        candidate_index
+                    );
+                }
+                if (lane == 0u) {
+                    admission_candidate_valid = candidate.valid;
+                }
+                let candidate_valid = workgroupUniformLoad(
+                    &admission_candidate_valid
+                ) != 0u;
+                if (!candidate_valid) {
+                    break;
+                }
+                let verdict = spawn_admission_claim_cooperative(
+                    admission_static_valid(candidate.position, radius),
+                    candidate.position,
+                    radius,
+                    destination_slot,
+                    rank,
+                    lane
+                );
+                if (lane == 0u) {
+                    admission_attempted += 1u;
+                    admission_rejection_class |= verdict.rejection_class;
+                    if (verdict.accepted != 0u) {
+                        admission_chosen_attempt = candidate_attempt;
+                    }
+                }
+                let chosen_attempt = workgroupUniformLoad(
+                    &admission_chosen_attempt
+                );
+                if (chosen_attempt != ADMISSION_INVALID) {
+                    break;
+                }
+            }
+        }
+        workgroupBarrier();
+
+        if (lane == 0u && rank_active) {
+            var errors = existing_errors;
+            let chosen_attempt = admission_chosen_attempt;
+            let attempted = admission_attempted;
+            var chosen = ADMISSION_INVALID;
+            var rejection_class = admission_rejection_class;
+            if (chosen_attempt == ADMISSION_INVALID) {
+                errors |= ADMISSION_ERROR_SDF | ADMISSION_ERROR_GLOBAL;
+                if ((rejection_class & 2u) != 0u) {
+                    errors |= ADMISSION_ERROR_EXISTING;
+                }
+                if ((rejection_class & 4u) != 0u) {
+                    errors |= ADMISSION_ERROR_SIBLING;
+                }
+                if ((rejection_class & 8u) != 0u) {
+                    errors |= ADMISSION_ERROR_CELL;
+                }
+            } else {
+                let candidate_offset = select(
+                    0u,
+                    admission_candidate_seed(rank) % candidate_capacity,
+                    admission_header(${H.COPIES_PER_SUBJECT}u) > 1u
+                );
+                chosen = (chosen_attempt + candidate_offset)
+                    % candidate_capacity;
+                var selected = enemy_payload_candidate(rank, chosen);
+                if (tower_payload) {
+                    selected = tower_payload_candidate(rank, chosen);
+                }
+                admission_store_placement(
+                    rank,
+                    ${P.SPAWN_X}u,
+                    bitcast<u32>(selected.position.x)
+                );
+                admission_store_placement(
+                    rank,
+                    ${P.SPAWN_Y}u,
+                    bitcast<u32>(selected.position.y)
+                );
+                admission_store_placement(
+                    rank,
+                    ${P.DIRECTION_X}u,
+                    bitcast<u32>(selected.direction.x)
+                );
+                admission_store_placement(
+                    rank,
+                    ${P.DIRECTION_Y}u,
+                    bitcast<u32>(selected.direction.y)
+                );
+                var velocity = selected.direction
+                    * bitcast<f32>(admission_header(${H.LAUNCH_SPEED}u));
+                if (admission_header(${H.TRANSIT_CODE}u)
+                        == ADMISSION_TRANSIT_AIRBORNE) {
+                    let landing = vec2f(
+                        bitcast<f32>(admission_placement_word(
+                            rank,
+                            ${P.TARGET_X}u
+                        )),
+                        bitcast<f32>(admission_placement_word(
+                            rank,
+                            ${P.TARGET_Y}u
+                        ))
+                    );
+                    velocity = (landing - selected.position)
+                        * (f32(admission_header(${H.FIXED_HZ}u))
+                            / f32(admission_header(
+                                ${H.TRAVEL_DURATION_FIXED_TICKS}u
+                            )));
+                }
+                admission_store_placement(
+                    rank,
+                    ${P.INITIAL_VELOCITY_X}u,
+                    bitcast<u32>(velocity.x)
+                );
+                admission_store_placement(
+                    rank,
+                    ${P.INITIAL_VELOCITY_Y}u,
+                    bitcast<u32>(velocity.y)
+                );
+                admission_store_transit(
+                    rank,
+                    ${T.VELOCITY_X}u,
+                    bitcast<u32>(velocity.x)
+                );
+                admission_store_transit(
+                    rank,
+                    ${T.VELOCITY_Y}u,
+                    bitcast<u32>(velocity.y)
+                );
+                rejection_class = 0u;
             }
             admission_store_placement(
                 rank,
-                ${P.INITIAL_VELOCITY_X}u,
-                bitcast<u32>(velocity.x)
+                ${P.ADMISSION_CHOSEN_CANDIDATE_INDEX}u,
+                chosen
             );
             admission_store_placement(
                 rank,
-                ${P.INITIAL_VELOCITY_Y}u,
-                bitcast<u32>(velocity.y)
+                ${P.ADMISSION_ATTEMPTED_CANDIDATE_COUNT}u,
+                attempted
             );
-            admission_store_transit(
+            admission_store_placement(
                 rank,
-                ${T.VELOCITY_X}u,
-                bitcast<u32>(velocity.x)
+                ${P.ADMISSION_FAILURE_CLASS}u,
+                rejection_class
             );
-            admission_store_transit(
-                rank,
-                ${T.VELOCITY_Y}u,
-                bitcast<u32>(velocity.y)
-            );
-            rejection_class = 0u;
+            admission_store_placement(rank, ${P.ERROR_FLAGS}u, errors);
         }
-        admission_store_placement(
-            rank,
-            ${P.ADMISSION_CHOSEN_CANDIDATE_INDEX}u,
-            chosen
-        );
-        admission_store_placement(
-            rank,
-            ${P.ADMISSION_ATTEMPTED_CANDIDATE_COUNT}u,
-            attempted
-        );
-        admission_store_placement(
-            rank,
-            ${P.ADMISSION_FAILURE_CLASS}u,
-            rejection_class
-        );
-        admission_store_placement(rank, ${P.ERROR_FLAGS}u, errors);
+        storageBarrier();
+        workgroupBarrier();
     }
 }
 `;

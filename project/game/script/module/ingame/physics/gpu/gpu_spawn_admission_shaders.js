@@ -15,8 +15,9 @@ export const GPU_SPAWN_ADMISSION_REJECTION = Object.freeze({
 /**
  * Caller는 `admission_physics`, `admission_simulations`,
  * `admission_grid_counts`, `admission_grid_bodies`, `params`와 아래
- * claim adapter 3개를 정의합니다. Candidate generation은 이 fragment 밖의
- * payload-local 권위이며, verdict/ordinal claim만 공유합니다.
+ * claim adapter 3개와 cooperative workgroup 상수/atomic scratch를 정의합니다.
+ * Candidate generation은 이 fragment 밖의 payload-local 권위이며,
+ * verdict/ordinal claim만 공유합니다.
  */
 export const GPU_SPAWN_ADMISSION_SHARED_WGSL = /* wgsl */`
 const SPAWN_ADMISSION_REJECT_STATIC_SDF: u32 =
@@ -277,6 +278,187 @@ fn spawn_admission_claim(
         );
     }
     return SpawnAdmissionVerdict(1u, 0u);
+}
+
+fn spawn_admission_cooperative_cell(
+    footprint: CollisionGridFootprint,
+    ordinal: u32
+) -> vec2i {
+    let width = u32(
+        footprint.maximum_cell.x - footprint.minimum_cell.x + 1
+    );
+    return vec2i(
+        footprint.minimum_cell.x + i32(ordinal % width),
+        footprint.minimum_cell.y + i32(ordinal / width)
+    );
+}
+
+/**
+ * Stable destination rank는 직렬로 유지하되 한 후보의 prior-sibling 검사를
+ * workgroup 전체에 분산합니다. 반환 verdict는 serial spawn_admission_claim과
+ * bit-for-bit 같은 의미를 가집니다.
+ */
+fn spawn_admission_claim_cooperative(
+    static_valid: bool,
+    position: vec2f,
+    radius: f32,
+    destination_slot: u32,
+    prior_claim_count: u32,
+    lane: u32
+) -> SpawnAdmissionVerdict {
+    if (lane == 0u) {
+        atomicStore(&spawn_admission_cooperative_rejection, 0u);
+    }
+    if (lane < SPAWN_ADMISSION_COOPERATIVE_CELL_CAPACITY) {
+        atomicStore(
+            &spawn_admission_cooperative_cell_claim_counts[lane],
+            0u
+        );
+    }
+    workgroupBarrier();
+
+    let footprint = collision_grid_footprint(position, radius);
+    let width = u32(max(
+        footprint.maximum_cell.x - footprint.minimum_cell.x + 1,
+        1
+    ));
+    let height = u32(max(
+        footprint.maximum_cell.y - footprint.minimum_cell.y + 1,
+        1
+    ));
+    let cell_count = width * height;
+    if (lane == 0u) {
+        if (!static_valid || footprint.valid == 0u) {
+            atomicOr(
+                &spawn_admission_cooperative_rejection,
+                SPAWN_ADMISSION_REJECT_STATIC_SDF
+            );
+        } else if (spawn_admission_overlaps_existing(
+            position,
+            radius,
+            destination_slot
+        )) {
+            atomicOr(
+                &spawn_admission_cooperative_rejection,
+                SPAWN_ADMISSION_REJECT_EXISTING_BODY
+            );
+        }
+    }
+
+    for (var rank = lane;
+        rank < prior_claim_count;
+        rank += SPAWN_ADMISSION_WORKGROUP_SIZE) {
+        if (!spawn_admission_claim_is_committed(rank)) {
+            continue;
+        }
+        let sibling_position = spawn_admission_claim_position(rank);
+        let sibling_radius = spawn_admission_claim_radius(rank);
+        let delta = sibling_position - position;
+        let minimum_distance = radius + sibling_radius;
+        if (dot(delta, delta) < minimum_distance * minimum_distance) {
+            atomicOr(
+                &spawn_admission_cooperative_rejection,
+                SPAWN_ADMISSION_REJECT_SIBLING_BODY
+            );
+        }
+        if (footprint.valid == 0u
+            || cell_count > SPAWN_ADMISSION_COOPERATIVE_CELL_CAPACITY) {
+            continue;
+        }
+        let sibling_footprint = collision_grid_footprint(
+            sibling_position,
+            sibling_radius
+        );
+        if (sibling_footprint.valid == 0u) {
+            continue;
+        }
+        for (var cell_ordinal = 0u;
+            cell_ordinal < cell_count;
+            cell_ordinal += 1u) {
+            let cell = spawn_admission_cooperative_cell(
+                footprint,
+                cell_ordinal
+            );
+            let counter_index = collision_grid_counter_index(
+                cell,
+                footprint.bucket
+            );
+            if (spawn_admission_footprint_contains_counter(
+                sibling_footprint,
+                counter_index
+            )) {
+                atomicAdd(
+                    &spawn_admission_cooperative_cell_claim_counts[
+                        cell_ordinal
+                    ],
+                    1u
+                );
+            }
+        }
+    }
+    workgroupBarrier();
+
+    if (lane == 0u && footprint.valid != 0u) {
+        if (cell_count <= SPAWN_ADMISSION_COOPERATIVE_CELL_CAPACITY) {
+            for (var cell_ordinal = 0u;
+                cell_ordinal < cell_count;
+                cell_ordinal += 1u) {
+                let cell = spawn_admission_cooperative_cell(
+                    footprint,
+                    cell_ordinal
+                );
+                let counter_index = collision_grid_counter_index(
+                    cell,
+                    footprint.bucket
+                );
+                let post_commit_count = atomicLoad(
+                    &admission_grid_counts.values[counter_index]
+                ) + 1u + atomicLoad(
+                    &spawn_admission_cooperative_cell_claim_counts[
+                        cell_ordinal
+                    ]
+                );
+                if (post_commit_count > params.max_bodies_per_cell) {
+                    atomicOr(
+                        &spawn_admission_cooperative_rejection,
+                        SPAWN_ADMISSION_REJECT_GRID_CELL_CAPACITY
+                    );
+                }
+            }
+        } else if (!spawn_admission_cell_capacity_available(
+            position,
+            radius,
+            prior_claim_count
+        )) {
+            atomicOr(
+                &spawn_admission_cooperative_rejection,
+                SPAWN_ADMISSION_REJECT_GRID_CELL_CAPACITY
+            );
+        }
+    }
+    workgroupBarrier();
+
+    let observed_rejection_class = atomicLoad(
+        &spawn_admission_cooperative_rejection
+    );
+    var rejection_class = 0u;
+    if ((observed_rejection_class
+            & SPAWN_ADMISSION_REJECT_STATIC_SDF) != 0u) {
+        rejection_class = SPAWN_ADMISSION_REJECT_STATIC_SDF;
+    } else if ((observed_rejection_class
+            & SPAWN_ADMISSION_REJECT_EXISTING_BODY) != 0u) {
+        rejection_class = SPAWN_ADMISSION_REJECT_EXISTING_BODY;
+    } else if ((observed_rejection_class
+            & SPAWN_ADMISSION_REJECT_SIBLING_BODY) != 0u) {
+        rejection_class = SPAWN_ADMISSION_REJECT_SIBLING_BODY;
+    } else if ((observed_rejection_class
+            & SPAWN_ADMISSION_REJECT_GRID_CELL_CAPACITY) != 0u) {
+        rejection_class = SPAWN_ADMISSION_REJECT_GRID_CELL_CAPACITY;
+    }
+    return SpawnAdmissionVerdict(
+        select(1u, 0u, rejection_class != 0u),
+        rejection_class
+    );
 }
 `;
 
