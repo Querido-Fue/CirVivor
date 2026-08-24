@@ -99,6 +99,15 @@ function normalizeHandle(source, label) {
     });
 }
 
+function reuseCanonicalHandle(source, label) {
+    if (!source || typeof source !== 'object' || !Object.isFrozen(source)) {
+        throw new TypeError(`${label}은 frozen exact handle 객체여야 합니다.`);
+    }
+    requirePositiveSafeInteger(source.entityId, `${label}.entityId`);
+    requirePositiveSafeInteger(source.incarnation, `${label}.incarnation`);
+    return source;
+}
+
 function handleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
@@ -147,6 +156,81 @@ function createNonZeroUint32Fingerprint(value) {
     return result === 0 ? 1 : result;
 }
 
+function createHandleFingerprint(handle) {
+    return `{"entityId":${JSON.stringify(handle.entityId)},`
+        + `"incarnation":${JSON.stringify(handle.incarnation)}}`;
+}
+
+function createOptionalHandleFingerprint(handle) {
+    return handle === null ? 'null' : createHandleFingerprint(handle);
+}
+
+function createPriorityTargetControlAttackFingerprint(payload) {
+    return [
+        '{"attackDefinitionId":',
+        JSON.stringify(payload.attackDefinitionId),
+        ',"attackRangeTiles":',
+        JSON.stringify(payload.attackRangeTiles),
+        ',"coreTargetHandle":',
+        createHandleFingerprint(payload.coreTargetHandle),
+        ',"distancePolicyId":',
+        JSON.stringify(payload.distancePolicyId),
+        ',"producerId":',
+        JSON.stringify(payload.producerId),
+        ',"projectileDefinitionId":',
+        JSON.stringify(payload.projectileDefinitionId),
+        ',"selectionSequence":',
+        JSON.stringify(payload.selectionSequence),
+        ',"sourceAbilityId":',
+        JSON.stringify(payload.sourceAbilityId),
+        ',"sourceHandle":',
+        createHandleFingerprint(payload.sourceHandle),
+        ',"stopWhileTargetInRange":true',
+        ',"targetFixedTick":',
+        JSON.stringify(payload.targetFixedTick),
+        ',"targetSelectionPolicyId":',
+        JSON.stringify(payload.targetSelectionPolicyId),
+        ',"towerTargetHandle":',
+        createOptionalHandleFingerprint(payload.towerTargetHandle),
+        '}'
+    ].join('');
+}
+
+function createPriorityTargetControlPayloadFingerprint(payload) {
+    return [
+        '{"attackDefinitionId":',
+        JSON.stringify(payload.attackDefinitionId),
+        ',"attackFingerprint":',
+        JSON.stringify(payload.attackFingerprint),
+        ',"attackRangeTiles":',
+        JSON.stringify(payload.attackRangeTiles),
+        ',"coreTargetHandle":',
+        createHandleFingerprint(payload.coreTargetHandle),
+        ',"distancePolicyId":',
+        JSON.stringify(payload.distancePolicyId),
+        ',"modeFlags":',
+        JSON.stringify(payload.modeFlags),
+        ',"producerId":',
+        JSON.stringify(payload.producerId),
+        ',"projectileDefinitionId":',
+        JSON.stringify(payload.projectileDefinitionId),
+        ',"selectionSequence":',
+        JSON.stringify(payload.selectionSequence),
+        ',"sourceAbilityId":',
+        JSON.stringify(payload.sourceAbilityId),
+        ',"sourceHandle":',
+        createHandleFingerprint(payload.sourceHandle),
+        ',"stopWhileTargetInRange":true',
+        ',"targetFixedTick":',
+        JSON.stringify(payload.targetFixedTick),
+        ',"targetSelectionPolicyId":',
+        JSON.stringify(payload.targetSelectionPolicyId),
+        ',"towerTargetHandle":',
+        createOptionalHandleFingerprint(payload.towerTargetHandle),
+        '}'
+    ].join('');
+}
+
 function normalizeMoveIntent(command) {
     const handle = normalizeHandle(command?.handle ?? command, 'control.handle');
     let moveIntentX = requireFinite(
@@ -170,22 +254,29 @@ function normalizeMoveIntent(command) {
     });
 }
 
-function normalizePriorityTargetControl(command, targetFixedTick) {
+function normalizePriorityTargetControl(
+    command,
+    targetFixedTick,
+    canonicalSnapshot = false
+) {
     if (!command || typeof command !== 'object') {
         throw new TypeError('priority target control command가 필요합니다.');
     }
-    const sourceHandle = normalizeHandle(
+    const normalizeExactHandle = canonicalSnapshot
+        ? reuseCanonicalHandle
+        : normalizeHandle;
+    const sourceHandle = normalizeExactHandle(
         command.sourceHandle ?? command.handle,
         'priorityControl.sourceHandle'
     );
-    const coreTargetHandle = normalizeHandle(
+    const coreTargetHandle = normalizeExactHandle(
         command.coreTargetHandle,
         'priorityControl.coreTargetHandle'
     );
     const towerTargetHandle = command.towerTargetHandle === undefined
         || command.towerTargetHandle === null
         ? null
-        : normalizeHandle(
+        : normalizeExactHandle(
             command.towerTargetHandle,
             'priorityControl.towerTargetHandle'
         );
@@ -230,7 +321,8 @@ function normalizePriorityTargetControl(command, targetFixedTick) {
         command.attackRangeTiles,
         'priorityControl.attackRangeTiles'
     );
-    const fingerprintSource = {
+    const payload = {
+        modeFlags: GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
         sourceHandle,
         coreTargetHandle,
         towerTargetHandle,
@@ -243,13 +335,13 @@ function normalizePriorityTargetControl(command, targetFixedTick) {
         attackRangeTiles,
         targetSelectionPolicyId,
         distancePolicyId,
-        stopWhileTargetInRange: true
+        stopWhileTargetInRange: true,
+        attackFingerprint: 0
     };
-    return Object.freeze({
-        modeFlags: GPU_BODY_CONTROL_PROGRAM_MODE.PRIORITY_TARGET_IN_RANGE,
-        ...fingerprintSource,
-        attackFingerprint: createNonZeroUint32Fingerprint(fingerprintSource)
-    });
+    payload.attackFingerprint = createNonZeroUint32Fingerprint(
+        createPriorityTargetControlAttackFingerprint(payload)
+    );
+    return Object.freeze(payload);
 }
 
 function sameOptionalHandle(left, right) {
@@ -1107,10 +1199,11 @@ export class GpuFixedCommandOwner {
                 command,
                 targetFixedTick,
                 commandId
-            ) => this.requestPriorityTargetControl(
+            ) => this.#requestPriorityTargetControl(
                 command,
                 targetFixedTick,
-                commandId
+                commandId,
+                true
             ),
             requestSelectedTargetSpawn: (
                 intent,
@@ -1244,6 +1337,20 @@ export class GpuFixedCommandOwner {
 
     /** Core-first inclusive range selection과 persistent stop/route state를 stage합니다. */
     requestPriorityTargetControl(command, targetFixedTick, commandId) {
+        return this.#requestPriorityTargetControl(
+            command,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestPriorityTargetControl(
+        command,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedIngress();
         if (rejected) {
@@ -1251,8 +1358,18 @@ export class GpuFixedCommandOwner {
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
-        const payload = normalizePriorityTargetControl(command, tick);
-        const payloadFingerprint = stableFingerprint(payload);
+        if (canonicalSnapshot && !Object.isFrozen(command)) {
+            throw new TypeError(
+                'canonical priority target control은 frozen이어야 합니다.'
+            );
+        }
+        const payload = normalizePriorityTargetControl(
+            command,
+            tick,
+            canonicalSnapshot
+        );
+        const payloadFingerprint
+            = createPriorityTargetControlPayloadFingerprint(payload);
         const fingerprint = createCommandFingerprintFromPayload(
             'priority-target-control',
             tick,
