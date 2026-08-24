@@ -730,9 +730,11 @@ export class HostileAttackDirector {
             [HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED]: 0
         };
         this.priorityReadyHeap = [];
-        this.maximumSourceAuditsPerFixedTick = Math.max(
-            this.maximumStartsPerFixedTick,
-            this.maximumPriorityControlRefreshesPerFixedTick
+        this.maximumSourceAuditsPerFixedTick = requirePositiveSafeInteger(
+            options.maximumSourceAuditsPerFixedTick
+                ?? HOSTILE_ATTACK_RUNTIME_DATA
+                    .MAXIMUM_SOURCE_AUDITS_PER_FIXED_TICK,
+            'maximumSourceAuditsPerFixedTick'
         );
         this.pendingByCommandId = new Map();
         this.pendingControlsByCommandId = new Map();
@@ -1798,6 +1800,8 @@ export class HostileAttackDirector {
                 this.priorityControlRefreshIntervalTicks,
             maximumPriorityControlRefreshesPerFixedTick:
                 this.maximumPriorityControlRefreshesPerFixedTick,
+            maximumSourceAuditsPerFixedTick:
+                this.maximumSourceAuditsPerFixedTick,
             activeSourceCount: records.length,
             activeArcherCount: archers.length,
             pendingShotCount: pendingShots.length,

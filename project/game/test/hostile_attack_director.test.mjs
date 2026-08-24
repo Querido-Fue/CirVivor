@@ -171,7 +171,9 @@ function createFixture(options = {}) {
         projectileSpawnAdapter: adapter,
         sessionGeneration: SESSION_GENERATION,
         historyCapacity: options.historyCapacity ?? 16,
-        enemyDefinitions: options.enemyDefinitions
+        enemyDefinitions: options.enemyDefinitions,
+        maximumSourceAuditsPerFixedTick:
+            options.maximumSourceAuditsPerFixedTick
     });
     return { registry, backend, adapter, director };
 }
@@ -498,6 +500,38 @@ test('completed death와 lifecycle despawn은 exact Archer를 staging 전에 제
     });
     assert.equal(despawn.removedArcherCount, 1);
     assert.equal(despawnFixture.director.getStatus().activeArcherCount, 0);
+});
+
+test('자가복구 source 감사는 gameplay refresh와 독립된 bounded budget으로 순환한다', () => {
+    const fixture = createFixture();
+    const handles = Array.from({ length: 9 }, (_, index) => ({
+        entityId: 100 + index,
+        incarnation: 1
+    }));
+    for (const handle of handles) {
+        registerArcher(fixture, handle, 1);
+        fixture.registry.remove(handle);
+        fixture.backend.remove(handle);
+    }
+
+    assert.equal(
+        fixture.director.getStatus().maximumSourceAuditsPerFixedTick,
+        8
+    );
+    const first = fixture.director.stageForFixedTick({
+        targetFixedTick: 2,
+        targetHandle: null
+    });
+    assert.equal(first.removedStaleCount, 8);
+    assert.equal(fixture.director.getStatus().activeSourceCount, 1);
+
+    const second = fixture.director.stageForFixedTick({
+        targetFixedTick: 3,
+        targetHandle: null
+    });
+    assert.equal(second.removedStaleCount, 1);
+    assert.equal(fixture.director.getStatus().activeSourceCount, 0);
+    assert.equal(fixture.director.requiresRecovery(), false);
 });
 
 test('eligible order와 per-tick budget은 deterministic하며 deferred Archer cooldown을 소비하지 않는다', () => {
