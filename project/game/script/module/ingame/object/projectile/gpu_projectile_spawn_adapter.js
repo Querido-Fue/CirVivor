@@ -1002,4 +1002,16 @@ export class GpuProjectileSpawnAdapter {
             commandNamespace: snapshot.commandNamespace ?? this.commandNamespace
         });
     }
+
+    /**
+     * Hostile director가 canonical catalog/exact handle로 만든 fresh request 전용입니다.
+     * Raw public data는 requestProjectile()의 materialization 경계를 사용해야 합니다.
+     */
+    requestCanonicalProjectile(options = {}) {
+        return requestGpuProjectileFromSnapshot({
+            ...options,
+            endpoint: this.endpoint,
+            commandNamespace: options.commandNamespace ?? this.commandNamespace
+        });
+    }
 }

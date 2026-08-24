@@ -389,6 +389,42 @@ test('adapter instance는 endpoint/namespace를 보관하고 explicit command ID
     assert.equal(endpoint.calls[0].intent.spawnSequence, 2);
 });
 
+test('canonical adapter request는 public request와 같은 immutable exact ingress를 만든다', () => {
+    const endpoint = createFakeEndpoint();
+    const adapter = new GpuProjectileSpawnAdapter(endpoint, {
+        commandNamespace: 'hostile-canonical'
+    });
+    const options = {
+        mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+        definition: Object.freeze(createDefinition()),
+        sourceHandle: Object.freeze({ entityId: 21, incarnation: 2 }),
+        targetHandle: Object.freeze({ entityId: 31, incarnation: 3 }),
+        positionOffset: Object.freeze({ x: 0.25, y: -0.5 }),
+        targetOffset: Object.freeze({ x: 0, y: 0 }),
+        launchSpeed: 12,
+        targetFixedTick: 19,
+        spawnSequence: 5,
+        commandId: 'hostile-canonical:fixture'
+    };
+
+    const publicReceipt = adapter.requestProjectile(options);
+    const canonicalReceipt = adapter.requestCanonicalProjectile(options);
+
+    assert.deepEqual(canonicalReceipt, publicReceipt);
+    assert.equal(endpoint.sourceRelativeCalls.length, 2);
+    assert.deepEqual(
+        endpoint.sourceRelativeCalls[1],
+        endpoint.sourceRelativeCalls[0]
+    );
+    assert.equal(Object.isFrozen(endpoint.sourceRelativeCalls[1].intent), true);
+    assert.equal(
+        Object.isFrozen(
+            endpoint.sourceRelativeCalls[1].intent.destinationSpawn
+        ),
+        true
+    );
+});
+
 test('generic mode API는 velocity source-relative payload를 불변 GPU SpawnProgram ingress로 보낸다', () => {
     const endpoint = createFakeEndpoint();
     const sourceHandle = { entityId: 11, incarnation: 3 };

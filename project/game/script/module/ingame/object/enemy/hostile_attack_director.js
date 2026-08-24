@@ -1217,8 +1217,15 @@ export class HostileAttackDirector {
                     producerId: record.attack.producerId,
                     sourceAbilityId: record.attack.sourceAbilityId,
                     commandId
-                };
-                receipt = this.projectileSpawnAdapter.requestProjectile(request);
+            };
+                const requestProjectile = typeof this.projectileSpawnAdapter
+                    .requestCanonicalProjectile === 'function'
+                    ? this.projectileSpawnAdapter.requestCanonicalProjectile
+                    : this.projectileSpawnAdapter.requestProjectile;
+                receipt = requestProjectile.call(
+                    this.projectileSpawnAdapter,
+                    request
+                );
             } catch (error) {
                 this.#fail(
                     'shot-request',
