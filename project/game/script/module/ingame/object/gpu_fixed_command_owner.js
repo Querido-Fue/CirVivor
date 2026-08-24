@@ -993,6 +993,12 @@ export class GpuFixedCommandOwner {
             'historyCapacity'
         );
         this.pending = new Array(this.commandCapacity).fill(null);
+        this.freePendingSlots = Array.from(
+            { length: this.commandCapacity },
+            (_, index) => this.commandCapacity - index - 1
+        );
+        this.pendingByCommandId = new Map();
+        this.pendingCommandsByTargetFixedTick = new Map();
         this.pendingCount = 0;
         this.pendingControlCount = 0;
         this.pendingSourceRelativeSpawnCount = 0;
@@ -1978,22 +1984,21 @@ export class GpuFixedCommandOwner {
             return this.#saveResult(result);
         }
 
-        const due = [];
-        for (let index = 0; index < this.commandCapacity; index++) {
-            const command = this.pending[index];
-            if (!command) {
-                continue;
-            }
-            if (command.targetFixedTick < tick) {
-                result.state = 'failed';
-                result.recoveryRequired = true;
-                result.rejected.push({
-                    commandId: command.commandId,
-                    domain: commandDomain(command),
-                    code: 'missed-fixed-boundary'
-                });
-            } else if (command.targetFixedTick === tick) {
-                due.push(command);
+        const due = [
+            ...(this.pendingCommandsByTargetFixedTick.get(tick) ?? [])
+        ].sort((left, right) => left.sequence - right.sequence);
+        for (const [targetFixedTick, commands] of
+            this.pendingCommandsByTargetFixedTick) {
+            if (targetFixedTick < tick) {
+                for (const command of commands) {
+                    result.state = 'failed';
+                    result.recoveryRequired = true;
+                    result.rejected.push({
+                        commandId: command.commandId,
+                        domain: commandDomain(command),
+                        code: 'missed-fixed-boundary'
+                    });
+                }
             }
         }
         if (result.recoveryRequired) {
@@ -2489,12 +2494,7 @@ export class GpuFixedCommandOwner {
             });
         }
 
-        const pendingCommandIds = new Set();
-        for (const command of this.pending) {
-            if (command) {
-                pendingCommandIds.add(command.commandId);
-            }
-        }
+        const pendingCommandIds = new Set(this.pendingByCommandId.keys());
         this.#consume(pendingCommandIds);
 
         let releasedDestinationCount = 0;
@@ -2671,6 +2671,9 @@ export class GpuFixedCommandOwner {
         this.knownCommands.clear();
         this.controlTargetKeys.clear();
         this.selectionBindingClaims.clear();
+        this.pendingByCommandId.clear();
+        this.pendingCommandsByTargetFixedTick.clear();
+        this.freePendingSlots.length = 0;
         this.pendingPriorityControlsByKey.clear();
         this.pendingPriorityControlsByCommandId.clear();
         this.destroyed = true;
@@ -2697,12 +2700,9 @@ export class GpuFixedCommandOwner {
             });
             return { accepted: false, receipt, command: null };
         }
-        let slot = -1;
-        for (let index = 0; index < this.commandCapacity; index++) {
-            if (this.pending[index] === null) {
-                slot = index;
-                break;
-            }
+        const slot = this.freePendingSlots.pop();
+        if (!Number.isInteger(slot) || slot < 0 || slot >= this.commandCapacity) {
+            throw new Error('fixed command free slot index가 pendingCount와 다릅니다.');
         }
         const stored = {
             ...command,
@@ -2710,6 +2710,18 @@ export class GpuFixedCommandOwner {
             slot
         };
         this.pending[slot] = stored;
+        this.pendingByCommandId.set(stored.commandId, stored);
+        let targetTickCommands = this.pendingCommandsByTargetFixedTick.get(
+            stored.targetFixedTick
+        );
+        if (!targetTickCommands) {
+            targetTickCommands = new Set();
+            this.pendingCommandsByTargetFixedTick.set(
+                stored.targetFixedTick,
+                targetTickCommands
+            );
+        }
+        targetTickCommands.add(stored);
         this.pendingCount++;
         if (isControlCommand(command)) {
             this.pendingControlCount++;
@@ -2771,12 +2783,22 @@ export class GpuFixedCommandOwner {
         if (commandIds.size === 0) {
             return;
         }
-        for (let index = 0; index < this.commandCapacity; index++) {
-            const command = this.pending[index];
-            if (!command || !commandIds.has(command.commandId)) {
+        for (const commandId of commandIds) {
+            const command = this.pendingByCommandId.get(commandId);
+            if (!command) {
                 continue;
             }
-            this.pending[index] = null;
+            this.pending[command.slot] = null;
+            this.pendingByCommandId.delete(commandId);
+            const targetTickCommands = this.pendingCommandsByTargetFixedTick
+                .get(command.targetFixedTick);
+            targetTickCommands?.delete(command);
+            if (targetTickCommands?.size === 0) {
+                this.pendingCommandsByTargetFixedTick.delete(
+                    command.targetFixedTick
+                );
+            }
+            this.freePendingSlots.push(command.slot);
             this.pendingCount--;
             if (isControlCommand(command)) {
                 this.pendingControlCount--;
