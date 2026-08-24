@@ -126,6 +126,16 @@ function stableFingerprint(value, ancestors = new Set()) {
     return fingerprint;
 }
 
+function createCommandFingerprintFromPayload(
+    type,
+    tick,
+    payloadFingerprint
+) {
+    return `{"payload":${payloadFingerprint},`
+        + `"tick":${JSON.stringify(tick)},`
+        + `"type":${JSON.stringify(type)}}`;
+}
+
 function createNonZeroUint32Fingerprint(value) {
     const source = typeof value === 'string' ? value : stableFingerprint(value);
     let hash = 0x811c9dc5;
@@ -1140,7 +1150,12 @@ export class GpuFixedCommandOwner {
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
         const payload = normalizeMoveIntent(command);
-        const fingerprint = stableFingerprint({ type: 'control', tick, payload });
+        const payloadFingerprint = stableFingerprint(payload);
+        const fingerprint = createCommandFingerprintFromPayload(
+            'control',
+            tick,
+            payloadFingerprint
+        );
         const duplicate = this.#handleKnownCommand(id, fingerprint);
         if (duplicate) {
             return duplicate;
@@ -1174,7 +1189,7 @@ export class GpuFixedCommandOwner {
             );
         }
         if (existing) {
-            if (existing.payloadFingerprint === stableFingerprint(payload)) {
+            if (existing.payloadFingerprint === payloadFingerprint) {
                 this.telemetry.coalesced++;
                 const receipt = Object.freeze({
                     accepted: true,
@@ -1221,7 +1236,7 @@ export class GpuFixedCommandOwner {
             this.controlTargetKeys.set(targetKey, {
                 state: 'pending',
                 command: enqueued.command,
-                payloadFingerprint: stableFingerprint(payload)
+                payloadFingerprint
             });
         }
         return enqueued.receipt;
@@ -1237,11 +1252,12 @@ export class GpuFixedCommandOwner {
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
         const payload = normalizePriorityTargetControl(command, tick);
-        const fingerprint = stableFingerprint({
-            type: 'priority-target-control',
+        const payloadFingerprint = stableFingerprint(payload);
+        const fingerprint = createCommandFingerprintFromPayload(
+            'priority-target-control',
             tick,
-            payload
-        });
+            payloadFingerprint
+        );
         const duplicate = this.#handleKnownCommand(id, fingerprint);
         if (duplicate) {
             return duplicate;
@@ -1283,7 +1299,7 @@ export class GpuFixedCommandOwner {
             );
         }
         if (existing) {
-            if (existing.payloadFingerprint === stableFingerprint(payload)) {
+            if (existing.payloadFingerprint === payloadFingerprint) {
                 this.telemetry.coalesced++;
                 const receipt = Object.freeze({
                     accepted: true,
@@ -1331,7 +1347,7 @@ export class GpuFixedCommandOwner {
             this.controlTargetKeys.set(targetKey, {
                 state: 'pending',
                 command: enqueued.command,
-                payloadFingerprint: stableFingerprint(payload)
+                payloadFingerprint
             });
         }
         return enqueued.accepted
