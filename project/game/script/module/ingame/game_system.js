@@ -160,9 +160,11 @@ function createWaveDiagnosticStatus(status) {
         available: status !== null && status !== undefined,
         totalSpawnCount: normalizeDiagnosticCount(status?.totalSpawnCount),
         queuedSpawnCount: normalizeDiagnosticCount(status?.queuedSpawnCount),
+        blockedSpawnCount: normalizeDiagnosticCount(status?.blockedSpawnCount),
         remainingSpawnCount: normalizeDiagnosticCount(
             status?.remainingSpawnCount
-        )
+        ),
+        allSpawnsQueued: status?.allSpawnsQueued === true
     });
 }
 

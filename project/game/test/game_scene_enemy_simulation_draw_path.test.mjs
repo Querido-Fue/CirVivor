@@ -352,7 +352,9 @@ test('GPU world full draw는 TileMap, GPU world, CPU Core만 그리고 CPU Tower
             available: false,
             totalSpawnCount: 0,
             queuedSpawnCount: 0,
-            remainingSpawnCount: 0
+            blockedSpawnCount: 0,
+            remainingSpawnCount: 0,
+            allSpawnsQueued: false
         });
         assert.equal('archers' in status.hostileAttack, false);
         assert.equal('pendingShots' in status.hostileAttack, false);
