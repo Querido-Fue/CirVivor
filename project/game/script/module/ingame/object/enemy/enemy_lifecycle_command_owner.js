@@ -678,23 +678,27 @@ export function normalizeSpawnIntent(source) {
 }
 export const createRegistryMetadata = createGpuRegistryMetadata;
 
+const EMPTY_COMMIT_ENTRIES = Object.freeze([]);
+
+function freezeCommitEntries(entries) {
+    return entries.length === 0
+        ? EMPTY_COMMIT_ENTRIES
+        : Object.freeze(entries.map((entry) => Object.freeze(entry)));
+}
+
 function freezeCommitResult(result) {
     return Object.freeze({
         fixedTick: result.fixedTick,
         state: result.state,
-        spawned: Object.freeze(result.spawned.map((entry) => Object.freeze(entry))),
-        despawned: Object.freeze(result.despawned.map((entry) => Object.freeze(entry))),
-        atomicTransforms: Object.freeze(
-            result.atomicTransforms.map((entry) => Object.freeze(entry))
+        spawned: freezeCommitEntries(result.spawned),
+        despawned: freezeCommitEntries(result.despawned),
+        atomicTransforms: freezeCommitEntries(result.atomicTransforms),
+        projectileCaptureReleases: freezeCommitEntries(
+            result.projectileCaptureReleases
         ),
-        projectileCaptureReleases: Object.freeze(
-            result.projectileCaptureReleases.map((entry) => Object.freeze(entry))
-        ),
-        routeLifecycle: Object.freeze(
-            result.routeLifecycle.map((entry) => Object.freeze(entry))
-        ),
+        routeLifecycle: freezeCommitEntries(result.routeLifecycle),
         routeRuntimeBinding: result.routeRuntimeBinding,
-        rejected: Object.freeze(result.rejected.map((entry) => Object.freeze(entry))),
+        rejected: freezeCommitEntries(result.rejected),
         recoveryRequired: result.recoveryRequired === true,
         backendState: result.backendState,
         registryRevision: result.registryRevision
@@ -1908,8 +1912,8 @@ export class EnemyLifecycleCommandOwner {
             routeRuntimeBinding: null,
             rejected: [],
             recoveryRequired: false,
-            backendState: this.backend.getRuntimeState(),
-            registryRevision: this.registry.getRevision()
+            backendState: null,
+            registryRevision: 0
         };
         const consumedCommandIds = new Set();
 
@@ -1919,7 +1923,12 @@ export class EnemyLifecycleCommandOwner {
             return this.#saveResult(baseResult);
         }
 
-        const dueCommands = [];
+        let dueCommandCount = 0;
+        const despawnCommands = [];
+        const spawnCommands = [];
+        const atomicTransformCommands = [];
+        const enemyAtomicTransformCommands = [];
+        const projectileCaptureReleaseCommands = [];
         for (const command of this.pendingCommands) {
             if (command.targetFixedTick < tick) {
                 if (command.type === 'atomic-transform-batch'
@@ -1941,35 +1950,43 @@ export class EnemyLifecycleCommandOwner {
                     code: 'missed-fixed-boundary'
                 });
             } else if (command.targetFixedTick === tick) {
-                dueCommands.push(command);
+                dueCommandCount++;
+                switch (command.type) {
+                    case 'despawn':
+                        despawnCommands.push(command);
+                        break;
+                    case 'spawn':
+                        spawnCommands.push(command);
+                        break;
+                    case 'atomic-transform-batch':
+                        atomicTransformCommands.push(command);
+                        break;
+                    case 'enemy-atomic-transform-batch':
+                        enemyAtomicTransformCommands.push(command);
+                        break;
+                    case 'projectile-capture-release-batch':
+                        projectileCaptureReleaseCommands.push(command);
+                        break;
+                    default:
+                        break;
+                }
             }
         }
         this.#consumeCommands(consumedCommandIds);
         if (baseResult.recoveryRequired) {
             return this.#saveResult(baseResult);
         }
-        if (dueCommands.length === 0) {
+        if (dueCommandCount === 0) {
             return this.#saveResult(baseResult);
         }
         if (this.backend.requiresRecovery()) {
+            baseResult.backendState = this.backend.getRuntimeState();
             baseResult.state = isRetryableBackendRecoveryState(baseResult.backendState)
                 ? 'stalled'
                 : 'failed';
             baseResult.recoveryRequired = true;
             return this.#saveResult(baseResult);
         }
-
-        const despawnCommands = dueCommands.filter((command) => command.type === 'despawn');
-        const spawnCommands = dueCommands.filter((command) => command.type === 'spawn');
-        const atomicTransformCommands = dueCommands.filter(
-            (command) => command.type === 'atomic-transform-batch'
-        );
-        const enemyAtomicTransformCommands = dueCommands.filter(
-            (command) => command.type === 'enemy-atomic-transform-batch'
-        );
-        const projectileCaptureReleaseCommands = dueCommands.filter(
-            (command) => command.type === 'projectile-capture-release-batch'
-        );
 
         const despawnOutcome = this.#commitDespawns(
             despawnCommands,
