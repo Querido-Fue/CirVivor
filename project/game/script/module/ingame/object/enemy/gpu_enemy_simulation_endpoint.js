@@ -4488,11 +4488,11 @@ export class GpuEnemySimulationEndpoint {
         this.#assertUsable();
         const tick = requirePositiveSafeInteger(fixedTick, 'fixedTick');
         if (this.completedEventRecoveryRequired
-            || this.effectCommandOwner.getStatus().recoveryRequired
-            || this.#formationCommandOwner.getStatus().recoveryRequired
-            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
-            || this.fixedCommandOwner.getStatus().recoveryRequired
-            || this.lifecycleCommandOwner.getStatus().recoveryRequired) {
+            || this.effectCommandOwner.requiresRecovery()
+            || this.#formationCommandOwner.requiresRecovery()
+            || this.#atomicTransformCommandOwner.requiresRecovery()
+            || this.fixedCommandOwner.requiresRecovery()
+            || this.lifecycleCommandOwner.requiresRecovery()) {
             this.#finalizeClosedLifecycleIngress();
             return Object.freeze({
                 fixedTick: tick,
@@ -5571,11 +5571,11 @@ export class GpuEnemySimulationEndpoint {
     fixedUpdate(delta, sourceTick) {
         this.#assertUsable();
         if (this.completedEventRecoveryRequired
-            || this.effectCommandOwner.getStatus().recoveryRequired
-            || this.#formationCommandOwner.getStatus().recoveryRequired
-            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
-            || this.fixedCommandOwner.getStatus().recoveryRequired
-            || this.lifecycleCommandOwner.getStatus().recoveryRequired
+            || this.effectCommandOwner.requiresRecovery()
+            || this.#formationCommandOwner.requiresRecovery()
+            || this.#atomicTransformCommandOwner.requiresRecovery()
+            || this.fixedCommandOwner.requiresRecovery()
+            || this.lifecycleCommandOwner.requiresRecovery()
             || this.getProjectileCaptureRuntimeStatus().requiresRecovery
             || this.getAbilitySubjectSnapshotStatus().requiresRecovery
             || this.getActorPayloadMaterializationStatus()
@@ -5654,11 +5654,11 @@ export class GpuEnemySimulationEndpoint {
     requiresRecovery() {
         return !this.destroyed && (
             this.completedEventRecoveryRequired
-            || this.effectCommandOwner.getStatus().recoveryRequired
-            || this.#formationCommandOwner.getStatus().recoveryRequired
-            || this.#atomicTransformCommandOwner.getStatus().recoveryRequired
-            || this.fixedCommandOwner.getStatus().recoveryRequired
-            || this.lifecycleCommandOwner.getStatus().recoveryRequired
+            || this.effectCommandOwner.requiresRecovery()
+            || this.#formationCommandOwner.requiresRecovery()
+            || this.#atomicTransformCommandOwner.requiresRecovery()
+            || this.fixedCommandOwner.requiresRecovery()
+            || this.lifecycleCommandOwner.requiresRecovery()
             || this.getProjectileCaptureRuntimeStatus().requiresRecovery
             || this.getAbilitySubjectSnapshotStatus().requiresRecovery
             || this.getActorPayloadMaterializationStatus().requiresRecovery

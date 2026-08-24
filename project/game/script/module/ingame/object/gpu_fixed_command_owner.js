@@ -2663,6 +2663,10 @@ export class GpuFixedCommandOwner {
             + this.pendingPriorityControlsByKey.size;
     }
 
+    requiresRecovery() {
+        return !this.destroyed && this.recoveryRequired;
+    }
+
     getStatus() {
         return Object.freeze({
             capacity: this.commandCapacity,

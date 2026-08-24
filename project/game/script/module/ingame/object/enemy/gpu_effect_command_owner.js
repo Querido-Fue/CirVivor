@@ -1227,6 +1227,10 @@ export class GpuEffectCommandOwner {
         return this.#getPendingProgramCount();
     }
 
+    requiresRecovery() {
+        return !this.destroyed && this.recoveryRequired;
+    }
+
     getStatus() {
         const runtime = this.backend.getEffectRuntimeStatus();
         return Object.freeze({

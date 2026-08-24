@@ -2049,6 +2049,10 @@ export class EnemyLifecycleCommandOwner {
         return this.lastCommitResult;
     }
 
+    requiresRecovery() {
+        return !this.destroyed && this.recoveryRequired;
+    }
+
     getStatus() {
         return Object.freeze({
             pendingCount: this.pendingCommands.length,
