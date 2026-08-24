@@ -143,6 +143,8 @@ export class WaveRunCoordinator {
         this.deadlineFixedTick = 0;
         this.deadlineReached = false;
         this.overtimeStarted = false;
+        this.firstPulseFixedTick = 0;
+        this.overtimeStartedFact = null;
         this.clearProofFingerprint = 0;
         this.completionRevision = 0;
         this.factRevision = 0;
@@ -222,6 +224,8 @@ export class WaveRunCoordinator {
             this.deadlineFixedTick = deadlineFixedTick;
             this.deadlineReached = false;
             this.overtimeStarted = false;
+            this.firstPulseFixedTick = 0;
+            this.overtimeStartedFact = null;
             this.clearProofFingerprint = 0;
             this.state = WAVE_RUN_STATE.WAVE_ACTIVE;
             const fact = this.#appendFact({
@@ -366,9 +370,12 @@ export class WaveRunCoordinator {
             accepted: result.accepted,
             clearCandidateAccepted: result.accepted
                 && result.state === WAVE_RUN_STATE.CLEAR_CANDIDATE,
-            recoveryRequired: false,
+            recoveryRequired: result.code
+                === WAVE_RUN_RESULT_CODE.SOURCE_CHANGED
+                || result.code === WAVE_RUN_RESULT_CODE.TRANSACTION_CONFLICT,
             code: result.code,
             state: result.state,
+            facts: result.facts,
             transactionFingerprint: result.transactionFingerprint
         });
     }
@@ -625,6 +632,26 @@ export class WaveRunCoordinator {
         return this.factJournal.snapshot();
     }
 
+    /** CoreOvertimePressureDirector가 per-tick journal scan 없이 읽는 bounded port입니다. */
+    getOvertimePressureView() {
+        const metadata = this.currentWaveMetadata;
+        return Object.freeze({
+            runSessionId: this.runSessionId,
+            planId: this.plan.planId,
+            mapId: this.plan.mapId,
+            state: this.state,
+            waveId: metadata?.waveId ?? null,
+            waveOrdinal: this.currentWaveOrdinal,
+            waveAttemptOrdinal: this.waveAttemptOrdinal,
+            deadlineFixedTick: this.deadlineFixedTick,
+            overtimeStarted: this.overtimeStarted,
+            firstPulseFixedTick: this.firstPulseFixedTick,
+            overtimeStartedFact: this.overtimeStartedFact,
+            resolutionProfile: metadata?.resolutionProfile ?? null,
+            destroyed: this.destroyed
+        });
+    }
+
     getStatus() {
         const metadata = this.currentWaveMetadata;
         return Object.freeze({
@@ -648,6 +675,8 @@ export class WaveRunCoordinator {
             deadlineFixedTick: this.deadlineFixedTick,
             deadlineReached: this.deadlineReached,
             overtimeStarted: this.overtimeStarted,
+            firstPulseFixedTick: this.firstPulseFixedTick,
+            overtimeStartedFact: this.overtimeStartedFact,
             preparedNextWave: this.preparedNextWave,
             clearProofFingerprint: this.clearProofFingerprint,
             completionRevision: this.completionRevision,
@@ -698,6 +727,22 @@ export class WaveRunCoordinator {
             const proofResult = createWaveClearProof(snapshot);
             if (proofResult.accepted) {
                 return this.#acceptExactClearProof(proofResult.proof);
+            }
+            if (!snapshot.run.running
+                || snapshot.run.defeated
+                || snapshot.run.coreDepleted) {
+                return {
+                    code: snapshot.run.defeated || snapshot.run.coreDepleted
+                        ? WAVE_RUN_RESULT_CODE.RUN_DEFEATED
+                        : WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN,
+                    details: { blockers: proofResult.blockers }
+                };
+            }
+            if (snapshot.run.recoveryRequired) {
+                return {
+                    code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN,
+                    details: { blockers: proofResult.blockers }
+                };
             }
             if (!this.deadlineReached) {
                 return {
@@ -761,6 +806,7 @@ export class WaveRunCoordinator {
             profile.overtime.graceTicks,
             'first overtime pulse fixed tick'
         );
+        this.firstPulseFixedTick = firstPulseFixedTick;
         const fact = this.#appendFact({
             type: WAVE_RUN_FACT_TYPE.OVERTIME_STARTED,
             runSessionId: this.runSessionId,
@@ -773,6 +819,7 @@ export class WaveRunCoordinator {
             hostileActorCount: snapshot.hostile.hostileActorCount,
             hostileSnapshotRevision: snapshot.hostile.revision
         });
+        this.overtimeStartedFact = fact;
         return {
             code: WAVE_RUN_RESULT_CODE.ACCEPTED,
             facts: [fact],

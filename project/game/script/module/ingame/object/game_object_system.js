@@ -116,6 +116,7 @@ import {
 
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
+const EMPTY_CORE_OVERTIME_FACTS = Object.freeze([]);
 const REPLACEMENT_GPU_ENDPOINT_INITIALIZED_STATES = new Set([
     'gpu-deferred',
     'gpu-ready'
@@ -263,6 +264,20 @@ export class GameObjectSystem {
                 ?.evaluateWaveQuiescence !== 'function') {
             throw new TypeError(
                 'waveQuiescenceEvaluator.evaluateWaveQuiescence()가 필요합니다.'
+            );
+        }
+        this.coreOvertimePressureDirector
+            = options?.coreOvertimePressureDirector ?? null;
+        if (this.coreOvertimePressureDirector !== null
+            && (this.waveQuiescenceEvaluator === null
+                || typeof this.coreOvertimePressureDirector
+                    ?.observeFixedBoundary !== 'function'
+                || typeof this.coreOvertimePressureDirector
+                    ?.getStatus !== 'function'
+                || typeof this.coreOvertimePressureDirector
+                    ?.requiresRecovery !== 'function')) {
+            throw new TypeError(
+                'coreOvertimePressureDirector와 wave quiescence evaluator가 필요합니다.'
             );
         }
         this.enemyPresentationProfile = options?.enemyPresentationProfile;
@@ -527,6 +542,7 @@ export class GameObjectSystem {
         this.waveGameplayIngressSealed = false;
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
+        this.lastCoreOvertimeFacts = EMPTY_CORE_OVERTIME_FACTS;
         this.terminalState = GPU_WORLD_TERMINAL_STATE.RUNNING;
         this.terminalDiagnostic = null;
         this.terminalFinalizationTick = 0;
@@ -759,6 +775,11 @@ export class GameObjectSystem {
         return this.enemyCoreImpactDirector?.getStatus() ?? null;
     }
 
+    /** R9 Overtime CPU Core pressure의 bounded 상태입니다. */
+    getCoreOvertimePressureStatus() {
+        return this.coreOvertimePressureDirector?.getStatus() ?? null;
+    }
+
     /** 독립 Pentagon Effect roster/cadence의 bounded scalar 상태입니다. */
     getPentagonEffectStatus() {
         return this.pentagonEffectDirector?.getStatus() ?? null;
@@ -968,7 +989,9 @@ export class GameObjectSystem {
             finalizationTick: this.terminalFinalizationTick,
             diagnostic: this.terminalDiagnostic,
             outcome: this.runOutcome.getStatus(),
-            lastCoreImpactFacts: this.lastCoreImpactFacts
+            lastCoreImpactFacts: this.lastCoreImpactFacts,
+            lastCoreOvertimeFacts: this.lastCoreOvertimeFacts,
+            overtimePressure: this.getCoreOvertimePressureStatus()
         });
     }
 
@@ -990,6 +1013,7 @@ export class GameObjectSystem {
             towerMerge: this.getTowerMergeStatus(),
             lastTowerCombatFacts: this.lastTowerCombatFacts,
             lastCoreImpactFacts: this.lastCoreImpactFacts,
+            lastCoreOvertimeFacts: this.lastCoreOvertimeFacts,
             pentagonEffect: this.getPentagonEffectStatus(),
             formation: this.getFormationRuntimeStatus(),
             jorangSplitLineage: this.getJorangSplitLineageStatus(),
@@ -1022,6 +1046,7 @@ export class GameObjectSystem {
         return this.enemySimulationRecoveryRequired
             || this.hostileAttackDirector?.requiresRecovery() === true
             || this.enemyCoreImpactDirector?.requiresRecovery() === true
+            || this.coreOvertimePressureDirector?.requiresRecovery() === true
             || this.pentagonEffectDirector?.requiresRecovery() === true
             || this.formationRuntimeDirector?.requiresRecovery() === true
             || this.jorangSplitLineageDirector?.requiresRecovery() === true
@@ -1152,6 +1177,8 @@ export class GameObjectSystem {
             && !this.coreIntegrity.isDepleted()
             && (this.hostileAttackDirector?.requiresRecovery() === true
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
+                || this.coreOvertimePressureDirector?.requiresRecovery()
+                    === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
@@ -1593,6 +1620,27 @@ export class GameObjectSystem {
                     'wave-quiescence-evaluation',
                     proposedFixedTick
                 );
+            }
+            const overtimePressure = this
+                .#evaluateCoreOvertimePressureBeforeGameplayIngress(
+                    proposedFixedTick,
+                    waveQuiescence
+                );
+            if (overtimePressure.recoveryRequired) {
+                return this.#pauseForGpuRecovery(
+                    'core-overtime-pressure',
+                    proposedFixedTick
+                );
+            }
+            if (this.coreIntegrity.isDepleted()) {
+                const overtimeTerminalReady = this.#transitionRunOutcomeForCore(
+                    proposedFixedTick,
+                    overtimePressure.coreDepletedFact
+                );
+                if (this.runOutcome.isDefeated()
+                    && overtimeTerminalReady !== true) {
+                    return false;
+                }
             }
             let primaryProjectileShotReceipt = null;
             if (this.runOutcome.isRunning()
@@ -2191,6 +2239,8 @@ export class GameObjectSystem {
                 && gpuState !== 'gpu-backpressure')
                 || this.hostileAttackDirector?.requiresRecovery() === true
                 || this.enemyCoreImpactDirector?.requiresRecovery() === true
+                || this.coreOvertimePressureDirector?.requiresRecovery()
+                    === true
                 || this.pentagonEffectDirector?.requiresRecovery() === true
                 || this.formationRuntimeDirector?.requiresRecovery() === true
                 || this.jorangSplitLineageDirector?.requiresRecovery() === true
@@ -2504,6 +2554,7 @@ export class GameObjectSystem {
         this.hostileParticipationTracker?.destroy();
         this.hostileParticipationTracker = null;
         this.waveQuiescenceEvaluator = null;
+        this.coreOvertimePressureDirector = null;
         this.lastWaveQuiescenceSnapshot = null;
         this.lastWaveQuiescenceEvaluation = null;
         this.hostileAttackDirector?.destroy();
@@ -2546,6 +2597,7 @@ export class GameObjectSystem {
         this.enemySimulationPaused = false;
         this.enemySimulationRecoveryDiagnostic = null;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
+        this.lastCoreOvertimeFacts = EMPTY_CORE_OVERTIME_FACTS;
         this.terminalDiagnostic = null;
         this.terminalState = GPU_WORLD_TERMINAL_STATE.SEALED;
         if (this.runOutcomeOwned) {
@@ -4227,13 +4279,17 @@ export class GameObjectSystem {
         if (this.waveGameplayIngressSealed) {
             return Object.freeze({
                 gameplayIngressSealed: true,
-                recoveryRequired: false
+                recoveryRequired: false,
+                snapshot: this.lastWaveQuiescenceSnapshot,
+                evaluation: this.lastWaveQuiescenceEvaluation
             });
         }
         if (!this.waveQuiescenceEvaluator || !this.waveDirector) {
             return Object.freeze({
                 gameplayIngressSealed: false,
-                recoveryRequired: false
+                recoveryRequired: false,
+                snapshot: null,
+                evaluation: null
             });
         }
         let snapshot;
@@ -4251,7 +4307,9 @@ export class GameObjectSystem {
             });
             return Object.freeze({
                 gameplayIngressSealed: false,
-                recoveryRequired: true
+                recoveryRequired: true,
+                snapshot: snapshot ?? null,
+                evaluation: null
             });
         }
         if (!evaluation
@@ -4268,7 +4326,9 @@ export class GameObjectSystem {
             });
             return Object.freeze({
                 gameplayIngressSealed: false,
-                recoveryRequired: true
+                recoveryRequired: true,
+                snapshot,
+                evaluation: null
             });
         }
         this.lastWaveQuiescenceEvaluation = Object.freeze({
@@ -4285,7 +4345,63 @@ export class GameObjectSystem {
         }
         return Object.freeze({
             gameplayIngressSealed: this.waveGameplayIngressSealed,
-            recoveryRequired: evaluation.recoveryRequired === true
+            recoveryRequired: evaluation.recoveryRequired === true,
+            snapshot,
+            evaluation
+        });
+    }
+
+    #evaluateCoreOvertimePressureBeforeGameplayIngress(
+        fixedTick,
+        waveQuiescence
+    ) {
+        if (!this.coreOvertimePressureDirector) {
+            return Object.freeze({
+                recoveryRequired: false,
+                coreDepletedFact: null
+            });
+        }
+        const snapshot = waveQuiescence?.snapshot ?? null;
+        const hostileStatus = this.hostileParticipationTracker?.getStatus() ?? null;
+        if (!snapshot || !hostileStatus) {
+            return Object.freeze({
+                recoveryRequired: true,
+                coreDepletedFact: null
+            });
+        }
+        let observation;
+        try {
+            observation = this.coreOvertimePressureDirector.observeFixedBoundary({
+                fixedTick,
+                completedFixedTick: this.lastCompletedEnemyFixedTick,
+                completedBoundary: this.lastCompletedEnemyFixedTick > 0,
+                intentionalPause: false,
+                recoveryRequired: this.enemySimulationRecoveryRequired,
+                snapshot,
+                hostileStatus
+            });
+        } catch {
+            return Object.freeze({
+                recoveryRequired: true,
+                coreDepletedFact: null
+            });
+        }
+        if (!observation
+            || typeof observation !== 'object'
+            || typeof observation.recoveryRequired !== 'boolean'
+            || !Array.isArray(observation.facts)) {
+            return Object.freeze({
+                recoveryRequired: true,
+                coreDepletedFact: null
+            });
+        }
+        this.lastCoreOvertimeFacts = observation.facts;
+        if (observation.defeated === true || this.runOutcome.isDefeated()) {
+            this.waveGameplayIngressSealed = true;
+        }
+        return Object.freeze({
+            recoveryRequired: observation.recoveryRequired,
+            coreDepletedFact: observation.coreDepletedFact ?? null
         });
     }
 

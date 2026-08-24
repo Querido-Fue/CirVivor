@@ -467,7 +467,39 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
     let fixture = null;
     let scenarioValid = true;
 
-    if (fixtureStage === 'tower-group-target-query') {
+    if (fixtureStage === 'r9-overtime-pressure') {
+        fixture = result?.r9OvertimePressure;
+        const handles = fixture?.createdHandles ?? [];
+        scenarioValid = fixture?.scenario
+                === 'r9-overtime-pressure-actual-webgpu'
+            && fixture.gpuCreateCount === 2
+            && fixture.gpuCreateSiegeWeight === 12
+            && handles.length === 2
+            && new Set(handles.map(({ entityId, incarnation }) => (
+                `${entityId}:${incarnation}`
+            ))).size === 2
+            && fixture.firstPulseDamage === 3
+            && fixture.firstPulseOrdinal === 1
+            && fixture.remainingCountAfterFirstDeath === 1
+            && fixture.remainingSiegeWeightAfterFirstDeath === 8
+            && fixture.secondPulseDamage === 2
+            && fixture.secondPulseOrdinal === 2
+            && fixture.finalHostileCount === 0
+            && fixture.finalPulseSuppressed === true
+            && fixture.finalWaveState === 'CLEAR_CANDIDATE'
+            && fixture.finalCoreIntegrity === 5
+            && fixture.lethal?.defeated === true
+            && fixture.lethal.coreDepleted === true
+            && fixture.lethal.runFailedFactCount === 1
+            && fixture.lethal.waveFailedFactCount === 1
+            && fixture.lethal.waveState === 'RUN_DEFEATED'
+            && fixture.hostileBufferBytes === 32
+            && fixture.storageMaximum === 2
+            && fixture.recoveryRequired === false
+            && result.requestedMaxStorageBuffersPerShaderStage === 9
+            && result.adapterMaxStorageBuffersPerShaderStage >= 9
+            && result.deviceMaxStorageBuffersPerShaderStage >= 9;
+    } else if (fixtureStage === 'tower-group-target-query') {
         fixture = result?.towerGroupTargetQuery;
         scenarioValid = fixture?.nearestEntityId === 50
             && fixture.octagonIdentityEntityId === 20
@@ -2972,6 +3004,7 @@ function assertFixtureStageResult(result) {
         || fixtureStage === 'actor-action-placement'
         || fixtureStage === 'r5-actor-verbs'
         || fixtureStage === 'r7-actor-payload-multiplicity'
+        || fixtureStage === 'r9-overtime-pressure'
         || fixtureStage === 'post-r5-live-bugfix'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
@@ -3084,6 +3117,8 @@ async function prepareHarnessApp(
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
     const runnerFileName = fixtureStage === 'r6-tower-merge'
         ? 'tower_merge_runner.js'
+        : fixtureStage === 'r9-overtime-pressure'
+            ? 'r9_overtime_pressure_runner.js'
         : fixtureStage === 'tower-group-target-query'
         ? 'tower_group_target_query_runner.js'
         : fixtureStage === 'r5-actor-verbs'
@@ -3123,7 +3158,8 @@ async function prepareHarnessApp(
     const productionDirectory = path.join(appDirectory, 'production');
     await fs.mkdir(productionDirectory, { recursive: true });
     if (fixtureStage === 'post-r5-live-bugfix'
-        || fixtureStage === 'r6-tower-merge') {
+        || fixtureStage === 'r6-tower-merge'
+        || fixtureStage === 'r9-overtime-pressure') {
         await linkRuntimeDirectory(
             gameScriptDirectory,
             path.join(productionDirectory, 'script')
@@ -3224,6 +3260,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'r7_actor_payload_multiplicity_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'r9_overtime_pressure_runner.js'
             )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))
