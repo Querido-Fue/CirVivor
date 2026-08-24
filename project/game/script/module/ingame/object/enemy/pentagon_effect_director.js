@@ -90,6 +90,60 @@ function createEmptyStageResult(fixedTick = 0) {
     });
 }
 
+function pushMinHeap(heap, entry, compare) {
+    let index = heap.length;
+    heap.push(entry);
+    while (index > 0) {
+        const parentIndex = (index - 1) >> 1;
+        const parent = heap[parentIndex];
+        if (compare(parent, entry) <= 0) {
+            break;
+        }
+        heap[index] = parent;
+        index = parentIndex;
+    }
+    heap[index] = entry;
+}
+
+function popMinHeap(heap, compare) {
+    if (heap.length === 0) return null;
+    const root = heap[0];
+    const tail = heap.pop();
+    if (heap.length === 0) return root;
+    let index = 0;
+    const halfLength = heap.length >> 1;
+    while (index < halfLength) {
+        let childIndex = (index << 1) + 1;
+        let child = heap[childIndex];
+        const rightIndex = childIndex + 1;
+        if (rightIndex < heap.length
+            && compare(heap[rightIndex], child) < 0) {
+            childIndex = rightIndex;
+            child = heap[rightIndex];
+        }
+        if (compare(tail, child) <= 0) {
+            break;
+        }
+        heap[index] = child;
+        index = childIndex;
+    }
+    heap[index] = tail;
+    return root;
+}
+
+function comparePulseScheduleEntry(left, right) {
+    return left.nextPulseTick - right.nextPulseTick
+        || left.entityId - right.entityId
+        || left.incarnation - right.incarnation
+        || left.pulseSequence - right.pulseSequence;
+}
+
+function comparePulseIdentity(left, right) {
+    return left.entityId - right.entityId
+        || left.incarnation - right.incarnation
+        || left.pulseSequence - right.pulseSequence;
+}
+
 /**
  * Pentagon Effect capability의 exact-handle roster와 pulse cadence만 소유합니다.
  * Effect instance/summary/pose는 GPU authority이며 roster는 bounded SoA입니다.
@@ -152,11 +206,17 @@ export class PentagonEffectDirector {
         this.pendingTicks = new Float64Array(this.capacity);
         this.pendingPhases = new Uint8Array(this.capacity);
         this.consecutiveDeferCounts = new Uint32Array(this.capacity);
+        this.scheduleVersions = new Float64Array(this.capacity);
+        this.lastLivenessAuditTicks = new Float64Array(this.capacity);
         this.profileIds = new Array(this.capacity).fill(null);
         this.effectDefinitionIds = new Array(this.capacity).fill(null);
         this.indexByExactHandle = new Map();
         this.indexByEntityId = new Map();
         this.count = 0;
+        this.pulseScheduleHeap = [];
+        this.sourceAuditIterator = null;
+        this.maximumSourceAuditsPerFixedTick =
+            this.maximumPulseProgramsPerFixedTick;
 
         this.pendingBatchIdByTick = new Map();
         this.pendingBatchCountByTick = new Map();
@@ -419,11 +479,11 @@ export class PentagonEffectDirector {
                     continue;
                 }
                 this.pulseSequences[plan.index] = plan.nextSequence;
-                this.nextPulseTicks[plan.index] = plan.nextPulseTick;
                 this.pendingTicks[plan.index] = 0;
                 this.pendingPhases[plan.index] = PULSE_PENDING_PHASE.NONE;
                 this.consecutiveDeferCounts[plan.index]
                     = plan.consecutiveDeferCount;
+                this.#schedulePulseAt(plan.index, plan.nextPulseTick);
                 this.lastCompletedSourceTick = Math.max(
                     this.lastCompletedSourceTick,
                     plan.sourceTick
@@ -512,75 +572,88 @@ export class PentagonEffectDirector {
             return this.lastStageResult;
         }
 
-        const dueIndexes = [];
+        let dueEntries;
         try {
-            for (let index = 0; index < this.count;) {
-                const disposition = this.#getExactDisposition(index);
+            this.#auditSources(tick);
+            dueEntries = this.#takeDuePulseEntries(tick);
+        } catch (error) {
+            this.#fail('effect-stage-preflight', String(error?.message ?? error));
+            return this.stageForFixedTick({ targetFixedTick: tick });
+        }
+        if (dueEntries.length === 0) {
+            this.lastStageResult = createEmptyStageResult(tick);
+            return this.lastStageResult;
+        }
+        const stagedEntryLimit = Math.min(
+            dueEntries.length,
+            this.maximumPulseProgramsPerFixedTick
+        );
+        const startCursor = dueEntries.length <= stagedEntryLimit
+            ? 0
+            : this.nextDueCursor % dueEntries.length;
+        const stagedEntries = [];
+        const deferredEntries = [];
+        try {
+            for (let offset = 0; offset < dueEntries.length; offset++) {
+                const entry = dueEntries[
+                    (startCursor + offset) % dueEntries.length
+                ];
+                const index = this.#resolveScheduledPulseIndex(entry);
+                if (index < 0) {
+                    continue;
+                }
+                if (stagedEntries.length
+                    >= this.maximumPulseProgramsPerFixedTick) {
+                    deferredEntries.push(entry);
+                    continue;
+                }
+                const disposition = this.lastLivenessAuditTicks[index] === tick
+                    ? 'active'
+                    : this.#getExactDisposition(index);
                 if (disposition === 'stale') {
                     this.#removeAt(index);
                     continue;
                 }
                 if (disposition === 'desync') {
-                    throw new RangeError('Effect roster registry/backend identity가 불일치합니다.');
+                    throw new RangeError(
+                        'Effect roster registry/backend identity가 불일치합니다.'
+                    );
                 }
-                if (this.pendingPhases[index] === PULSE_PENDING_PHASE.NONE) {
-                    if (this.nextPulseTicks[index] < tick) {
-                        throw new RangeError(
-                            `Effect pulse cadence를 지나쳤습니다: ${this.nextPulseTicks[index]}/${tick}`
-                        );
-                    }
-                    if (this.nextPulseTicks[index] === tick) {
-                        dueIndexes.push(index);
-                    }
+                this.lastLivenessAuditTicks[index] = tick;
+                stagedEntries.push(entry);
+            }
+            for (const entry of deferredEntries) {
+                const index = this.#resolveScheduledPulseIndex(entry);
+                if (index >= 0) {
+                    this.#schedulePulseAt(index, tick + 1, entry);
                 }
-                index++;
             }
         } catch (error) {
             this.#fail('effect-stage-preflight', String(error?.message ?? error));
             return this.stageForFixedTick({ targetFixedTick: tick });
         }
-        if (dueIndexes.length === 0) {
+        const dueCount = stagedEntries.length + deferredEntries.length;
+        if (dueCount === 0) {
             this.lastStageResult = createEmptyStageResult(tick);
             return this.lastStageResult;
         }
-        this.telemetry.duePulseCount += dueIndexes.length;
+        this.telemetry.duePulseCount += dueCount;
         this.telemetry.maximumDuePulseCount = Math.max(
             this.telemetry.maximumDuePulseCount,
-            dueIndexes.length
+            dueCount
         );
-        dueIndexes.sort((left, right) => (
-            this.entityIds[left] - this.entityIds[right]
-                || this.incarnations[left] - this.incarnations[right]
-                || this.pulseSequences[left] - this.pulseSequences[right]
-        ));
-        const stagedIndexCount = Math.min(
-            dueIndexes.length,
-            this.maximumPulseProgramsPerFixedTick
-        );
-        const startCursor = dueIndexes.length <= stagedIndexCount
-            ? 0
-            : this.nextDueCursor % dueIndexes.length;
-        const stagedIndexes = Array.from(
-            { length: stagedIndexCount },
-            (_, offset) => dueIndexes[(startCursor + offset) % dueIndexes.length]
-        ).sort((left, right) => (
-            this.entityIds[left] - this.entityIds[right]
-                || this.incarnations[left] - this.incarnations[right]
-                || this.pulseSequences[left] - this.pulseSequences[right]
-        ));
-        if (stagedIndexCount < dueIndexes.length) {
-            for (let offset = stagedIndexCount;
-                offset < dueIndexes.length;
-                offset++) {
-                const index = dueIndexes[
-                    (startCursor + offset) % dueIndexes.length
-                ];
-                this.nextPulseTicks[index] = tick + 1;
-            }
+        if (deferredEntries.length > 0) {
             this.telemetry.quotaDeferredPulseCount +=
-                dueIndexes.length - stagedIndexCount;
+                deferredEntries.length;
         }
-        const commands = stagedIndexes.map((index) => {
+        stagedEntries.sort(comparePulseIdentity);
+        const commands = stagedEntries.map((entry) => {
+            const index = this.#resolveScheduledPulseIndex(entry);
+            if (index < 0) {
+                throw new RangeError(
+                    'Effect staged source schedule identity가 유실되었습니다.'
+                );
+            }
             const sourceHandle = Object.freeze({
                 entityId: this.entityIds[index],
                 incarnation: this.incarnations[index]
@@ -636,8 +709,11 @@ export class PentagonEffectDirector {
                     'effect-command-history-capacity'
                 ].includes(receipt.reason);
             if (retryableCapacity) {
-                for (const index of stagedIndexes) {
-                    this.nextPulseTicks[index] = tick + 1;
+                for (const entry of stagedEntries) {
+                    const index = this.#resolveScheduledPulseIndex(entry);
+                    if (index >= 0) {
+                        this.#schedulePulseAt(index, tick + 1, entry);
+                    }
                 }
                 this.telemetry.capacityRejectedStageCount++;
             } else if (receipt?.reason !== 'effect-command-port-revoked') {
@@ -657,13 +733,21 @@ export class PentagonEffectDirector {
             });
             return this.lastStageResult;
         }
-        for (const index of stagedIndexes) {
+        for (const entry of stagedEntries) {
+            const index = this.#resolveScheduledPulseIndex(entry);
+            if (index < 0) {
+                this.#fail(
+                    'effect-stage-pending',
+                    'Effect accepted source schedule identity가 유실되었습니다.'
+                );
+                break;
+            }
             this.pendingTicks[index] = tick;
             this.pendingPhases[index] = PULSE_PENDING_PHASE.QUEUED;
         }
-        this.nextDueCursor = dueIndexes.length <= stagedIndexCount
+        this.nextDueCursor = dueCount <= stagedEntries.length
             ? 0
-            : (startCursor + stagedIndexCount) % dueIndexes.length;
+            : (startCursor + stagedEntries.length) % dueCount;
         this.pendingBatchIdByTick.set(tick, batchId);
         this.pendingBatchCountByTick.set(tick, commands.length);
         this.telemetry.stagedBatchCount++;
@@ -781,6 +865,8 @@ export class PentagonEffectDirector {
             this.pendingTicks[index] = 0;
             this.pendingPhases[index] = PULSE_PENDING_PHASE.NONE;
         }
+        this.pulseScheduleHeap.length = 0;
+        this.sourceAuditIterator = null;
         return Object.freeze({
             closed: true,
             reason: this.ingressCloseReason,
@@ -938,10 +1024,13 @@ export class PentagonEffectDirector {
         this.pendingTicks[index] = 0;
         this.pendingPhases[index] = PULSE_PENDING_PHASE.NONE;
         this.consecutiveDeferCounts[index] = 0;
+        this.scheduleVersions[index] = 0;
+        this.lastLivenessAuditTicks[index] = 0;
         this.profileIds[index] = profile.id;
         this.effectDefinitionIds[index] = definition.id;
         this.indexByExactHandle.set(key, index);
         this.indexByEntityId.set(handle.entityId, index);
+        this.#schedulePulseAt(index, nextPulseTick);
         this.telemetry.registered++;
         return true;
     }
@@ -995,6 +1084,9 @@ export class PentagonEffectDirector {
             this.pendingPhases[index] = this.pendingPhases[lastIndex];
             this.consecutiveDeferCounts[index]
                 = this.consecutiveDeferCounts[lastIndex];
+            this.scheduleVersions[index] = this.scheduleVersions[lastIndex];
+            this.lastLivenessAuditTicks[index]
+                = this.lastLivenessAuditTicks[lastIndex];
             this.profileIds[index] = this.profileIds[lastIndex];
             this.effectDefinitionIds[index] = this.effectDefinitionIds[lastIndex];
             const movedKey = `${this.entityIds[index]}:${this.incarnations[index]}`;
@@ -1008,6 +1100,8 @@ export class PentagonEffectDirector {
         this.pendingTicks[lastIndex] = 0;
         this.pendingPhases[lastIndex] = PULSE_PENDING_PHASE.NONE;
         this.consecutiveDeferCounts[lastIndex] = 0;
+        this.scheduleVersions[lastIndex] = 0;
+        this.lastLivenessAuditTicks[lastIndex] = 0;
         this.profileIds[lastIndex] = null;
         this.effectDefinitionIds[lastIndex] = null;
         this.count--;
@@ -1072,12 +1166,122 @@ export class PentagonEffectDirector {
         this.pendingTicks.fill(0);
         this.pendingPhases.fill(PULSE_PENDING_PHASE.NONE);
         this.consecutiveDeferCounts.fill(0);
+        this.scheduleVersions.fill(0);
+        this.lastLivenessAuditTicks.fill(0);
         this.profileIds.fill(null);
         this.effectDefinitionIds.fill(null);
         this.indexByExactHandle.clear();
         this.indexByEntityId.clear();
+        this.pulseScheduleHeap.length = 0;
+        this.sourceAuditIterator = null;
         this.count = 0;
         this.nextDueCursor = 0;
+    }
+
+    #schedulePulseAt(index, nextPulseTick, reusableEntry = null) {
+        const tick = requirePositiveSafeInteger(
+            nextPulseTick,
+            'nextPulseTick'
+        );
+        const previousVersion = this.scheduleVersions[index];
+        if (!Number.isSafeInteger(previousVersion)
+            || previousVersion >= Number.MAX_SAFE_INTEGER) {
+            throw new RangeError('Effect pulse schedule version 공간이 고갈되었습니다.');
+        }
+        const version = previousVersion + 1;
+        const entityId = this.entityIds[index];
+        const incarnation = this.incarnations[index];
+        const pulseSequence = this.pulseSequences[index];
+        this.nextPulseTicks[index] = tick;
+        this.scheduleVersions[index] = version;
+        const entry = reusableEntry ?? {};
+        entry.key = `${entityId}:${incarnation}`;
+        entry.entityId = entityId;
+        entry.incarnation = incarnation;
+        entry.pulseSequence = pulseSequence;
+        entry.nextPulseTick = tick;
+        entry.version = version;
+        pushMinHeap(
+            this.pulseScheduleHeap,
+            entry,
+            comparePulseScheduleEntry
+        );
+    }
+
+    #resolveScheduledPulseIndex(entry) {
+        const index = this.indexByExactHandle.get(entry.key);
+        return index !== undefined
+            && this.scheduleVersions[index] === entry.version
+            && this.pendingPhases[index] === PULSE_PENDING_PHASE.NONE
+            && this.nextPulseTicks[index] === entry.nextPulseTick
+            && this.pulseSequences[index] === entry.pulseSequence
+            && this.entityIds[index] === entry.entityId
+            && this.incarnations[index] === entry.incarnation
+            ? index
+            : -1;
+    }
+
+    #takeDuePulseEntries(fixedTick) {
+        const dueEntries = [];
+        while (this.pulseScheduleHeap.length > 0) {
+            const entry = this.pulseScheduleHeap[0];
+            if (this.#resolveScheduledPulseIndex(entry) < 0) {
+                popMinHeap(
+                    this.pulseScheduleHeap,
+                    comparePulseScheduleEntry
+                );
+                continue;
+            }
+            if (entry.nextPulseTick < fixedTick) {
+                throw new RangeError(
+                    `Effect pulse cadence를 지나쳤습니다: ${entry.nextPulseTick}/${fixedTick}`
+                );
+            }
+            if (entry.nextPulseTick > fixedTick) {
+                break;
+            }
+            dueEntries.push(popMinHeap(
+                this.pulseScheduleHeap,
+                comparePulseScheduleEntry
+            ));
+        }
+        return dueEntries;
+    }
+
+    #auditSources(fixedTick) {
+        const auditCount = Math.min(
+            this.count,
+            this.maximumSourceAuditsPerFixedTick
+        );
+        if (auditCount === 0) {
+            this.sourceAuditIterator = null;
+            return;
+        }
+        if (this.sourceAuditIterator === null) {
+            this.sourceAuditIterator = this.indexByExactHandle.keys();
+        }
+        for (let offset = 0; offset < auditCount; offset++) {
+            const next = this.sourceAuditIterator.next();
+            if (next.done) {
+                this.sourceAuditIterator = null;
+                break;
+            }
+            const index = this.indexByExactHandle.get(next.value);
+            if (index === undefined) {
+                continue;
+            }
+            const disposition = this.#getExactDisposition(index);
+            if (disposition === 'desync') {
+                throw new RangeError(
+                    'Effect roster registry/backend identity가 불일치합니다.'
+                );
+            }
+            if (disposition === 'stale') {
+                this.#removeAt(index);
+                continue;
+            }
+            this.lastLivenessAuditTicks[index] = fixedTick;
+        }
     }
 
     #observeTerminalFixedCommit(lifecycleResult, fixedTick) {

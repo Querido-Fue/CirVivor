@@ -72,6 +72,104 @@ test('Pentagon pulse admission은 4-slot 예산을 tick별로 나누고 due sour
         bodyKeys.add(`${handle.entityId}:${handle.incarnation}`);
     }
     const requests = [];
+    let livenessProbeCount = 0;
+    const director = new PentagonEffectDirector({
+        endpoint: {
+            hasBody(handle) {
+                livenessProbeCount++;
+                return bodyKeys.has(`${handle.entityId}:${handle.incarnation}`);
+            },
+            getCapacity() { return capacity; },
+            getStatus() {
+                return Object.freeze({
+                    sessionGeneration,
+                    effectCommandCapacity: capacity
+                });
+            }
+        },
+        registry,
+        effectCommandPort: Object.freeze({
+            requestPulseBatch(batch) {
+                requests.push(batch);
+                return Object.freeze({
+                    accepted: true,
+                    batchId: batch.batchId,
+                    targetFixedTick: batch.targetFixedTick,
+                    queuedCount: batch.commands.length,
+                    replayed: false
+                });
+            }
+        }),
+        sessionGeneration,
+        capacity
+    });
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [],
+        spawned: handles.map((handle) => ({ handle }))
+    }, 1);
+    livenessProbeCount = 0;
+
+    assert.equal(
+        director.stageForFixedTick({ targetFixedTick: 120 }).stagedCount,
+        0
+    );
+    for (const targetFixedTick of [121, 122, 123]) {
+        const stage = director.stageForFixedTick({ targetFixedTick });
+        assert.equal(stage.accepted, true);
+        assert.equal(stage.stagedCount, 2);
+    }
+
+    const stagedEntityIds = requests.flatMap((batch) => (
+        batch.commands.map((command) => command.sourceHandle.entityId)
+    ));
+    for (const batch of requests) {
+        assert.deepEqual(
+            batch.commands.map((command) => command.sourceHandle.entityId),
+            batch.commands
+                .map((command) => command.sourceHandle.entityId)
+                .sort((left, right) => left - right)
+        );
+    }
+    assert.equal(stagedEntityIds.length, 6);
+    assert.deepEqual(
+        [...new Set(stagedEntityIds)].sort((left, right) => left - right),
+        handles.map(({ entityId }) => entityId).sort((left, right) => left - right)
+    );
+    const status = director.getStatus();
+    assert.equal(status.maximumPulseProgramsPerFixedTick, 2);
+    assert.equal(status.telemetry.maximumDuePulseCount, 6);
+    assert.equal(status.telemetry.maximumStagedPulseCount, 2);
+    assert.equal(status.telemetry.quotaDeferredPulseCount, 6);
+    assert.equal(status.telemetry.capacityRejectedStageCount, 0);
+    assert.equal(status.recoveryRequired, false);
+    assert.ok(
+        livenessProbeCount <= 12,
+        `bounded liveness audit budget을 초과했습니다: ${livenessProbeCount}`
+    );
+});
+
+test('Pentagon pulse schedule은 dense swap despawn 뒤 moved exact handle을 유지한다', () => {
+    const sessionGeneration = 302;
+    const capacity = 4;
+    const registry = new WorldRegistry({ capacity });
+    const bodyKeys = new Set();
+    const handles = [];
+    for (let index = 0; index < 3; index++) {
+        const handle = registry.reserveEntity({
+            kindId: 'enemy',
+            definitionId: 'basic_penta_01',
+            createdAtTick: 1
+        });
+        assert.ok(handle);
+        assert.equal(
+            registry.activateReserved(handle, createEmitterMetadata()),
+            true
+        );
+        handles.push(handle);
+        bodyKeys.add(`${handle.entityId}:${handle.incarnation}`);
+    }
+    const requests = [];
     const director = new PentagonEffectDirector({
         endpoint: {
             hasBody(handle) {
@@ -107,37 +205,29 @@ test('Pentagon pulse admission은 4-slot 예산을 tick별로 나누고 due sour
         spawned: handles.map((handle) => ({ handle }))
     }, 1);
 
-    assert.equal(
-        director.stageForFixedTick({ targetFixedTick: 120 }).stagedCount,
-        0
-    );
-    for (const targetFixedTick of [121, 122, 123]) {
-        const stage = director.stageForFixedTick({ targetFixedTick });
-        assert.equal(stage.accepted, true);
-        assert.equal(stage.stagedCount, 2);
-    }
+    assert.ok(registry.remove(handles[0]));
+    bodyKeys.delete(`${handles[0].entityId}:${handles[0].incarnation}`);
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [{ handle: handles[0] }],
+        spawned: []
+    }, 2);
 
-    const stagedEntityIds = requests.flatMap((batch) => (
-        batch.commands.map((command) => command.sourceHandle.entityId)
-    ));
-    for (const batch of requests) {
-        assert.deepEqual(
-            batch.commands.map((command) => command.sourceHandle.entityId),
-            batch.commands
-                .map((command) => command.sourceHandle.entityId)
-                .sort((left, right) => left - right)
-        );
-    }
-    assert.equal(stagedEntityIds.length, 6);
-    assert.deepEqual(
-        [...new Set(stagedEntityIds)].sort((left, right) => left - right),
-        handles.map(({ entityId }) => entityId).sort((left, right) => left - right)
+    assert.equal(
+        director.stageForFixedTick({ targetFixedTick: 121 }).stagedCount,
+        1
     );
-    const status = director.getStatus();
-    assert.equal(status.maximumPulseProgramsPerFixedTick, 2);
-    assert.equal(status.telemetry.maximumDuePulseCount, 6);
-    assert.equal(status.telemetry.maximumStagedPulseCount, 2);
-    assert.equal(status.telemetry.quotaDeferredPulseCount, 6);
-    assert.equal(status.telemetry.capacityRejectedStageCount, 0);
-    assert.equal(status.recoveryRequired, false);
+    assert.equal(
+        director.stageForFixedTick({ targetFixedTick: 122 }).stagedCount,
+        1
+    );
+    assert.deepEqual(
+        requests.flatMap((batch) => batch.commands).map(
+            (command) => command.sourceHandle.entityId
+        ).sort((left, right) => left - right),
+        handles.slice(1).map(({ entityId }) => entityId)
+            .sort((left, right) => left - right)
+    );
+    assert.equal(director.getStatus().activeEmitterCount, 2);
+    assert.equal(director.requiresRecovery(), false);
 });
