@@ -26,6 +26,20 @@ const VALID_COMPLETION_EVENT_PUBLICATION_MODES = new Set(
     Object.values(GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE)
 );
 const COMPLETION_FINGERPRINT_FLOAT32 = new DataView(new ArrayBuffer(4));
+const EMPTY_COMPLETION_ENTRIES = Object.freeze([]);
+const COMPLETION_EVENT_FINGERPRINT_FIELDS = Object.freeze([
+    'type',
+    'flags',
+    'effectInstanceId',
+    'instanceIncarnation',
+    'sourceEntityId',
+    'sourceIncarnation',
+    'targetEntityId',
+    'targetIncarnation',
+    'effectDefinitionCode',
+    'valueFixedPoint',
+    'position'
+]);
 const NORMAL_COMPLETION_RESULTS = new Set([
     GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED,
     GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
@@ -331,21 +345,13 @@ function createCompletionBatchFingerprint(batch) {
     mixCompletionFingerprint(state, batch.events.length);
     for (const event of batch.events) {
         let presenceMask = 0;
-        const fields = [
-            'type',
-            'flags',
-            'effectInstanceId',
-            'instanceIncarnation',
-            'sourceEntityId',
-            'sourceIncarnation',
-            'targetEntityId',
-            'targetIncarnation',
-            'effectDefinitionCode',
-            'valueFixedPoint',
-            'position'
-        ];
-        for (let index = 0; index < fields.length; index++) {
-            if (Object.hasOwn(event ?? {}, fields[index])) {
+        for (let index = 0;
+            index < COMPLETION_EVENT_FINGERPRINT_FIELDS.length;
+            index++) {
+            if (Object.hasOwn(
+                event ?? {},
+                COMPLETION_EVENT_FINGERPRINT_FIELDS[index]
+            )) {
                 presenceMask |= 1 << index;
             }
         }
@@ -388,8 +394,8 @@ function createEmptyCompletionSnapshot(
         fixedTick,
         completedThroughTick,
         batchCount: 0,
-        results: Object.freeze([]),
-        events: Object.freeze([]),
+        results: EMPTY_COMPLETION_ENTRIES,
+        events: EMPTY_COMPLETION_ENTRIES,
         validatedEventCount: 0,
         eventPublicationMode,
         staleBatchCount: 0,
@@ -701,8 +707,8 @@ export class GpuEffectCommandOwner {
                 fixedTick: tick,
                 state: 'failed',
                 batchId: null,
-                programs: [],
-                rejected: [],
+                programs: EMPTY_COMPLETION_ENTRIES,
+                rejected: EMPTY_COMPLETION_ENTRIES,
                 recoveryRequired: true,
                 protocolFailure: this.failure
             });
@@ -722,8 +728,8 @@ export class GpuEffectCommandOwner {
                 fixedTick: tick,
                 state: 'committed',
                 batchId: batch?.batchId ?? null,
-                programs: [],
-                rejected: [],
+                programs: EMPTY_COMPLETION_ENTRIES,
+                rejected: EMPTY_COMPLETION_ENTRIES,
                 recoveryRequired: false,
                 protocolFailure: null
             });
@@ -798,7 +804,7 @@ export class GpuEffectCommandOwner {
             state: 'committed',
             batchId: batch.batchId,
             programs,
-            rejected: [],
+            rejected: EMPTY_COMPLETION_ENTRIES,
             recoveryRequired: false,
             protocolFailure: null
         });
@@ -845,11 +851,10 @@ export class GpuEffectCommandOwner {
                 'Effect completion batch capacity를 초과했습니다.'
             );
         }
-        const frozenProtocolAtDrain = Object.freeze({ ...protocolAtDrain });
         for (const source of scratch) {
             this.deferredCompletionBatches.push(Object.freeze({
                 source,
-                protocol: frozenProtocolAtDrain
+                protocol: protocolAtDrain
             }));
         }
         scratch.length = 0;
@@ -907,8 +912,13 @@ export class GpuEffectCommandOwner {
             );
         }
 
+        const publishCompletionEvents
+            = this.completionEventPublicationMode
+                === GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.FULL;
         const results = [];
-        const events = [];
+        const events = publishCompletionEvents
+            ? []
+            : EMPTY_COMPLETION_ENTRIES;
         let acceptedBatchCount = 0;
         let zeroTargetCount = 0;
         let sourceInvalidCount = 0;
@@ -959,10 +969,9 @@ export class GpuEffectCommandOwner {
                 }
                 let candidateCount = 0;
                 let appliedInstanceCount = 0;
-                const pulseResultByCommandId = new Map();
-                const publishCompletionEvents
-                    = this.completionEventPublicationMode
-                        === GPU_EFFECT_COMPLETION_EVENT_PUBLICATION_MODE.FULL;
+                const pulseResultByCommandId = publishCompletionEvents
+                    ? new Map()
+                    : null;
                 const commandByEventKey = publishCompletionEvents
                     ? new Map()
                     : null;
@@ -996,7 +1005,7 @@ export class GpuEffectCommandOwner {
                         candidateCount += result.candidateCount;
                     }
                     appliedInstanceCount += result.appliedCount;
-                    pulseResultByCommandId.set(command.commandId, result);
+                    pulseResultByCommandId?.set(command.commandId, result);
                     if (commandByEventKey) {
                         const eventKey = effectEventCommandKey(
                             command.sourceHandle.entityId,
@@ -1838,13 +1847,18 @@ export class GpuEffectCommandOwner {
             }
             const result = pulseResults[commandIndex];
             if (type === GPU_EFFECT_EVENT_TYPE.PULSE_EMITTED) {
-                while (nextPulseCommandIndex < commandCount
-                    && [
-                        GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID,
-                        GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY
-                    ].includes(
-                        pulseResults[nextPulseCommandIndex].resultCode
-                    )) {
+                while (nextPulseCommandIndex < commandCount) {
+                    const nextResultCode = pulseResults[
+                        nextPulseCommandIndex
+                    ].resultCode;
+                    const skipsPulseEvent = nextResultCode
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT.SOURCE_INVALID
+                        || nextResultCode
+                            === GPU_EFFECT_PULSE_PROGRAM_RESULT
+                                .DEFERRED_CAPACITY;
+                    if (!skipsPulseEvent) {
+                        break;
+                    }
                     nextPulseCommandIndex++;
                 }
                 if (sawInstanceEvent
