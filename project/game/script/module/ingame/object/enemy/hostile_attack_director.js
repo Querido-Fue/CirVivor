@@ -518,6 +518,70 @@ function createEmptyStageResult(targetFixedTick, overrides = {}) {
     });
 }
 
+function pushMinHeap(heap, entry, compare) {
+    let index = heap.length;
+    heap.push(entry);
+    while (index > 0) {
+        const parentIndex = (index - 1) >> 1;
+        const parent = heap[parentIndex];
+        if (compare(parent, entry) <= 0) {
+            break;
+        }
+        heap[index] = parent;
+        index = parentIndex;
+    }
+    heap[index] = entry;
+}
+
+function popMinHeap(heap, compare) {
+    if (heap.length === 0) return null;
+    const root = heap[0];
+    const tail = heap.pop();
+    if (heap.length === 0) return root;
+    let index = 0;
+    const halfLength = heap.length >> 1;
+    while (index < halfLength) {
+        let childIndex = (index << 1) + 1;
+        let child = heap[childIndex];
+        const rightIndex = childIndex + 1;
+        if (rightIndex < heap.length
+            && compare(heap[rightIndex], child) < 0) {
+            childIndex = rightIndex;
+            child = heap[rightIndex];
+        }
+        if (compare(tail, child) <= 0) {
+            break;
+        }
+        heap[index] = child;
+        index = childIndex;
+    }
+    heap[index] = tail;
+    return root;
+}
+
+function compareShotReadyEntry(left, right) {
+    return left.readyFixedTick - right.readyFixedTick
+        || left.createdAtTick - right.createdAtTick
+        || left.entityId - right.entityId
+        || left.incarnation - right.incarnation;
+}
+
+function compareShotDueEntry(left, right) {
+    return left.lastAttemptOrdinal - right.lastAttemptOrdinal
+        || left.nextEligibleFixedTick - right.nextEligibleFixedTick
+        || left.createdAtTick - right.createdAtTick
+        || left.entityId - right.entityId
+        || left.incarnation - right.incarnation;
+}
+
+function comparePriorityReadyEntry(left, right) {
+    return left.nextPriorityControlFixedTick
+            - right.nextPriorityControlFixedTick
+        || left.createdAtTick - right.createdAtTick
+        || left.entityId - right.entityId
+        || left.incarnation - right.incarnation;
+}
+
 /**
  * Lifecycle 결과만으로 attack-capable exact enemy roster와 targeted shot 상태를 소유합니다.
  * Endpoint commit/fixed/presentation/draw/destroy는 호출하지 않습니다.
@@ -606,6 +670,16 @@ export class HostileAttackDirector {
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
+        this.shotReadyHeap = [];
+        this.shotDueHeaps = {
+            [HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER]: [],
+            [HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED]: []
+        };
+        this.shotDueCounts = {
+            [HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER]: 0,
+            [HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED]: 0
+        };
+        this.priorityReadyHeap = [];
         this.maximumSourceAuditsPerFixedTick = Math.max(
             this.maximumStartsPerFixedTick,
             this.maximumPriorityControlRefreshesPerFixedTick
@@ -847,22 +921,22 @@ export class HostileAttackDirector {
                 protocolFailure: this.protocolFailure
             }));
         }
-        const eligible = Array.from(this.recordsByHandle.values()).filter((record) => (
-            record.pendingCommandId === null
-            && record.lastAttemptedFixedTick !== targetFixedTick
-            && record.nextEligibleFixedTick <= targetFixedTick
-            && (record.attack.targetMode
-                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-                ? coreTargetHandle !== null
-                : targetHandle !== null)
-        ));
-        eligible.sort((left, right) => (
-            left.lastAttemptOrdinal - right.lastAttemptOrdinal
-            || left.nextEligibleFixedTick - right.nextEligibleFixedTick
-            || left.createdAtTick - right.createdAtTick
-            || left.handle.entityId - right.handle.entityId
-            || left.handle.incarnation - right.handle.incarnation
-        ));
+        this.#promoteShotSchedules(targetFixedTick);
+        const currentTowerAvailable = targetHandle !== null;
+        const corePriorityAvailable = coreTargetHandle !== null;
+        const eligibleCount = (
+            currentTowerAvailable
+                ? this.shotDueCounts[
+                    HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+                ]
+                : 0
+        ) + (
+            corePriorityAvailable
+                ? this.shotDueCounts[
+                    HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+                ]
+                : 0
+        );
 
         const availableBudget = Math.max(
             0,
@@ -870,8 +944,12 @@ export class HostileAttackDirector {
         );
         const selected = [];
         let selectedStaleCount = 0;
-        for (const record of eligible) {
-            if (selected.length >= availableBudget) {
+        while (selected.length < availableBudget) {
+            const record = this.#takeNextDueShotRecord({
+                currentTowerAvailable,
+                corePriorityAvailable
+            });
+            if (record === null) {
                 break;
             }
             const sourceDisposition = this.#getExactActiveDisposition(
@@ -896,43 +974,29 @@ export class HostileAttackDirector {
         }
         const deferredCount = Math.max(
             0,
-            eligible.length - selectedStaleCount - selected.length
+            eligibleCount - selectedStaleCount - selected.length
         );
         this.telemetry.budgetDeferred += deferredCount;
 
-        const priorityRecords = Array.from(
-            this.recordsByHandle.values()
-        ).filter((record) => (
+        const selectedPriorityRecords = selected.filter((record) => (
             record.attack.targetMode
                 === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
         ));
-        priorityRecords.sort((left, right) => (
+        for (const record of selectedPriorityRecords) {
+            this.#cancelPriorityControlSchedule(record);
+        }
+        const refreshRecords = this.#takeDuePriorityControlRecords(
+            targetFixedTick,
+            this.maximumPriorityControlRefreshesPerFixedTick
+        );
+        const controlRecords = [
+            ...selectedPriorityRecords,
+            ...refreshRecords
+        ];
+        controlRecords.sort((left, right) => (
             left.createdAtTick - right.createdAtTick
             || left.handle.entityId - right.handle.entityId
             || left.handle.incarnation - right.handle.incarnation
-        ));
-        const selectedPriorityKeys = new Set(
-            selected.filter((record) => (
-                record.attack.targetMode
-                    === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-            )).map((record) => handleKey(record.handle))
-        );
-        const refreshRecords = priorityRecords.filter((record) => (
-            !selectedPriorityKeys.has(handleKey(record.handle))
-            && record.nextPriorityControlFixedTick <= targetFixedTick
-        )).sort((left, right) => (
-            left.nextPriorityControlFixedTick
-                - right.nextPriorityControlFixedTick
-            || left.createdAtTick - right.createdAtTick
-            || left.handle.entityId - right.handle.entityId
-            || left.handle.incarnation - right.handle.incarnation
-        )).slice(0, this.maximumPriorityControlRefreshesPerFixedTick);
-        const controlRecordKeys = new Set(selectedPriorityKeys);
-        for (const record of refreshRecords) {
-            controlRecordKeys.add(handleKey(record.handle));
-        }
-        const controlRecords = priorityRecords.filter((record) => (
-            controlRecordKeys.has(handleKey(record.handle))
         ));
         let controlAttemptedCount = 0;
         let controlAcceptedCount = 0;
@@ -1060,6 +1124,7 @@ export class HostileAttackDirector {
             record.lastControlCommandId = controlCommandId;
             record.nextPriorityControlFixedTick
                 = nextPriorityControlFixedTick;
+            this.#schedulePriorityControlRecord(record);
             controlAcceptedCount++;
             this.telemetry.controlRequestAccepted++;
         }
@@ -1177,6 +1242,7 @@ export class HostileAttackDirector {
                     );
                     break;
                 }
+                this.#scheduleShotRecord(record);
                 continue;
             }
             if (receipt.commandId !== commandId
@@ -1255,7 +1321,7 @@ export class HostileAttackDirector {
         }
         return this.#saveStageResult(Object.freeze({
             targetFixedTick,
-            eligibleCount: eligible.length,
+            eligibleCount,
             attemptedCount,
             acceptedCount,
             rejectedCount,
@@ -1729,6 +1795,8 @@ export class HostileAttackDirector {
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
+        this.#clearShotSchedules();
+        this.priorityReadyHeap.length = 0;
         this.pendingByCommandId.clear();
         this.pendingControlsByCommandId.clear();
         this.committedGpuDeathsByHandle.clear();
@@ -1755,6 +1823,8 @@ export class HostileAttackDirector {
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
+        this.#clearShotSchedules();
+        this.priorityReadyHeap.length = 0;
         this.pendingByCommandId.clear();
         this.pendingControlsByCommandId.clear();
         this.committedGpuDeathsByHandle.clear();
@@ -2292,7 +2362,7 @@ export class HostileAttackDirector {
             );
             return false;
         }
-        this.recordsByHandle.set(key, {
+        const record = {
             handle,
             definitionId: view.definitionId,
             createdAtTick,
@@ -2307,14 +2377,21 @@ export class HostileAttackDirector {
             lastAttemptOrdinal: 0,
             lastAcceptedAttemptOrdinal: 0,
             lastControlFixedTick: 0,
-            lastControlCommandId: null
-        });
+            lastControlCommandId: null,
+            shotScheduleVersion: 0,
+            shotScheduleState: null,
+            priorityScheduleVersion: 0,
+            priorityScheduleState: null
+        };
+        this.recordsByHandle.set(key, record);
         if (attackEntry.attack.targetMode
             === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
             this.currentTowerSourceCount++;
         } else {
             this.corePrioritySourceCount++;
+            this.#schedulePriorityControlRecord(record);
         }
+        this.#scheduleShotRecord(record);
         this.telemetry.registered++;
         return attackEntry.attack.targetMode;
     }
@@ -2919,6 +2996,7 @@ export class HostileAttackDirector {
         const record = this.recordsByHandle.get(handleKey(pending.sourceHandle));
         if (record?.pendingCommandId === pending.commandId) {
             record.pendingCommandId = null;
+            this.#scheduleShotRecord(record);
         }
         this.#rememberTerminalCommand(pending.commandId, terminal);
     }
@@ -2929,6 +3007,8 @@ export class HostileAttackDirector {
         if (!record) {
             return false;
         }
+        this.#cancelShotSchedule(record);
+        this.#cancelPriorityControlSchedule(record);
         this.recordsByHandle.delete(key);
         if (record.attack.targetMode
             === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
@@ -2946,6 +3026,227 @@ export class HostileAttackDirector {
             this.telemetry.removedAsStale++;
         }
         return true;
+    }
+
+    #clearShotSchedules() {
+        this.shotReadyHeap.length = 0;
+        this.shotDueHeaps[
+            HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+        ].length = 0;
+        this.shotDueHeaps[
+            HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+        ].length = 0;
+        this.shotDueCounts[
+            HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+        ] = 0;
+        this.shotDueCounts[
+            HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+        ] = 0;
+    }
+
+    #scheduleShotRecord(record) {
+        if (this.recordsByHandle.get(handleKey(record.handle)) !== record
+            || record.pendingCommandId !== null) {
+            return false;
+        }
+        if (!Number.isSafeInteger(record.shotScheduleVersion)
+            || record.shotScheduleVersion < 0
+            || record.shotScheduleVersion >= Number.MAX_SAFE_INTEGER) {
+            this.#fail(
+                'shot-schedule',
+                'schedule-version-overflow',
+                `Hostile shot schedule version을 전진시킬 수 없습니다: ${handleKey(record.handle)}`
+            );
+            return false;
+        }
+        if (record.shotScheduleState === 'due') {
+            this.shotDueCounts[record.attack.targetMode]--;
+        }
+        record.shotScheduleVersion++;
+        record.shotScheduleState = 'ready';
+        const retryFixedTick = record.lastAttemptedFixedTick <= 0
+            ? 0
+            : Math.min(
+                Number.MAX_SAFE_INTEGER,
+                record.lastAttemptedFixedTick + 1
+            );
+        pushMinHeap(this.shotReadyHeap, {
+            record,
+            version: record.shotScheduleVersion,
+            readyFixedTick: Math.max(
+                record.nextEligibleFixedTick,
+                retryFixedTick
+            ),
+            lastAttemptOrdinal: record.lastAttemptOrdinal,
+            nextEligibleFixedTick: record.nextEligibleFixedTick,
+            createdAtTick: record.createdAtTick,
+            entityId: record.handle.entityId,
+            incarnation: record.handle.incarnation
+        }, compareShotReadyEntry);
+        return true;
+    }
+
+    #cancelShotSchedule(record) {
+        if (record.shotScheduleState === 'due') {
+            this.shotDueCounts[record.attack.targetMode]--;
+        }
+        if (Number.isSafeInteger(record.shotScheduleVersion)
+            && record.shotScheduleVersion < Number.MAX_SAFE_INTEGER) {
+            record.shotScheduleVersion++;
+        }
+        record.shotScheduleState = null;
+    }
+
+    #isCurrentShotScheduleEntry(entry, state) {
+        const record = entry?.record;
+        return record !== null
+            && record !== undefined
+            && this.recordsByHandle.get(handleKey(record.handle)) === record
+            && record.pendingCommandId === null
+            && record.shotScheduleVersion === entry.version
+            && record.shotScheduleState === state;
+    }
+
+    #promoteShotSchedules(targetFixedTick) {
+        while (this.shotReadyHeap.length > 0) {
+            const entry = this.shotReadyHeap[0];
+            if (!this.#isCurrentShotScheduleEntry(entry, 'ready')) {
+                popMinHeap(this.shotReadyHeap, compareShotReadyEntry);
+                continue;
+            }
+            if (entry.readyFixedTick > targetFixedTick) {
+                break;
+            }
+            popMinHeap(this.shotReadyHeap, compareShotReadyEntry);
+            const record = entry.record;
+            record.shotScheduleState = 'due';
+            this.shotDueCounts[record.attack.targetMode]++;
+            pushMinHeap(
+                this.shotDueHeaps[record.attack.targetMode],
+                entry,
+                compareShotDueEntry
+            );
+        }
+    }
+
+    #peekCurrentDueShotEntry(targetMode) {
+        const heap = this.shotDueHeaps[targetMode];
+        while (heap.length > 0) {
+            const entry = heap[0];
+            if (this.#isCurrentShotScheduleEntry(entry, 'due')) {
+                return entry;
+            }
+            popMinHeap(heap, compareShotDueEntry);
+        }
+        return null;
+    }
+
+    #takeNextDueShotRecord(options) {
+        const currentTowerEntry = options.currentTowerAvailable
+            ? this.#peekCurrentDueShotEntry(
+                HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
+            )
+            : null;
+        const corePriorityEntry = options.corePriorityAvailable
+            ? this.#peekCurrentDueShotEntry(
+                HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            )
+            : null;
+        const selectedEntry = currentTowerEntry === null
+            ? corePriorityEntry
+            : corePriorityEntry === null
+                || compareShotDueEntry(
+                    currentTowerEntry,
+                    corePriorityEntry
+                ) <= 0
+                ? currentTowerEntry
+                : corePriorityEntry;
+        if (selectedEntry === null) {
+            return null;
+        }
+        const record = selectedEntry.record;
+        popMinHeap(
+            this.shotDueHeaps[record.attack.targetMode],
+            compareShotDueEntry
+        );
+        this.shotDueCounts[record.attack.targetMode]--;
+        record.shotScheduleState = null;
+        return record;
+    }
+
+    #schedulePriorityControlRecord(record) {
+        if (record.attack.targetMode
+                !== HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            || this.recordsByHandle.get(handleKey(record.handle)) !== record) {
+            return false;
+        }
+        if (!Number.isSafeInteger(record.priorityScheduleVersion)
+            || record.priorityScheduleVersion < 0
+            || record.priorityScheduleVersion >= Number.MAX_SAFE_INTEGER) {
+            this.#fail(
+                'priority-control-schedule',
+                'schedule-version-overflow',
+                `M priority schedule version을 전진시킬 수 없습니다: ${handleKey(record.handle)}`
+            );
+            return false;
+        }
+        record.priorityScheduleVersion++;
+        record.priorityScheduleState = 'ready';
+        pushMinHeap(this.priorityReadyHeap, {
+            record,
+            version: record.priorityScheduleVersion,
+            nextPriorityControlFixedTick:
+                record.nextPriorityControlFixedTick,
+            createdAtTick: record.createdAtTick,
+            entityId: record.handle.entityId,
+            incarnation: record.handle.incarnation
+        }, comparePriorityReadyEntry);
+        return true;
+    }
+
+    #cancelPriorityControlSchedule(record) {
+        if (record.attack.targetMode
+            !== HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED) {
+            return;
+        }
+        if (Number.isSafeInteger(record.priorityScheduleVersion)
+            && record.priorityScheduleVersion < Number.MAX_SAFE_INTEGER) {
+            record.priorityScheduleVersion++;
+        }
+        record.priorityScheduleState = null;
+    }
+
+    #isCurrentPriorityScheduleEntry(entry) {
+        const record = entry?.record;
+        return record !== null
+            && record !== undefined
+            && this.recordsByHandle.get(handleKey(record.handle)) === record
+            && record.attack.targetMode
+                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+            && record.priorityScheduleVersion === entry.version
+            && record.priorityScheduleState === 'ready';
+    }
+
+    #takeDuePriorityControlRecords(targetFixedTick, maximumCount) {
+        const records = [];
+        while (this.priorityReadyHeap.length > 0
+            && records.length < maximumCount) {
+            const entry = this.priorityReadyHeap[0];
+            if (!this.#isCurrentPriorityScheduleEntry(entry)) {
+                popMinHeap(
+                    this.priorityReadyHeap,
+                    comparePriorityReadyEntry
+                );
+                continue;
+            }
+            if (entry.nextPriorityControlFixedTick > targetFixedTick) {
+                break;
+            }
+            popMinHeap(this.priorityReadyHeap, comparePriorityReadyEntry);
+            entry.record.priorityScheduleState = null;
+            records.push(entry.record);
+        }
+        return records;
     }
 
     #pruneStaleSources() {
