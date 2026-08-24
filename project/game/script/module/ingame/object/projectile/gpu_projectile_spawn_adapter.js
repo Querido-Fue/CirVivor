@@ -44,6 +44,23 @@ import {
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
 const GPU_PROJECTILE_LAYER = GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE;
+const CACHED_PROJECTILE_DYNAMIC_KEYS = Object.freeze([
+    'spawnSequence',
+    'sourceEntityId',
+    'sourceIncarnation',
+    'ownerEntityId',
+    'ownerIncarnation',
+    'targetEntityId',
+    'targetIncarnation',
+    'originOwnerEntityId',
+    'originOwnerIncarnation',
+    'originSourceEntityId',
+    'originSourceIncarnation',
+    'originTargetEntityId',
+    'originTargetIncarnation',
+    'position',
+    'velocity'
+]);
 
 export const GPU_PROJECTILE_WORLD_KIND_ID = 'projectile';
 export const GPU_PROJECTILE_SPAWN_MODE = Object.freeze({
@@ -348,6 +365,73 @@ function createRenderStyle(definition) {
     });
 }
 
+function createCanonicalProjectileTemplateKey(options) {
+    return JSON.stringify([
+        options.allegiancePolicy ?? null,
+        options.teamId ?? null,
+        options.damagePolicyId ?? null,
+        options.targetPolicyId ?? null,
+        options.producerId ?? null,
+        options.sourceAbilityId ?? null
+    ]);
+}
+
+function readCanonicalProjectileTemplate(cache, definition, cacheKey) {
+    return cache?.get(definition)?.get(cacheKey) ?? null;
+}
+
+function cacheCanonicalProjectileTemplate(
+    cache,
+    definition,
+    cacheKey,
+    intent
+) {
+    let templatesByKey = cache.get(definition);
+    if (!templatesByKey) {
+        templatesByKey = new Map();
+        cache.set(definition, templatesByKey);
+    }
+    const template = { ...intent };
+    for (const key of CACHED_PROJECTILE_DYNAMIC_KEYS) {
+        delete template[key];
+    }
+    templatesByKey.set(cacheKey, Object.freeze(template));
+}
+
+function createGpuProjectileSpawnIntentFromTemplate(options, template) {
+    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
+    const ownerHandle = normalizeEntityHandle(options.ownerHandle, 'ownerHandle');
+    const targetHandle = normalizeEntityHandle(options.targetHandle, 'targetHandle');
+    const spawnSequence = requireNonNegativeSafeInteger(
+        options.spawnSequence ?? 0,
+        'spawnSequence'
+    );
+    return Object.freeze({
+        ...template,
+        originOwnerEntityId: ownerHandle?.entityId ?? null,
+        originOwnerIncarnation: ownerHandle?.incarnation ?? null,
+        originSourceEntityId: sourceHandle?.entityId ?? null,
+        originSourceIncarnation: sourceHandle?.incarnation ?? null,
+        originTargetEntityId: targetHandle?.entityId ?? null,
+        originTargetIncarnation: targetHandle?.incarnation ?? null,
+        spawnSequence,
+        ...(sourceHandle ? {
+            sourceEntityId: sourceHandle.entityId,
+            sourceIncarnation: sourceHandle.incarnation
+        } : {}),
+        ...(ownerHandle ? {
+            ownerEntityId: ownerHandle.entityId,
+            ownerIncarnation: ownerHandle.incarnation
+        } : {}),
+        ...(targetHandle ? {
+            targetEntityId: targetHandle.entityId,
+            targetIncarnation: targetHandle.incarnation
+        } : {}),
+        position: normalizeVector(options.position, 'position'),
+        velocity: normalizeVector(options.velocity, 'velocity')
+    });
+}
+
 /**
  * data definition과 world-space 발사 상태를 mixed-body GPU spawn intent로 변환합니다.
  * entityId/incarnation은 endpoint 내부 WorldRegistry가 fixed 경계에서만 발급합니다.
@@ -363,7 +447,10 @@ export function createGpuProjectileSpawnIntent(options = {}) {
     return createGpuProjectileSpawnIntentFromSnapshot(snapshot);
 }
 
-function createGpuProjectileSpawnIntentFromSnapshot(options) {
+function createGpuProjectileSpawnIntentFromSnapshot(
+    options,
+    canonicalTemplateCache = null
+) {
     const definition = options.definition;
     if (!definition || typeof definition !== 'object') {
         throw new TypeError('GPU projectile definition이 필요합니다.');
@@ -372,6 +459,23 @@ function createGpuProjectileSpawnIntentFromSnapshot(options) {
         || Object.prototype.hasOwnProperty.call(options, 'incarnation')
         || Object.prototype.hasOwnProperty.call(options, 'handle')) {
         throw new TypeError('projectile identity는 WorldRegistry만 발급할 수 있습니다.');
+    }
+    const cacheKey = canonicalTemplateCache !== null
+            && Object.isFrozen(definition)
+        ? createCanonicalProjectileTemplateKey(options)
+        : null;
+    const cachedTemplate = cacheKey === null
+        ? null
+        : readCanonicalProjectileTemplate(
+            canonicalTemplateCache,
+            definition,
+            cacheKey
+        );
+    if (cachedTemplate) {
+        return createGpuProjectileSpawnIntentFromTemplate(
+            options,
+            cachedTemplate
+        );
     }
     const definitionId = requireNonEmptyString(definition.id, 'definition.id');
     const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
@@ -413,7 +517,7 @@ function createGpuProjectileSpawnIntentFromSnapshot(options) {
         originTargetEntityId: targetHandle?.entityId ?? null,
         originTargetIncarnation: targetHandle?.incarnation ?? null
     });
-    return Object.freeze({
+    const intent = Object.freeze({
         kindId: GPU_PROJECTILE_WORLD_KIND_ID,
         definitionId,
         ...allegiance,
@@ -479,6 +583,15 @@ function createGpuProjectileSpawnIntentFromSnapshot(options) {
         alive: true,
         ...(renderStyle ? { renderStyle } : {})
     });
+    if (cacheKey !== null) {
+        cacheCanonicalProjectileTemplate(
+            canonicalTemplateCache,
+            definition,
+            cacheKey,
+            intent
+        );
+    }
+    return intent;
 }
 
 /**
@@ -523,7 +636,10 @@ export function createGpuSelectedTargetProjectileIntent(options = {}) {
     return createGpuSelectedTargetProjectileIntentFromSnapshot(snapshot);
 }
 
-function createGpuSelectedTargetProjectileIntentFromSnapshot(snapshot) {
+function createGpuSelectedTargetProjectileIntentFromSnapshot(
+    snapshot,
+    canonicalTemplateCache = null
+) {
     const sourceHandle = normalizeEntityHandle(
         snapshot.sourceHandle,
         'sourceHandle'
@@ -580,7 +696,7 @@ function createGpuSelectedTargetProjectileIntentFromSnapshot(snapshot) {
             ?? GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
         damagePolicyId: snapshot.damagePolicyId,
         targetPolicyId: snapshot.targetPolicyId
-    });
+    }, canonicalTemplateCache);
     if (baseDestinationSpawn.targetPolicyId
         !== PROJECTILE_TARGET_POLICY_ID
             .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN) {
@@ -667,7 +783,10 @@ export function requestGpuSelectedTargetProjectile(options = {}) {
     return requestGpuSelectedTargetProjectileFromSnapshot(snapshot);
 }
 
-function requestGpuSelectedTargetProjectileFromSnapshot(snapshot) {
+function requestGpuSelectedTargetProjectileFromSnapshot(
+    snapshot,
+    canonicalTemplateCache = null
+) {
     const { endpoint, ...intentOptions } = snapshot;
     rejectPresentProperties(snapshot, [
         'position',
@@ -697,7 +816,7 @@ function requestGpuSelectedTargetProjectileFromSnapshot(snapshot) {
     const intent = createGpuSelectedTargetProjectileIntentFromSnapshot({
         ...intentOptions,
         spawnSequence
-    });
+    }, canonicalTemplateCache);
     const commandId = snapshot.commandId === undefined
         || snapshot.commandId === null
         ? createGpuSelectedTargetProjectileCommandId({
@@ -739,7 +858,10 @@ export function requestGpuProjectileSpawn(options = {}) {
     return requestGpuProjectileSpawnFromSnapshot(snapshot);
 }
 
-function requestGpuProjectileSpawnFromSnapshot(options) {
+function requestGpuProjectileSpawnFromSnapshot(
+    options,
+    canonicalTemplateCache = null
+) {
     const endpoint = requireEndpoint(options.endpoint);
     const targetFixedTick = requirePositiveSafeInteger(
         options.targetFixedTick,
@@ -762,7 +884,7 @@ function requestGpuProjectileSpawnFromSnapshot(options) {
         allegiancePolicy: options.allegiancePolicy,
         damagePolicyId: options.damagePolicyId,
         targetPolicyId: options.targetPolicyId
-    });
+    }, canonicalTemplateCache);
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({
             definitionId: intent.definitionId,
@@ -788,7 +910,10 @@ export function requestGpuProjectile(options = {}) {
     return requestGpuProjectileFromSnapshot(snapshot);
 }
 
-function requestGpuProjectileFromSnapshot(options) {
+function requestGpuProjectileFromSnapshot(
+    options,
+    canonicalTemplateCache = null
+) {
     const mode = options.mode ?? GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE;
     if (!Object.values(GPU_PROJECTILE_SPAWN_MODE).includes(mode)) {
         throw new RangeError(`지원하지 않는 GPU projectile spawn mode입니다: ${mode}`);
@@ -814,10 +939,16 @@ function requestGpuProjectileFromSnapshot(options) {
             'targetWorldPosition',
             'cpuTargetPosition'
         ], 'ABSOLUTE');
-        return requestGpuProjectileSpawnFromSnapshot(options);
+        return requestGpuProjectileSpawnFromSnapshot(
+            options,
+            canonicalTemplateCache
+        );
     }
     if (mode === GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET) {
-        return requestGpuSelectedTargetProjectileFromSnapshot(options);
+        return requestGpuSelectedTargetProjectileFromSnapshot(
+            options,
+            canonicalTemplateCache
+        );
     }
 
     rejectPresentProperties(options, ['position', 'velocity'], mode);
@@ -900,7 +1031,7 @@ function requestGpuProjectileFromSnapshot(options) {
             ?? GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT,
         damagePolicyId: options.damagePolicyId,
         targetPolicyId: options.targetPolicyId
-    });
+    }, canonicalTemplateCache);
     const commandId = options.commandId === undefined || options.commandId === null
         ? createGpuProjectileCommandId({
             definitionId: destinationSpawn.definitionId,
@@ -972,6 +1103,7 @@ export class GpuProjectileSpawnAdapter {
             options.commandNamespace ?? DEFAULT_COMMAND_NAMESPACE,
             'commandNamespace'
         );
+        this.canonicalProjectileTemplateCache = new WeakMap();
     }
 
     /** @param {object} options - requestGpuProjectileSpawn()에서 endpoint를 제외한 값입니다. */
@@ -1012,6 +1144,6 @@ export class GpuProjectileSpawnAdapter {
             ...options,
             endpoint: this.endpoint,
             commandNamespace: options.commandNamespace ?? this.commandNamespace
-        });
+        }, this.canonicalProjectileTemplateCache);
     }
 }

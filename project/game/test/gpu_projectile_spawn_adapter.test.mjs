@@ -409,12 +409,18 @@ test('canonical adapter request는 public request와 같은 immutable exact ingr
 
     const publicReceipt = adapter.requestProjectile(options);
     const canonicalReceipt = adapter.requestCanonicalProjectile(options);
+    const cachedCanonicalReceipt = adapter.requestCanonicalProjectile(options);
 
     assert.deepEqual(canonicalReceipt, publicReceipt);
-    assert.equal(endpoint.sourceRelativeCalls.length, 2);
+    assert.deepEqual(cachedCanonicalReceipt, publicReceipt);
+    assert.equal(endpoint.sourceRelativeCalls.length, 3);
     assert.deepEqual(
         endpoint.sourceRelativeCalls[1],
         endpoint.sourceRelativeCalls[0]
+    );
+    assert.deepEqual(
+        endpoint.sourceRelativeCalls[2],
+        endpoint.sourceRelativeCalls[1]
     );
     assert.equal(Object.isFrozen(endpoint.sourceRelativeCalls[1].intent), true);
     assert.equal(
