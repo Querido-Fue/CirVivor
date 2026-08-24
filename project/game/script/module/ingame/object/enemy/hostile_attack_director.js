@@ -496,6 +496,46 @@ export function createHostileAttackControlCommandId(options = {}) {
     ].join(':');
 }
 
+function createCanonicalHostileControlCommandId(
+    sessionGeneration,
+    record,
+    coreTargetHandle,
+    towerTargetHandle,
+    targetFixedTick
+) {
+    return `${HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE}:${sessionGeneration}`
+        + `:${record.handle.entityId}:${record.handle.incarnation}`
+        + `:core:${coreTargetHandle.entityId}:${coreTargetHandle.incarnation}`
+        + `:tower:${towerTargetHandle?.entityId ?? 'none'}`
+        + `:${towerTargetHandle?.incarnation ?? 'none'}`
+        + `:range:${Math.fround(record.attack.attackRangeTiles)}`
+        + `:${targetFixedTick}:${record.shotSequence}`
+        + `:${record.encodedAttackDefinitionId}`;
+}
+
+function createCanonicalHostileShotCommandId(
+    sessionGeneration,
+    record,
+    targetHandle,
+    coreTargetHandle,
+    towerTargetHandle,
+    targetFixedTick
+) {
+    const prefix = `${HOSTILE_ATTACK_COMMAND_NAMESPACE}:${sessionGeneration}`
+        + `:${record.handle.entityId}:${record.handle.incarnation}`;
+    const targetIdentity = record.attack.targetMode
+        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
+        ? `:selected:core:${coreTargetHandle.entityId}`
+            + `:${coreTargetHandle.incarnation}`
+            + `:tower:${towerTargetHandle?.entityId ?? 'none'}`
+            + `:${towerTargetHandle?.incarnation ?? 'none'}`
+            + `:range:${Math.fround(record.attack.attackRangeTiles)}`
+        : `:${targetHandle.entityId}:${targetHandle.incarnation}`;
+    return prefix + targetIdentity
+        + `:${targetFixedTick}:${record.shotSequence}`
+        + `:${record.encodedAttackDefinitionId}`;
+}
+
 function resolveEndpointDependency(options, methodName, explicitName) {
     if (options[explicitName] !== undefined && options[explicitName] !== null) {
         return options[explicitName];
@@ -1045,16 +1085,13 @@ export class HostileAttackDirector {
                 );
                 break;
             }
-            const controlCommandId = createHostileAttackControlCommandId({
-                sessionGeneration: this.sessionGeneration,
-                sourceHandle: record.handle,
+            const controlCommandId = createCanonicalHostileControlCommandId(
+                this.sessionGeneration,
+                record,
                 coreTargetHandle,
-                towerTargetHandle: selectedTowerTargetHandle,
-                attackRangeTiles: record.attack.attackRangeTiles,
-                targetFixedTick,
-                selectionSequence: record.shotSequence,
-                attackDefinitionId: record.attack.id
-            });
+                selectedTowerTargetHandle,
+                targetFixedTick
+            );
             controlAttemptedCount++;
             this.telemetry.controlRequestAttempts++;
             controlCommandIds.push(controlCommandId);
@@ -1171,18 +1208,14 @@ export class HostileAttackDirector {
         for (const record of selected) {
             const isCorePriority = record.attack.targetMode
                 === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED;
-            const commandId = createHostileAttackCommandId({
-                sessionGeneration: this.sessionGeneration,
-                sourceHandle: record.handle,
-                ...(isCorePriority ? {
-                    coreTargetHandle,
-                    towerTargetHandle: selectedTowerTargetHandle,
-                    attackRangeTiles: record.attack.attackRangeTiles
-                } : { targetHandle }),
-                targetFixedTick,
-                shotSequence: record.shotSequence,
-                attackDefinitionId: record.attack.id
-            });
+            const commandId = createCanonicalHostileShotCommandId(
+                this.sessionGeneration,
+                record,
+                targetHandle,
+                coreTargetHandle,
+                selectedTowerTargetHandle,
+                targetFixedTick
+            );
             if (!Number.isSafeInteger(this.nextAttemptOrdinal)
                 || this.nextAttemptOrdinal <= 0
                 || this.nextAttemptOrdinal >= Number.MAX_SAFE_INTEGER) {
@@ -2386,6 +2419,7 @@ export class HostileAttackDirector {
             definitionId: view.definitionId,
             createdAtTick,
             attack: attackEntry.attack,
+            encodedAttackDefinitionId: encodeURIComponent(attackEntry.attack.id),
             projectileDefinition: attackEntry.projectileDefinition,
             phaseOffsetTicks,
             nextEligibleFixedTick,
