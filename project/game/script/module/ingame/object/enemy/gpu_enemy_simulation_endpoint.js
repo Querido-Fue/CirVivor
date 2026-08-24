@@ -5579,7 +5579,10 @@ export class GpuEnemySimulationEndpoint {
             || this.actorPayloadFailure !== null
             || (!this.projectileCaptureBackendSupported
                 && this.#hasProjectileCaptureRegistryDomain())
-            || this.backend.requiresRecovery()) {
+            || (typeof this.backend.requiresBlockingRecovery === 'function'
+                ? this.backend.requiresBlockingRecovery()
+                : this.backend.requiresRecovery()
+                    && this.backend.getRuntimeState() !== 'gpu-backpressure')) {
             return false;
         }
         let actorPayloadPlacementSubmitted = false;

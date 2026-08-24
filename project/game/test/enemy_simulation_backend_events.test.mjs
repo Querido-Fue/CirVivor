@@ -28,6 +28,9 @@ function attachFakeSimulation(backend, runtimeState) {
         getRuntimeState() {
             return runtimeState;
         },
+        requiresProjectileCaptureRecovery() {
+            return runtimeState === 'event-backpressure';
+        },
         getStatus() {
             return Object.freeze({
                 state: runtimeState,
@@ -61,6 +64,10 @@ for (const [simulationState, backendState] of [
         });
         assert.equal(backend.getRuntimeState(), backendState);
         assert.equal(backend.requiresRecovery(), true);
+        assert.equal(
+            backend.requiresBlockingRecovery(),
+            backendState !== 'gpu-backpressure'
+        );
         assert.equal(backend.getStatus().events.completedThroughTick, 5);
         assert.equal(backend.getStatus().gpu.events.completedThroughTick, 5);
 

@@ -3502,6 +3502,9 @@ export class EnemySimulationBackend {
             || this.state === 'gpu-backpressure'
             || this.state === 'gpu-terminal-unavailable'
             || this.state === 'gpu-failed'
+            || (this.state !== 'gpu-backpressure'
+                && this.simulation
+                    ?.requiresProjectileCaptureRecovery?.() === true)
             || this.abilitySubjectSnapshotRuntime.requiresRecovery()
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
             || this.actorActionPlacementRuntime.failure !== null
@@ -3513,6 +3516,10 @@ export class EnemySimulationBackend {
             || this.towerCreationFailure !== null
             || this.towerMergeFailure !== null
             || this.actorPayloadPreleaseFailure !== null;
+    }
+
+    requiresBlockingRecovery() {
+        return this.requiresRecovery() && this.state !== 'gpu-backpressure';
     }
 
     /** 반복 호출 가능한 session teardown입니다. */
@@ -3590,7 +3597,6 @@ export class EnemySimulationBackend {
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerMergeRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
-            || this.simulation?.requiresProjectileCaptureRecovery?.() === true
             || this.towerCreationFailure !== null
             || this.towerMergeFailure !== null) {
             this.state = 'gpu-requires-rebuild';
