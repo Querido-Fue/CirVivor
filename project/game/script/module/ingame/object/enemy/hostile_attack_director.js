@@ -603,6 +603,13 @@ export class HostileAttackDirector {
         );
 
         this.recordsByHandle = new Map();
+        this.currentTowerSourceCount = 0;
+        this.corePrioritySourceCount = 0;
+        this.sourceAuditIterator = null;
+        this.maximumSourceAuditsPerFixedTick = Math.max(
+            this.maximumStartsPerFixedTick,
+            this.maximumPriorityControlRefreshesPerFixedTick
+        );
         this.pendingByCommandId = new Map();
         this.pendingControlsByCommandId = new Map();
         this.committedGpuDeathsByHandle = new Map();
@@ -725,7 +732,7 @@ export class HostileAttackDirector {
             }));
         }
 
-        const removedStaleCount = this.#pruneStaleSources();
+        let removedStaleCount = this.#pruneStaleSources();
         if (this.recoveryRequired) {
             return this.#saveStageResult(createEmptyStageResult(targetFixedTick, {
                 removedStaleCount,
@@ -734,17 +741,8 @@ export class HostileAttackDirector {
             }));
         }
 
-        const hasCurrentTowerSource = Array.from(
-            this.recordsByHandle.values()
-        ).some((record) => (
-            record.attack.targetMode === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER
-        ));
-        const hasCorePrioritySource = Array.from(
-            this.recordsByHandle.values()
-        ).some((record) => (
-            record.attack.targetMode
-                === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-        ));
+        const hasCurrentTowerSource = this.currentTowerSourceCount > 0;
+        const hasCorePrioritySource = this.corePrioritySourceCount > 0;
         let targetHandle = null;
         if (hasCurrentTowerSource
             && options.targetHandle !== undefined
@@ -870,8 +868,36 @@ export class HostileAttackDirector {
             0,
             this.maximumStartsPerFixedTick - this.startAttemptsInBudgetTick
         );
-        const selected = eligible.slice(0, availableBudget);
-        const deferredCount = eligible.length - selected.length;
+        const selected = [];
+        let selectedStaleCount = 0;
+        for (const record of eligible) {
+            if (selected.length >= availableBudget) {
+                break;
+            }
+            const sourceDisposition = this.#getExactActiveDisposition(
+                record.handle
+            );
+            if (sourceDisposition === 'desync') {
+                this.#fail(
+                    'source-liveness',
+                    'source-registry-backend-desync',
+                    `Hostile source exact liveness가 불일치합니다: ${handleKey(record.handle)}`
+                );
+                break;
+            }
+            if (sourceDisposition === 'stale') {
+                if (this.#removeRecord(record.handle, 'stale')) {
+                    removedStaleCount++;
+                    selectedStaleCount++;
+                }
+                continue;
+            }
+            selected.push(record);
+        }
+        const deferredCount = Math.max(
+            0,
+            eligible.length - selectedStaleCount - selected.length
+        );
         this.telemetry.budgetDeferred += deferredCount;
 
         const priorityRecords = Array.from(
@@ -913,6 +939,23 @@ export class HostileAttackDirector {
         let controlRejectedCount = 0;
         const controlCommandIds = [];
         for (const record of controlRecords) {
+            const sourceDisposition = this.#getExactActiveDisposition(
+                record.handle
+            );
+            if (sourceDisposition === 'desync') {
+                this.#fail(
+                    'source-liveness',
+                    'source-registry-backend-desync',
+                    `Hostile source exact liveness가 불일치합니다: ${handleKey(record.handle)}`
+                );
+                break;
+            }
+            if (sourceDisposition === 'stale') {
+                if (this.#removeRecord(record.handle, 'stale')) {
+                    removedStaleCount++;
+                }
+                continue;
+            }
             let nextPriorityControlFixedTick;
             try {
                 nextPriorityControlFixedTick = checkedTickSum(
@@ -1683,6 +1726,9 @@ export class HostileAttackDirector {
             );
         }
         this.recordsByHandle.clear();
+        this.currentTowerSourceCount = 0;
+        this.corePrioritySourceCount = 0;
+        this.sourceAuditIterator = null;
         this.pendingByCommandId.clear();
         this.pendingControlsByCommandId.clear();
         this.committedGpuDeathsByHandle.clear();
@@ -1706,6 +1752,9 @@ export class HostileAttackDirector {
             return;
         }
         this.recordsByHandle.clear();
+        this.currentTowerSourceCount = 0;
+        this.corePrioritySourceCount = 0;
+        this.sourceAuditIterator = null;
         this.pendingByCommandId.clear();
         this.pendingControlsByCommandId.clear();
         this.committedGpuDeathsByHandle.clear();
@@ -2260,6 +2309,12 @@ export class HostileAttackDirector {
             lastControlFixedTick: 0,
             lastControlCommandId: null
         });
+        if (attackEntry.attack.targetMode
+            === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
+            this.currentTowerSourceCount++;
+        } else {
+            this.corePrioritySourceCount++;
+        }
         this.telemetry.registered++;
         return attackEntry.attack.targetMode;
     }
@@ -2875,6 +2930,12 @@ export class HostileAttackDirector {
             return false;
         }
         this.recordsByHandle.delete(key);
+        if (record.attack.targetMode
+            === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
+            this.currentTowerSourceCount--;
+        } else {
+            this.corePrioritySourceCount--;
+        }
         if (reason === 'death') {
             this.telemetry.removedByDeath++;
         } else if (reason === 'despawn') {
@@ -2889,13 +2950,30 @@ export class HostileAttackDirector {
 
     #pruneStaleSources() {
         let removed = 0;
-        for (const record of Array.from(this.recordsByHandle.values())) {
+        const auditCount = Math.min(
+            this.recordsByHandle.size,
+            this.maximumSourceAuditsPerFixedTick
+        );
+        if (auditCount === 0) {
+            this.sourceAuditIterator = null;
+            return removed;
+        }
+        if (this.sourceAuditIterator === null) {
+            this.sourceAuditIterator = this.recordsByHandle.values();
+        }
+        for (let index = 0; index < auditCount; index++) {
+            const next = this.sourceAuditIterator.next();
+            if (next.done) {
+                this.sourceAuditIterator = null;
+                break;
+            }
+            const record = next.value;
             const disposition = this.#getExactActiveDisposition(record.handle);
             if (disposition === 'desync') {
                 this.#fail(
                     'source-liveness',
                     'source-registry-backend-desync',
-                    `Archer exact liveness가 불일치합니다: ${handleKey(record.handle)}`
+                    `Hostile source exact liveness가 불일치합니다: ${handleKey(record.handle)}`
                 );
                 break;
             }
