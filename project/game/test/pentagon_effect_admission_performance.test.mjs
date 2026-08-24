@@ -19,6 +19,9 @@ const { WorldRegistry } = await loadGameModule(
 const { PentagonEffectDirector } = await loadGameModule(
     'ingame/object/enemy/pentagon_effect_director.js'
 );
+const {
+    GPU_EFFECT_PULSE_PROGRAM_RESULT
+} = await loadGameModule('ingame/physics/gpu/gpu_effect_runtime_abi.js');
 
 const PROFILE = ENEMY_EFFECT_EMITTER_PROFILE_BY_ID[
     PENTA_CLUSTER_BOOST_PULSE_EMITTER_PROFILE_ID
@@ -230,4 +233,138 @@ test('Pentagon pulse schedule은 dense swap despawn 뒤 moved exact handle을 �
     );
     assert.equal(director.getStatus().activeEmitterCount, 2);
     assert.equal(director.requiresRecovery(), false);
+});
+
+test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후 점진 회복한다', () => {
+    const sessionGeneration = 303;
+    const capacity = 8;
+    const registry = new WorldRegistry({ capacity });
+    const bodyKeys = new Set();
+    const handles = [];
+    for (let index = 0; index < 6; index++) {
+        const handle = registry.reserveEntity({
+            kindId: 'enemy',
+            definitionId: 'basic_penta_01',
+            createdAtTick: 1
+        });
+        assert.ok(handle);
+        assert.equal(
+            registry.activateReserved(handle, createEmitterMetadata()),
+            true
+        );
+        handles.push(handle);
+        bodyKeys.add(`${handle.entityId}:${handle.incarnation}`);
+    }
+    const requests = [];
+    const director = new PentagonEffectDirector({
+        endpoint: {
+            hasBody(handle) {
+                return bodyKeys.has(`${handle.entityId}:${handle.incarnation}`);
+            },
+            getCapacity() { return capacity; },
+            getStatus() {
+                return Object.freeze({
+                    sessionGeneration,
+                    effectCommandCapacity: 16
+                });
+            }
+        },
+        registry,
+        effectCommandPort: Object.freeze({
+            requestPulseBatch(batch) {
+                requests.push(batch);
+                return Object.freeze({
+                    accepted: true,
+                    batchId: batch.batchId,
+                    targetFixedTick: batch.targetFixedTick,
+                    queuedCount: batch.commands.length,
+                    replayed: false
+                });
+            }
+        }),
+        sessionGeneration,
+        capacity
+    });
+    director.observeLifecycle({
+        recoveryRequired: false,
+        despawned: [],
+        spawned: handles.map((handle) => ({ handle }))
+    }, 1);
+
+    const firstStage = director.stageForFixedTick({ targetFixedTick: 121 });
+    assert.equal(firstStage.stagedCount, 4);
+    const firstCommands = requests[0].commands;
+    director.observeFixedCommit({
+        recoveryRequired: false,
+        effectPrograms: {
+            state: 'committed',
+            recoveryRequired: false,
+            batchId: firstStage.batchId,
+            programs: firstCommands.map((command) => ({
+                commandId: command.commandId,
+                sourceHandle: command.sourceHandle,
+                pulseSequence: command.pulseSequence
+            }))
+        }
+    }, 121);
+    director.observeCompletedEvents({
+        fixedTick: 122,
+        protocolFailure: null,
+        results: firstCommands.map((command, index) => ({
+            commandId: command.commandId,
+            sourceTick: 121,
+            sourceHandle: command.sourceHandle,
+            pulseSequence: command.pulseSequence,
+            resultCode: index < 2
+                ? GPU_EFFECT_PULSE_PROGRAM_RESULT.APPLIED
+                : GPU_EFFECT_PULSE_PROGRAM_RESULT.DEFERRED_CAPACITY,
+            candidateCount: 1,
+            appliedCount: index < 2 ? 1 : 0
+        }))
+    });
+    assert.equal(director.getStatus().currentPulseProgramsPerFixedTick, 2);
+
+    const reducedStage = director.stageForFixedTick({ targetFixedTick: 122 });
+    assert.equal(reducedStage.stagedCount, 2);
+    const reducedCommands = requests[1].commands;
+    assert.deepEqual(
+        reducedCommands.map((command) => command.pulseSequence),
+        [0, 0]
+    );
+    director.observeFixedCommit({
+        recoveryRequired: false,
+        effectPrograms: {
+            state: 'committed',
+            recoveryRequired: false,
+            batchId: reducedStage.batchId,
+            programs: reducedCommands.map((command) => ({
+                commandId: command.commandId,
+                sourceHandle: command.sourceHandle,
+                pulseSequence: command.pulseSequence
+            }))
+        }
+    }, 122);
+    director.observeCompletedEvents({
+        fixedTick: 123,
+        protocolFailure: null,
+        results: reducedCommands.map((command) => ({
+            commandId: command.commandId,
+            sourceTick: 122,
+            sourceHandle: command.sourceHandle,
+            pulseSequence: command.pulseSequence,
+            resultCode: GPU_EFFECT_PULSE_PROGRAM_RESULT.ZERO_TARGET,
+            candidateCount: 0,
+            appliedCount: 0
+        }))
+    });
+
+    const status = director.getStatus();
+    assert.equal(status.currentPulseProgramsPerFixedTick, 3);
+    assert.equal(status.telemetry.capacityFeedbackBatchCount, 2);
+    assert.equal(status.telemetry.admissionLimitReductionCount, 1);
+    assert.equal(status.telemetry.admissionLimitIncreaseCount, 1);
+    assert.equal(status.telemetry.minimumPulseAdmissionLimit, 2);
+    assert.equal(status.telemetry.currentPulseAdmissionLimit, 3);
+    assert.equal(status.telemetry.capacityRejectedCompletionCount, 2);
+    assert.equal(status.recoveryRequired, false);
 });

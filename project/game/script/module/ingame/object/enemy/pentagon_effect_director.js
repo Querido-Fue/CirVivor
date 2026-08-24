@@ -226,6 +226,8 @@ export class PentagonEffectDirector {
                 'maximumPulseProgramsPerFixedTick은 Effect command capacity를 초과할 수 없습니다.'
             );
         }
+        this.currentPulseProgramsPerFixedTick
+            = this.maximumPulseProgramsPerFixedTick;
 
         this.entityIds = new Uint32Array(this.capacity);
         this.incarnations = new Uint32Array(this.capacity);
@@ -286,7 +288,14 @@ export class PentagonEffectDirector {
             capacityRejectedStageCount: 0,
             capacityRejectedCompletionCount: 0,
             staleCompletionCount: 0,
-            replayedStageCount: 0
+            replayedStageCount: 0,
+            capacityFeedbackBatchCount: 0,
+            admissionLimitReductionCount: 0,
+            admissionLimitIncreaseCount: 0,
+            minimumPulseAdmissionLimit:
+                this.maximumPulseProgramsPerFixedTick,
+            currentPulseAdmissionLimit:
+                this.maximumPulseProgramsPerFixedTick
         };
     }
 
@@ -539,6 +548,7 @@ export class PentagonEffectDirector {
                     );
                 }
             }
+            this.#applyCapacityFeedback(completionPlans);
             this.observedCompletionSnapshots.add(snapshot);
         } catch (error) {
             this.#fail(
@@ -620,7 +630,7 @@ export class PentagonEffectDirector {
         }
         const stagedEntryLimit = Math.min(
             dueEntries.length,
-            this.maximumPulseProgramsPerFixedTick
+            this.currentPulseProgramsPerFixedTick
         );
         const startCursor = dueEntries.length <= stagedEntryLimit
             ? 0
@@ -631,7 +641,7 @@ export class PentagonEffectDirector {
             for (let offset = 0;
                 offset < dueEntries.length
                     && stagedEntries.length
-                        < this.maximumPulseProgramsPerFixedTick;
+                        < this.currentPulseProgramsPerFixedTick;
                 offset++) {
                 const entry = dueEntries[
                     (startCursor + offset) % dueEntries.length
@@ -932,6 +942,10 @@ export class PentagonEffectDirector {
         this.lastCompletedSourceTick = 0;
         this.lastStageResult = createEmptyStageResult();
         this.nextDueCursor = 0;
+        this.currentPulseProgramsPerFixedTick
+            = this.maximumPulseProgramsPerFixedTick;
+        this.telemetry.currentPulseAdmissionLimit
+            = this.currentPulseProgramsPerFixedTick;
         this.recoveryRequired = false;
         this.failure = null;
         return true;
@@ -958,6 +972,8 @@ export class PentagonEffectDirector {
             lastCompletedSourceTick: this.lastCompletedSourceTick,
             maximumPulseProgramsPerFixedTick:
                 this.maximumPulseProgramsPerFixedTick,
+            currentPulseProgramsPerFixedTick:
+                this.currentPulseProgramsPerFixedTick,
             nextDueCursor: this.nextDueCursor,
             recoveryRequired: this.recoveryRequired,
             failure: this.failure,
@@ -1213,6 +1229,55 @@ export class PentagonEffectDirector {
             throw new RangeError('Effect roster profile이 catalog에 없습니다.');
         }
         return profile;
+    }
+
+    #applyCapacityFeedback(completionPlans) {
+        const feedbackBySourceTick = new Map();
+        for (const plan of completionPlans) {
+            if (plan.kind !== 'active' && !plan.deferredCapacity) {
+                continue;
+            }
+            let feedback = feedbackBySourceTick.get(plan.sourceTick);
+            if (feedback === undefined) {
+                feedback = {
+                    admittedCount: 0,
+                    deferredCapacityCount: 0
+                };
+                feedbackBySourceTick.set(plan.sourceTick, feedback);
+            }
+            if (plan.deferredCapacity) {
+                feedback.deferredCapacityCount++;
+            } else {
+                feedback.admittedCount++;
+            }
+        }
+        const sourceTicks = Array.from(feedbackBySourceTick.keys())
+            .sort((left, right) => left - right);
+        for (const sourceTick of sourceTicks) {
+            const feedback = feedbackBySourceTick.get(sourceTick);
+            const currentLimit = this.currentPulseProgramsPerFixedTick;
+            this.telemetry.capacityFeedbackBatchCount++;
+            if (feedback.deferredCapacityCount > 0) {
+                const nextLimit = Math.max(
+                    1,
+                    Math.min(currentLimit, feedback.admittedCount)
+                );
+                if (nextLimit < currentLimit) {
+                    this.currentPulseProgramsPerFixedTick = nextLimit;
+                    this.telemetry.admissionLimitReductionCount++;
+                    this.telemetry.minimumPulseAdmissionLimit = Math.min(
+                        this.telemetry.minimumPulseAdmissionLimit,
+                        nextLimit
+                    );
+                }
+            } else if (feedback.admittedCount >= currentLimit
+                && currentLimit < this.maximumPulseProgramsPerFixedTick) {
+                this.currentPulseProgramsPerFixedTick = currentLimit + 1;
+                this.telemetry.admissionLimitIncreaseCount++;
+            }
+        }
+        this.telemetry.currentPulseAdmissionLimit
+            = this.currentPulseProgramsPerFixedTick;
     }
 
     #clearRoster() {
