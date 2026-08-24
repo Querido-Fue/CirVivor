@@ -589,6 +589,9 @@ function comparePriorityReadyEntry(left, right) {
 export class HostileAttackDirector {
     constructor(options = {}) {
         const endpoint = options.endpoint ?? null;
+        const hostileCommandPort = options.hostileCommandPort
+            ?? endpoint?.getHostileCommandPort?.()
+            ?? endpoint;
         this.registry = resolveEndpointDependency(options, 'getRegistry', 'registry');
         const backend = resolveEndpointDependency(options, 'getBackend', 'backend');
         if (!this.registry
@@ -651,7 +654,7 @@ export class HostileAttackDirector {
             );
 
         this.projectileSpawnAdapter = options.projectileSpawnAdapter
-            ?? new GpuProjectileSpawnAdapter(endpoint, {
+            ?? new GpuProjectileSpawnAdapter(hostileCommandPort, {
                 commandNamespace: HOSTILE_ATTACK_COMMAND_NAMESPACE
             });
         if (typeof this.projectileSpawnAdapter?.requestProjectile !== 'function') {
@@ -660,7 +663,7 @@ export class HostileAttackDirector {
             );
         }
         this.priorityTargetControlPort = options.priorityTargetControlPort
-            ?? endpoint;
+            ?? hostileCommandPort;
         this.historyCapacity = requirePositiveSafeInteger(
             options.historyCapacity ?? DEFAULT_COMPLETION_HISTORY_CAPACITY,
             'historyCapacity'
@@ -1051,7 +1054,7 @@ export class HostileAttackDirector {
             let receipt;
             try {
                 receipt = this.priorityTargetControlPort
-                    ?.requestPriorityTargetControl?.({
+                    ?.requestPriorityTargetControl?.(Object.freeze({
                         sourceHandle: record.handle,
                         coreTargetHandle,
                         towerTargetHandle: selectedTowerTargetHandle,
@@ -1066,7 +1069,7 @@ export class HostileAttackDirector {
                             record.projectileDefinition.id,
                         producerId: record.attack.producerId,
                         sourceAbilityId: record.attack.sourceAbilityId
-                    }, targetFixedTick, controlCommandId) ?? Object.freeze({
+                    }), targetFixedTick, controlCommandId) ?? Object.freeze({
                         accepted: false,
                         reason: 'priority-target-control-unavailable'
                     });

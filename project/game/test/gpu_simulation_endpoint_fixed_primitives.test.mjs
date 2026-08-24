@@ -807,6 +807,45 @@ test('M public wrapper는 exact canonical source/Core/Tower와 selected policy �
     endpoint.destroy();
 });
 
+test('Hostile command port는 frozen canonical M control/projectile만 public과 같은 owner 계약으로 예약한다', () => {
+    const backend = createPrimitiveBackend({ capacity: 12 });
+    const endpoint = createEndpoint(backend);
+    const handles = createRhomPriorityFixture(endpoint);
+    const port = endpoint.getHostileCommandPort();
+    assert.equal(Object.isFrozen(port), true);
+
+    assert.deepEqual({ ...port.requestPriorityTargetControl(
+        createRhomPriorityControl(handles),
+        2,
+        'rhom:canonical:unfrozen-control'
+    ) }, {
+        accepted: false,
+        reason: 'priority-target-control-contract'
+    });
+
+    const acceptedControl = port.requestPriorityTargetControl(
+        Object.freeze(createRhomPriorityControl(handles)),
+        2,
+        'rhom:canonical:control'
+    );
+    assert.equal(acceptedControl.accepted, true);
+    assert.ok(acceptedControl.attackFingerprint > 0);
+
+    const selectedIntent = createRhomSelectedIntent(handles);
+    assert.equal(Object.isFrozen(selectedIntent), true);
+    assert.equal(port.requestSelectedTargetSpawn(
+        selectedIntent,
+        2,
+        'rhom:canonical:spawn'
+    ).accepted, true);
+
+    const committed = endpoint.commitAtFixedBoundary(2);
+    assert.equal(committed.fixedCommands.controls.length, 1);
+    assert.equal(committed.fixedCommands.selectedTargetSpawns.length, 1);
+    assert.equal(committed.recoveryRequired, false);
+    endpoint.destroy();
+});
+
 test('tracked body observation은 exact handle만 구성하고 immutable observed snapshot을 반환한다', () => {
     const backend = createPrimitiveBackend();
     const endpoint = createEndpoint(backend);

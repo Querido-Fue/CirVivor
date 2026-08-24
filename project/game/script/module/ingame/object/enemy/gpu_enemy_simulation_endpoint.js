@@ -889,6 +889,8 @@ export class GpuEnemySimulationEndpoint {
     #effectLifecycleCommitProofs;
     #projectileCaptureReleaseAuthority;
     #activeMetadataMutationRegistryAuthority;
+    #fixedCanonicalHostileCommandPort;
+    #hostileCommandPort;
     #projectileCaptureTransactionPort;
     #projectileCaptureCommandPort;
     #authenticProjectileCaptureCoreImpactReceipts;
@@ -1541,6 +1543,45 @@ export class GpuEnemySimulationEndpoint {
                     options.sourceRelativeSpawnCommandCapacity
             }
         );
+        this.#fixedCanonicalHostileCommandPort = this.fixedCommandOwner
+            .getCanonicalHostileCommandPort();
+        this.#hostileCommandPort = Object.freeze({
+            requestSpawn: (
+                intent,
+                targetFixedTick,
+                commandId
+            ) => this.requestSpawn(intent, targetFixedTick, commandId),
+            requestPriorityTargetControl: (
+                command,
+                targetFixedTick,
+                commandId
+            ) => this.#requestPriorityTargetControl(
+                command,
+                targetFixedTick,
+                commandId,
+                true
+            ),
+            requestSourceRelativeSpawn: (
+                intent,
+                targetFixedTick,
+                commandId
+            ) => this.#requestSourceRelativeSpawn(
+                intent,
+                targetFixedTick,
+                commandId,
+                true
+            ),
+            requestSelectedTargetSpawn: (
+                intent,
+                targetFixedTick,
+                commandId
+            ) => this.#requestSelectedTargetSpawn(
+                intent,
+                targetFixedTick,
+                commandId,
+                true
+            )
+        });
         this.effectBackendPort = createEffectBackendPort(
             this.backend,
             this.sessionGeneration
@@ -1785,6 +1826,20 @@ export class GpuEnemySimulationEndpoint {
 
     /** Core-first inclusive GPU target selection command를 예약합니다. */
     requestPriorityTargetControl(command, targetFixedTick, commandId) {
+        return this.#requestPriorityTargetControl(
+            command,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestPriorityTargetControl(
+        command,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedGameplayIngress();
         if (rejected) {
@@ -1792,10 +1847,17 @@ export class GpuEnemySimulationEndpoint {
         }
         let snapshot;
         try {
-            snapshot = materializeGpuPlainDataSnapshot(
-                command,
-                'priorityTargetControl'
-            );
+            if (canonicalSnapshot && !Object.isFrozen(command)) {
+                throw new TypeError(
+                    'canonical priority target control은 frozen이어야 합니다.'
+                );
+            }
+            snapshot = canonicalSnapshot
+                ? command
+                : materializeGpuPlainDataSnapshot(
+                    command,
+                    'priorityTargetControl'
+                );
         } catch {
             return Object.freeze({
                 accepted: false,
@@ -1806,7 +1868,10 @@ export class GpuEnemySimulationEndpoint {
         if (contractFailure) {
             return contractFailure;
         }
-        return this.fixedCommandOwner.requestPriorityTargetControl(
+        const commandPort = canonicalSnapshot
+            ? this.#fixedCanonicalHostileCommandPort
+            : this.fixedCommandOwner;
+        return commandPort.requestPriorityTargetControl(
             snapshot,
             targetFixedTick,
             commandId
@@ -1815,6 +1880,20 @@ export class GpuEnemySimulationEndpoint {
 
     /** CPU pose를 거치지 않는 tick-start source-relative spawn을 예약합니다. */
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
+        return this.#requestSourceRelativeSpawn(
+            intent,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestSourceRelativeSpawn(
+        intent,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedGameplayIngress();
         if (rejected) {
@@ -1823,10 +1902,17 @@ export class GpuEnemySimulationEndpoint {
         let snapshot;
         let abilityMetadata = null;
         try {
-            snapshot = materializeGpuPlainDataSnapshot(
-                intent,
-                'sourceRelativeSpawn'
-            );
+            if (canonicalSnapshot && !Object.isFrozen(intent)) {
+                throw new TypeError(
+                    'canonical source-relative spawn은 frozen이어야 합니다.'
+                );
+            }
+            snapshot = canonicalSnapshot
+                ? intent
+                : materializeGpuPlainDataSnapshot(
+                    intent,
+                    'sourceRelativeSpawn'
+                );
             if (this.abilitySubjectBackendSupported) {
                 abilityMetadata = createAbilityEntityMetadata({
                     kindId: snapshot.destinationSpawn?.kindId,
@@ -1840,7 +1926,10 @@ export class GpuEnemySimulationEndpoint {
                 reason: 'source-relative-spawn-contract'
             });
         }
-        const receipt = this.fixedCommandOwner.requestSourceRelativeSpawn(
+        const commandPort = canonicalSnapshot
+            ? this.#fixedCanonicalHostileCommandPort
+            : this.fixedCommandOwner;
+        const receipt = commandPort.requestSourceRelativeSpawn(
             snapshot,
             targetFixedTick,
             commandId
@@ -1854,6 +1943,20 @@ export class GpuEnemySimulationEndpoint {
 
     /** Same-tick priority control의 exact selected target projectile을 예약합니다. */
     requestSelectedTargetSpawn(intent, targetFixedTick, commandId) {
+        return this.#requestSelectedTargetSpawn(
+            intent,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestSelectedTargetSpawn(
+        intent,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedGameplayIngress();
         if (rejected) {
@@ -1861,10 +1964,17 @@ export class GpuEnemySimulationEndpoint {
         }
         let snapshot;
         try {
-            snapshot = materializeGpuPlainDataSnapshot(
-                intent,
-                'selectedTargetSpawn'
-            );
+            if (canonicalSnapshot && !Object.isFrozen(intent)) {
+                throw new TypeError(
+                    'canonical selected-target spawn은 frozen이어야 합니다.'
+                );
+            }
+            snapshot = canonicalSnapshot
+                ? intent
+                : materializeGpuPlainDataSnapshot(
+                    intent,
+                    'selectedTargetSpawn'
+                );
         } catch {
             return Object.freeze({
                 accepted: false,
@@ -1890,7 +2000,10 @@ export class GpuEnemySimulationEndpoint {
                 reason: 'selected-target-spawn-contract'
             });
         }
-        const receipt = this.fixedCommandOwner.requestSelectedTargetSpawn(
+        const commandPort = canonicalSnapshot
+            ? this.#fixedCanonicalHostileCommandPort
+            : this.fixedCommandOwner;
+        const receipt = commandPort.requestSelectedTargetSpawn(
             snapshot,
             targetFixedTick,
             commandId
@@ -3025,6 +3138,12 @@ export class GpuEnemySimulationEndpoint {
     getEffectCommandPort() {
         this.#assertUsable();
         return this.effectCommandOwner.getCommandPort();
+    }
+
+    /** Hostile director가 만든 frozen canonical control/projectile 전용 port입니다. */
+    getHostileCommandPort() {
+        this.#assertUsable();
+        return this.#hostileCommandPort;
     }
 
     /** GameObject-owned Formation director에 주입하는 bounded command port입니다. */

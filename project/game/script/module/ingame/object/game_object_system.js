@@ -3173,7 +3173,8 @@ export class GameObjectSystem {
             endpoint,
             registry: endpoint.getRegistry(),
             backend: endpoint.getBackend(),
-            priorityTargetControlPort: endpoint
+            priorityTargetControlPort:
+                endpoint.getHostileCommandPort?.() ?? endpoint
         });
         if (!director
             || typeof director.observeCompletedEvents !== 'function'

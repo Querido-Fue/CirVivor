@@ -1092,6 +1092,43 @@ export class GpuFixedCommandOwner {
         this.ingressCloseReason = null;
         this.terminalCancelResult = null;
         this.destroyed = false;
+        this.canonicalHostileCommandPort = Object.freeze({
+            requestPriorityTargetControl: (
+                command,
+                targetFixedTick,
+                commandId
+            ) => this.requestPriorityTargetControl(
+                command,
+                targetFixedTick,
+                commandId
+            ),
+            requestSelectedTargetSpawn: (
+                intent,
+                targetFixedTick,
+                commandId
+            ) => this.#requestSelectedTargetSpawn(
+                intent,
+                targetFixedTick,
+                commandId,
+                true
+            ),
+            requestSourceRelativeSpawn: (
+                intent,
+                targetFixedTick,
+                commandId
+            ) => this.#requestSourceRelativeSpawn(
+                intent,
+                targetFixedTick,
+                commandId,
+                true
+            )
+        });
+    }
+
+    /** Hostile director가 이미 만든 frozen canonical command 전용 port입니다. */
+    getCanonicalHostileCommandPort() {
+        this.#assertUsable();
+        return this.canonicalHostileCommandPort;
     }
 
     requestBodyControl(command, targetFixedTick, commandId) {
@@ -1307,6 +1344,20 @@ export class GpuFixedCommandOwner {
 
     /** Same source/tick priority control result를 소비할 selected projectile를 예약합니다. */
     requestSelectedTargetSpawn(intent, targetFixedTick, commandId) {
+        return this.#requestSelectedTargetSpawn(
+            intent,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestSelectedTargetSpawn(
+        intent,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedIngress();
         if (rejected) {
@@ -1314,7 +1365,9 @@ export class GpuFixedCommandOwner {
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
-        const snapshot = materializeGpuPlainDataSnapshot(intent, 'selectedTargetSpawn');
+        const snapshot = canonicalSnapshot
+            ? intent
+            : materializeGpuPlainDataSnapshot(intent, 'selectedTargetSpawn');
         const fingerprint = stableFingerprint({
             type: 'selected-target-spawn',
             tick,
@@ -1402,6 +1455,20 @@ export class GpuFixedCommandOwner {
     }
 
     requestSourceRelativeSpawn(intent, targetFixedTick, commandId) {
+        return this.#requestSourceRelativeSpawn(
+            intent,
+            targetFixedTick,
+            commandId,
+            false
+        );
+    }
+
+    #requestSourceRelativeSpawn(
+        intent,
+        targetFixedTick,
+        commandId,
+        canonicalSnapshot
+    ) {
         this.#assertUsable();
         const rejected = this.#rejectClosedIngress();
         if (rejected) {
@@ -1409,10 +1476,12 @@ export class GpuFixedCommandOwner {
         }
         const tick = requirePositiveSafeInteger(targetFixedTick, 'targetFixedTick');
         const id = requireNonEmptyString(commandId, 'commandId');
-        const snapshot = materializeGpuPlainDataSnapshot(
-            intent,
-            'sourceRelativeSpawn'
-        );
+        const snapshot = canonicalSnapshot
+            ? intent
+            : materializeGpuPlainDataSnapshot(
+                intent,
+                'sourceRelativeSpawn'
+            );
         const modeFlags = normalizeSourceRelativeMode(snapshot);
         const sourceHandle = normalizeHandle(
             snapshot?.sourceHandle,
