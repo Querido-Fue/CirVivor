@@ -1615,6 +1615,8 @@ export class GpuCircleBodySimulation {
         this.handleToSlot = new Map();
         this.pendingSlotHandles = new Array(this.capacity).fill(null);
         this.pendingHandleToSlot = new Map();
+        this.occupiedEntitySlots = new Map();
+        this.duplicateOccupiedEntityIdCount = 0;
         this.freeSlots = [];
         this.stagedFixedPrograms = null;
         this.stagedEffectPulseBatch = null;
@@ -1948,7 +1950,7 @@ export class GpuCircleBodySimulation {
         const styleView = new DataView(nextStyles);
         const nextSlotHandles = new Array(this.capacity).fill(null);
         const nextHandleToSlot = new Map();
-        const nextEntityIds = new Set();
+        const nextOccupiedEntitySlots = new Map();
         for (let index = 0; index < bodies.length; index++) {
             const body = bodies[index];
             this.#validateBody(body, index);
@@ -1960,14 +1962,14 @@ export class GpuCircleBodySimulation {
             if (handle) {
                 const key = entityHandleKey(handle);
                 if (nextHandleToSlot.has(key)
-                    || nextEntityIds.has(handle.entityId)) {
+                    || nextOccupiedEntitySlots.has(handle.entityId)) {
                     throw new RangeError(
                         `활성 body entityId는 incarnation과 무관하게 유일해야 합니다: ${handle.entityId}`
                     );
                 }
                 nextSlotHandles[index] = handle;
                 nextHandleToSlot.set(key, index);
-                nextEntityIds.add(handle.entityId);
+                nextOccupiedEntitySlots.set(handle.entityId, index);
             }
             writeGpuCircleBodySpawn(nextStorage, index, body);
             writeGpuEffectBodyStateSpawn(nextEffectBodyState, index, body);
@@ -2087,6 +2089,8 @@ export class GpuCircleBodySimulation {
         }
         this.slotHandles = nextSlotHandles;
         this.handleToSlot = nextHandleToSlot;
+        this.occupiedEntitySlots = nextOccupiedEntitySlots;
+        this.duplicateOccupiedEntityIdCount = 0;
         this.pendingSlotHandles.fill(null);
         this.pendingHandleToSlot.clear();
         this.pendingBodyCount = 0;
@@ -2214,6 +2218,8 @@ export class GpuCircleBodySimulation {
             this.slotActive.fill(0);
             this.slotHandles.fill(null);
             this.handleToSlot.clear();
+            this.occupiedEntitySlots.clear();
+            this.duplicateOccupiedEntityIdCount = 0;
             this.freeSlots.length = 0;
             writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: 0 });
             this.#refreshHostBodyDerivedState();
@@ -2253,6 +2259,12 @@ export class GpuCircleBodySimulation {
                 reason: 'capacity'
             });
         }
+        if (this.duplicateOccupiedEntityIdCount > 0) {
+            const duplicateEntityId = this.#findDuplicateOccupiedEntityId();
+            throw new Error(
+                `GPU active/pending entityId mapping이 중복되었습니다: ${duplicateEntityId}`
+            );
+        }
 
         const stagingStorage = createGpuCircleBodyAbiStorage(bodies.length);
         const stagingEffectBodyState = createGpuEffectBodyStateStorage(bodies.length);
@@ -2266,23 +2278,6 @@ export class GpuCircleBodySimulation {
         const stagingStyleView = new DataView(stagingStyles);
         const handles = new Array(bodies.length);
         const batchKeys = new Set();
-        const occupiedEntityIds = new Set();
-        for (let slot = 0; slot < this.bodyCount; slot++) {
-            const handle = this.slotActive[slot] === 1
-                ? this.slotHandles[slot]
-                : this.slotActive[slot] === 2
-                    ? this.pendingSlotHandles[slot]
-                    : null;
-            if (!handle) {
-                continue;
-            }
-            if (occupiedEntityIds.has(handle.entityId)) {
-                throw new Error(
-                    `GPU active/pending entityId mapping이 중복되었습니다: ${handle.entityId}`
-                );
-            }
-            occupiedEntityIds.add(handle.entityId);
-        }
         const batchEntityIds = new Set();
         const startsNewAuthoritativeEpoch = this.activeBodyCount === 0;
         for (let index = 0; index < bodies.length; index++) {
@@ -2298,7 +2293,7 @@ export class GpuCircleBodySimulation {
                 || this.handleToSlot.has(key)
                 || this.pendingHandleToSlot.has(key)
                 || batchEntityIds.has(handle.entityId)
-                || occupiedEntityIds.has(handle.entityId)) {
+                || this.occupiedEntitySlots.has(handle.entityId)) {
                 throw new RangeError(`이미 활성 상태인 enemy handle입니다: ${key}`);
             }
             batchKeys.add(key);
@@ -2367,6 +2362,7 @@ export class GpuCircleBodySimulation {
             this.slotActive[slot] = 1;
             this.slotHandles[slot] = handles[index];
             this.handleToSlot.set(entityHandleKey(handles[index]), slot);
+            this.#addOccupiedEntitySlot(handles[index].entityId, slot);
             this.slotRouteRuntimeDomain[slot]
                 = bodies[index].routeRuntimeState ? 1 : 0;
             clearBodyControlStateSlot(this.hostBodyControlStates, slot);
@@ -2384,7 +2380,7 @@ export class GpuCircleBodySimulation {
             }
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
-        this.#refreshHostBodyDerivedState();
+        this.#refreshHostBodyDerivedState(selectedSlots);
 
         try {
             this.#uploadSlotRanges(selectedSlots);
@@ -2684,9 +2680,13 @@ export class GpuCircleBodySimulation {
                 slot
             );
             copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
+            const removedHandle = this.slotHandles[slot];
             this.slotActive[slot] = 0;
             this.slotHandles[slot] = null;
             this.handleToSlot.delete(selectedKeys[index]);
+            if (removedHandle) {
+                this.#removeOccupiedEntitySlot(removedHandle.entityId, slot);
+            }
             this.slotRouteRuntimeDomain[slot] = 0;
             clearBodyControlStateSlot(this.hostBodyControlStates, slot);
             this.freeSlots.push(slot);
@@ -3257,6 +3257,10 @@ export class GpuCircleBodySimulation {
                 this.pendingSlotHandles[slot] = spawn.destinationHandle;
                 this.pendingHandleToSlot.set(
                     entityHandleKey(spawn.destinationHandle),
+                    slot
+                );
+                this.#addOccupiedEntitySlot(
+                    spawn.destinationHandle.entityId,
                     slot
                 );
             }
@@ -4516,25 +4520,15 @@ export class GpuCircleBodySimulation {
             || authentic.authoritativeEpoch !== this.authoritativeEpoch) {
             return reject('atomic-transform-prepare-stale');
         }
-        const occupiedEntityIdToSlot = new Map();
-        for (let slot = 0; slot < this.bodyCount; slot++) {
-            const handle = this.slotActive[slot] === 1
-                ? this.slotHandles[slot]
-                : this.slotActive[slot] === 2
-                    ? this.pendingSlotHandles[slot]
-                    : null;
-            if (!handle) {
-                continue;
-            }
-            if (occupiedEntityIdToSlot.has(handle.entityId)) {
-                this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
-                return reject(
-                    `atomic-transform-active-entity-id-conflict:${handle.entityId}`,
-                    true
-                );
-            }
-            occupiedEntityIdToSlot.set(handle.entityId, slot);
+        if (this.duplicateOccupiedEntityIdCount > 0) {
+            const duplicateEntityId = this.#findDuplicateOccupiedEntityId();
+            this.requiresAuthoritativeRebuild = this.activeBodyCount > 0;
+            return reject(
+                `atomic-transform-active-entity-id-conflict:${duplicateEntityId}`,
+                true
+            );
         }
+        const occupiedEntityIdToSlot = this.occupiedEntitySlots;
         this.authenticAtomicTransformPrepareByFingerprint.delete(fingerprint);
         if (this.armedAtomicTransform) {
             return reject('atomic-transform-already-armed', true);
@@ -4648,6 +4642,10 @@ export class GpuCircleBodySimulation {
                         entityHandleKey(destinationHandles[1]),
                         slot
                     );
+                    this.#addOccupiedEntitySlot(
+                        destinationHandles[1].entityId,
+                        slot
+                    );
                     this.pendingBodyCount++;
                 }
                 for (let destinationIndex = 0;
@@ -4734,7 +4732,10 @@ export class GpuCircleBodySimulation {
         } catch (error) {
             for (const slot of claimedNewSlots) {
                 const handle = this.pendingSlotHandles[slot];
-                if (handle) this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                if (handle) {
+                    this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                    this.#removeOccupiedEntitySlot(handle.entityId, slot);
+                }
                 this.pendingSlotHandles[slot] = null;
                 this.slotActive[slot] = 0;
                 this.pendingBodyCount--;
@@ -4771,6 +4772,7 @@ export class GpuCircleBodySimulation {
                 const handle = this.pendingSlotHandles[slot];
                 if (handle) {
                     this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                    this.#removeOccupiedEntitySlot(handle.entityId, slot);
                 }
                 this.pendingSlotHandles[slot] = null;
                 this.slotActive[slot] = 0;
@@ -4876,6 +4878,7 @@ export class GpuCircleBodySimulation {
                     `${destination.entityId}:${destination.incarnation}`,
                     slot
                 );
+                this.#addOccupiedEntitySlot(destination.entityId, slot);
                 if (index > 0) {
                     this.pendingHandleToSlot.delete(
                         `${destination.entityId}:${destination.incarnation}`
@@ -4912,7 +4915,10 @@ export class GpuCircleBodySimulation {
         }
         for (const slot of armed.claimedNewSlots) {
             const handle = this.pendingSlotHandles[slot];
-            if (handle) this.pendingHandleToSlot.delete(entityHandleKey(handle));
+            if (handle) {
+                this.pendingHandleToSlot.delete(entityHandleKey(handle));
+                this.#removeOccupiedEntitySlot(handle.entityId, slot);
+            }
             this.pendingSlotHandles[slot] = null;
             this.slotActive[slot] = 0;
             this.pendingBodyCount--;
@@ -6627,6 +6633,10 @@ export class GpuCircleBodySimulation {
         }
 
         for (const [key, slot] of this.pendingHandleToSlot) {
+            const pendingHandle = this.pendingSlotHandles[slot];
+            if (pendingHandle) {
+                this.#removeOccupiedEntitySlot(pendingHandle.entityId, slot);
+            }
             this.pendingSlotHandles[slot] = null;
             this.slotActive[slot] = 0;
             this.slotHandles[slot] = null;
@@ -6736,6 +6746,7 @@ export class GpuCircleBodySimulation {
                     this.activeBodyCount++;
                     this.lastSpawnProgramResolvedCount++;
                 } else {
+                    this.#removeOccupiedEntitySlot(handle.entityId, slot);
                     writeGpuCircleBodySpawn(this.hostStorage, slot, TOMBSTONE_BODY);
                     writeGpuEffectBodyStateSpawn(
                         this.hostEffectBodyState,
@@ -8916,10 +8927,18 @@ export class GpuCircleBodySimulation {
                 const sourceBKey = entityHandleKey(record.sourceB);
                 this.handleToSlot.delete(sourceAKey);
                 this.handleToSlot.delete(sourceBKey);
+                this.#removeOccupiedEntitySlot(
+                    record.sourceB.entityId,
+                    record.sourceB.slot
+                );
                 this.slotHandles[record.sourceA.slot] = record.destination;
                 this.slotActive[record.sourceA.slot] = 1;
                 this.handleToSlot.set(
                     entityHandleKey(record.destination),
+                    record.sourceA.slot
+                );
+                this.#addOccupiedEntitySlot(
+                    record.destination.entityId,
                     record.sourceA.slot
                 );
                 this.slotHandles[record.sourceB.slot] = null;
@@ -9895,6 +9914,8 @@ export class GpuCircleBodySimulation {
         this.handleToSlot.clear();
         this.pendingSlotHandles.fill(null);
         this.pendingHandleToSlot.clear();
+        this.occupiedEntitySlots.clear();
+        this.duplicateOccupiedEntityIdCount = 0;
         this.freeSlots.length = 0;
         this.stagedFixedPrograms = null;
         this.#invalidateTrackedPose('destroyed');
@@ -10181,38 +10202,109 @@ export class GpuCircleBodySimulation {
         });
     }
 
-    #refreshHostBodyDerivedState() {
+    #addOccupiedEntitySlot(entityId, slot) {
+        const indexed = this.occupiedEntitySlots.get(entityId);
+        if (indexed === undefined) {
+            this.occupiedEntitySlots.set(entityId, slot);
+            return;
+        }
+        if (indexed instanceof Set) {
+            indexed.add(slot);
+            return;
+        }
+        if (indexed !== slot) {
+            this.occupiedEntitySlots.set(entityId, new Set([indexed, slot]));
+            this.duplicateOccupiedEntityIdCount++;
+        }
+    }
+
+    #removeOccupiedEntitySlot(entityId, slot) {
+        const indexed = this.occupiedEntitySlots.get(entityId);
+        if (indexed instanceof Set) {
+            if (!indexed.delete(slot)) {
+                return;
+            }
+            if (indexed.size === 1) {
+                this.occupiedEntitySlots.set(entityId, indexed.values().next().value);
+                this.duplicateOccupiedEntityIdCount--;
+            } else if (indexed.size === 0) {
+                this.occupiedEntitySlots.delete(entityId);
+                this.duplicateOccupiedEntityIdCount--;
+            }
+            return;
+        }
+        if (indexed === slot) {
+            this.occupiedEntitySlots.delete(entityId);
+        }
+    }
+
+    #findDuplicateOccupiedEntityId() {
+        for (const [entityId, slots] of this.occupiedEntitySlots) {
+            if (slots instanceof Set) {
+                return entityId;
+            }
+        }
+        return null;
+    }
+
+    #occupiedEntityIncludesSlot(entityId, slot) {
+        const indexed = this.occupiedEntitySlots.get(entityId);
+        return indexed instanceof Set ? indexed.has(slot) : indexed === slot;
+    }
+
+    #refreshHostBodyDerivedState(addedSlots = null) {
+        const incremental = Array.isArray(addedSlots);
         const physicsView = new DataView(this.hostStorage.physicsBuffer);
         const simulationView = new DataView(this.hostStorage.simulationBuffer);
         const contactHandlerView = new DataView(
             this.hostStorage.contactHandlerBuffer
         );
-        let eventProducingBodyCount = 0;
-        let atomicTransformFirstHitBodyCount = 0;
-        let projectileCaptureDomainBodyCount = 0;
-        let projectileCaptureProjectileBodyCount = 0;
-        let projectileCaptureMaintenanceBodyCount = 0;
-        let projectileBodyCount = 0;
-        let routeRuntimeRosterCount = 0;
-        let routeRuntimeProjectileThreatBodyCount = 0;
-        let maximumBodyRadius = 0;
-        const activeEntityIds = new Set();
-        this.slotEventProducing.fill(0);
-        this.slotProjectileCaptureDomain.fill(0);
-        this.slotRouteRuntimeDomain.fill(0);
+        let eventProducingBodyCount = incremental
+            ? this.eventProducingBodyCount : 0;
+        let atomicTransformFirstHitBodyCount = incremental
+            ? this.atomicTransformFirstHitBodyCount : 0;
+        let projectileCaptureDomainBodyCount = incremental
+            ? this.projectileCaptureDomainBodyCount : 0;
+        let projectileCaptureProjectileBodyCount = incremental
+            ? this.projectileCaptureProjectileBodyCount : 0;
+        let projectileCaptureMaintenanceBodyCount = incremental
+            ? this.projectileCaptureMaintenanceBodyCount : 0;
+        let projectileBodyCount = incremental ? this.projectileBodyCount : 0;
+        let routeRuntimeRosterCount = incremental
+            ? this.routeRuntimeRosterCount : 0;
+        let routeRuntimeProjectileThreatBodyCount = incremental
+            ? this.routeRuntimeProjectileThreatBodyCount : 0;
+        let maximumBodyRadius = incremental ? this.maximumBodyRadius : 0;
+        const activeEntityIds = incremental ? null : new Set();
+        if (!incremental) {
+            this.slotEventProducing.fill(0);
+            this.slotProjectileCaptureDomain.fill(0);
+            this.slotRouteRuntimeDomain.fill(0);
+        }
         const atomicTransformStateView = new DataView(
             this.hostStorage.atomicTransformStateBuffer
         );
         const projectileCaptureStateView = new DataView(
             this.hostStorage.projectileCaptureStateBuffer
         );
-        for (let slot = 0; slot < this.bodyCount; slot++) {
+        const scanCount = incremental ? addedSlots.length : this.bodyCount;
+        for (let index = 0; index < scanCount; index++) {
+            const slot = incremental ? addedSlots[index] : index;
             if (this.slotActive[slot] !== 1) {
                 continue;
             }
+            if (incremental) {
+                this.slotEventProducing[slot] = 0;
+                this.slotProjectileCaptureDomain[slot] = 0;
+                this.slotRouteRuntimeDomain[slot] = 0;
+            }
             const activeHandle = this.slotHandles[slot];
             if (activeHandle) {
-                if (activeEntityIds.has(activeHandle.entityId)) {
+                if ((!incremental && activeEntityIds.has(activeHandle.entityId))
+                    || !this.#occupiedEntityIncludesSlot(
+                        activeHandle.entityId,
+                        slot
+                    )) {
                     const error = new Error(
                         `GPU active entityId가 둘 이상의 slot에 존재합니다: ${activeHandle.entityId}`
                     );
@@ -10227,7 +10319,7 @@ export class GpuCircleBodySimulation {
                         : 'failed';
                     throw error;
                 }
-                activeEntityIds.add(activeHandle.entityId);
+                activeEntityIds?.add(activeHandle.entityId);
             }
             const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
             const simulationOffset = slot * GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE;
