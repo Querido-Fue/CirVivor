@@ -1676,6 +1676,7 @@ export class GpuCircleBodySimulation {
         this.eventProducingBodyCount = 0;
         this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
+        this.bodyRadiusContributionCounts = new Map();
         this.eventReadbackSlots = [];
         this.eventReadbackLease = 0;
         this.eventReadbackCursor = 0;
@@ -2656,6 +2657,7 @@ export class GpuCircleBodySimulation {
             );
             writeRenderStyle(stagingStyleView, index, TOMBSTONE_BODY);
         }
+        this.#removeHostBodyDerivedState(selectedSlots);
         for (let index = 0; index < selectedSlots.length; index++) {
             const slot = selectedSlots[index];
             copyBodySlot(stagingStorage, index, this.hostStorage, slot);
@@ -2696,6 +2698,10 @@ export class GpuCircleBodySimulation {
                 this.hostStorage,
                 peerSlot
             );
+            if (peerState.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR
+                && peerState.phase !== GPU_PROJECTILE_CAPTURE_PHASE.IDLE) {
+                this.projectileCaptureMaintenanceBodyCount--;
+            }
             writeGpuProjectileCaptureState(this.hostStorage, peerSlot, {
                 ...peerState,
                 phase: GPU_PROJECTILE_CAPTURE_PHASE.IDLE,
@@ -2726,7 +2732,6 @@ export class GpuCircleBodySimulation {
             this.freeSlots = this.freeSlots.filter((slot) => slot < this.bodyCount);
         }
         writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
-        this.#refreshHostBodyDerivedState();
 
         try {
             this.#uploadSlotRanges([
@@ -9912,6 +9917,7 @@ export class GpuCircleBodySimulation {
         this.projectileCaptureMaintenanceBodyCount = 0;
         this.atomicTransformFirstHitBodyCount = 0;
         this.maximumBodyRadius = 0;
+        this.bodyRadiusContributionCounts.clear();
         this.slotHandles.fill(null);
         this.handleToSlot.clear();
         this.pendingSlotHandles.fill(null);
@@ -10254,6 +10260,119 @@ export class GpuCircleBodySimulation {
         return indexed instanceof Set ? indexed.has(slot) : indexed === slot;
     }
 
+    #addBodyRadiusContribution(radius) {
+        const count = this.bodyRadiusContributionCounts.get(radius) ?? 0;
+        this.bodyRadiusContributionCounts.set(radius, count + 1);
+    }
+
+    #removeBodyRadiusContribution(radius) {
+        const count = this.bodyRadiusContributionCounts.get(radius);
+        if (!Number.isSafeInteger(count) || count <= 0) {
+            throw new RangeError(
+                `GPU body radius contribution이 없습니다: ${radius}`
+            );
+        }
+        if (count === 1) {
+            this.bodyRadiusContributionCounts.delete(radius);
+            return radius >= this.maximumBodyRadius;
+        }
+        this.bodyRadiusContributionCounts.set(radius, count - 1);
+        return false;
+    }
+
+    #removeHostBodyDerivedState(removedSlots) {
+        const physicsView = new DataView(this.hostStorage.physicsBuffer);
+        const atomicTransformStateView = new DataView(
+            this.hostStorage.atomicTransformStateBuffer
+        );
+        const projectileCaptureStateView = new DataView(
+            this.hostStorage.projectileCaptureStateBuffer
+        );
+        let maximumBodyRadiusRemoved = false;
+        for (const slot of removedSlots) {
+            if (this.slotActive[slot] !== 1) continue;
+            if (this.slotEventProducing[slot] === 1) {
+                this.slotEventProducing[slot] = 0;
+                this.eventProducingBodyCount--;
+            }
+            const physicsOffset = slot * GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE;
+            const interaction = unpackGpuCircleInteractionMeta(
+                physicsView.getUint32(
+                    physicsOffset
+                        + GPU_CIRCLE_BODY_ABI.PHYSICS.INTERACTION_META,
+                    LITTLE_ENDIAN
+                )
+            );
+            const physics = unpackGpuCirclePhysicsMeta(
+                physicsView.getUint32(
+                    physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.PHYSICAL_META,
+                    LITTLE_ENDIAN
+                )
+            );
+            if (physics.bodyLayer
+                === GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE) {
+                this.projectileBodyCount--;
+                if ((interaction.interactionMask
+                    & GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY) !== 0) {
+                    this.routeRuntimeProjectileThreatBodyCount--;
+                }
+            }
+            if (atomicTransformStateView.getUint32(
+                (slot * GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE)
+                    + GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.PROGRAM_ID,
+                LITTLE_ENDIAN
+            ) === GPU_CIRCLE_ATOMIC_TRANSFORM_PROGRAM.J_SPLIT_FIRST_HIT) {
+                this.atomicTransformFirstHitBodyCount--;
+            }
+            const captureMeta = unpackGpuProjectileCaptureStateMeta(
+                projectileCaptureStateView.getUint32(
+                    (slot * GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE)
+                        + GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE
+                            .ROLE_PHASE_PROFILE_POLICY,
+                    LITTLE_ENDIAN
+                )
+            );
+            if (captureMeta.role === GPU_PROJECTILE_CAPTURE_ROLE.CAPTOR) {
+                this.projectileCaptureDomainBodyCount--;
+                if (captureMeta.phase !== GPU_PROJECTILE_CAPTURE_PHASE.IDLE) {
+                    this.projectileCaptureMaintenanceBodyCount--;
+                }
+            } else if (captureMeta.role
+                === GPU_PROJECTILE_CAPTURE_ROLE.PROJECTILE) {
+                this.projectileCaptureProjectileBodyCount--;
+            }
+            this.slotProjectileCaptureDomain[slot] = 0;
+            const routeState = readGpuRouteRuntimeState(
+                this.hostRouteRuntimeStates,
+                this.capacity,
+                slot
+            );
+            if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
+                this.routeRuntimeRosterCount--;
+                maximumBodyRadiusRemoved
+                    = this.#removeBodyRadiusContribution(
+                        routeState.blockerRadius
+                    ) || maximumBodyRadiusRemoved;
+            }
+            this.slotRouteRuntimeDomain[slot] = 0;
+            maximumBodyRadiusRemoved = this.#removeBodyRadiusContribution(
+                physicsView.getFloat32(
+                    physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.RADIUS,
+                    LITTLE_ENDIAN
+                )
+            ) || maximumBodyRadiusRemoved;
+        }
+        if (maximumBodyRadiusRemoved) {
+            let maximumBodyRadius = 0;
+            for (const radius of this.bodyRadiusContributionCounts.keys()) {
+                maximumBodyRadius = Math.max(maximumBodyRadius, radius);
+            }
+            this.maximumBodyRadius = maximumBodyRadius;
+        }
+        this.uploadedComputeFixedDelta = NaN;
+        this.uploadedComputeFixedTick = -1;
+    }
+
     #refreshHostBodyDerivedState(addedSlots = null) {
         const incremental = Array.isArray(addedSlots);
         const physicsView = new DataView(this.hostStorage.physicsBuffer);
@@ -10279,6 +10398,7 @@ export class GpuCircleBodySimulation {
         let maximumBodyRadius = incremental ? this.maximumBodyRadius : 0;
         const activeEntityIds = incremental ? null : new Set();
         if (!incremental) {
+            this.bodyRadiusContributionCounts.clear();
             this.slotEventProducing.fill(0);
             this.slotProjectileCaptureDomain.fill(0);
             this.slotRouteRuntimeDomain.fill(0);
@@ -10409,19 +10529,21 @@ export class GpuCircleBodySimulation {
                 this.slotRouteRuntimeDomain[slot] = 1;
                 if (routeState.role === GPU_ROUTE_RUNTIME_ROLE.CLOSER) {
                     routeRuntimeRosterCount++;
+                    this.#addBodyRadiusContribution(
+                        routeState.blockerRadius
+                    );
                     maximumBodyRadius = Math.max(
                         maximumBodyRadius,
                         routeState.blockerRadius
                     );
                 }
             }
-            maximumBodyRadius = Math.max(
-                maximumBodyRadius,
-                physicsView.getFloat32(
-                    physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.RADIUS,
-                    LITTLE_ENDIAN
-                )
+            const bodyRadius = physicsView.getFloat32(
+                physicsOffset + GPU_CIRCLE_BODY_ABI.PHYSICS.RADIUS,
+                LITTLE_ENDIAN
             );
+            this.#addBodyRadiusContribution(bodyRadius);
+            maximumBodyRadius = Math.max(maximumBodyRadius, bodyRadius);
         }
         this.eventProducingBodyCount = eventProducingBodyCount;
         this.atomicTransformFirstHitBodyCount
