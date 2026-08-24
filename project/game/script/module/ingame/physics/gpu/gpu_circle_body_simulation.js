@@ -5650,6 +5650,21 @@ export class GpuCircleBodySimulation {
         });
     }
 
+    requiresProjectileCaptureRecovery() {
+        return this.requiresAuthoritativeRebuild
+            || this.state === 'failed'
+            || this.failure !== null
+            || (this.lastProjectileCaptureErrorFlags !== 0
+                && !(this.lastProjectileCaptureRuntimeStatus
+                        === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
+                    && this.lastProjectileCaptureErrorFlags
+                        === GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
+                            .COMPLETION_CAPACITY
+                    && this.lastProjectileCaptureCapacityRejectionFlags !== 0))
+            || this.terminalProjectileCaptureProgramCancelStatus
+                ?.state === 'failed';
+    }
+
     getProjectileCaptureRuntimeStatus() {
         const armed = this.armedProjectileCaptureRelease;
         const terminal = this.terminalProjectileCaptureProgramCancelStatus;
@@ -5726,19 +5741,7 @@ export class GpuCircleBodySimulation {
             retryBacklogRemaining:
                 this.projectileCaptureRetryState !== null,
             storageProfile: GPU_PROJECTILE_CAPTURE_STORAGE_PROFILE,
-            requiresRecovery: this.requiresAuthoritativeRebuild
-                || this.state === 'failed'
-                || this.failure !== null
-                || (this.lastProjectileCaptureErrorFlags !== 0
-                    && !(this.lastProjectileCaptureRuntimeStatus
-                            === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
-                        && this.lastProjectileCaptureErrorFlags
-                            === GPU_PROJECTILE_CAPTURE_RUNTIME_ERROR_FLAG
-                                .COMPLETION_CAPACITY
-                        && this.lastProjectileCaptureCapacityRejectionFlags
-                            !== 0))
-                || this.terminalProjectileCaptureProgramCancelStatus
-                    ?.state === 'failed',
+            requiresRecovery: this.requiresProjectileCaptureRecovery(),
             failure: this.failure,
             terminal: this.getTerminalProjectileCaptureProgramCancelStatus()
         });

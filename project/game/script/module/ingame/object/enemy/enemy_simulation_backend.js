@@ -3504,7 +3504,7 @@ export class EnemySimulationBackend {
             || this.state === 'gpu-failed'
             || this.abilitySubjectSnapshotRuntime.requiresRecovery()
             || this.actorPayloadMaterializationRuntime.requiresRecovery()
-            || this.actorActionPlacementRuntime.getStatus().failure !== null
+            || this.actorActionPlacementRuntime.failure !== null
             || this.actorTransitRuntime.requiresRecovery()
             || this.towerGroupRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
@@ -3585,11 +3585,12 @@ export class EnemySimulationBackend {
 
     #syncState() {
         if (this.towerGroupRuntime.requiresRecovery()
-            || this.actorActionPlacementRuntime.getStatus().failure !== null
+            || this.actorActionPlacementRuntime.failure !== null
             || this.actorTransitRuntime.requiresRecovery()
             || this.towerCreationRuntime.requiresRecovery()
             || this.towerMergeRuntime.requiresRecovery()
             || this.towerTargetQueryRuntime.requiresRecovery()
+            || this.simulation?.requiresProjectileCaptureRecovery?.() === true
             || this.towerCreationFailure !== null
             || this.towerMergeFailure !== null) {
             this.state = 'gpu-requires-rebuild';

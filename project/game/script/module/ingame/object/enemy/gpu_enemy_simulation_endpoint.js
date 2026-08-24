@@ -5576,10 +5576,10 @@ export class GpuEnemySimulationEndpoint {
             || this.#atomicTransformCommandOwner.requiresRecovery()
             || this.fixedCommandOwner.requiresRecovery()
             || this.lifecycleCommandOwner.requiresRecovery()
-            || this.getProjectileCaptureRuntimeStatus().requiresRecovery
-            || this.getAbilitySubjectSnapshotStatus().requiresRecovery
-            || this.getActorPayloadMaterializationStatus()
-                .requiresRecovery) {
+            || this.actorPayloadFailure !== null
+            || (!this.projectileCaptureBackendSupported
+                && this.#hasProjectileCaptureRegistryDomain())
+            || this.backend.requiresRecovery()) {
             return false;
         }
         let actorPayloadPlacementSubmitted = false;
@@ -5659,9 +5659,9 @@ export class GpuEnemySimulationEndpoint {
             || this.#atomicTransformCommandOwner.requiresRecovery()
             || this.fixedCommandOwner.requiresRecovery()
             || this.lifecycleCommandOwner.requiresRecovery()
-            || this.getProjectileCaptureRuntimeStatus().requiresRecovery
-            || this.getAbilitySubjectSnapshotStatus().requiresRecovery
-            || this.getActorPayloadMaterializationStatus().requiresRecovery
+            || this.actorPayloadFailure !== null
+            || (!this.projectileCaptureBackendSupported
+                && this.#hasProjectileCaptureRegistryDomain())
             || this.backend.requiresRecovery()
         );
     }
