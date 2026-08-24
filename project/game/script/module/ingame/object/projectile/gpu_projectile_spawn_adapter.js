@@ -44,6 +44,7 @@ import {
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMMAND_NAMESPACE = 'gpu-projectile';
 const GPU_PROJECTILE_LAYER = GPU_CIRCLE_BODY_COLLISION_LAYER.PROJECTILE;
+const ZERO_VECTOR = Object.freeze({ x: 0, y: 0 });
 const CACHED_PROJECTILE_DYNAMIC_KEYS = Object.freeze([
     'spawnSequence',
     'sourceEntityId',
@@ -70,6 +71,9 @@ export const GPU_PROJECTILE_SPAWN_MODE = Object.freeze({
     SOURCE_RELATIVE_TARGET_ENTITY: 'source-relative-target-entity',
     SOURCE_RELATIVE_SELECTED_TARGET: 'source-relative-selected-target'
 });
+const GPU_PROJECTILE_SPAWN_MODE_SET = new Set(
+    Object.values(GPU_PROJECTILE_SPAWN_MODE)
+);
 export const GPU_PROJECTILE_SELECTED_TARGET_POLICY_ID
     = PROJECTILE_SELECTED_TARGET_POLICY_ID;
 export const GPU_PROJECTILE_SELECTED_TARGET_DISTANCE_POLICY_ID
@@ -189,6 +193,43 @@ function normalizeEntityHandle(source, label = 'sourceHandle') {
         throw new RangeError(`${label}.incarnation이 유효하지 않습니다.`);
     }
     return Object.freeze({ entityId, incarnation });
+}
+
+function normalizeCanonicalEntityHandle(source, label = 'sourceHandle') {
+    if (source === undefined || source === null) {
+        return null;
+    }
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label}은 entity handle 객체여야 합니다.`);
+    }
+    const entityId = Number(source.entityId);
+    const incarnation = Number(source.incarnation);
+    if (!Number.isSafeInteger(entityId)
+        || entityId <= 0
+        || entityId >= INVALID_HANDLE_COMPONENT) {
+        throw new RangeError(`${label}.entityId가 유효하지 않습니다.`);
+    }
+    if (!Number.isSafeInteger(incarnation)
+        || incarnation <= 0
+        || incarnation >= INVALID_HANDLE_COMPONENT) {
+        throw new RangeError(`${label}.incarnation이 유효하지 않습니다.`);
+    }
+    return Object.isFrozen(source)
+            && source.entityId === entityId
+            && source.incarnation === incarnation
+        ? source
+        : Object.freeze({ entityId, incarnation });
+}
+
+function normalizeCanonicalVector(source, label) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label} 벡터가 필요합니다.`);
+    }
+    const x = requireFinite(source.x, `${label}.x`);
+    const y = requireFinite(source.y, `${label}.y`);
+    return Object.isFrozen(source) && source.x === x && source.y === y
+        ? source
+        : Object.freeze({ x, y });
 }
 
 function resolveProjectileAllegiance(options) {
@@ -365,43 +406,67 @@ function createRenderStyle(definition) {
     });
 }
 
-function createCanonicalProjectileTemplateKey(options) {
-    return JSON.stringify([
-        options.allegiancePolicy ?? null,
-        options.teamId ?? null,
-        options.damagePolicyId ?? null,
-        options.targetPolicyId ?? null,
-        options.producerId ?? null,
-        options.sourceAbilityId ?? null
-    ]);
+function canonicalTemplateMatches(entry, options) {
+    return entry.allegiancePolicy === (options.allegiancePolicy ?? null)
+        && entry.teamId === (options.teamId ?? null)
+        && entry.damagePolicyId === (options.damagePolicyId ?? null)
+        && entry.targetPolicyId === (options.targetPolicyId ?? null)
+        && entry.producerId === (options.producerId ?? null)
+        && entry.sourceAbilityId === (options.sourceAbilityId ?? null);
 }
 
-function readCanonicalProjectileTemplate(cache, definition, cacheKey) {
-    return cache?.get(definition)?.get(cacheKey) ?? null;
+function readCanonicalProjectileTemplate(cache, definition, options) {
+    const entries = cache?.get(definition);
+    if (!entries) {
+        return null;
+    }
+    for (const entry of entries) {
+        if (canonicalTemplateMatches(entry, options)) {
+            return entry.template;
+        }
+    }
+    return null;
 }
 
 function cacheCanonicalProjectileTemplate(
     cache,
     definition,
-    cacheKey,
+    options,
     intent
 ) {
-    let templatesByKey = cache.get(definition);
-    if (!templatesByKey) {
-        templatesByKey = new Map();
-        cache.set(definition, templatesByKey);
+    let entries = cache.get(definition);
+    if (!entries) {
+        entries = [];
+        cache.set(definition, entries);
     }
     const template = { ...intent };
     for (const key of CACHED_PROJECTILE_DYNAMIC_KEYS) {
         delete template[key];
     }
-    templatesByKey.set(cacheKey, Object.freeze(template));
+    entries.push(Object.freeze({
+        allegiancePolicy: options.allegiancePolicy ?? null,
+        teamId: options.teamId ?? null,
+        damagePolicyId: options.damagePolicyId ?? null,
+        targetPolicyId: options.targetPolicyId ?? null,
+        producerId: options.producerId ?? null,
+        sourceAbilityId: options.sourceAbilityId ?? null,
+        template: Object.freeze(template)
+    }));
 }
 
 function createGpuProjectileSpawnIntentFromTemplate(options, template) {
-    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
-    const ownerHandle = normalizeEntityHandle(options.ownerHandle, 'ownerHandle');
-    const targetHandle = normalizeEntityHandle(options.targetHandle, 'targetHandle');
+    const sourceHandle = normalizeCanonicalEntityHandle(
+        options.sourceHandle,
+        'sourceHandle'
+    );
+    const ownerHandle = normalizeCanonicalEntityHandle(
+        options.ownerHandle,
+        'ownerHandle'
+    );
+    const targetHandle = normalizeCanonicalEntityHandle(
+        options.targetHandle,
+        'targetHandle'
+    );
     const spawnSequence = requireNonNegativeSafeInteger(
         options.spawnSequence ?? 0,
         'spawnSequence'
@@ -427,8 +492,8 @@ function createGpuProjectileSpawnIntentFromTemplate(options, template) {
             targetEntityId: targetHandle.entityId,
             targetIncarnation: targetHandle.incarnation
         } : {}),
-        position: normalizeVector(options.position, 'position'),
-        velocity: normalizeVector(options.velocity, 'velocity')
+        position: normalizeCanonicalVector(options.position, 'position'),
+        velocity: normalizeCanonicalVector(options.velocity, 'velocity')
     });
 }
 
@@ -460,16 +525,14 @@ function createGpuProjectileSpawnIntentFromSnapshot(
         || Object.prototype.hasOwnProperty.call(options, 'handle')) {
         throw new TypeError('projectile identity는 WorldRegistry만 발급할 수 있습니다.');
     }
-    const cacheKey = canonicalTemplateCache !== null
-            && Object.isFrozen(definition)
-        ? createCanonicalProjectileTemplateKey(options)
-        : null;
-    const cachedTemplate = cacheKey === null
+    const cacheEligible = canonicalTemplateCache !== null
+        && Object.isFrozen(definition);
+    const cachedTemplate = !cacheEligible
         ? null
         : readCanonicalProjectileTemplate(
             canonicalTemplateCache,
             definition,
-            cacheKey
+            options
         );
     if (cachedTemplate) {
         return createGpuProjectileSpawnIntentFromTemplate(
@@ -478,9 +541,15 @@ function createGpuProjectileSpawnIntentFromSnapshot(
         );
     }
     const definitionId = requireNonEmptyString(definition.id, 'definition.id');
-    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
-    const ownerHandle = normalizeEntityHandle(options.ownerHandle, 'ownerHandle');
-    const targetHandle = normalizeEntityHandle(options.targetHandle, 'targetHandle');
+    const normalizeHandle = canonicalTemplateCache === null
+        ? normalizeEntityHandle
+        : normalizeCanonicalEntityHandle;
+    const normalizeVectorValue = canonicalTemplateCache === null
+        ? normalizeVector
+        : normalizeCanonicalVector;
+    const sourceHandle = normalizeHandle(options.sourceHandle, 'sourceHandle');
+    const ownerHandle = normalizeHandle(options.ownerHandle, 'ownerHandle');
+    const targetHandle = normalizeHandle(options.targetHandle, 'targetHandle');
     const allegiance = resolveProjectileAllegiance(options);
     const damagePolicyId = normalizeGameplayDamagePolicyId(
         options.damagePolicyId
@@ -545,8 +614,8 @@ function createGpuProjectileSpawnIntentFromSnapshot(
         ...(sourceAbilityId !== undefined ? {
             sourceAbilityId: requireNonEmptyString(sourceAbilityId, 'sourceAbilityId')
         } : {}),
-        position: normalizeVector(options.position, 'position'),
-        velocity: normalizeVector(options.velocity, 'velocity'),
+        position: normalizeVectorValue(options.position, 'position'),
+        velocity: normalizeVectorValue(options.velocity, 'velocity'),
         radius: requirePositiveFinite(
             definition.collisionRadius ?? definition.radius,
             'definition.collisionRadius'
@@ -583,11 +652,11 @@ function createGpuProjectileSpawnIntentFromSnapshot(
         alive: true,
         ...(renderStyle ? { renderStyle } : {})
     });
-    if (cacheKey !== null) {
+    if (cacheEligible) {
         cacheCanonicalProjectileTemplate(
             canonicalTemplateCache,
             definition,
-            cacheKey,
+            options,
             intent
         );
     }
@@ -640,15 +709,21 @@ function createGpuSelectedTargetProjectileIntentFromSnapshot(
     snapshot,
     canonicalTemplateCache = null
 ) {
-    const sourceHandle = normalizeEntityHandle(
+    const normalizeHandle = canonicalTemplateCache === null
+        ? normalizeEntityHandle
+        : normalizeCanonicalEntityHandle;
+    const normalizeVectorValue = canonicalTemplateCache === null
+        ? normalizeVector
+        : normalizeCanonicalVector;
+    const sourceHandle = normalizeHandle(
         snapshot.sourceHandle,
         'sourceHandle'
     );
-    const coreTargetHandle = normalizeEntityHandle(
+    const coreTargetHandle = normalizeHandle(
         snapshot.coreTargetHandle,
         'coreTargetHandle'
     );
-    const towerTargetHandle = normalizeEntityHandle(
+    const towerTargetHandle = normalizeHandle(
         snapshot.towerTargetHandle,
         'towerTargetHandle'
     );
@@ -684,8 +759,8 @@ function createGpuSelectedTargetProjectileIntentFromSnapshot(
     );
     const baseDestinationSpawn = createGpuProjectileSpawnIntentFromSnapshot({
         definition: snapshot.definition,
-        position: { x: 0, y: 0 },
-        velocity: { x: 0, y: 0 },
+        position: ZERO_VECTOR,
+        velocity: ZERO_VECTOR,
         spawnSequence: snapshot.spawnSequence,
         sourceHandle,
         ownerHandle: snapshot.ownerHandle,
@@ -722,9 +797,12 @@ function createGpuSelectedTargetProjectileIntentFromSnapshot(
         coreTargetHandle,
         towerTargetHandle,
         destinationSpawn,
-        positionOffset: normalizeVector(snapshot.positionOffset, 'positionOffset'),
-        targetOffset: normalizeVector(
-            snapshot.targetOffset ?? { x: 0, y: 0 },
+        positionOffset: normalizeVectorValue(
+            snapshot.positionOffset,
+            'positionOffset'
+        ),
+        targetOffset: normalizeVectorValue(
+            snapshot.targetOffset ?? ZERO_VECTOR,
             'targetOffset'
         ),
         launchSpeed: requirePositiveFinite(snapshot.launchSpeed, 'launchSpeed'),
@@ -915,7 +993,7 @@ function requestGpuProjectileFromSnapshot(
     canonicalTemplateCache = null
 ) {
     const mode = options.mode ?? GPU_PROJECTILE_SPAWN_MODE.ABSOLUTE;
-    if (!Object.values(GPU_PROJECTILE_SPAWN_MODE).includes(mode)) {
+    if (!GPU_PROJECTILE_SPAWN_MODE_SET.has(mode)) {
         throw new RangeError(`지원하지 않는 GPU projectile spawn mode입니다: ${mode}`);
     }
     rejectPresentProperties(
@@ -961,7 +1039,13 @@ function requestGpuProjectileFromSnapshot(
         options.spawnSequence ?? 0,
         'spawnSequence'
     );
-    const sourceHandle = normalizeEntityHandle(options.sourceHandle, 'sourceHandle');
+    const normalizeHandle = canonicalTemplateCache === null
+        ? normalizeEntityHandle
+        : normalizeCanonicalEntityHandle;
+    const normalizeVectorValue = canonicalTemplateCache === null
+        ? normalizeVector
+        : normalizeCanonicalVector;
+    const sourceHandle = normalizeHandle(options.sourceHandle, 'sourceHandle');
     if (!sourceHandle) {
         throw new TypeError(`${mode} mode에는 sourceHandle이 필요합니다.`);
     }
@@ -1007,19 +1091,25 @@ function requestGpuProjectileFromSnapshot(
         ], mode);
     }
     const targetHandle = isTargetEntity
-        ? normalizeEntityHandle(options.targetHandle, 'targetHandle')
+        ? normalizeHandle(options.targetHandle, 'targetHandle')
         : null;
     if (isTargetEntity && !targetHandle) {
         throw new TypeError(`${mode} mode에는 targetHandle이 필요합니다.`);
     }
-    const positionOffset = normalizeVector(options.positionOffset, 'positionOffset');
+    const positionOffset = normalizeVectorValue(
+        options.positionOffset,
+        'positionOffset'
+    );
     const targetOffset = isTargetEntity
-        ? normalizeVector(options.targetOffset ?? { x: 0, y: 0 }, 'targetOffset')
+        ? normalizeVectorValue(
+            options.targetOffset ?? ZERO_VECTOR,
+            'targetOffset'
+        )
         : null;
     const destinationSpawn = createGpuProjectileSpawnIntentFromSnapshot({
         definition: options.definition,
-        position: { x: 0, y: 0 },
-        velocity: { x: 0, y: 0 },
+        position: ZERO_VECTOR,
+        velocity: ZERO_VECTOR,
         spawnSequence,
         sourceHandle,
         targetHandle,
@@ -1049,7 +1139,10 @@ function requestGpuProjectileFromSnapshot(
             sourceHandle,
             destinationSpawn,
             positionOffset,
-            launchVelocity: normalizeVector(options.launchVelocity, 'launchVelocity'),
+            launchVelocity: normalizeVectorValue(
+                options.launchVelocity,
+                'launchVelocity'
+            ),
             sourceVelocityScale: requireFinite(
                 options.sourceVelocityScale ?? 0,
                 'sourceVelocityScale'
@@ -1061,7 +1154,10 @@ function requestGpuProjectileFromSnapshot(
             sourceHandle,
             destinationSpawn,
             positionOffset,
-            aimWorldPoint: normalizeVector(options.aimWorldPoint, 'aimWorldPoint'),
+            aimWorldPoint: normalizeVectorValue(
+                options.aimWorldPoint,
+                'aimWorldPoint'
+            ),
             launchSpeed: requirePositiveFinite(options.launchSpeed, 'launchSpeed')
         });
     } else {
