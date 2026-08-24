@@ -20,6 +20,7 @@ const PULSE_PENDING_PHASE = Object.freeze({
     SUBMITTED: 2
 });
 const EFFECT_COMMAND_PIPELINE_DEPTH = 4;
+const MAXIMUM_EFFECT_SOURCE_AUDITS_PER_FIXED_TICK = 8;
 
 function requirePositiveSafeInteger(value, label) {
     const number = Number(value);
@@ -215,8 +216,10 @@ export class PentagonEffectDirector {
         this.count = 0;
         this.pulseScheduleHeap = [];
         this.sourceAuditIterator = null;
-        this.maximumSourceAuditsPerFixedTick =
-            this.maximumPulseProgramsPerFixedTick;
+        this.maximumSourceAuditsPerFixedTick = Math.min(
+            this.maximumPulseProgramsPerFixedTick,
+            MAXIMUM_EFFECT_SOURCE_AUDITS_PER_FIXED_TICK
+        );
 
         this.pendingBatchIdByTick = new Map();
         this.pendingBatchCountByTick = new Map();
@@ -609,7 +612,7 @@ export class PentagonEffectDirector {
                 }
                 const disposition = this.lastLivenessAuditTicks[index] === tick
                     ? 'active'
-                    : this.#getExactDisposition(index);
+                    : this.#getExactLivenessDisposition(index);
                 if (disposition === 'stale') {
                     this.#removeAt(index);
                     continue;
@@ -1109,18 +1112,14 @@ export class PentagonEffectDirector {
     }
 
     #getExactDisposition(index) {
+        const livenessDisposition = this.#getExactLivenessDisposition(index);
+        if (livenessDisposition !== 'active') {
+            return livenessDisposition;
+        }
         const handle = {
             entityId: this.entityIds[index],
             incarnation: this.incarnations[index]
         };
-        const registryHas = this.registry.has(handle);
-        const backendHas = this.endpoint.hasBody(handle);
-        if (registryHas !== backendHas) {
-            return 'desync';
-        }
-        if (!registryHas) {
-            return 'stale';
-        }
         const profile = this.#readProfileAt(index);
         const definition = this.effectDefinitionById[
             this.effectDefinitionIds[index]
@@ -1148,6 +1147,19 @@ export class PentagonEffectDirector {
             return 'desync';
         }
         return 'active';
+    }
+
+    #getExactLivenessDisposition(index) {
+        const handle = {
+            entityId: this.entityIds[index],
+            incarnation: this.incarnations[index]
+        };
+        const registryHas = this.registry.has(handle);
+        const backendHas = this.endpoint.hasBody(handle);
+        if (registryHas !== backendHas) {
+            return 'desync';
+        }
+        return registryHas ? 'active' : 'stale';
     }
 
     #readProfileAt(index) {
