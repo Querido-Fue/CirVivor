@@ -592,6 +592,27 @@ test('fact history는 bounded/immutable이고 pulse identity는 monotonic하다'
     assert.deepEqual(pulseOrdinals, [...pulseOrdinals].sort((a, b) => a - b));
 });
 
+test('Overtime 1,000 pulse stress는 ordinal을 잃지 않고 fact/transaction history를 bounded 유지한다', () => {
+    const harness = createHarness({ factCapacity: 8, maxIntegrity: 100_000 });
+    for (let ordinal = 1; ordinal <= 1_000; ordinal++) {
+        const receipt = observe(harness, {
+            transactionId: `pulse-stress:${ordinal}`,
+            completedFixedTick: 3 + ((ordinal - 1) * 2),
+            siegeWeight: 4
+        });
+        assert.equal(receipt.pulsed, true, `pulse=${ordinal}`);
+        assert.equal(receipt.overtimePulseOrdinal, ordinal, `pulse=${ordinal}`);
+        assert.equal(receipt.recoveryRequired, false, `pulse=${ordinal}`);
+    }
+    const status = harness.director.getStatus();
+    assert.equal(status.overtimePulseOrdinal, 1_000);
+    assert.equal(status.overtimeDamageTotalFixedPoint, 1_000_000);
+    assert.equal(status.facts.length, 8);
+    assert.ok(harness.coordinator.getFacts().length <= 64);
+    assert.equal(harness.coreIntegrity.getCurrentIntegrity(), 99_000);
+    assert.equal(harness.runOutcome.isRunning(), true);
+});
+
 test('GameObjectSystem은 impact→clear test→overtime→terminal→ordinary staging 순서를 고정하고 recovery에서 CPU pressure를 보존한다', async () => {
     const gameObjectSystemSource = await readFile(
         new URL('../script/module/ingame/object/game_object_system.js', import.meta.url),

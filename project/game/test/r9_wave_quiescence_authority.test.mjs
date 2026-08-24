@@ -335,6 +335,59 @@ test('tracker는 sentence hostile을 포함하고 technical/projectile/stale/ABA
     void projectile;
 });
 
+test('tracker는 1,000→1→0 hostile lifecycle batch를 O(changes)로 exact 집계한다', () => {
+    const registry = new WorldRegistry({ capacity: 1_000 });
+    const handles = [];
+    for (let index = 0; index < 1_000; index++) {
+        handles.push(activate(registry, {
+            createdAtTick: index + 1,
+            creationOrigin: (index & 1) === 0
+                ? 'PLAYER_SENTENCE'
+                : 'NATURAL'
+        }));
+    }
+    const tracker = new HostileParticipationTracker();
+    let status = tracker.refresh(registry);
+    assert.equal(status.liveHostileActorCount, 1_000);
+    assert.equal(status.fullReconcileCount, 1);
+
+    const firstBatch = handles.slice(0, -1);
+    for (const handle of firstBatch) {
+        assert.equal(registry.remove(handle), true);
+    }
+    status = tracker.refresh(registry, {}, {
+        lifecycle: {
+            despawned: firstBatch.map((handle) => ({ handle })),
+            spawned: [],
+            registryRevision: registry.getRevision()
+        }
+    });
+    assert.equal(status.liveHostileActorCount, 1);
+    assert.equal(status.perTickRegistryScanCount, 0);
+    assert.equal(status.fullReconcileCount, 1);
+
+    const finalHandle = handles.at(-1);
+    assert.equal(registry.remove(finalHandle), true);
+    status = tracker.refresh(registry, {}, {
+        lifecycle: {
+            despawned: [{ handle: finalHandle }],
+            spawned: [],
+            registryRevision: registry.getRevision()
+        }
+    });
+    assert.equal(status.liveHostileActorCount, 0);
+    assert.equal(status.perTickRegistryScanCount, 0);
+    assert.equal(status.fullReconcileCount, 1);
+    const proof = createWaveClearProof(createSnapshot({
+        totalSpawnCount: 1_000,
+        snapshotRevision: status.revision,
+        hostileRevision: status.revision,
+        trackerRegistryRevision: status.registryRevision,
+        registryRevision: registry.getRevision()
+    }));
+    assert.equal(proof.accepted, true);
+});
+
 test('256-step randomized tracker/quiescence는 oracle과 같고 steady full scan은 0이다', () => {
     const registry = new WorldRegistry({ capacity: 64 });
     let externalFullScanCount = 0;

@@ -21,6 +21,7 @@
         "test:webgpu:r8-shop-editor": "node game/test/support/run_nw_r8_shop_editor.mjs",
         "test:webgpu:r9-overtime-pressure": "node game/test/support/run_nw_r9_overtime_pressure.mjs",
         "test:webgpu:r9-multi-wave": "node game/test/support/run_nw_r9_multi_wave.mjs",
+        "test:webgpu:r9-wave-settlement": "node game/test/support/run_nw_r9_wave_settlement.mjs",
         "test:webgpu:post-r5-live": "node game/test/support/run_nw_post_r5_live_bugfix.mjs",
         "test:title-gpu:smoke": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile smoke",
         "test:title-gpu:qa": "node game/test/support/run_nw_title_gpu_pipeline.mjs --profile qa --keep-run-directory",

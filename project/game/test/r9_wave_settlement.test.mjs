@@ -506,6 +506,39 @@ test('commerce drift는 reward 전에는 mutation 0, reward 뒤에는 durable bo
     assert.equal(after.shop.getStatus().openCount, 0);
 });
 
+test('Shop open이 100 boundary 지연돼도 settlement/reward/open은 exact once다', () => {
+    const harness = createHarness();
+    const snapshot = acceptClear(harness);
+    harness.safe.endpointPendingFixedTick = 1;
+    const requested = harness.settlement.commitSettlement(
+        createSettlementRequest(harness, snapshot)
+    );
+    assert.equal(requested.code,
+        WAVE_SETTLEMENT_RESULT_CODE.OPEN_REQUESTED);
+    for (let boundary = 1; boundary <= 100; boundary++) {
+        assert.equal(
+            harness.shopPhase.progressOpening().code,
+            SHOP_PHASE_RESULT_CODE.OPEN_DEFERRED,
+            `boundary=${boundary}`
+        );
+        assert.equal(
+            harness.settlement.observeShopOpening().code,
+            WAVE_SETTLEMENT_RESULT_CODE.OPEN_DEFERRED,
+            `boundary=${boundary}`
+        );
+        assert.equal(harness.commerce.getGoldStatus().creditCount, 1);
+        assert.equal(harness.shop.getStatus().openCount, 0);
+    }
+    harness.safe.endpointPendingFixedTick = 0;
+    finishShopOpen(harness);
+    const status = harness.settlement.getStatus();
+    assert.equal(status.commitCount, 1);
+    assert.equal(status.openRequestCount, 1);
+    assert.equal(status.openCount, 1);
+    assert.equal(harness.commerce.getGoldStatus().creditCount, 1);
+    assert.equal(harness.shop.getStatus().openCount, 1);
+});
+
 test('reward 전/후 recovery 재시도는 같은 settlement를 이어서 열고 bonus를 중복하지 않는다', () => {
     for (const failureStage of ['before-reward', 'after-reward']) {
         let remainingFailureCount = 1;

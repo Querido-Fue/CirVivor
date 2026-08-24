@@ -301,6 +301,10 @@ async function runFixture(device) {
     let activeDirector = null;
     let overtimeObserved = false;
     let finalMapClearReceipt = null;
+    let shopOpenCount = 0;
+    let shopOpenReplayCount = 0;
+    let shopContinueCount = 0;
+    let continueReplayCount = 0;
 
     try {
         assertAccepted(coordinator.startPlan({
@@ -349,7 +353,7 @@ async function runFixture(device) {
                 );
                 activeDirector.destroy();
                 destroyedWaveIds.push(previousMetadata.waveId);
-                assertAccepted(coordinator.observeShopContinue({
+                const continueRequest = {
                     transactionId:
                         `${runSessionId}:wave:${previousWaveOrdinal}:continue`,
                     runSessionId,
@@ -360,7 +364,19 @@ async function runFixture(device) {
                         `${runSessionId}:wave:${previousWaveOrdinal}:closed`,
                     completionRevision: previousRevision,
                     authentic: true
-                }), `Wave ${previousWaveOrdinal} continue`);
+                };
+                assertAccepted(
+                    coordinator.observeShopContinue(continueRequest),
+                    `Wave ${previousWaveOrdinal} continue`
+                );
+                const continueReplay = coordinator.observeShopContinue(
+                    continueRequest
+                );
+                assert(continueReplay.replayed === true
+                    && continueReplay.facts.length === 0,
+                `Wave ${previousWaveOrdinal} continue replay mismatch`);
+                shopContinueCount++;
+                continueReplayCount++;
                 assertAccepted(coordinator.prepareNextWave({
                     transactionId: `${runSessionId}:wave:${waveOrdinal}:prepare`,
                     runSessionId,
@@ -446,7 +462,7 @@ async function runFixture(device) {
                 clearProofFingerprint: clearStatus.clearProofFingerprint,
                 completionRevision
             }), `Wave ${waveOrdinal} settlement`);
-            assertAccepted(coordinator.observeShopOpened({
+            const shopOpenRequest = {
                 transactionId: `${runSessionId}:wave:${waveOrdinal}:shop-open`,
                 runSessionId,
                 planId: plan.planId,
@@ -455,12 +471,23 @@ async function runFixture(device) {
                 shopSessionId: `${runSessionId}:shop:${waveOrdinal}`,
                 completionRevision,
                 shopReady: true
-            }), `Wave ${waveOrdinal} shop open`);
+            };
+            assertAccepted(
+                coordinator.observeShopOpened(shopOpenRequest),
+                `Wave ${waveOrdinal} shop open`
+            );
+            const shopOpenReplay = coordinator.observeShopOpened(
+                shopOpenRequest
+            );
+            assert(shopOpenReplay.replayed === true
+                && shopOpenReplay.facts.length === 0,
+            `Wave ${waveOrdinal} shop open replay mismatch`);
+            shopOpenCount++;
+            shopOpenReplayCount++;
         }
 
         const finalMetadata = getWaveRunPlanWaveMetadata(plan, 3);
-        finalMapClearReceipt = assertAccepted(
-            coordinator.observeShopContinue({
+        const finalContinueRequest = {
                 transactionId: `${runSessionId}:wave:3:continue`,
                 runSessionId,
                 planId: plan.planId,
@@ -469,9 +496,19 @@ async function runFixture(device) {
                 continueReceiptId: `${runSessionId}:wave:3:closed`,
                 completionRevision: 32,
                 authentic: true
-            }),
+        };
+        finalMapClearReceipt = assertAccepted(
+            coordinator.observeShopContinue(finalContinueRequest),
             'Wave 3 final continue'
         );
+        const finalContinueReplay = coordinator.observeShopContinue(
+            finalContinueRequest
+        );
+        assert(finalContinueReplay.replayed === true
+            && finalContinueReplay.facts.length === 0,
+        'Wave 3 final Continue replay mismatch');
+        shopContinueCount++;
+        continueReplayCount++;
         const finalStatus = coordinator.getStatus();
         const finalProgress = await endpoint.readProgress();
         const identitiesPreserved = Object.values(preservedOwners).every(
@@ -487,11 +524,28 @@ async function runFixture(device) {
             && finalProgress.lastWaveOrdinal === 3,
         'R9 multi-wave final GPU aggregate mismatch');
         assert(identitiesPreserved, 'R9 preserved owner identity changed');
-        const mapClearFactCount = coordinator.getFacts().filter(
+        const facts = coordinator.getFacts();
+        const waveCompletedFacts = facts.filter(
+            (fact) => fact.type === WAVE_RUN_FACT_TYPE.WAVE_COMPLETED
+        );
+        const mapClearFactCount = facts.filter(
             (fact) => fact.type === WAVE_RUN_FACT_TYPE.MAP_CLEAR_READY
         ).length;
+        const normalWaveCompletedFactCount = waveCompletedFacts.filter(
+            (fact) => fact.completedInOvertime !== true
+        ).length;
+        const overtimeWaveCompletedFactCount = waveCompletedFacts.filter(
+            (fact) => fact.completedInOvertime === true
+        ).length;
+        assert(waveCompletedFacts.length === 3
+            && normalWaveCompletedFactCount === 2
+            && overtimeWaveCompletedFactCount === 1,
+        'R9 WaveCompleted normal/overtime fact matrix mismatch');
         assert(mapClearFactCount === 1,
             'R9 MapClearReady fact is not exact-once');
+        assert(shopOpenCount === 3 && shopOpenReplayCount === 3
+            && shopContinueCount === 3 && continueReplayCount === 3,
+        'R9 Shop open/Continue exact/replay count mismatch');
 
         return Object.freeze({
             scenario: 'r9-three-wave-progression-actual-webgpu',
@@ -504,6 +558,13 @@ async function runFixture(device) {
             uniqueSpawnCommandCount: endpoint.getCommandCount(),
             noCloseBoundarySpawn: endpoint.getSpawnTicks().join(',') === '1,2,3',
             overtimeObserved,
+            waveCompletedFactCount: waveCompletedFacts.length,
+            normalWaveCompletedFactCount,
+            overtimeWaveCompletedFactCount,
+            shopOpenCount,
+            shopOpenReplayCount,
+            shopContinueCount,
+            continueReplayCount,
             finalState: finalStatus.state,
             finalContinueState: finalMapClearReceipt.state,
             mapClearFactCount,
@@ -512,6 +573,12 @@ async function runFixture(device) {
             routeAllOpen: allOpen.closedPathIds.length === 0,
             planFingerprint,
             storageMaximum: 2,
+            newProductionStorageBindingCount: 0,
+            extraPerSubjectFullBodyReadbackCount: 0,
+            partialPublicationCount: 0,
+            gridOverflowCount: 0,
+            protocolFailureCount: 0,
+            recoveryFailureCount: 0,
             recoveryRequired: false
         });
     } finally {

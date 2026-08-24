@@ -632,47 +632,73 @@ test('forbidden transition/old identity/conflict는 state를 변경하지 않는
     assert.equal(harness.coordinator.getStatus().elapsedCombatTicks, 0);
 });
 
-test('3-Wave Continue는 same plan next identity를 거쳐 final MAP_CLEAR_READY가 된다', () => {
+test('3-Wave Continue replay는 32회 반복 run에서도 final MAP_CLEAR_READY exact once다', () => {
     const fixture = { plan: planData.R9_QA_THREE_WAVE_RUN_PLAN };
-    const harness = createHarness({ fixture, runSessionId: 'r9-qa-run' });
-    harness.start();
-    harness.begin(1, 100);
-    for (let ordinal = 1; ordinal <= 3; ordinal++) {
-        assert.equal(harness.clear(ordinal).code, WAVE_RUN_RESULT_CODE.ACCEPTED);
-        assert.equal(harness.settle(ordinal).code, WAVE_RUN_RESULT_CODE.ACCEPTED);
-        assert.equal(harness.openShop(ordinal).code, WAVE_RUN_RESULT_CODE.ACCEPTED);
-        const continued = harness.continueShop(ordinal);
-        assert.equal(continued.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
-        if (ordinal < 3) {
-            assert.equal(
-                harness.coordinator.getStatus().state,
-                WAVE_RUN_STATE.NEXT_WAVE_PREPARE
+    for (let runOrdinal = 1; runOrdinal <= 32; runOrdinal++) {
+        const harness = createHarness({
+            fixture,
+            runSessionId: `r9-qa-run:${runOrdinal}`
+        });
+        assert.equal(harness.start().code, WAVE_RUN_RESULT_CODE.ACCEPTED);
+        assert.equal(harness.begin(1, 100).code,
+            WAVE_RUN_RESULT_CODE.ACCEPTED);
+        for (let ordinal = 1; ordinal <= 3; ordinal++) {
+            assert.equal(harness.clear(ordinal).code,
+                WAVE_RUN_RESULT_CODE.ACCEPTED);
+            assert.equal(harness.settle(ordinal).code,
+                WAVE_RUN_RESULT_CODE.ACCEPTED);
+            assert.equal(harness.openShop(ordinal).code,
+                WAVE_RUN_RESULT_CODE.ACCEPTED);
+            const continueRequest = {
+                transactionId: `continue:${runOrdinal}:${ordinal}`,
+                ...harness.waveSource(),
+                continueReceiptId: `closed:${runOrdinal}:${ordinal}`,
+                completionRevision: ordinal,
+                authentic: true
+            };
+            const continued = harness.coordinator.observeShopContinue(
+                continueRequest
             );
-            const nextMetadata = getWaveRunPlanWaveMetadata(fixture.plan, ordinal + 1);
-            const prepared = harness.coordinator.prepareNextWave({
-                transactionId: harness.transaction('next'),
-                ...harness.planSource(),
-                completedWaveOrdinal: ordinal,
-                completedWaveId: harness.coordinator.getStatus().currentWaveId,
-                nextWaveOrdinal: ordinal + 1,
-                nextWaveId: nextMetadata.waveId,
-                completionRevision: ordinal
-            });
-            assert.equal(prepared.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
-            assert.equal(
-                harness.begin(ordinal + 1, 100 + ordinal).code,
-                WAVE_RUN_RESULT_CODE.ACCEPTED
+            assert.equal(continued.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
+            const replay = harness.coordinator.observeShopContinue(
+                continueRequest
             );
+            assert.equal(replay.replayed, true);
+            assert.equal(replay.facts.length, 0);
+            if (ordinal < 3) {
+                assert.equal(
+                    harness.coordinator.getStatus().state,
+                    WAVE_RUN_STATE.NEXT_WAVE_PREPARE
+                );
+                const nextMetadata = getWaveRunPlanWaveMetadata(
+                    fixture.plan,
+                    ordinal + 1
+                );
+                const prepared = harness.coordinator.prepareNextWave({
+                    transactionId: harness.transaction('next'),
+                    ...harness.planSource(),
+                    completedWaveOrdinal: ordinal,
+                    completedWaveId:
+                        harness.coordinator.getStatus().currentWaveId,
+                    nextWaveOrdinal: ordinal + 1,
+                    nextWaveId: nextMetadata.waveId,
+                    completionRevision: ordinal
+                });
+                assert.equal(prepared.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
+                assert.equal(
+                    harness.begin(ordinal + 1, 100 + ordinal).code,
+                    WAVE_RUN_RESULT_CODE.ACCEPTED
+                );
+            }
         }
+        const status = harness.coordinator.getStatus();
+        assert.equal(status.state, WAVE_RUN_STATE.MAP_CLEAR_READY);
+        assert.equal(status.currentWaveOrdinal, 3);
+        assert.equal(status.facts.filter(({ type }) => (
+            type === WAVE_RUN_FACT_TYPE.MAP_CLEAR_READY
+        )).length, 1);
+        harness.coordinator.destroy();
     }
-    const status = harness.coordinator.getStatus();
-    assert.equal(status.state, WAVE_RUN_STATE.MAP_CLEAR_READY);
-    assert.equal(status.currentWaveOrdinal, 3);
-    assert.equal(
-        status.facts.filter(({ type }) => type === WAVE_RUN_FACT_TYPE.MAP_CLEAR_READY)
-            .length,
-        1
-    );
 });
 
 test('defeat/destroy는 exact terminal seal이며 status/facts는 immutable이다', () => {
