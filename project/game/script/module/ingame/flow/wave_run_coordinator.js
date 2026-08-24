@@ -9,6 +9,10 @@ import {
     WAVE_RUN_STATE,
     WAVE_RUN_TERMINAL_STATES
 } from '../contract/wave_run_state_contract.js';
+import {
+    createWaveClearProof,
+    getWaveQuiescenceSnapshotFingerprint
+} from '../contract/wave_quiescence_contract.js';
 
 const UINT32_MAX = 0xffff_ffff;
 const DEFAULT_FACT_HISTORY_CAPACITY = 128;
@@ -325,67 +329,47 @@ export class WaveRunCoordinator {
 
     observeDeadline(request = {}) {
         const source = requireRecord(request, 'observeDeadline request');
-        const canonical = this.#createQuiescenceCanonical(source);
-        return this.#transact('observe-deadline', source, canonical, () => {
-            const sourceCode = this.#validateWaveSource(source);
-            if (sourceCode) return { code: sourceCode };
-            if (!this.deadlineReached
-                || (this.state !== WAVE_RUN_STATE.WAVE_ACTIVE
-                    && this.state !== WAVE_RUN_STATE.DEADLINE_SPAWN_DRAIN)) {
-                return { code: WAVE_RUN_RESULT_CODE.WRONG_PHASE };
-            }
-            const observation = this.#validateQuiescenceObservation(source);
-            if (!observation.spawnDrained) {
-                this.state = WAVE_RUN_STATE.DEADLINE_SPAWN_DRAIN;
-                return {
-                    code: WAVE_RUN_RESULT_CODE.ACCEPTED,
-                    details: { spawnDrainPending: true }
-                };
-            }
-            if (observation.hostileActorCount === 0) {
-                return this.#acceptClearCandidate(source, observation);
-            }
-            const profile = this.currentWaveMetadata.resolutionProfile;
-            if (!profile.overtime.enabled) {
-                return { code: WAVE_RUN_RESULT_CODE.DEFERRED };
-            }
-            this.state = WAVE_RUN_STATE.OVERTIME;
-            this.overtimeStarted = true;
-            const firstPulseFixedTick = checkedUint32Sum(
-                this.deadlineFixedTick,
-                profile.overtime.graceTicks,
-                'first overtime pulse fixed tick'
-            );
-            const fact = this.#appendFact({
-                type: WAVE_RUN_FACT_TYPE.OVERTIME_STARTED,
-                runSessionId: this.runSessionId,
-                mapId: this.plan.mapId,
-                waveId: this.currentWaveMetadata.waveId,
-                waveOrdinal: this.currentWaveOrdinal,
-                waveAttemptOrdinal: this.waveAttemptOrdinal,
-                deadlineFixedTick: this.deadlineFixedTick,
-                firstPulseFixedTick,
-                hostileActorCount: observation.hostileActorCount
-            });
-            return {
-                code: WAVE_RUN_RESULT_CODE.ACCEPTED,
-                facts: [fact],
-                details: { firstPulseFixedTick }
-            };
-        });
+        return this.#observeExactQuiescence(
+            'observe-deadline',
+            source,
+            true
+        );
     }
 
     prepareClearCandidate(request = {}) {
         const source = requireRecord(request, 'prepareClearCandidate request');
-        const canonical = this.#createQuiescenceCanonical(source);
-        return this.#transact('prepare-clear-candidate', source, canonical, () => {
-            const sourceCode = this.#validateWaveSource(source);
-            if (sourceCode) return { code: sourceCode };
-            if (!CLEAR_SOURCE_STATES.has(this.state)) {
-                return { code: WAVE_RUN_RESULT_CODE.WRONG_PHASE };
-            }
-            const observation = this.#validateQuiescenceObservation(source);
-            return this.#acceptClearCandidate(source, observation);
+        return this.#observeExactQuiescence(
+            'prepare-clear-candidate',
+            source,
+            false
+        );
+    }
+
+    observeWaveQuiescence(request = {}) {
+        const source = requireRecord(request, 'observeWaveQuiescence request');
+        return this.#observeExactQuiescence(
+            'observe-wave-quiescence',
+            source,
+            false
+        );
+    }
+
+    /** GameObjectSystem의 narrow evaluator port와 직접 호환됩니다. */
+    evaluateWaveQuiescence(snapshot) {
+        const snapshotFingerprint
+            = getWaveQuiescenceSnapshotFingerprint(snapshot);
+        const result = this.observeWaveQuiescence({
+            transactionId: `wave-quiescence:${snapshotFingerprint}`,
+            snapshot
+        });
+        return Object.freeze({
+            accepted: result.accepted,
+            clearCandidateAccepted: result.accepted
+                && result.state === WAVE_RUN_STATE.CLEAR_CANDIDATE,
+            recoveryRequired: false,
+            code: result.code,
+            state: result.state,
+            transactionFingerprint: result.transactionFingerprint
         });
     }
 
@@ -682,66 +666,72 @@ export class WaveRunCoordinator {
         this.transactionSize = 0;
     }
 
-    #createQuiescenceCanonical(source) {
-        return {
-            runSessionId: source.runSessionId,
-            planId: source.planId,
-            waveOrdinal: source.waveOrdinal,
-            waveId: source.waveId,
-            allSpawnsQueued: source.allSpawnsQueued,
-            remainingSpawnCount: source.remainingSpawnCount,
-            blockedSpawnCount: source.blockedSpawnCount,
-            hostileActorCount: source.hostileActorCount,
-            quiescenceProven: source.quiescenceProven,
-            clearProofFingerprint: source.clearProofFingerprint,
-            completionRevision: source.completionRevision
+    #observeExactQuiescence(action, source, deadlineRequired) {
+        const snapshot = source.snapshot;
+        const snapshotFingerprint
+            = getWaveQuiescenceSnapshotFingerprint(snapshot);
+        const canonical = {
+            runSessionId: this.runSessionId,
+            planId: this.plan.planId,
+            mapId: snapshot.wave.mapId,
+            waveOrdinal: snapshot.wave.waveOrdinal,
+            waveId: snapshot.wave.waveId,
+            snapshotFingerprint
         };
-    }
-
-    #validateQuiescenceObservation(source) {
-        const allSpawnsQueued = requireBoolean(
-            source.allSpawnsQueued,
-            'allSpawnsQueued'
-        );
-        const remainingSpawnCount = requireUint32(
-            source.remainingSpawnCount,
-            'remainingSpawnCount'
-        );
-        const blockedSpawnCount = requireUint32(
-            source.blockedSpawnCount,
-            'blockedSpawnCount'
-        );
-        const hostileActorCount = requireUint32(
-            source.hostileActorCount,
-            'hostileActorCount'
-        );
-        return Object.freeze({
-            spawnDrained: allSpawnsQueued
-                && remainingSpawnCount === 0
-                && blockedSpawnCount === 0,
-            hostileActorCount
+        return this.#transact(action, source, canonical, () => {
+            if (!this.currentWaveMetadata
+                || snapshot.wave.mapId !== this.plan.mapId
+                || snapshot.wave.waveOrdinal !== this.currentWaveOrdinal
+                || snapshot.wave.waveId !== this.currentWaveMetadata.waveId) {
+                return { code: WAVE_RUN_RESULT_CODE.SOURCE_CHANGED };
+            }
+            if (!CLEAR_SOURCE_STATES.has(this.state)) {
+                return {
+                    code: TERMINAL_STATES.has(this.state)
+                        ? this.#terminalResultCode()
+                        : WAVE_RUN_RESULT_CODE.WRONG_PHASE
+                };
+            }
+            if (deadlineRequired && !this.deadlineReached) {
+                return { code: WAVE_RUN_RESULT_CODE.WRONG_PHASE };
+            }
+            const proofResult = createWaveClearProof(snapshot);
+            if (proofResult.accepted) {
+                return this.#acceptExactClearProof(proofResult.proof);
+            }
+            if (!this.deadlineReached) {
+                return {
+                    code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN,
+                    details: { blockers: proofResult.blockers }
+                };
+            }
+            const spawnDrained = snapshot.wave.allSpawnsQueued
+                && snapshot.wave.remainingSpawnCount === 0
+                && snapshot.wave.blockedSpawnCount === 0
+                && snapshot.pending.hostileProducerCount === 0;
+            if (!spawnDrained) {
+                this.state = WAVE_RUN_STATE.DEADLINE_SPAWN_DRAIN;
+                return {
+                    code: WAVE_RUN_RESULT_CODE.ACCEPTED,
+                    details: {
+                        spawnDrainPending: true,
+                        blockers: proofResult.blockers
+                    }
+                };
+            }
+            if (snapshot.hostile.hostileActorCount > 0) {
+                return this.#enterOvertime(snapshot);
+            }
+            return {
+                code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN,
+                details: { blockers: proofResult.blockers }
+            };
         });
     }
 
-    #acceptClearCandidate(source, observation) {
-        if (!observation.spawnDrained || observation.hostileActorCount !== 0) {
-            return { code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN };
-        }
-        if (source.quiescenceProven !== true) {
-            return { code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN };
-        }
-        requireBoolean(source.quiescenceProven, 'quiescenceProven');
-        const clearProofFingerprint = requireUint32(
-            source.clearProofFingerprint,
-            'clearProofFingerprint'
-        );
-        const completionRevision = requireUint32(
-            source.completionRevision,
-            'completionRevision'
-        );
-        if (clearProofFingerprint === 0 || completionRevision === 0) {
-            return { code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN };
-        }
+    #acceptExactClearProof(proof) {
+        const clearProofFingerprint = proof.proofFingerprint;
+        const completionRevision = proof.completionRevision;
         this.clearProofFingerprint = clearProofFingerprint;
         this.completionRevision = Math.max(
             this.completionRevision,
@@ -751,6 +741,42 @@ export class WaveRunCoordinator {
         return {
             code: WAVE_RUN_RESULT_CODE.ACCEPTED,
             details: { clearProofFingerprint, completionRevision }
+        };
+    }
+
+    #enterOvertime(snapshot) {
+        const profile = this.currentWaveMetadata.resolutionProfile;
+        if (!profile.overtime.enabled) {
+            return { code: WAVE_RUN_RESULT_CODE.DEFERRED };
+        }
+        if (this.state === WAVE_RUN_STATE.OVERTIME) {
+            return {
+                code: WAVE_RUN_RESULT_CODE.QUIESCENCE_NOT_PROVEN
+            };
+        }
+        this.state = WAVE_RUN_STATE.OVERTIME;
+        this.overtimeStarted = true;
+        const firstPulseFixedTick = checkedUint32Sum(
+            this.deadlineFixedTick,
+            profile.overtime.graceTicks,
+            'first overtime pulse fixed tick'
+        );
+        const fact = this.#appendFact({
+            type: WAVE_RUN_FACT_TYPE.OVERTIME_STARTED,
+            runSessionId: this.runSessionId,
+            mapId: this.plan.mapId,
+            waveId: this.currentWaveMetadata.waveId,
+            waveOrdinal: this.currentWaveOrdinal,
+            waveAttemptOrdinal: this.waveAttemptOrdinal,
+            deadlineFixedTick: this.deadlineFixedTick,
+            firstPulseFixedTick,
+            hostileActorCount: snapshot.hostile.hostileActorCount,
+            hostileSnapshotRevision: snapshot.hostile.revision
+        });
+        return {
+            code: WAVE_RUN_RESULT_CODE.ACCEPTED,
+            facts: [fact],
+            details: { firstPulseFixedTick }
         };
     }
 

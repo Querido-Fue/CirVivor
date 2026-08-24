@@ -108,6 +108,9 @@ import {
     HostileParticipationTracker
 } from '../state/hostile_participation_tracker.js';
 import {
+    createWaveQuiescenceSnapshot
+} from '../contract/wave_quiescence_contract.js';
+import {
     SentenceRuntimeEstimator
 } from '../word/sentence_runtime_estimator.js';
 
@@ -157,6 +160,15 @@ function requireNonNegativeSafeInteger(value, label) {
         throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
     }
     return number;
+}
+
+function readBoundedStatusCount(value) {
+    const number = Number(value);
+    return Number.isSafeInteger(number)
+        && number >= 0
+        && number <= 0xffff_ffff
+        ? number
+        : null;
 }
 
 function createEmptyGpuEventSnapshot(completedThroughTick = 0) {
@@ -237,6 +249,22 @@ export class GameObjectSystem {
             throw new TypeError('towerCombatRoster contract가 올바르지 않습니다.');
         }
         this.waveDefinition = options?.waveDefinition;
+        this.waveOrdinal = requireNonNegativeSafeInteger(
+            options?.waveOrdinal ?? 1,
+            'waveOrdinal'
+        );
+        if (this.waveOrdinal === 0) {
+            throw new RangeError('waveOrdinal은 양의 안전한 정수여야 합니다.');
+        }
+        this.waveQuiescenceEvaluator
+            = options?.waveQuiescenceEvaluator ?? null;
+        if (this.waveQuiescenceEvaluator !== null
+            && typeof this.waveQuiescenceEvaluator
+                ?.evaluateWaveQuiescence !== 'function') {
+            throw new TypeError(
+                'waveQuiescenceEvaluator.evaluateWaveQuiescence()가 필요합니다.'
+            );
+        }
         this.enemyPresentationProfile = options?.enemyPresentationProfile;
         this.gameplayWorldActorsEnabled = policy.gameplayWorldActorsEnabled;
         this.enemyWaveEnabled = policy.enemyWaveEnabled;
@@ -493,6 +521,10 @@ export class GameObjectSystem {
         this.enemySimulationRecoveryDiagnostic = null;
         this.gpuRecoveryProbation = IDLE_GPU_RECOVERY_PROBATION;
         this.lastCompletedGpuEvents = createEmptyGpuEventSnapshot(this.initialFixedTick);
+        this.waveQuiescenceSnapshotRevision = 0;
+        this.lastWaveQuiescenceSnapshot = null;
+        this.lastWaveQuiescenceEvaluation = null;
+        this.waveGameplayIngressSealed = false;
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
         this.terminalState = GPU_WORLD_TERMINAL_STATE.RUNNING;
@@ -782,6 +814,151 @@ export class GameObjectSystem {
 
     getHostileParticipationStatus() {
         return this.hostileParticipationTracker?.getStatus() ?? null;
+    }
+
+    /**
+     * Transform/pose/entity 배열 없이 Wave clear에 필요한 scalar authority만
+     * materialize합니다. Recovery/init reconcile 외 registry scan은 수행하지 않습니다.
+     */
+    captureWaveQuiescenceSnapshot(
+        fixedTick = this.lastCompletedEnemyFixedTick
+    ) {
+        if (!this.initialized || this.destroyed || !this.waveDirector) {
+            return null;
+        }
+        const boundedFixedTick = requireNonNegativeSafeInteger(
+            fixedTick,
+            'wave quiescence fixedTick'
+        );
+        const hostile = this.#refreshHostileParticipation();
+        const wave = this.waveDirector.getStatus();
+        const endpointStatus = this.enemySimulationEndpoint.getStatus();
+        const backendStatus = endpointStatus.backend?.gpu
+            ?? endpointStatus.backend
+            ?? {};
+        const eventStatus = endpointStatus.events?.backend
+            ?? backendStatus.events
+            ?? {};
+        const protocol = this.enemySimulationBackend
+            ?.getEventProtocolState?.() ?? {};
+        const pending = this.enemySimulationEndpoint
+            .getPendingHostileParticipationView();
+        const payload = endpointStatus.actorPayloadMaterializations ?? {};
+        const placement = payload.placement ?? {};
+        const transit = payload.transit ?? {};
+        const atomic = endpointStatus.atomicTransformCommands ?? {};
+        const lifecycle = endpointStatus.lifecycle ?? {};
+        const requiredCounts = [
+            pending.pendingHostileLifecycleSpawnCount,
+            pending.pendingHostileMaterializationCount,
+            pending.pendingHostileTransitCount,
+            payload.transactionCount,
+            payload.pendingCount,
+            payload.inFlightCount,
+            placement.pendingCount,
+            placement.inFlightCount,
+            payload.pendingTransitLandingCount,
+            transit.activeActorCount,
+            atomic.pendingPrepareCount,
+            atomic.pendingTransformCount,
+            atomic.pendingReadbackCount,
+            atomic.completedPrepareBacklogCount,
+            lifecycle.pendingCount,
+            eventStatus.lastSubmittedTick,
+            eventStatus.lastCompletedTick,
+            endpointStatus.events?.completedThroughTick,
+            endpointStatus.events?.deferredBatchCount
+        ].map(readBoundedStatusCount);
+        const boundedStatusExact = requiredCounts.every((value) => value !== null)
+            && readBoundedStatusCount(protocol.sessionGeneration) !== null
+            && Number(protocol.sessionGeneration) > 0
+            && readBoundedStatusCount(protocol.deviceGeneration) !== null
+            && readBoundedStatusCount(protocol.authoritativeEpoch) !== null;
+        const countAt = (index) => requiredCounts[index] ?? 0;
+        const hostileAtomicTransformCount = countAt(10)
+            + countAt(11)
+            + countAt(12)
+            + countAt(13);
+        const materializationWorkCount = countAt(3)
+            + countAt(4)
+            + countAt(5)
+            + countAt(6)
+            + countAt(7);
+        const atomicTransformWorkCount = hostileAtomicTransformCount;
+        const snapshot = createWaveQuiescenceSnapshot({
+            snapshotRevision: ++this.waveQuiescenceSnapshotRevision,
+            fixedTick: boundedFixedTick,
+            protocol: {
+                sessionGeneration: readBoundedStatusCount(
+                    protocol.sessionGeneration
+                ) ?? 1,
+                deviceGeneration: readBoundedStatusCount(
+                    protocol.deviceGeneration
+                ) ?? 0,
+                authoritativeEpoch: readBoundedStatusCount(
+                    protocol.authoritativeEpoch
+                ) ?? 0
+            },
+            wave: {
+                mapId: this.tileMap.mapId,
+                waveId: wave.waveId,
+                waveOrdinal: this.waveOrdinal,
+                initialized: wave.initialized,
+                totalSpawnCount: wave.totalSpawnCount,
+                queuedSpawnCount: wave.queuedSpawnCount,
+                remainingSpawnCount: wave.remainingSpawnCount,
+                blockedSpawnCount: wave.blockedSpawnCount,
+                allSpawnsQueued: wave.allSpawnsQueued,
+                completionOwned: wave.completionOwned
+            },
+            hostile: {
+                revision: hostile.revision,
+                registryRevision: hostile.registryRevision,
+                countExact: hostile.countExact,
+                liveHostileActorCount: hostile.liveHostileActorCount,
+                pendingHostileActorCount: hostile.pendingHostileActorCount,
+                hostileActorCount: hostile.hostileActorCount
+            },
+            pending: {
+                hostileLifecycleSpawnCount: countAt(0),
+                hostileMaterializationCount: countAt(1),
+                hostileTransitCount: countAt(2),
+                hostileAtomicTransformCount,
+                lifecycleCommandCount: countAt(14),
+                materializationWorkCount,
+                transitActorCount: countAt(9),
+                atomicTransformWorkCount
+            },
+            events: {
+                lastSubmittedTick: countAt(15),
+                lastCompletedTick: countAt(16),
+                completedThroughTick: countAt(17),
+                deferredBatchCount: countAt(18),
+                protocolFailure:
+                    endpointStatus.events?.protocolFailure !== null
+                    || boundedStatusExact === false
+            },
+            registryRevision: this.worldRegistry.getRevision(),
+            run: {
+                running: this.runOutcome.isRunning(),
+                defeated: this.runOutcome.isDefeated(),
+                coreDepleted: this.coreIntegrity.isDepleted(),
+                recoveryRequired: boundedStatusExact === false
+                    || this.isEnemySimulationRecoveryRequired()
+            }
+        });
+        this.lastWaveQuiescenceSnapshot = snapshot;
+        return snapshot;
+    }
+
+    getWaveQuiescenceStatus() {
+        return Object.freeze({
+            snapshotRevision: this.waveQuiescenceSnapshotRevision,
+            lastSnapshot: this.lastWaveQuiescenceSnapshot,
+            lastEvaluation: this.lastWaveQuiescenceEvaluation,
+            gameplayIngressSealed: this.waveGameplayIngressSealed,
+            perEnemyUiObjectCount: 0
+        });
     }
 
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
@@ -1407,8 +1584,19 @@ export class GameObjectSystem {
                 return this.#pauseForGpuRecovery();
             }
 
+            const waveQuiescence = this
+                .#evaluateWaveQuiescenceBeforeGameplayIngress(
+                    proposedFixedTick
+                );
+            if (waveQuiescence.recoveryRequired) {
+                return this.#pauseForGpuRecovery(
+                    'wave-quiescence-evaluation',
+                    proposedFixedTick
+                );
+            }
             let primaryProjectileShotReceipt = null;
-            if (this.runOutcome.isRunning()) {
+            if (this.runOutcome.isRunning()
+                && !waveQuiescence.gameplayIngressSealed) {
                 const readyActorCreationStage = this.towerCreationCoordinator
                     ?.stageReadyActorActionPlacementAtFixedBoundary(
                         proposedFixedTick
@@ -2315,6 +2503,9 @@ export class GameObjectSystem {
         this.bountyRewardDirector = null;
         this.hostileParticipationTracker?.destroy();
         this.hostileParticipationTracker = null;
+        this.waveQuiescenceEvaluator = null;
+        this.lastWaveQuiescenceSnapshot = null;
+        this.lastWaveQuiescenceEvaluation = null;
         this.hostileAttackDirector?.destroy();
         this.hostileAttackDirector = null;
         this.pentagonEffectDirector?.destroy();
@@ -4030,6 +4221,72 @@ export class GameObjectSystem {
             pending,
             changes
         );
+    }
+
+    #evaluateWaveQuiescenceBeforeGameplayIngress(fixedTick) {
+        if (this.waveGameplayIngressSealed) {
+            return Object.freeze({
+                gameplayIngressSealed: true,
+                recoveryRequired: false
+            });
+        }
+        if (!this.waveQuiescenceEvaluator || !this.waveDirector) {
+            return Object.freeze({
+                gameplayIngressSealed: false,
+                recoveryRequired: false
+            });
+        }
+        let snapshot;
+        let evaluation;
+        try {
+            snapshot = this.captureWaveQuiescenceSnapshot(fixedTick);
+            evaluation = this.waveQuiescenceEvaluator
+                .evaluateWaveQuiescence(snapshot);
+        } catch (error) {
+            this.lastWaveQuiescenceEvaluation = Object.freeze({
+                accepted: false,
+                clearCandidateAccepted: false,
+                recoveryRequired: true,
+                reason: String(error?.message ?? error)
+            });
+            return Object.freeze({
+                gameplayIngressSealed: false,
+                recoveryRequired: true
+            });
+        }
+        if (!evaluation
+            || typeof evaluation !== 'object'
+            || typeof evaluation.accepted !== 'boolean'
+            || typeof evaluation.clearCandidateAccepted !== 'boolean'
+            || (evaluation.clearCandidateAccepted
+                && evaluation.accepted !== true)) {
+            this.lastWaveQuiescenceEvaluation = Object.freeze({
+                accepted: false,
+                clearCandidateAccepted: false,
+                recoveryRequired: true,
+                reason: 'invalid-wave-quiescence-evaluation'
+            });
+            return Object.freeze({
+                gameplayIngressSealed: false,
+                recoveryRequired: true
+            });
+        }
+        this.lastWaveQuiescenceEvaluation = Object.freeze({
+            accepted: evaluation.accepted,
+            clearCandidateAccepted: evaluation.clearCandidateAccepted,
+            recoveryRequired: evaluation.recoveryRequired === true,
+            code: typeof evaluation.code === 'string'
+                ? evaluation.code
+                : null,
+            snapshotFingerprint: snapshot.snapshotFingerprint
+        });
+        if (evaluation.clearCandidateAccepted) {
+            this.waveGameplayIngressSealed = true;
+        }
+        return Object.freeze({
+            gameplayIngressSealed: this.waveGameplayIngressSealed,
+            recoveryRequired: evaluation.recoveryRequired === true
+        });
     }
 
     #createSentenceRuntimePreviewState(compiledAbility = null) {

@@ -3091,8 +3091,12 @@ export class GpuEnemySimulationEndpoint {
         let pendingSiegeWeight = 0;
         let pendingBountyPotential = 0;
         let pendingSentenceCreatedCount = 0;
+        let pendingHostileLifecycleSpawnCount = 0;
+        let pendingHostileMaterializationCount = 0;
+        let pendingHostileTransitCount = 0;
         for (const entry of this.pendingHostileSpawnEntries) {
             pendingHostileActorCount += 1;
+            pendingHostileLifecycleSpawnCount += 1;
             pendingSiegeWeight += entry.siegeWeight;
             pendingBountyPotential += entry.bountyPotential;
             pendingSentenceCreatedCount += entry.sentenceCreated ? 1 : 0;
@@ -3105,6 +3109,7 @@ export class GpuEnemySimulationEndpoint {
             }
             const count = transaction.handles.length;
             pendingHostileActorCount += count;
+            pendingHostileMaterializationCount += count;
             pendingSentenceCreatedCount += transaction.payloadDefinition
                     .creationOrigin === 'PLAYER_SENTENCE'
                 ? count
@@ -3114,11 +3119,37 @@ export class GpuEnemySimulationEndpoint {
             pendingBountyPotential += count
                 * Number(transaction.spawnTemplate?.bountyBudget ?? 0);
         }
+        // THROW payload는 publication 뒤 landing 전까지 registry에서
+        // countsTowardHostile=false입니다. 이 transit roster를 pending에 다시
+        // 포함해야 one-frame visible zero가 Wave clear로 오인되지 않습니다.
+        for (const landing of this.actorPayloadTransitLandings.values()) {
+            for (const metadata of landing.landingMetadata) {
+                if (metadata?.teamId !== GAMEPLAY_TEAM_ID.HOSTILE
+                    || metadata.countsTowardHostile === false) {
+                    continue;
+                }
+                pendingHostileActorCount += 1;
+                pendingHostileTransitCount += 1;
+                if (metadata.countsTowardSiege !== false) {
+                    pendingSiegeWeight += Number(metadata.siegeWeight ?? 0);
+                }
+                if (metadata.countsTowardBountyPotential !== false) {
+                    pendingBountyPotential += Number(metadata.bountyBudget ?? 0);
+                }
+                pendingSentenceCreatedCount += metadata.creationOrigin
+                        === 'PLAYER_SENTENCE'
+                    ? 1
+                    : 0;
+            }
+        }
         return Object.freeze({
             pendingHostileActorCount,
             pendingSiegeWeight,
             pendingBountyPotential,
-            pendingSentenceCreatedCount
+            pendingSentenceCreatedCount,
+            pendingHostileLifecycleSpawnCount,
+            pendingHostileMaterializationCount,
+            pendingHostileTransitCount
         });
     }
 

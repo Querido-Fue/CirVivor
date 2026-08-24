@@ -53,6 +53,9 @@ export class HostileParticipationTracker {
         this.reconciled = false;
         this.revision = 0;
         this.registryRevision = 0;
+        this.fullReconcileCount = 0;
+        this.incrementalRefreshCount = 0;
+        this.lastRefreshUsedFullReconcile = false;
         this.liveHostileActorCount = 0;
         this.liveSiegeWeight = 0;
         this.liveBountyPotential = 0;
@@ -74,6 +77,8 @@ export class HostileParticipationTracker {
         if (!this.reconciled || this.boundRegistry !== registry || changes.reconcile === true) {
             this.reconcile(registry);
         } else {
+            this.incrementalRefreshCount++;
+            this.lastRefreshUsedFullReconcile = false;
             if (changes.lifecycle) {
                 this.observeLifecycle(changes.lifecycle, registry, false);
             }
@@ -102,6 +107,8 @@ export class HostileParticipationTracker {
         }
         this.handleScratch.length = 0;
         this.reconciled = true;
+        this.fullReconcileCount++;
+        this.lastRefreshUsedFullReconcile = true;
         this.registryRevision = registry.getRevision();
         return this.snapshot;
     }
@@ -238,6 +245,10 @@ export class HostileParticipationTracker {
             pendingSentenceCreatedCount: this.pending.sentenceCreatedCount,
             sentenceCreatedCount:
                 this.liveSentenceCreatedCount + this.pending.sentenceCreatedCount,
+            fullReconcileCount: this.fullReconcileCount,
+            incrementalRefreshCount: this.incrementalRefreshCount,
+            perTickRegistryScanCount:
+                this.lastRefreshUsedFullReconcile ? 1 : 0,
             perEnemyUiObjectCount: 0
         });
         return this.snapshot;
@@ -260,6 +271,10 @@ export class HostileParticipationTracker {
             liveSentenceCreatedCount: 0,
             pendingSentenceCreatedCount: 0,
             sentenceCreatedCount: 0,
+            fullReconcileCount: this.fullReconcileCount,
+            incrementalRefreshCount: this.incrementalRefreshCount,
+            perTickRegistryScanCount:
+                this.lastRefreshUsedFullReconcile ? 1 : 0,
             perEnemyUiObjectCount: 0
         });
     }

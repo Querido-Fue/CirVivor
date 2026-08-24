@@ -13,6 +13,9 @@ const planContract = await loadGameModule(
 const stateContract = await loadGameModule(
     'ingame/contract/wave_run_state_contract.js'
 );
+const quiescenceContract = await loadGameModule(
+    'ingame/contract/wave_quiescence_contract.js'
+);
 const { WaveRunCoordinator } = await loadGameModule(
     'ingame/flow/wave_run_coordinator.js'
 );
@@ -43,6 +46,7 @@ const {
     WAVE_RUN_RESULT_CODE,
     WAVE_RUN_STATE
 } = stateContract;
+const { createWaveQuiescenceSnapshot } = quiescenceContract;
 
 function createProfile(overrides = {}) {
     return createWaveResolutionProfile({
@@ -109,6 +113,77 @@ function createFixturePlan(options = {}) {
     return { plan, profileById };
 }
 
+function createQuiescenceSnapshot(plan, waveOrdinal, overrides = {}) {
+    const metadata = getWaveRunPlanWaveMetadata(plan, waveOrdinal);
+    const liveHostileActorCount = overrides.liveHostileActorCount ?? 0;
+    const pendingHostileActorCount
+        = overrides.pendingHostileActorCount ?? 0;
+    const totalSpawnCount = overrides.totalSpawnCount ?? 1;
+    const remainingSpawnCount = overrides.remainingSpawnCount ?? 0;
+    const queuedSpawnCount = totalSpawnCount - remainingSpawnCount;
+    return createWaveQuiescenceSnapshot({
+        snapshotRevision: overrides.snapshotRevision ?? 1,
+        fixedTick: overrides.fixedTick ?? 1,
+        protocol: {
+            sessionGeneration: 1,
+            deviceGeneration: 2,
+            authoritativeEpoch: 3
+        },
+        wave: {
+            mapId: plan.mapId,
+            waveId: metadata.waveId,
+            waveOrdinal,
+            initialized: true,
+            totalSpawnCount,
+            queuedSpawnCount,
+            remainingSpawnCount,
+            blockedSpawnCount: overrides.blockedSpawnCount ?? 0,
+            allSpawnsQueued: overrides.allSpawnsQueued ?? true,
+            completionOwned: false
+        },
+        hostile: {
+            revision: overrides.hostileRevision
+                ?? overrides.snapshotRevision
+                ?? 1,
+            registryRevision: overrides.trackerRegistryRevision ?? 10,
+            countExact: overrides.countExact ?? true,
+            liveHostileActorCount,
+            pendingHostileActorCount,
+            hostileActorCount:
+                liveHostileActorCount + pendingHostileActorCount
+        },
+        pending: {
+            hostileLifecycleSpawnCount:
+                overrides.hostileLifecycleSpawnCount ?? 0,
+            hostileMaterializationCount:
+                overrides.hostileMaterializationCount ?? 0,
+            hostileTransitCount: overrides.hostileTransitCount ?? 0,
+            hostileAtomicTransformCount:
+                overrides.hostileAtomicTransformCount ?? 0,
+            lifecycleCommandCount: overrides.lifecycleCommandCount ?? 0,
+            materializationWorkCount:
+                overrides.materializationWorkCount ?? 0,
+            transitActorCount: overrides.transitActorCount ?? 0,
+            atomicTransformWorkCount:
+                overrides.atomicTransformWorkCount ?? 0
+        },
+        events: {
+            lastSubmittedTick: overrides.lastSubmittedTick ?? 1,
+            lastCompletedTick: overrides.lastCompletedTick ?? 1,
+            completedThroughTick: overrides.completedThroughTick ?? 1,
+            deferredBatchCount: overrides.deferredBatchCount ?? 0,
+            protocolFailure: overrides.protocolFailure ?? false
+        },
+        registryRevision: overrides.registryRevision ?? 10,
+        run: {
+            running: overrides.running ?? true,
+            defeated: overrides.defeated ?? false,
+            coreDepleted: overrides.coreDepleted ?? false,
+            recoveryRequired: overrides.recoveryRequired ?? false
+        }
+    });
+}
+
 function createHarness(options = {}) {
     const fixture = options.fixture ?? createFixturePlan(options);
     const runSessionId = options.runSessionId ?? 'fixture-run';
@@ -158,21 +233,19 @@ function createHarness(options = {}) {
         clear(completionRevision = 1) {
             return coordinator.prepareClearCandidate({
                 transactionId: transaction('clear'),
-                ...waveSource(),
-                allSpawnsQueued: true,
-                remainingSpawnCount: 0,
-                blockedSpawnCount: 0,
-                hostileActorCount: 0,
-                quiescenceProven: true,
-                clearProofFingerprint: 1000 + completionRevision,
-                completionRevision
+                snapshot: createQuiescenceSnapshot(
+                    fixture.plan,
+                    coordinator.getStatus().currentWaveOrdinal,
+                    { snapshotRevision: completionRevision }
+                )
             });
         },
         settle(completionRevision = 1) {
+            const status = coordinator.getStatus();
             return coordinator.prepareSettlement({
                 transactionId: transaction('settle'),
                 ...waveSource(),
-                clearProofFingerprint: 1000 + completionRevision,
+                clearProofFingerprint: status.clearProofFingerprint,
                 completionRevision
             });
         },
@@ -465,14 +538,11 @@ test('deadline exact boundary는 normal clear 또는 spawn drain/Overtime으로 
     );
     const clear = normal.coordinator.observeDeadline({
         transactionId: 'normal-deadline',
-        ...normal.waveSource(),
-        allSpawnsQueued: true,
-        remainingSpawnCount: 0,
-        blockedSpawnCount: 0,
-        hostileActorCount: 0,
-        quiescenceProven: true,
-        clearProofFingerprint: 77,
-        completionRevision: 1
+        snapshot: createQuiescenceSnapshot(
+            normal.fixture.plan,
+            1,
+            { snapshotRevision: 1, fixedTick: 2 }
+        )
     });
     assert.equal(clear.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
     assert.equal(normal.coordinator.getStatus().state, WAVE_RUN_STATE.CLEAR_CANDIDATE);
@@ -492,14 +562,18 @@ test('deadline exact boundary는 normal clear 또는 spawn drain/Overtime으로 
     });
     const drain = overtime.coordinator.observeDeadline({
         transactionId: 'overtime-deadline-drain',
-        ...overtime.waveSource(),
-        allSpawnsQueued: false,
-        remainingSpawnCount: 1,
-        blockedSpawnCount: 0,
-        hostileActorCount: 1,
-        quiescenceProven: false,
-        clearProofFingerprint: 0,
-        completionRevision: 1
+        snapshot: createQuiescenceSnapshot(
+            overtime.fixture.plan,
+            1,
+            {
+                snapshotRevision: 1,
+                allSpawnsQueued: false,
+                remainingSpawnCount: 1,
+                liveHostileActorCount: 1,
+                hostileLifecycleSpawnCount: 1,
+                lifecycleCommandCount: 1
+            }
+        )
     });
     assert.equal(drain.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
     assert.equal(
@@ -508,14 +582,11 @@ test('deadline exact boundary는 normal clear 또는 spawn drain/Overtime으로 
     );
     const entered = overtime.coordinator.observeDeadline({
         transactionId: 'overtime-deadline-enter',
-        ...overtime.waveSource(),
-        allSpawnsQueued: true,
-        remainingSpawnCount: 0,
-        blockedSpawnCount: 0,
-        hostileActorCount: 1,
-        quiescenceProven: false,
-        clearProofFingerprint: 0,
-        completionRevision: 1
+        snapshot: createQuiescenceSnapshot(
+            overtime.fixture.plan,
+            1,
+            { snapshotRevision: 2, liveHostileActorCount: 1 }
+        )
     });
     assert.equal(entered.code, WAVE_RUN_RESULT_CODE.ACCEPTED);
     assert.equal(overtime.coordinator.getStatus().state, WAVE_RUN_STATE.OVERTIME);
