@@ -56,6 +56,7 @@ import {
 const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMPLETION_HISTORY_CAPACITY = 2048;
 const EMPTY_COMMAND_IDS = Object.freeze([]);
+const CANONICAL_EXACT_HANDLES = new WeakSet();
 const CURRENT_TOWER_TARGET_POLICY = 'current-single-living-tower';
 const CAST_START_TARGET_SNAPSHOT_POLICY = 'cast-start-exact-handle';
 const GPU_DEATH_EVENT_TYPE = 'death';
@@ -137,13 +138,18 @@ function freezeHandle(source, label) {
     if (!source || typeof source !== 'object') {
         throw new TypeError(`${label}은 exact handle 객체여야 합니다.`);
     }
-    return Object.freeze({
+    if (CANONICAL_EXACT_HANDLES.has(source)) {
+        return source;
+    }
+    const handle = Object.freeze({
         entityId: requireExactIdentityComponent(source.entityId, `${label}.entityId`),
         incarnation: requireExactIdentityComponent(
             source.incarnation,
             `${label}.incarnation`
         )
     });
+    CANONICAL_EXACT_HANDLES.add(handle);
+    return handle;
 }
 
 function sameHandle(left, right) {
@@ -670,6 +676,7 @@ export class HostileAttackDirector {
         );
 
         this.recordsByHandle = new Map();
+        this.recordByEntityId = new Map();
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
@@ -1802,6 +1809,7 @@ export class HostileAttackDirector {
             );
         }
         this.recordsByHandle.clear();
+        this.recordByEntityId.clear();
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
@@ -1830,6 +1838,7 @@ export class HostileAttackDirector {
             return;
         }
         this.recordsByHandle.clear();
+        this.recordByEntityId.clear();
         this.currentTowerSourceCount = 0;
         this.corePrioritySourceCount = 0;
         this.sourceAuditIterator = null;
@@ -2310,12 +2319,12 @@ export class HostileAttackDirector {
             return false;
         }
 
-        for (const record of this.recordsByHandle.values()) {
-            if (record.handle.entityId !== handle.entityId
-                || record.handle.incarnation === handle.incarnation) {
-                continue;
-            }
-            const oldDisposition = this.#getExactActiveDisposition(record.handle);
+        const priorEntityRecord = this.recordByEntityId.get(handle.entityId);
+        if (priorEntityRecord
+            && priorEntityRecord.handle.incarnation !== handle.incarnation) {
+            const oldDisposition = this.#getExactActiveDisposition(
+                priorEntityRecord.handle
+            );
             if (oldDisposition === 'active' || oldDisposition === 'desync') {
                 this.#fail(
                     'lifecycle-spawn',
@@ -2324,7 +2333,7 @@ export class HostileAttackDirector {
                 );
                 return false;
             }
-            this.#removeRecord(record.handle, 'stale');
+            this.#removeRecord(priorEntityRecord.handle, 'stale');
         }
 
         let createdAtTick;
@@ -2394,6 +2403,7 @@ export class HostileAttackDirector {
             priorityScheduleState: null
         };
         this.recordsByHandle.set(key, record);
+        this.recordByEntityId.set(handle.entityId, record);
         if (attackEntry.attack.targetMode
             === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
             this.currentTowerSourceCount++;
@@ -3020,6 +3030,9 @@ export class HostileAttackDirector {
         this.#cancelShotSchedule(record);
         this.#cancelPriorityControlSchedule(record);
         this.recordsByHandle.delete(key);
+        if (this.recordByEntityId.get(record.handle.entityId) === record) {
+            this.recordByEntityId.delete(record.handle.entityId);
+        }
         if (record.attack.targetMode
             === HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER) {
             this.currentTowerSourceCount--;
