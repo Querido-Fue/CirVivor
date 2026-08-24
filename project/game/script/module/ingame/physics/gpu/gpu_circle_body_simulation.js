@@ -3251,9 +3251,9 @@ export class GpuCircleBodySimulation {
                 copyRenderStyleSlot(stagingStyles, index, this.hostRenderStyles, slot);
                 clearBodyControlStateSlot(this.hostBodyControlStates, slot);
                 this.slotActive[slot] = 2;
-                this.slotRouteRuntimeDomain[slot]
-                    = sourceRelativeSpawns[index].destinationSpawn
-                        ?.routeRuntimeState ? 1 : 0;
+                this.slotEventProducing[slot] = 0;
+                this.slotProjectileCaptureDomain[slot] = 0;
+                this.slotRouteRuntimeDomain[slot] = 0;
                 this.pendingSlotHandles[slot] = spawn.destinationHandle;
                 this.pendingHandleToSlot.set(
                     entityHandleKey(spawn.destinationHandle),
@@ -3268,7 +3268,7 @@ export class GpuCircleBodySimulation {
             this.bodyCount += normalizedSpawns.length - reusableCount;
             this.pendingBodyCount += normalizedSpawns.length;
             writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
-            this.#refreshHostBodyDerivedState();
+            this.#refreshHostBodyDerivedState([]);
             if (selectedSlots.length > 0) {
                 this.#uploadSlotRanges(selectedSlots);
                 this.#uploadBodyCountState();
@@ -6699,6 +6699,7 @@ export class GpuCircleBodySimulation {
             }
             const outcomes = [];
             const cleanupSlots = [];
+            const activatedSlots = [];
             let batchFailure = null;
             for (const outcome of entry.outcomes) {
                 const handle = outcome.destinationHandle;
@@ -6744,6 +6745,7 @@ export class GpuCircleBodySimulation {
                     this.slotHandles[slot] = handle;
                     this.handleToSlot.set(key, slot);
                     this.activeBodyCount++;
+                    activatedSlots.push(slot);
                     this.lastSpawnProgramResolvedCount++;
                 } else {
                     this.#removeOccupiedEntitySlot(handle.entityId, slot);
@@ -6803,7 +6805,7 @@ export class GpuCircleBodySimulation {
                 this.freeSlots = this.freeSlots.filter((slot) => slot < this.bodyCount);
             }
             writeGpuCircleBodyCounts(this.hostStorage, { bodyCount: this.bodyCount });
-            this.#refreshHostBodyDerivedState();
+            this.#refreshHostBodyDerivedState(activatedSlots);
             if (cleanupSlots.length > 0 && this.#hasCurrentGpuResources()) {
                 this.#uploadSlotRanges(cleanupSlots);
                 this.#uploadBodyCountState();
