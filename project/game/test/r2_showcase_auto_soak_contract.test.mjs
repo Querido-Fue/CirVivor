@@ -43,6 +43,9 @@ test('manual showcase 자동 soak는 명시적 환경 변수에서만 bounded te
     assert.match(bootstrapSource, /fixedTicksPerActiveSimulationSecond/);
     assert.match(bootstrapSource, /foregroundCoverageRatio/);
     assert.match(bootstrapSource, /partialFixedFrameCount/);
+    assert.match(bootstrapSource, /detailedPhaseTimings/);
+    assert.match(bootstrapSource, /objectFixed/);
+    assert.match(bootstrapSource, /waveQueueSpawns/);
     assert.match(bootstrapSource, /projectileCapture/);
     assert.match(bootstrapSource, /atomicTransform/);
     assert.match(bootstrapSource, /routeAvailability/);

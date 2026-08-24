@@ -148,8 +148,13 @@ function installAutoSoakDiagnostics() {
     const systemHandler = game?.systemHandler;
     const gameSystem = systemHandler?.sceneSystem?.scene?.getGameSystem?.();
     const endpoint = gameSystem?.getGpuSimulationEndpoint?.();
+    const objectSystem = gameSystem?.getObjectSystem?.();
     const frameTelemetryPort = getWebGpuFrameTelemetryPort();
-    if (!systemHandler || !gameSystem || !endpoint || !frameTelemetryPort) {
+    if (!systemHandler
+        || !gameSystem
+        || !objectSystem
+        || !endpoint
+        || !frameTelemetryPort) {
         throw new Error('자동 soak diagnostics에 actual Game/System/endpoint가 필요합니다.');
     }
     const counters = {
@@ -180,6 +185,7 @@ function installAutoSoakDiagnostics() {
             lifecycleCommit: [],
             endpointDraw: []
         },
+        detailedPhaseDurationSamplesMs: {},
         completion: Object.fromEntries(
             Object.keys(AUTO_SOAK_COMPLETION_METHODS).map((label) => [label, {
                 callCount: 0,
@@ -207,6 +213,18 @@ function installAutoSoakDiagnostics() {
         };
         restorers.push(() => {
             owner[methodName] = original;
+        });
+    };
+    const wrapTimed = (owner, methodName, label) => {
+        wrap(owner, methodName, (original, receiver, args) => {
+            const startedAt = performance.now();
+            try {
+                return original.apply(receiver, args);
+            } finally {
+                const samples = counters.detailedPhaseDurationSamplesMs[label]
+                    ?? (counters.detailedPhaseDurationSamplesMs[label] = []);
+                samples.push(performance.now() - startedAt);
+            }
         });
     };
     const recordAcceptedSpawn = (request) => {
@@ -237,6 +255,50 @@ function installAutoSoakDiagnostics() {
         }
         return result;
     });
+
+    for (const [owner, methodName, label] of [
+        [objectSystem, 'fixedUpdate', 'objectFixed'],
+        [objectSystem.waveDirector, 'queueSpawnsForFixedTick', 'waveQueueSpawns'],
+        [objectSystem.actorPayloadMaterializer, 'observeCompleted',
+            'actorPayloadObserveCompleted'],
+        [objectSystem.actorPayloadMaterializer, 'stageReadyForFixedTick',
+            'actorPayloadStageReady'],
+        [objectSystem.abilityRuntime, 'observeCompletedSubjectSnapshots',
+            'abilityObserveCompleted'],
+        [objectSystem.abilityRuntime, 'stageForFixedTick', 'abilityStage'],
+        [objectSystem.projectileCaptureDirector,
+            'observeCompletedCapturePrograms', 'projectileCaptureObserve'],
+        [objectSystem.projectileCaptureDirector,
+            'observeCompletedReleasePrograms', 'projectileReleaseObserve'],
+        [objectSystem.projectileCaptureDirector, 'observeCompletedEvents',
+            'projectileEventObserve'],
+        [objectSystem.projectileCaptureDirector, 'stageForFixedTick',
+            'projectileCaptureStage'],
+        [objectSystem.jorangSplitLineageDirector, 'observeCompletedPreparations',
+            'atomicTransformObserve'],
+        [objectSystem.jorangSplitLineageDirector, 'observeCompletedEvents',
+            'jorangEventObserve'],
+        [objectSystem.jorangSplitLineageDirector, 'stageForFixedTick',
+            'atomicTransformStage'],
+        [objectSystem.pentagonEffectDirector, 'observeCompletedEvents',
+            'effectObserve'],
+        [objectSystem.pentagonEffectDirector, 'stageForFixedTick', 'effectStage'],
+        [objectSystem.formationRuntimeDirector, 'observeCompletedPreparations',
+            'formationObserve'],
+        [objectSystem.formationRuntimeDirector, 'stageForFixedTick',
+            'formationStage'],
+        [objectSystem.hostileAttackDirector, 'observeCompletedEvents',
+            'hostileObserve'],
+        [objectSystem.hostileAttackDirector, 'stageForFixedTick', 'hostileStage'],
+        [objectSystem.enemyCoreImpactDirector, 'observeCompletedEvents',
+            'coreImpactObserve'],
+        [objectSystem.enemyCoreImpactDirector, 'stageForFixedTick',
+            'coreImpactStage'],
+        [objectSystem.bountyRewardDirector, 'observeCompletedEvents',
+            'bountyObserve']
+    ]) {
+        wrapTimed(owner, methodName, label);
+    }
 
     wrap(systemHandler, 'tick', (original, receiver, args) => {
         counters.renderFrameCount++;
@@ -390,6 +452,11 @@ function installAutoSoakDiagnostics() {
             )) {
                 samples.length = 0;
             }
+            for (const samples of Object.values(
+                counters.detailedPhaseDurationSamplesMs
+            )) {
+                samples.length = 0;
+            }
             lastRafTimestamp = Number(game.lastFrameTimestamp);
             lastWallTimestamp = performance.now();
             for (const counter of Object.values(counters.completion)) {
@@ -411,6 +478,15 @@ function installAutoSoakDiagnostics() {
                 )
             ));
             delete snapshot.phaseDurationSamplesMs;
+            snapshot.detailedPhaseTimings = Object.freeze(Object.fromEntries(
+                Object.entries(counters.detailedPhaseDurationSamplesMs).map(
+                    ([label, samples]) => [
+                        label,
+                        summarizeDurationSamples(samples)
+                    ]
+                )
+            ));
+            delete snapshot.detailedPhaseDurationSamplesMs;
             for (const [label, counter] of Object.entries(
                 snapshot.completion
             )) {
