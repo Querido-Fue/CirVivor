@@ -14,6 +14,9 @@ import {
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
 import {
+    R9_QA_THREE_WAVE_RUN_PLAN
+} from 'data/scene/game/r9_wave_run_plan_data.js';
+import {
     R5_SHOWCASE_SENTENCE_LOADOUT,
     R6_QA_SENTENCE_LOADOUT,
     R7_QA_SENTENCE_LOADOUT
@@ -46,6 +49,7 @@ export const PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID
 export const R6_QA_LAUNCH_ARGUMENT = '--r6-qa';
 export const R7_QA_LAUNCH_ARGUMENT = '--r7-qa';
 export const R8_QA_LAUNCH_ARGUMENT = '--r8-qa';
+export const R9_QA_LAUNCH_ARGUMENT = '--r9-qa';
 
 /** 실제 executable에서만 쓰는 명시적 QA launcher 선택 seam입니다. */
 export function isR6QaLaunchRequested(
@@ -66,6 +70,13 @@ export function isR8QaLaunchRequested(
     argv = globalThis.nw?.App?.argv ?? []
 ) {
     return Array.isArray(argv) && argv.includes(R8_QA_LAUNCH_ARGUMENT);
+}
+
+/** R9 3-Wave QA는 exact launcher argument에서만 활성화됩니다. */
+export function isR9QaLaunchRequested(
+    argv = globalThis.nw?.App?.argv ?? []
+) {
+    return Array.isArray(argv) && argv.includes(R9_QA_LAUNCH_ARGUMENT);
 }
 
 function createPlayableSessionOptions(
@@ -121,6 +132,9 @@ function createGameStartOptions(selectedMapId, loadout) {
  * @returns {object} GameScene constructor에 전달할 세션 옵션입니다.
  */
 export function createProductionGameStartOptions(selectedMapId) {
+    if (isR9QaLaunchRequested()) {
+        return createR9QaGameStartOptions();
+    }
     if (isR8QaLaunchRequested()) {
         return createR8QaGameStartOptions(selectedMapId);
     }
@@ -132,6 +146,37 @@ export function createProductionGameStartOptions(selectedMapId) {
                 ? R6_QA_SENTENCE_LOADOUT
                 : R5_SHOWCASE_SENTENCE_LOADOUT
     );
+}
+
+/** 실제 GameSystem/GPU endpoint를 공유하는 data-owned R9 3-Wave QA route입니다. */
+export function createR9QaGameStartOptions() {
+    const firstWave = R9_QA_THREE_WAVE_RUN_PLAN.waves[0].waveDefinition;
+    return {
+        ...createPlayableSessionOptions(
+            R2_ENEMY_SHOWCASE_MAP_DATA,
+            firstWave,
+            R2_ENEMY_SHOWCASE_STAGE_ONE_PERFORMANCE_SESSION,
+            R5_SHOWCASE_SENTENCE_LOADOUT
+        ),
+        initialGold: R8_WORD_SHOP_BALANCE.QA_INITIAL_GOLD,
+        r8ShopOptions: Object.freeze({
+            mode: SHOP_RUNTIME_CONFIGURATION_MODE.QA,
+            autoOpen: false,
+            sourceId: 'launcher.--r9-qa',
+            runSessionId: 'run.r9.qa',
+            runSeed: R8_WORD_SHOP_BALANCE.QA_RUN_SEED,
+            unlockedWordDefinitionIds:
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS,
+            unlockedPoolFingerprint: fingerprintUnlockedWordPool(
+                R8_ALL_UNLOCKED_WORD_DEFINITION_IDS
+            ),
+            allowEconomicallyRedundantOffers: true
+        }),
+        r9WaveRunPlan: R9_QA_THREE_WAVE_RUN_PLAN,
+        r9RunSessionId: 'run.r9.qa',
+        r9WarmExposureApproved: true,
+        r9QaRuntimeAuthorized: true
+    };
 }
 
 /** Permanent key 없이 실제 GameScene에 Merge slot을 주입하는 QA launcher입니다. */

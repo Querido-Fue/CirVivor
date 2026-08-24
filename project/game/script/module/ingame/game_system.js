@@ -2,7 +2,10 @@ import { THE_CORE_DATA } from 'data/object/core/the_core_data.js';
 import { InputActionMapper } from './input/input_action_mapper.js';
 import { CameraZoomController } from './input/camera_zoom_controller.js';
 import { PlayerControlRouter } from './input/player_control_router.js';
-import { GameObjectSystem } from './object/game_object_system.js';
+import {
+    GameObjectSystem,
+    NEXT_WAVE_PROGRESSION_RESULT_CODE
+} from './object/game_object_system.js';
 import { TowerCombatRoster } from './object/tower/tower_combat_roster.js';
 import { TowerGroupState } from './object/tower/tower_group_state.js';
 import { CoreIntegrity } from './state/core_integrity.js';
@@ -10,9 +13,20 @@ import { RunOutcome } from './state/run_outcome.js';
 import { RunCommerceState } from './state/run_commerce_state.js';
 import {
     SHOP_OPEN_SOURCE_KIND,
+    SHOP_PHASE_RESULT_CODE,
     SHOP_RUNTIME_PHASE,
     ShopPhaseCoordinator
 } from './flow/shop_phase_coordinator.js';
+import { WaveRunCoordinator } from './flow/wave_run_coordinator.js';
+import {
+    CoreOvertimePressureDirector
+} from './flow/core_overtime_pressure_director.js';
+import {
+    WAVE_SETTLEMENT_RESULT_CODE,
+    WAVE_SETTLEMENT_STAGE,
+    WaveSettlementCoordinator,
+    createWaveSettlementTransactionId
+} from './flow/wave_settlement_coordinator.js';
 import { ShopUiCommandExecutor } from './flow/shop_ui_command_executor.js';
 import { SentenceBoardState } from './word/sentence_board_state.js';
 import { SentenceSlotController } from './word/sentence_slot_controller.js';
@@ -23,12 +37,31 @@ import {
     normalizeShopRuntimeConfiguration
 } from './contract/shop_runtime_configuration_contract.js';
 import {
+    getWaveRunPlanFingerprint
+} from './contract/wave_run_plan_contract.js';
+import {
+    WAVE_RUN_RESULT_CODE,
+    WAVE_RUN_STATE
+} from './contract/wave_run_state_contract.js';
+import {
+    createWaveClearProof
+} from './contract/wave_quiescence_contract.js';
+import {
+    SENTENCE_RUNTIME_PHASE
+} from './contract/word_sentence_contract.js';
+import {
     FIXED_STEP_RESULT
 } from 'simulation/fixed_step_result_contract.js';
 import {
     GAME_WORLD_SESSION_MODE,
     selectGameWorldSessionMode
 } from './game_world_session_mode.js';
+
+const R9_COMBAT_CLOCK_STATES = new Set([
+    WAVE_RUN_STATE.WAVE_ACTIVE,
+    WAVE_RUN_STATE.DEADLINE_SPAWN_DRAIN,
+    WAVE_RUN_STATE.OVERTIME
+]);
 
 function normalizeDiagnosticCount(value) {
     const number = Number(value);
@@ -315,6 +348,62 @@ export class GameSystem {
                 ?? THE_CORE_DATA.MAX_INTEGRITY
         });
         this.runOutcome = new RunOutcome();
+        this.r9WaveRunPlan = options.r9WaveRunPlan ?? null;
+        this.r9Configured = this.r9WaveRunPlan !== null;
+        this.r9PlanFingerprint = this.r9Configured
+            ? getWaveRunPlanFingerprint(this.r9WaveRunPlan)
+            : 0;
+        this.r9RunSessionId = this.r9Configured
+            ? options.r9RunSessionId
+                ?? this.shopRuntimeConfiguration.runSessionId
+            : null;
+        if (this.r9Configured
+            && (typeof this.r9RunSessionId !== 'string'
+                || this.r9RunSessionId.trim().length === 0)) {
+            throw new TypeError('R9 runSessionId가 필요합니다.');
+        }
+        if (this.r9Configured
+            && options.mapId !== undefined
+            && options.mapId !== this.r9WaveRunPlan.mapId) {
+            throw new RangeError('R9 plan의 map identity가 시작 옵션과 다릅니다.');
+        }
+        if (this.r9Configured
+            && options.waveDefinition !== undefined
+            && options.waveDefinition
+                !== this.r9WaveRunPlan.waves[0].waveDefinition) {
+            throw new RangeError('R9 plan의 Wave identity가 시작 옵션과 다릅니다.');
+        }
+        this.waveRunCoordinator = this.r9Configured
+            ? new WaveRunCoordinator({
+                plan: this.r9WaveRunPlan,
+                runSessionId: this.r9RunSessionId
+            })
+            : null;
+        this.coreOvertimePressureDirector = this.r9Configured
+            ? new CoreOvertimePressureDirector({
+                coreIntegrity: this.coreIntegrity,
+                runOutcome: this.runOutcome,
+                waveRunCoordinator: this.waveRunCoordinator
+            })
+            : null;
+        this.r9WarmExposureApproved
+            = options.r9WarmExposureApproved === true;
+        this.waveSettlementCoordinator = this.r9Configured
+            ? new WaveSettlementCoordinator({
+                waveRunCoordinator: this.waveRunCoordinator,
+                commerceState: this.runCommerceState,
+                shopPhaseCoordinator: this.shopPhaseCoordinator,
+                coreIntegrity: this.coreIntegrity,
+                runOutcome: this.runOutcome,
+                overtimePressureDirector:
+                    this.coreOvertimePressureDirector,
+                warmExposureGate: Object.freeze({
+                    isApproved: () => this.r9WarmExposureApproved
+                }),
+                qaRuntimeAuthorized:
+                    options.r9QaRuntimeAuthorized === true
+            })
+            : null;
         this.initialCameraZoom = options.initialCameraZoom;
         this.towerMaxHp = options.towerMaxHp;
         this.objectSystemOptions = Object.freeze({
@@ -324,7 +413,10 @@ export class GameSystem {
             runOutcome: this.runOutcome,
             enemyWaveEnabled: options.enemyWaveEnabled,
             gameplayWorldActorsEnabled: options.gameplayWorldActorsEnabled,
-            waveDefinition: options.waveDefinition,
+            waveDefinition: this.r9Configured
+                ? this.r9WaveRunPlan.waves[0].waveDefinition
+                : options.waveDefinition,
+            waveOrdinal: this.r9Configured ? 1 : undefined,
             enemyPresentationProfile: options.enemyPresentationProfile,
             wordSystem: this.wordSystem,
             goldLedger: this.goldLedger
@@ -347,6 +439,12 @@ export class GameSystem {
         this.fixedStepBatchBoundaryRevision = 0;
         this.shopPointerReleaseRequired = false;
         this.shopMovementReleaseRequired = false;
+        this.r9RuntimeActive = false;
+        this.r9PendingShopCloseReceipt = null;
+        this.r9ProgressionFailure = null;
+        this.r9LastClockReceipt = null;
+        this.r9LastSettlementReceipt = null;
+        this.r9LastContinueReceipt = null;
         this.entered = false;
         this.destroyed = false;
     }
@@ -383,7 +481,15 @@ export class GameSystem {
         this.objectSystem = new GameObjectSystem(this.dependencies, {
             ...this.objectSystemOptions,
             sessionMode,
-            towerCombatRoster: this.towerCombatRoster
+            towerCombatRoster: this.towerCombatRoster,
+            waveQuiescenceEvaluator: this.r9Configured
+                && sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+                ? this.waveRunCoordinator
+                : null,
+            coreOvertimePressureDirector: this.r9Configured
+                && sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+                ? this.coreOvertimePressureDirector
+                : null
         });
         this.#syncViewportSnapshot();
         this.objectSystem.init(this.viewportSnapshot);
@@ -410,8 +516,11 @@ export class GameSystem {
         this.inputActionMapper.primeWheelBaseline(
             this.dependencies.inputActionSource
         );
+        this.r9RuntimeActive = this.r9Configured
+            && sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD;
+        if (this.r9RuntimeActive) this.#startR9Run();
         this.entered = true;
-        if (this.r8QaAutoOpen) {
+        if (this.r8QaAutoOpen && !this.r9RuntimeActive) {
             this.requestShopOpen({
                 sourceKind: SHOP_OPEN_SOURCE_KIND.QA_EXPLICIT,
                 sourceId: this.r8QaOpenSourceId,
@@ -432,21 +541,68 @@ export class GameSystem {
         if (!this.entered || this.destroyed) {
             return false;
         }
+        if (this.r9ProgressionFailure !== null
+            || this.#isR9MapClearReady()) {
+            return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
+        }
         let suppressGameplayInput = false;
         const shopPhase = this.shopPhaseCoordinator.getPhase();
+        if (this.r9RuntimeActive
+            && this.r9PendingShopCloseReceipt !== null
+            && shopPhase === SHOP_RUNTIME_PHASE.COMBAT) {
+            if (this.#progressR9ClosedShopBoundary()) {
+                return FIXED_STEP_RESULT.COMPLETED;
+            }
+            if (this.isGpuWorldRecoveryRequired()) {
+                return FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+            }
+            return this.#needsR9PausedTechnicalBoundary()
+                ? this.#advanceR9PausedTechnicalBoundary()
+                : FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+        }
         if (shopPhase === SHOP_RUNTIME_PHASE.SHOP) {
+            if (this.r9RuntimeActive
+                && this.isGpuWorldRecoveryRequired()) {
+                return FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+            }
+            if (this.r9RuntimeActive
+                && this.#needsR9PausedTechnicalBoundary()) {
+                return this.#advanceR9PausedTechnicalBoundary();
+            }
             return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
         }
         if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_CLOSING) {
-            this.shopPhaseCoordinator.progressClosing();
+            const closeReceipt = this.shopPhaseCoordinator.progressClosing();
             if (this.shopPhaseCoordinator.getPhase() !== shopPhase) {
                 this.fixedStepBatchBoundaryRevision++;
+                if (this.r9RuntimeActive
+                    && closeReceipt.accepted === true
+                    && closeReceipt.code === SHOP_PHASE_RESULT_CODE.CLOSED) {
+                    this.r9PendingShopCloseReceipt
+                        = this.#captureR9PendingShopClose(closeReceipt);
+                    return this.#progressR9ClosedShopBoundary()
+                        ? FIXED_STEP_RESULT.COMPLETED
+                        : FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+                }
                 return FIXED_STEP_RESULT.COMPLETED;
             }
             return FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
         } else if (shopPhase === SHOP_RUNTIME_PHASE.SHOP_OPENING) {
             this.shopPhaseCoordinator.progressOpening();
             if (this.shopPhaseCoordinator.getPhase() !== shopPhase) {
+                if (this.r9RuntimeActive) {
+                    const settlementReceipt = this.waveSettlementCoordinator
+                        .observeShopOpening();
+                    this.r9LastSettlementReceipt = settlementReceipt;
+                    if (settlementReceipt.accepted !== true
+                        || settlementReceipt.code
+                            !== WAVE_SETTLEMENT_RESULT_CODE.OPENED) {
+                        this.#recordR9ProgressionFailure(
+                            'shop-open-observation',
+                            settlementReceipt
+                        );
+                    }
+                }
                 this.fixedStepBatchBoundaryRevision++;
                 return FIXED_STEP_RESULT.COMPLETED;
             }
@@ -504,6 +660,11 @@ export class GameSystem {
         );
         if (advanced) {
             this.fixedTick = proposedFixedTick;
+            if (this.r9RuntimeActive) {
+                this.#observeR9CompletedGameplayBoundary(
+                    proposedFixedTick
+                );
+            }
         }
         return advanced;
     }
@@ -517,7 +678,10 @@ export class GameSystem {
             return;
         }
         const shopPhase = this.shopPhaseCoordinator.getPhase();
-        if (shopPhase === SHOP_RUNTIME_PHASE.COMBAT) {
+        const r9Paused = this.r9ProgressionFailure !== null
+            || this.#isR9MapClearReady()
+            || this.r9PendingShopCloseReceipt !== null;
+        if (shopPhase === SHOP_RUNTIME_PHASE.COMBAT && !r9Paused) {
             const cameraZoomAction = this.inputActionMapper.mapCameraZoomAction(
                 this.dependencies.inputActionSource
             );
@@ -530,7 +694,8 @@ export class GameSystem {
         const frameDelta = typeof this.dependencies.timePort.getDelta === 'function'
             ? this.dependencies.timePort.getDelta()
             : 0;
-        const worldPresentationPaused = shopPhase === SHOP_RUNTIME_PHASE.SHOP;
+        const worldPresentationPaused = shopPhase === SHOP_RUNTIME_PHASE.SHOP
+            || r9Paused;
         this.objectSystem.update(
             worldPresentationPaused
                 ? 1
@@ -772,6 +937,27 @@ export class GameSystem {
         return this.shopUiCommandExecutor?.getStatus() ?? null;
     }
 
+    getWaveRunStatus() {
+        return this.waveRunCoordinator?.getStatus() ?? null;
+    }
+
+    getWaveSettlementStatus() {
+        return this.waveSettlementCoordinator?.getStatus() ?? null;
+    }
+
+    getNextWaveProgressionStatus() {
+        return Object.freeze({
+            configured: this.r9Configured,
+            active: this.r9RuntimeActive,
+            pendingShopClose:
+                this.r9PendingShopCloseReceipt !== null,
+            failure: this.r9ProgressionFailure,
+            objectSystem:
+                this.objectSystem?.getNextWaveProgressionStatus?.() ?? null,
+            mapClearReady: this.#isR9MapClearReady()
+        });
+    }
+
     requestShopOpen(source) {
         return this.shopPhaseCoordinator.requestOpen(source);
     }
@@ -838,6 +1024,8 @@ export class GameSystem {
             shop: this.wordShopSession?.getStatus() ?? null,
             shopPhase: this.getShopPhaseStatus(),
             shopUi: this.getShopUiCommandStatus(),
+            waveRun: this.waveRunCoordinator?.getSettlementView?.() ?? null,
+            waveProgression: this.getNextWaveProgressionStatus(),
             bounty: this.getBountyRewardStatus(),
             hostiles: this.getHostileParticipationStatus(),
             words: wordStatus,
@@ -858,8 +1046,16 @@ export class GameSystem {
 
     /** fixed pipeline 진입 전 SHOP intentional pause를 게시합니다. */
     getFixedStepDisposition() {
-        return this.shopPhaseCoordinator?.getPhase()
-            === SHOP_RUNTIME_PHASE.SHOP
+        const shopPhase = this.shopPhaseCoordinator?.getPhase();
+        if (this.r9RuntimeActive
+            && shopPhase === SHOP_RUNTIME_PHASE.SHOP
+            && (this.isGpuWorldRecoveryRequired()
+                || this.#needsR9PausedTechnicalBoundary())) {
+            return FIXED_STEP_RESULT.COMPLETED;
+        }
+        return this.r9ProgressionFailure !== null
+            || this.#isR9MapClearReady()
+            || shopPhase === SHOP_RUNTIME_PHASE.SHOP
             ? FIXED_STEP_RESULT.INTENTIONAL_PAUSE
             : FIXED_STEP_RESULT.COMPLETED;
     }
@@ -944,6 +1140,12 @@ export class GameSystem {
         this.cameraZoomController = null;
         this.objectSystem?.destroy();
         this.objectSystem = null;
+        this.waveSettlementCoordinator?.destroy();
+        this.waveSettlementCoordinator = null;
+        this.coreOvertimePressureDirector?.destroy();
+        this.coreOvertimePressureDirector = null;
+        this.waveRunCoordinator?.destroy();
+        this.waveRunCoordinator = null;
         this.towerCombatRoster?.destroy();
         this.towerCombatRoster = null;
         this.towerGroupState?.destroy();
@@ -967,6 +1169,12 @@ export class GameSystem {
         this.fixedTick = 0;
         this.shopPointerReleaseRequired = false;
         this.shopMovementReleaseRequired = false;
+        this.r9RuntimeActive = false;
+        this.r9PendingShopCloseReceipt = null;
+        this.r9ProgressionFailure = null;
+        this.r9LastClockReceipt = null;
+        this.r9LastSettlementReceipt = null;
+        this.r9LastContinueReceipt = null;
         this.entered = false;
     }
 
@@ -1021,6 +1229,344 @@ export class GameSystem {
             endpointRecoveryRequired: this.isGpuWorldRecoveryRequired(),
             recoveryProbationState: recovery?.probation?.state ?? null,
             runDefeated: this.runOutcome.isDefeated()
+        });
+    }
+
+    #startR9Run() {
+        const plan = this.r9WaveRunPlan;
+        const startReceipt = this.waveRunCoordinator.startPlan({
+            transactionId: `r9-run:${this.r9RunSessionId}:start`,
+            runSessionId: this.r9RunSessionId,
+            planId: plan.planId,
+            planFingerprint: this.r9PlanFingerprint
+        });
+        if (startReceipt.accepted !== true) {
+            throw new Error(`R9 plan start 실패: ${startReceipt.code}`);
+        }
+        const first = plan.waves[0].waveDefinition;
+        const beginReceipt = this.waveRunCoordinator.beginWave({
+            transactionId: `r9-run:${this.r9RunSessionId}:wave:1:begin`,
+            runSessionId: this.r9RunSessionId,
+            planId: plan.planId,
+            waveOrdinal: 1,
+            waveId: first.waveId,
+            startingFixedTick: this.fixedTick
+        });
+        if (beginReceipt.accepted !== true) {
+            throw new Error(`R9 Wave 1 begin 실패: ${beginReceipt.code}`);
+        }
+    }
+
+    #observeR9CompletedGameplayBoundary(completedFixedTick) {
+        const status = this.waveRunCoordinator.getStatus();
+        if (R9_COMBAT_CLOCK_STATES.has(status.state)) {
+            const receipt = this.waveRunCoordinator.observeClockTick({
+                transactionId: [
+                    'r9-clock',
+                    this.r9RunSessionId,
+                    status.currentWaveOrdinal,
+                    status.elapsedCombatTicks + 1
+                ].join(':'),
+                runSessionId: this.r9RunSessionId,
+                planId: this.r9WaveRunPlan.planId,
+                waveOrdinal: status.currentWaveOrdinal,
+                waveId: status.currentWaveId,
+                proposedElapsedCombatTicks:
+                    status.elapsedCombatTicks + 1,
+                completedFixedTick,
+                completed: true,
+                intentionalPause: false
+            });
+            this.r9LastClockReceipt = receipt;
+            if (receipt.accepted !== true
+                && receipt.code !== WAVE_RUN_RESULT_CODE.DEFERRED) {
+                this.#recordR9ProgressionFailure('combat-clock', receipt);
+                return;
+            }
+        }
+        this.#commitR9SettlementIfReady(completedFixedTick);
+    }
+
+    #commitR9SettlementIfReady(fixedTick) {
+        const view = this.waveRunCoordinator.getSettlementView();
+        if (view.state !== WAVE_RUN_STATE.CLEAR_CANDIDATE) return;
+        const snapshot = this.objectSystem
+            .getWaveQuiescenceStatus().lastSnapshot;
+        let proofResult;
+        try {
+            proofResult = createWaveClearProof(snapshot);
+        } catch (error) {
+            this.#recordR9ProgressionFailure(
+                'clear-proof-publication',
+                Object.freeze({ code: String(error?.message ?? error) })
+            );
+            return;
+        }
+        if (proofResult.accepted !== true || !proofResult.proof) {
+            this.#recordR9ProgressionFailure(
+                'clear-proof-publication',
+                proofResult
+            );
+            return;
+        }
+        const transactionId = createWaveSettlementTransactionId({
+            runSessionId: view.runSessionId,
+            mapId: view.mapId,
+            waveOrdinal: view.waveOrdinal,
+            waveId: view.waveId,
+            completionRevision: proofResult.proof.completionRevision
+        });
+        const receipt = this.waveSettlementCoordinator.commitSettlement({
+            transactionId,
+            quiescenceSnapshot: snapshot,
+            fixedTick,
+            expectedCommerceRevision: this.runCommerceState.getRevision(),
+            waveStatistics: Object.freeze({})
+        });
+        this.r9LastSettlementReceipt = receipt;
+        if (receipt.accepted !== true
+            || (receipt.code !== WAVE_SETTLEMENT_RESULT_CODE.OPEN_REQUESTED
+                && receipt.code
+                    !== WAVE_SETTLEMENT_RESULT_CODE.OPEN_DEFERRED
+                && receipt.code !== WAVE_SETTLEMENT_RESULT_CODE.OPENED)) {
+            this.#recordR9ProgressionFailure('wave-settlement', receipt);
+        }
+    }
+
+    #progressR9ClosedShopBoundary() {
+        const pending = this.r9PendingShopCloseReceipt;
+        if (!pending) return true;
+        const closeReceipt = pending.receipt;
+        const view = pending.sourceView;
+        const nextWaveOrdinal = pending.nextWaveOrdinal;
+        const nextTransactionId = pending.nextTransactionId;
+        const preparedStatus = this.objectSystem
+            .getNextWaveProgressionStatus();
+        const matchingPrepared = nextTransactionId !== null
+            && preparedStatus.transactionId === nextTransactionId
+            && preparedStatus.waveOrdinal === nextWaveOrdinal;
+        const blockers = this.#collectR9ClosedShopBlockers({
+            view,
+            closeReceipt,
+            matchingPrepared
+        });
+        if (blockers.length !== 0) return false;
+
+        if (nextWaveOrdinal > 0) {
+            const nextEntry = this.r9WaveRunPlan.waves[
+                nextWaveOrdinal - 1
+            ];
+            const prepareReceipt = this.objectSystem.prepareNextWave({
+                transactionId: nextTransactionId,
+                waveDefinition: nextEntry.waveDefinition,
+                waveOrdinal: nextWaveOrdinal,
+                fixedTickOffset: matchingPrepared
+                    ? preparedStatus.fixedTickOffset
+                    : this.fixedTick,
+                planFingerprint: this.r9PlanFingerprint
+            });
+            if (prepareReceipt.accepted !== true) {
+                if (prepareReceipt.code
+                        === NEXT_WAVE_PROGRESSION_RESULT_CODE
+                            .DEFERRED_UNSAFE_BOUNDARY
+                    || prepareReceipt.code
+                        === NEXT_WAVE_PROGRESSION_RESULT_CODE
+                            .DIRECTOR_INIT_FAILED) {
+                    return false;
+                }
+                this.#recordR9ProgressionFailure(
+                    'next-wave-director-prepare',
+                    prepareReceipt
+                );
+                return false;
+            }
+        }
+
+        const continueReceipt = this.waveRunCoordinator.observeShopContinue({
+            transactionId: `${closeReceipt.transactionId}:r9-observe`,
+            runSessionId: view.runSessionId,
+            planId: view.planId,
+            waveOrdinal: view.waveOrdinal,
+            waveId: view.waveId,
+            continueReceiptId: closeReceipt.transactionId,
+            completionRevision: view.completionRevision,
+            authentic: true
+        });
+        this.r9LastContinueReceipt = continueReceipt;
+        if (continueReceipt.accepted !== true) {
+            this.#recordR9ProgressionFailure(
+                'authentic-shop-continue',
+                continueReceipt
+            );
+            return false;
+        }
+        if (nextWaveOrdinal === 0) {
+            if (continueReceipt.state !== WAVE_RUN_STATE.MAP_CLEAR_READY
+                || this.wordSystem.setRuntimePhase(
+                    SENTENCE_RUNTIME_PHASE.PAUSE
+                ) !== true) {
+                this.#recordR9ProgressionFailure(
+                    'map-clear-ready',
+                    continueReceipt
+                );
+                return false;
+            }
+            this.r9PendingShopCloseReceipt = null;
+            this.synchronizePresentation();
+            return true;
+        }
+
+        const current = this.r9WaveRunPlan.waves[view.waveOrdinal - 1];
+        const nextEntry = this.r9WaveRunPlan.waves[nextWaveOrdinal - 1];
+        const prepareRunReceipt = this.waveRunCoordinator.prepareNextWave({
+            transactionId: `${nextTransactionId}:wave-run-prepare`,
+            runSessionId: view.runSessionId,
+            planId: view.planId,
+            planFingerprint: this.r9PlanFingerprint,
+            completedWaveOrdinal: view.waveOrdinal,
+            completedWaveId: current.waveDefinition.waveId,
+            nextWaveOrdinal,
+            nextWaveId: nextEntry.waveDefinition.waveId,
+            completionRevision: view.completionRevision
+        });
+        if (prepareRunReceipt.accepted !== true) {
+            this.#recordR9ProgressionFailure(
+                'next-wave-run-prepare',
+                prepareRunReceipt
+            );
+            return false;
+        }
+        const beginReceipt = this.waveRunCoordinator.beginWave({
+            transactionId: `${nextTransactionId}:begin`,
+            runSessionId: view.runSessionId,
+            planId: view.planId,
+            waveOrdinal: nextWaveOrdinal,
+            waveId: nextEntry.waveDefinition.waveId,
+            startingFixedTick: this.fixedTick
+        });
+        if (beginReceipt.accepted !== true) {
+            this.#recordR9ProgressionFailure(
+                'next-wave-begin',
+                beginReceipt
+            );
+            return false;
+        }
+        const activationReceipt = this.objectSystem.activatePreparedNextWave({
+            transactionId: nextTransactionId,
+            planFingerprint: this.r9PlanFingerprint
+        });
+        if (activationReceipt.accepted !== true) {
+            if (activationReceipt.code
+                    === NEXT_WAVE_PROGRESSION_RESULT_CODE
+                        .DEFERRED_UNSAFE_BOUNDARY) {
+                return false;
+            }
+            this.#recordR9ProgressionFailure(
+                'next-wave-activation',
+                activationReceipt
+            );
+            return false;
+        }
+        this.r9PendingShopCloseReceipt = null;
+        return true;
+    }
+
+    #captureR9PendingShopClose(closeReceipt) {
+        const sourceView = this.waveRunCoordinator.getSettlementView();
+        const nextWaveOrdinal = sourceView.nextProgression?.type
+                === 'NEXT_WAVE'
+            ? sourceView.nextProgression.waveOrdinal
+            : 0;
+        const nextTransactionId = nextWaveOrdinal > 0
+            ? [
+                'r9-next-wave',
+                this.r9RunSessionId,
+                nextWaveOrdinal,
+                sourceView.completionRevision
+            ].join(':')
+            : null;
+        return Object.freeze({
+            receipt: closeReceipt,
+            sourceView,
+            nextWaveOrdinal,
+            nextTransactionId
+        });
+    }
+
+    #collectR9ClosedShopBlockers({
+        view,
+        closeReceipt,
+        matchingPrepared
+    }) {
+        const blockers = [];
+        const board = this.sentenceBoard.getStatus();
+        const commerce = this.runCommerceState.getStatus();
+        const shop = this.wordShopSession.getStatus();
+        const settlement = this.waveSettlementCoordinator.getStatus();
+        const hostile = this.getHostileParticipationStatus();
+        const wave = this.objectSystem.getEnemyWaveStatus();
+        if (closeReceipt.accepted !== true
+            || closeReceipt.code !== SHOP_PHASE_RESULT_CODE.CLOSED
+            || this.shopPhaseCoordinator.getPhase()
+                !== SHOP_RUNTIME_PHASE.COMBAT
+            || shop.active !== false) {
+            blockers.push('SHOP_NOT_AUTHENTICALLY_CLOSED');
+        }
+        if (board.draftSlots !== null) blockers.push('BOARD_DRAFT_PENDING');
+        if (commerce.pendingTransactionCount !== 0) {
+            blockers.push('COMMERCE_PENDING');
+        }
+        if (settlement.activeStage !== WAVE_SETTLEMENT_STAGE.OPENED
+            || settlement.settlementOrdinal !== view.waveOrdinal
+            || settlement.settlementReceipt === null) {
+            blockers.push('SETTLEMENT_NOT_COMMITTED');
+        }
+        if (hostile?.countExact !== true
+            || hostile.hostileActorCount !== 0
+            || hostile.pendingHostileActorCount !== 0) {
+            blockers.push('HOSTILE_NOT_EXACT_ZERO');
+        }
+        if (!matchingPrepared
+            && (wave?.allSpawnsQueued !== true
+                || wave.remainingSpawnCount !== 0
+                || wave.blockedSpawnCount !== 0)) {
+            blockers.push('OLD_WAVE_PENDING');
+        }
+        if (this.isGpuWorldRecoveryRequired()) {
+            blockers.push('ENDPOINT_RECOVERY');
+        }
+        return blockers;
+    }
+
+    #isR9MapClearReady() {
+        return this.r9RuntimeActive
+            && this.waveRunCoordinator?.getSettlementView?.().state
+                === WAVE_RUN_STATE.MAP_CLEAR_READY;
+    }
+
+    #needsR9PausedTechnicalBoundary() {
+        const recovery = this.getGpuRecoveryStatus();
+        return recovery?.probation?.state === 'PENDING'
+            || (recovery?.pendingFixedTick ?? 0) !== 0;
+    }
+
+    #advanceR9PausedTechnicalBoundary() {
+        const proposedFixedTick = this.fixedTick + 1;
+        const advanced = this.objectSystem.fixedUpdate(
+            this.dependencies.timePort.getFixedDelta(),
+            proposedFixedTick
+        );
+        if (advanced === true) this.fixedTick = proposedFixedTick;
+        return advanced === true
+            ? FIXED_STEP_RESULT.COMPLETED
+            : FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE;
+    }
+
+    #recordR9ProgressionFailure(stage, detail) {
+        this.r9ProgressionFailure ??= Object.freeze({
+            stage,
+            code: detail?.code ?? 'R9_PROGRESSION_FAILURE',
+            transactionId: detail?.transactionId ?? null
         });
     }
 

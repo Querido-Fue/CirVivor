@@ -475,4 +475,66 @@ test('GameObjectSystem은 proof 평가 뒤에만 gameplay ingress를 stage한다
     assert.doesNotMatch(waveDirectorSource, /createWaveClearProof|WaveRunCoordinator/u);
 });
 
+test('next Wave seam은 candidate init 뒤 원자 교체하고 authentic CLOSED 뒤에만 활성화한다', async () => {
+    const [objectSource, gameSystemSource, gameSceneSource] = await Promise.all([
+        readFile(new URL(
+            '../script/module/ingame/object/game_object_system.js',
+            import.meta.url
+        ), 'utf8'),
+        readFile(new URL(
+            '../script/module/ingame/game_system.js',
+            import.meta.url
+        ), 'utf8'),
+        readFile(new URL(
+            '../script/module/scene/game/_game_scene.js',
+            import.meta.url
+        ), 'utf8')
+    ]);
+    const prepareStart = objectSource.indexOf('    prepareNextWave(request = {})');
+    const activateStart = objectSource.indexOf(
+        '    activatePreparedNextWave(request = {})',
+        prepareStart
+    );
+    const prepareSource = objectSource.slice(prepareStart, activateStart);
+    assert.ok(prepareStart > 0 && activateStart > prepareStart);
+    assert.ok(
+        prepareSource.indexOf('candidate.init(this.tileMap)')
+            < prepareSource.indexOf('oldWaveDirector.destroy()')
+    );
+    assert.ok(
+        prepareSource.indexOf('oldWaveDirector.destroy()')
+            < prepareSource.indexOf('this.waveDirector = candidate')
+    );
+    assert.doesNotMatch(prepareSource, /queueSpawnsForFixedTick/u);
+    assert.match(prepareSource, /this\.waveGameplayIngressSealed = true/u);
+    assert.match(
+        objectSource.slice(activateStart),
+        /this\.waveGameplayIngressSealed = false/u
+    );
+    const activationSource = objectSource.slice(
+        activateStart,
+        objectSource.indexOf(
+            '    getNextWaveProgressionStatus()',
+            activateStart
+        )
+    );
+    assert.ok(
+        activationSource.indexOf(
+            'if (known?.activationReceipt) return known.activationReceipt;'
+        ) < activationSource.indexOf('if (!prepared)')
+    );
+    assert.match(
+        gameSystemSource,
+        /progressClosing\(\)[\s\S]*SHOP_PHASE_RESULT_CODE\.CLOSED[\s\S]*#captureR9PendingShopClose/u
+    );
+    assert.match(
+        gameSystemSource,
+        /#progressR9ClosedShopBoundary\(\)[\s\S]*prepareNextWave\([\s\S]*observeShopContinue\([\s\S]*beginWave\([\s\S]*activatePreparedNextWave\(/u
+    );
+    assert.match(
+        gameSceneSource,
+        /r9WaveRunPlan: this\.r9WaveRunPlan[\s\S]*r9RunSessionId: this\.r9RunSessionId/u
+    );
+});
+
 console.log('R9 exact wave quiescence authority: ok');

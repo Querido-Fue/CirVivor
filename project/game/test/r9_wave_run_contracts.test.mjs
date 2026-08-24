@@ -714,9 +714,8 @@ test('defeat/destroy는 exact terminal seal이며 status/facts는 immutable이�
     assert.equal(afterDestroy.code, WAVE_RUN_RESULT_CODE.DESTROYED);
 });
 
-test('R8/Post-R8 source는 Turn 1에 연결되지 않고 WaveDirector completionOwned=false다', async () => {
+test('R8 primitive는 R9 진행을 소유하지 않고 WaveDirector completionOwned=false다', async () => {
     const sourceUrls = [
-        '../script/module/scene/game/production_game_start_route.js',
         '../script/module/ingame/flow/shop_phase_coordinator.js',
         '../script/module/ingame/contract/r8_fingerprint_contract.js'
     ].map((relative) => new URL(relative, import.meta.url));

@@ -499,6 +499,38 @@ function assertDedicatedFixtureResult(result, fixtureStage) {
             && result.requestedMaxStorageBuffersPerShaderStage === 9
             && result.adapterMaxStorageBuffersPerShaderStage >= 9
             && result.deviceMaxStorageBuffersPerShaderStage >= 9;
+    } else if (fixtureStage === 'r9-multi-wave') {
+        fixture = result?.r9MultiWave;
+        scenarioValid = fixture?.scenario
+                === 'r9-three-wave-progression-actual-webgpu'
+            && fixture.directorCreateCount === 3
+            && fixture.directorSequence?.length === 3
+            && fixture.directorSequence.map(({ fixedTickOffset }) => (
+                fixedTickOffset
+            )).join(',') === '0,1,2'
+            && fixture.destroyedWaveIds?.length === 2
+            && fixture.sameGpuEndpoint === true
+            && fixture.endpointProgress?.totalSpawnCount === 3
+            && fixture.endpointProgress.liveHostileCount === 0
+            && fixture.endpointProgress.completedWaveCount === 3
+            && fixture.endpointProgress.lastWaveOrdinal === 3
+            && fixture.firstSpawnFixedTicks?.join(',') === '1,2,3'
+            && fixture.uniqueSpawnCommandCount === 3
+            && fixture.noCloseBoundarySpawn === true
+            && fixture.overtimeObserved === true
+            && fixture.finalState === 'MAP_CLEAR_READY'
+            && fixture.finalContinueState === 'MAP_CLEAR_READY'
+            && fixture.mapClearFactCount === 1
+            && fixture.nextDirectorCreatedAfterFinal === false
+            && fixture.preservedOwnerIdentity === true
+            && fixture.routeAllOpen === true
+            && Number.isSafeInteger(fixture.planFingerprint)
+            && fixture.planFingerprint > 0
+            && fixture.storageMaximum === 2
+            && fixture.recoveryRequired === false
+            && result.requestedMaxStorageBuffersPerShaderStage === 9
+            && result.adapterMaxStorageBuffersPerShaderStage >= 9
+            && result.deviceMaxStorageBuffersPerShaderStage >= 9;
     } else if (fixtureStage === 'tower-group-target-query') {
         fixture = result?.towerGroupTargetQuery;
         scenarioValid = fixture?.nearestEntityId === 50
@@ -3005,6 +3037,7 @@ function assertFixtureStageResult(result) {
         || fixtureStage === 'r5-actor-verbs'
         || fixtureStage === 'r7-actor-payload-multiplicity'
         || fixtureStage === 'r9-overtime-pressure'
+        || fixtureStage === 'r9-multi-wave'
         || fixtureStage === 'post-r5-live-bugfix'
         || fixtureStage === 'tower-group-target-query'
         || fixtureStage === 'maximum-damage-window'
@@ -3117,6 +3150,8 @@ async function prepareHarnessApp(
     const fixtureStage = process.env.CIRVIVOR_WEBGPU_FIXTURE_STAGE || 'full';
     const runnerFileName = fixtureStage === 'r6-tower-merge'
         ? 'tower_merge_runner.js'
+        : fixtureStage === 'r9-multi-wave'
+            ? 'r9_multi_wave_runner.js'
         : fixtureStage === 'r9-overtime-pressure'
             ? 'r9_overtime_pressure_runner.js'
         : fixtureStage === 'tower-group-target-query'
@@ -3159,7 +3194,8 @@ async function prepareHarnessApp(
     await fs.mkdir(productionDirectory, { recursive: true });
     if (fixtureStage === 'post-r5-live-bugfix'
         || fixtureStage === 'r6-tower-merge'
-        || fixtureStage === 'r9-overtime-pressure') {
+        || fixtureStage === 'r9-overtime-pressure'
+        || fixtureStage === 'r9-multi-wave') {
         await linkRuntimeDirectory(
             gameScriptDirectory,
             path.join(productionDirectory, 'script')
@@ -3264,6 +3300,10 @@ async function runHarness() {
             fs.access(path.join(
                 harnessDirectory,
                 'r9_overtime_pressure_runner.js'
+            )),
+            fs.access(path.join(
+                harnessDirectory,
+                'r9_multi_wave_runner.js'
             )),
             ...PRODUCTION_SCRIPT_MODULE_FILES.map((relativePath) => (
                 fs.access(path.join(gameScriptDirectory, ...relativePath.split('/')))

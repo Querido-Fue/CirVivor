@@ -31,11 +31,17 @@ const {
     'data/scene/game/performance_serpentine_wave_data.js'
 );
 const {
+    R9_QA_THREE_WAVE_RUN_PLAN
+} = await loadGameModule('data/scene/game/r9_wave_run_plan_data.js');
+const {
     PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID,
     PRODUCTION_PERFORMANCE_SELECTION_MAP_ID,
     PRODUCTION_STAGE_ONE_RUNTIME_MAP_ID,
     PRODUCTION_STAGE_ONE_SELECTION_MAP_ID,
-    createProductionGameStartOptions
+    R9_QA_LAUNCH_ARGUMENT,
+    createProductionGameStartOptions,
+    createR9QaGameStartOptions,
+    isR9QaLaunchRequested
 } = await loadGameModule('scene/game/production_game_start_route.js');
 const {
     ABILITY_SLOT_ID
@@ -157,6 +163,35 @@ test('첫 카드가 아닌 직접 map 요청은 기존 map resolver 경로를 �
     assert.deepEqual(createProductionGameStartOptions(undefined), {
         mapId: undefined
     });
+});
+
+test('--r9-qa는 configured Shop과 동일 GPU world의 data-owned 3-Wave plan을 연다', () => {
+    assert.equal(R9_QA_LAUNCH_ARGUMENT, '--r9-qa');
+    assert.equal(isR9QaLaunchRequested(['--r9-qa']), true);
+    assert.equal(isR9QaLaunchRequested(['--r9-qa-extra']), false);
+    assert.equal(isR9QaLaunchRequested([]), false);
+
+    const first = createR9QaGameStartOptions();
+    const second = createR9QaGameStartOptions();
+    assert.strictEqual(first.r9WaveRunPlan, R9_QA_THREE_WAVE_RUN_PLAN);
+    assert.equal(first.r9WaveRunPlan.waves.length, 3);
+    assert.strictEqual(
+        first.waveDefinition,
+        R9_QA_THREE_WAVE_RUN_PLAN.waves[0].waveDefinition
+    );
+    assert.equal(first.mapId, R9_QA_THREE_WAVE_RUN_PLAN.mapId);
+    assert.notStrictEqual(
+        first.tileNavigationSource,
+        second.tileNavigationSource
+    );
+    assert.equal(first.r8ShopOptions.mode, 'QA');
+    assert.equal(first.r8ShopOptions.autoOpen, false);
+    assert.equal(first.r8ShopOptions.allowEconomicallyRedundantOffers, true);
+    assert.equal(first.r9RunSessionId, 'run.r9.qa');
+    assert.equal(first.r9WarmExposureApproved, true);
+    assert.equal(first.r9QaRuntimeAuthorized, true);
+    assert.equal(first.enemyWaveEnabled, true);
+    assert.equal(first.gameplayWorldActorsEnabled, true);
 });
 
 test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene에 그대로 전달한다', async () => {
