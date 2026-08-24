@@ -697,6 +697,9 @@ export class WaveRunCoordinator {
             completedInOvertime: this.overtimeStarted,
             overtimeStarted: this.overtimeStarted,
             elapsedCombatTicks: this.elapsedCombatTicks,
+            combatDurationTicks:
+                metadata?.resolutionProfile.combatDurationTicks ?? 0,
+            deadlineReached: this.deadlineReached,
             completionGoldBonus:
                 metadata?.resolutionProfile.settlement.completionGoldBonus ?? 0,
             shopAfterEveryWave: this.plan.shopAfterEveryWave,

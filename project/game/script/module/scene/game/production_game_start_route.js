@@ -14,8 +14,17 @@ import {
     PERFORMANCE_SERPENTINE_WAVE_01_DATA
 } from 'data/scene/game/performance_serpentine_wave_data.js';
 import {
+    R9_PRODUCTION_WAVE_RUN_PLAN_BY_MAP_ID,
     R9_QA_THREE_WAVE_RUN_PLAN
 } from 'data/scene/game/r9_wave_run_plan_data.js';
+import {
+    R9_WAVE_RESOLUTION_PROFILE_BY_ID
+} from 'data/scene/game/r9_wave_resolution_profile_data.js';
+import {
+    R9_POST_R8_PRODUCTION_SHOP_EXPOSURE,
+    isR9ProductionShopExposureApproved,
+    resolveR9ProductionRunIdentity
+} from 'data/scene/game/r9_production_run_data.js';
 import {
     R5_SHOWCASE_SENTENCE_LOADOUT,
     R6_QA_SENTENCE_LOADOUT,
@@ -122,6 +131,57 @@ function createGameStartOptions(selectedMapId, loadout) {
     };
 }
 
+function attachProductionR9Runtime(options, identitySource = null) {
+    const plan = R9_PRODUCTION_WAVE_RUN_PLAN_BY_MAP_ID[options.mapId] ?? null;
+    if (!plan) {
+        if (identitySource === null) return options;
+        return {
+            ...options,
+            r8ShopOptions: normalizeShopRuntimeConfiguration({
+                ...identitySource,
+                sourceId:
+                    R9_POST_R8_PRODUCTION_SHOP_EXPOSURE.sourceId,
+                mode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+            })
+        };
+    }
+    const resolvedIdentity = identitySource
+        ?? resolveR9ProductionRunIdentity(plan.planId);
+    if (!resolvedIdentity) {
+        throw new Error(`R9 production run identity가 없습니다: ${plan.planId}`);
+    }
+    const r8ShopOptions = normalizeShopRuntimeConfiguration({
+        ...resolvedIdentity,
+        sourceId: R9_POST_R8_PRODUCTION_SHOP_EXPOSURE.sourceId,
+        mode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+    });
+    const productionRunIdentity = identitySource === null
+        ? resolvedIdentity
+        : Object.freeze({
+            runSessionId: r8ShopOptions.runSessionId,
+            runSeed: r8ShopOptions.runSeed,
+            unlockedWordDefinitionIds:
+                r8ShopOptions.unlockedWordDefinitionIds,
+            unlockedPoolFingerprint: r8ShopOptions.unlockedPoolFingerprint
+        });
+    const firstWave = plan.waves[0];
+    return {
+        ...options,
+        waveDefinition: firstWave.waveDefinition,
+        productionRunIdentity,
+        r8ShopOptions,
+        r9WaveRunPlan: plan,
+        r9WaveResolutionProfile:
+            R9_WAVE_RESOLUTION_PROFILE_BY_ID[
+                firstWave.resolutionProfileId
+            ],
+        r9RunSessionId: productionRunIdentity.runSessionId,
+        r9WarmExposureApproved:
+            isR9ProductionShopExposureApproved(productionRunIdentity),
+        r9QaRuntimeAuthorized: false
+    };
+}
+
 /**
  * 타이틀의 선택 map ID를 실제 GameScene 세션 옵션으로 변환합니다.
  *
@@ -138,13 +198,15 @@ export function createProductionGameStartOptions(selectedMapId) {
     if (isR8QaLaunchRequested()) {
         return createR8QaGameStartOptions(selectedMapId);
     }
-    return createGameStartOptions(
-        selectedMapId,
-        isR7QaLaunchRequested()
-            ? R7_QA_SENTENCE_LOADOUT
-            : isR6QaLaunchRequested()
-                ? R6_QA_SENTENCE_LOADOUT
-                : R5_SHOWCASE_SENTENCE_LOADOUT
+    return attachProductionR9Runtime(
+        createGameStartOptions(
+            selectedMapId,
+            isR7QaLaunchRequested()
+                ? R7_QA_SENTENCE_LOADOUT
+                : isR6QaLaunchRequested()
+                    ? R6_QA_SENTENCE_LOADOUT
+                    : R5_SHOWCASE_SENTENCE_LOADOUT
+        )
     );
 }
 
@@ -173,6 +235,10 @@ export function createR9QaGameStartOptions() {
             allowEconomicallyRedundantOffers: true
         }),
         r9WaveRunPlan: R9_QA_THREE_WAVE_RUN_PLAN,
+        r9WaveResolutionProfile:
+            R9_WAVE_RESOLUTION_PROFILE_BY_ID[
+                R9_QA_THREE_WAVE_RUN_PLAN.waves[0].resolutionProfileId
+            ],
         r9RunSessionId: 'run.r9.qa',
         r9WarmExposureApproved: true,
         r9QaRuntimeAuthorized: true
@@ -222,20 +288,17 @@ export function createR8QaGameStartOptions(
 
 /**
  * R9/new-run owner가 완전한 production identity를 주입할 public seam입니다.
- * 이번 단계에서는 auto-open caller나 settlement를 추가하지 않습니다.
+ * map-owned R9 plan/profile과 Post-R8 승인 gate까지 한 번에 결합합니다.
  */
 export function createProductionShopGameStartOptions(
     selectedMapId,
     productionRunIdentity
 ) {
-    return {
-        ...createGameStartOptions(
+    return attachProductionR9Runtime(
+        createGameStartOptions(
             selectedMapId,
             R5_SHOWCASE_SENTENCE_LOADOUT
         ),
-        r8ShopOptions: normalizeShopRuntimeConfiguration({
-            ...productionRunIdentity,
-            mode: SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
-        })
-    };
+        productionRunIdentity
+    );
 }

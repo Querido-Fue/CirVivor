@@ -3,6 +3,14 @@ import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
 
+import { loadGameModule } from './support/source_module_loader.mjs';
+
+const {
+    createR9WaveFlowPresentation
+} = await loadGameModule(
+    'scene/game/render/r9_wave_flow_presentation_model.js'
+);
+
 const STATUS_RENDERER_SOURCE = await readFile(
     new URL(
         '../script/module/scene/game/render/game_scene_status_renderer.js',
@@ -26,7 +34,10 @@ async function createRendererHarness() {
     const positioningCalls = [];
     const releasedItems = [];
     const shopOverlaySessions = [];
-    const colorSchemes = { Game: { Font: '#ddeeff' } };
+    const colorSchemes = {
+        Game: { Font: '#ddeeff' },
+        Title: { Menu: { Accent: '#ff3355' } }
+    };
     const controlToken = Object.freeze({ name: 'CONTROL' });
     let positioningSequence = 0;
 
@@ -256,6 +267,11 @@ async function createRendererHarness() {
                     return session;
                 }
             }
+        )],
+        ['./r9_wave_flow_presentation_model.js', createSyntheticModule(
+            context,
+            'r9_wave_flow_presentation_model.js',
+            { createR9WaveFlowPresentation }
         )]
     ]);
     await module.link((specifier) => {
@@ -446,11 +462,11 @@ test('resize는 layout을 재컴파일·반납하고 destroy는 session presenta
         harness.positioningCalls.filter(({ type }) => type === 'construct').length,
         2
     );
-    assert.equal(harness.releasedItems.length, 2);
+    assert.equal(harness.releasedItems.length, 4);
 
     renderer.destroy();
     renderer.destroy();
-    assert.equal(harness.releasedItems.length, 4);
+    assert.equal(harness.releasedItems.length, 8);
     const previousCallCount = harness.calls.length;
     assert.equal(renderer.draw(status, {
         ww: 1600,
@@ -503,4 +519,113 @@ test('status renderer는 Shop overlay variable update/command/destroy port를 �
     renderer.destroy();
     assert.equal(shop.destroyed, true);
     assert.deepEqual(Array.from(renderer.drainCommands()), []);
+});
+
+test('R9 aggregate는 combat/overtime/Shop/final semantic surface를 authority 변경 없이 표시한다', async () => {
+    const harness = await createRendererHarness();
+    const renderer = harness.createRenderer();
+    const viewport = Object.freeze({
+        ww: 1920,
+        wh: 1080,
+        uiww: 1600,
+        uiOffsetX: 160,
+        uiScale: 1.5
+    });
+    const baseWaveFlow = Object.freeze({
+        configured: true,
+        waveOrdinal: 1,
+        totalWaveCount: 3,
+        waveId: 'wave-1',
+        waveState: 'WAVE_ACTIVE',
+        elapsedTicks: 10,
+        remainingTicks: 50,
+        deadlineReached: false,
+        hostileActorCount: 12,
+        siegeWeight: 12,
+        overtimeActive: false,
+        overtimePulseOrdinal: 0,
+        ticksUntilNextPulse: 0,
+        projectedNextDamageFixedPoint: 0,
+        settlementCode: null,
+        perEnemyUiObjectCount: 0,
+        shopPreview: Object.freeze({
+            completedWaveOrdinal: 0,
+            clearType: null,
+            overtimePulseCount: 0,
+            overtimeDamageTotalFixedPoint: 0,
+            nextWaveId: null,
+            finalWave: false,
+            mapClearReady: false
+        })
+    });
+
+    assert.equal(renderer.draw(createStatus({
+        waveFlow: baseWaveFlow
+    }), viewport), true);
+    assert.deepEqual(
+        harness.calls.slice(-2).map(({ options }) => options.text),
+        ['WAVE 1/3', 'TIME 50 · HOSTILES 12']
+    );
+    assert.deepEqual(
+        Array.from(renderer.getWaveFlowPresentationStatus().semanticSurfaces),
+        ['hud.wave-active']
+    );
+
+    harness.calls.length = 0;
+    const overtimeFlow = Object.freeze({
+        ...baseWaveFlow,
+        waveState: 'OVERTIME',
+        overtimeActive: true,
+        deadlineReached: true,
+        remainingTicks: 0,
+        ticksUntilNextPulse: 4,
+        projectedNextDamageFixedPoint: 1250
+    });
+    renderer.draw(createStatus({ waveFlow: overtimeFlow }), viewport);
+    assert.deepEqual(
+        harness.calls.slice(-2).map(({ options }) => options.text),
+        [
+            'WAVE 1/3 · OVERTIME',
+            'HOSTILES 12 · NEXT CORE PRESSURE 4 TICKS · DMG 1,250'
+        ]
+    );
+    assert.ok(harness.calls.slice(-2).every(
+        ({ options }) => options.fill === '#ff3355'
+    ));
+    assert.deepEqual(
+        Array.from(renderer.getWaveFlowPresentationStatus().semanticSurfaces),
+        ['hud.overtime']
+    );
+
+    harness.calls.length = 0;
+    const finalShopFlow = Object.freeze({
+        ...baseWaveFlow,
+        waveOrdinal: 3,
+        waveId: 'wave-3',
+        waveState: 'SHOP',
+        hostileActorCount: 0,
+        shopPreview: Object.freeze({
+            completedWaveOrdinal: 3,
+            completedWaveId: 'wave-3',
+            clearType: 'OVERTIME',
+            overtimePulseCount: 2,
+            overtimeDamageTotalFixedPoint: 2500,
+            nextWaveId: null,
+            finalWave: true,
+            mapClearReady: false
+        })
+    });
+    renderer.draw(createStatus({ waveFlow: finalShopFlow }), viewport);
+    assert.deepEqual(
+        harness.calls.slice(-2).map(({ options }) => options.text),
+        [
+            'FINAL WAVE CLEAR · OVERTIME · 2 PULSES · DMG 2,500',
+            'CONTINUE → MAP CLEAR'
+        ]
+    );
+    assert.deepEqual(
+        Array.from(renderer.getWaveFlowPresentationStatus().semanticSurfaces),
+        ['shop.wave-overtime-clear', 'shop.final-wave']
+    );
+    assert.equal(finalShopFlow.shopPreview.finalWave, true);
 });

@@ -457,7 +457,7 @@ test('GameSystem SHOP은 fixed/control/GPU submit을 얼리고 update/draw는 �
     gameSystem.destroy();
 });
 
-test('R8 exact QA route만 data-owned Gold/pool과 auto-open을 추가하고 기존 routes는 유지한다', () => {
+test('R8 exact QA auto-open과 R9 ordinary production Shop route를 분리한다', () => {
     assert.equal(isR8QaLaunchRequested([R8_QA_LAUNCH_ARGUMENT]), true);
     assert.equal(isR8QaLaunchRequested(['--r7-qa']), false);
     const ordinary = createProductionGameStartOptions(
@@ -473,7 +473,15 @@ test('R8 exact QA route만 data-owned Gold/pool과 auto-open을 추가하고 기
     );
     assert.strictEqual(r6.wordSystemOptions.loadout, R6_QA_SENTENCE_LOADOUT);
     assert.strictEqual(r7.wordSystemOptions.loadout, R7_QA_SENTENCE_LOADOUT);
-    assert.equal(Object.hasOwn(ordinary, 'r8ShopOptions'), false);
+    assert.equal(Object.hasOwn(ordinary, 'r8ShopOptions'), true);
+    assert.equal(
+        ordinary.r8ShopOptions.mode,
+        SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+    );
+    assert.equal(ordinary.r8ShopOptions.autoOpen, false);
+    assert.equal(ordinary.r9WarmExposureApproved, true);
+    assert.equal(ordinary.r9QaRuntimeAuthorized, false);
+    assert.equal(ordinary.r9WaveRunPlan.waves.length, 1);
     assert.equal(Object.hasOwn(r6, 'r8ShopOptions'), false);
     assert.equal(Object.hasOwn(r7, 'r8ShopOptions'), false);
     assert.strictEqual(r8.wordSystemOptions.loadout, R5_SHOWCASE_SENTENCE_LOADOUT);

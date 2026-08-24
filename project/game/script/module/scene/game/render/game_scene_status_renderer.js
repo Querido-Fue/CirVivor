@@ -7,6 +7,9 @@ import { TYPOGRAPHY } from 'ui/style/typography.js';
 import {
     createShopOverlayRenderer
 } from '../shop/shop_overlay_renderer.js';
+import {
+    createR9WaveFlowPresentation
+} from './r9_wave_flow_presentation_model.js';
 
 const STATUS_LAYER = 'ui';
 const STATUS_X_PARENT_PERCENT = 3;
@@ -16,6 +19,8 @@ const STATUS_LAYOUT_HEIGHT_PARENT_PERCENT = 20;
 const STATUS_FIRST_LINE_HEIGHT_UIWW_PERCENT = 1.0625;
 const TOWER_STATUS_COMPONENT_ID = 'game_scene_tower_status';
 const CORE_STATUS_COMPONENT_ID = 'game_scene_core_status';
+const WAVE_PRIMARY_COMPONENT_ID = 'game_scene_wave_primary_status';
+const WAVE_SECONDARY_COMPONENT_ID = 'game_scene_wave_secondary_status';
 
 function normalizePositiveNumber(value, fallback = 0) {
     const number = Number(value);
@@ -91,6 +96,9 @@ export class GameSceneStatusRenderer {
         this.dynamicItems = null;
         this.towerCommand = null;
         this.coreCommand = null;
+        this.wavePrimaryCommand = null;
+        this.waveSecondaryCommand = null;
+        this.waveFlowPresentationStatus = null;
         this.shopOverlayRenderer = createShopOverlayRenderer({
             inputSource: options.inputSource,
             animationPort: options.animationPort,
@@ -109,7 +117,7 @@ export class GameSceneStatusRenderer {
      * GameSystem의 bounded gameplay snapshot을 canonical UI layout으로 표시합니다.
      * @param {object|null} status - GameSystem.getGameplayStatus() 결과입니다.
      * @param {{ww?:number,wh?:number,uiww?:number,uiOffsetX?:number,uiScale?:number}} [viewport={}] - 현재 UI viewport snapshot입니다.
-     * @returns {boolean} 두 status line을 제출했는지 여부입니다.
+     * @returns {boolean} bounded aggregate status를 제출했는지 여부입니다.
      */
     draw(status, viewport = {}) {
         if (this.destroyed) {
@@ -128,11 +136,26 @@ export class GameSceneStatusRenderer {
         this.towerCommand.fill = fill;
         this.coreCommand.text = createCoreStatusText(status);
         this.coreCommand.fill = fill;
+        const wavePresentation = createR9WaveFlowPresentation(
+            status?.waveFlow
+        );
+        this.waveFlowPresentationStatus = wavePresentation;
+        const waveFill = wavePresentation.accented
+            ? ColorSchemes.Title?.Menu?.Accent ?? fill
+            : fill;
+        this.wavePrimaryCommand.text = wavePresentation.primaryText;
+        this.wavePrimaryCommand.fill = waveFill;
+        this.waveSecondaryCommand.text = wavePresentation.secondaryText;
+        this.waveSecondaryCommand.fill = waveFill;
 
-        for (const entry of this.staticItems) {
-            render(STATUS_LAYER, entry.item);
+        for (let index = 0; index < 2; index++) {
+            render(STATUS_LAYER, this.staticItems[index].item);
         }
         this.shopOverlayRenderer.draw(status, normalizedViewport);
+        if (wavePresentation.visible) {
+            render(STATUS_LAYER, this.wavePrimaryCommand);
+            render(STATUS_LAYER, this.waveSecondaryCommand);
+        }
         return true;
     }
 
@@ -147,6 +170,11 @@ export class GameSceneStatusRenderer {
         return this.shopOverlayRenderer?.getStatus?.() ?? null;
     }
 
+    /** Golden/manual QA가 읽는 마지막 immutable semantic surface 상태입니다. */
+    getWaveFlowPresentationStatus() {
+        return this.waveFlowPresentationStatus;
+    }
+
     /** pooled UI command를 반납합니다. 반복 호출해도 안전합니다. */
     destroy() {
         if (this.destroyed) {
@@ -155,6 +183,7 @@ export class GameSceneStatusRenderer {
         this.destroyed = true;
         this.shopOverlayRenderer?.destroy?.();
         this.shopOverlayRenderer = null;
+        this.waveFlowPresentationStatus = null;
         this.#releaseLayout();
     }
 
@@ -226,12 +255,24 @@ export class GameSceneStatusRenderer {
             .textStyle(TYPOGRAPHY.CONTROL)
             .text('CORE   N/A')
             .fill(ColorSchemes.Game?.Font ?? null)
+            .item('text', WAVE_PRIMARY_COMPONENT_ID)
+            .textStyle(TYPOGRAPHY.CONTROL)
+            .text('')
+            .fill(ColorSchemes.Game?.Font ?? null)
+            .item('text', WAVE_SECONDARY_COMPONENT_ID)
+            .textStyle(TYPOGRAPHY.CONTROL)
+            .text('')
+            .fill(ColorSchemes.Game?.Font ?? null)
             .build();
 
         this.staticItems = buildResult.staticItems;
         this.dynamicItems = buildResult.dynamicItems;
         this.towerCommand = buildResult.components[TOWER_STATUS_COMPONENT_ID];
         this.coreCommand = buildResult.components[CORE_STATUS_COMPONENT_ID];
+        this.wavePrimaryCommand
+            = buildResult.components[WAVE_PRIMARY_COMPONENT_ID];
+        this.waveSecondaryCommand
+            = buildResult.components[WAVE_SECONDARY_COMPONENT_ID];
     }
 
     #releaseLayout() {
@@ -245,6 +286,8 @@ export class GameSceneStatusRenderer {
         this.dynamicItems = null;
         this.towerCommand = null;
         this.coreCommand = null;
+        this.wavePrimaryCommand = null;
+        this.waveSecondaryCommand = null;
     }
 }
 

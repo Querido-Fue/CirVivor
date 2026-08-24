@@ -504,3 +504,104 @@ test('SystemHandler backpressure receipt는 미실행 remainder를 debt로 보�
     assert.equal(profilerState.fixedSamples.length, 1);
     assert.equal(profilerState.fixedSamples[0].deferred, true);
 });
+
+test('R9 WAVE_ACTIVE/OVERTIME/SHOP user pause는 clock·pulse·cooldown debt를 만들지 않는다', async () => {
+    const frameState = { frames: [] };
+    const App = await loadApp(class SystemHandlerStub {}, frameState);
+
+    for (const waveState of ['WAVE_ACTIVE', 'OVERTIME', 'SHOP']) {
+        let frameMode = 'paused';
+        const counters = {
+            clockTicks: 11,
+            pulseTicks: waveState === 'OVERTIME' ? 3 : 0,
+            cooldownTicks: 7
+        };
+        const tickReceipts = [];
+        const handler = {
+            debugSystem: null,
+            prepareDebugFrameControl() {
+                return { mode: frameMode };
+            },
+            shouldRunFixedStep() {
+                return waveState !== 'SHOP';
+            },
+            tick(context) {
+                const completed = context.debugFrameMode === 'running'
+                    && waveState !== 'SHOP'
+                    ? context.fixedStepCount
+                    : 0;
+                counters.clockTicks += completed;
+                counters.cooldownTicks += completed;
+                if (waveState === 'OVERTIME') {
+                    counters.pulseTicks += completed;
+                }
+                const receipt = Object.freeze({
+                    requestedFixedStepCount: context.fixedStepCount,
+                    completedFixedStepCount: completed,
+                    deferredBackpressureCount: 0,
+                    intentionalPauseCount: 0,
+                    consumedFixedStepCount: completed
+                });
+                tickReceipts.push(receipt);
+                return receipt;
+            }
+        };
+        const app = new App(handler);
+        app.running = true;
+        app.lastFrameTimestamp = 1_000;
+        let now = 1_000;
+        const beforePause = { ...counters };
+
+        for (let frame = 0; frame < 600; frame++) {
+            now += 1000 / 60;
+            app.loop(now);
+        }
+        assert.deepEqual(counters, beforePause, waveState);
+        assert.equal(app.accumulatorSeconds, 0, waveState);
+        assert.equal(
+            tickReceipts.slice(-600).every((receipt) => (
+                receipt.requestedFixedStepCount === 0
+                && receipt.completedFixedStepCount === 0
+            )),
+            true,
+            waveState
+        );
+
+        frameMode = 'running';
+        let resumed = null;
+        for (let frame = 0; frame < 3; frame++) {
+            now += 1000 / 60;
+            app.loop(now);
+            const candidate = tickReceipts.at(-1);
+            assert.ok(candidate.requestedFixedStepCount <= 1, waveState);
+            if (waveState === 'SHOP'
+                || candidate.requestedFixedStepCount > 0) {
+                resumed = candidate;
+                break;
+            }
+        }
+        assert.ok(resumed, waveState);
+        assert.ok(resumed.requestedFixedStepCount <= 1, waveState);
+        assert.equal(
+            resumed.completedFixedStepCount,
+            waveState === 'SHOP' ? 0 : 1,
+            waveState
+        );
+        assert.ok(app.accumulatorSeconds < app.fixedStepSeconds, waveState);
+        assert.equal(
+            counters.clockTicks - beforePause.clockTicks,
+            waveState === 'SHOP' ? 0 : 1,
+            waveState
+        );
+        assert.equal(
+            counters.cooldownTicks - beforePause.cooldownTicks,
+            waveState === 'SHOP' ? 0 : 1,
+            waveState
+        );
+        assert.equal(
+            counters.pulseTicks - beforePause.pulseTicks,
+            waveState === 'OVERTIME' ? 1 : 0,
+            waveState
+        );
+    }
+});

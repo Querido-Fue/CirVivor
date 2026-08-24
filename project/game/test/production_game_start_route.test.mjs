@@ -31,8 +31,19 @@ const {
     'data/scene/game/performance_serpentine_wave_data.js'
 );
 const {
-    R9_QA_THREE_WAVE_RUN_PLAN
+    R9_PERFORMANCE_PRODUCTION_WAVE_RUN_PLAN,
+    R9_QA_THREE_WAVE_RUN_PLAN,
+    R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN
 } = await loadGameModule('data/scene/game/r9_wave_run_plan_data.js');
+const {
+    R9_WAVE_RESOLUTION_PROFILE_BY_ID
+} = await loadGameModule(
+    'data/scene/game/r9_wave_resolution_profile_data.js'
+);
+const {
+    R9_POST_R8_PRODUCTION_SHOP_EXPOSURE,
+    R9_PRODUCTION_RUN_IDENTITY_BY_PLAN_ID
+} = await loadGameModule('data/scene/game/r9_production_run_data.js');
 const {
     PRODUCTION_PERFORMANCE_RUNTIME_MAP_ID,
     PRODUCTION_PERFORMANCE_SELECTION_MAP_ID,
@@ -75,6 +86,29 @@ test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.strictEqual(
+        options.r9WaveRunPlan,
+        R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN
+    );
+    assert.strictEqual(
+        options.r9WaveResolutionProfile,
+        R9_WAVE_RESOLUTION_PROFILE_BY_ID[
+            R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN
+                .waves[0].resolutionProfileId
+        ]
+    );
+    assert.strictEqual(
+        options.productionRunIdentity,
+        R9_PRODUCTION_RUN_IDENTITY_BY_PLAN_ID[
+            R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN.planId
+        ]
+    );
+    assert.equal(options.r8ShopOptions.mode, 'PRODUCTION');
+    assert.equal(options.r8ShopOptions.autoOpen, false);
+    assert.equal(options.r8ShopOptions.configured, true);
+    assert.equal(options.r9WarmExposureApproved, true);
+    assert.equal(options.r9QaRuntimeAuthorized, false);
+    assert.equal(R9_POST_R8_PRODUCTION_SHOP_EXPOSURE.status, 'APPROVED');
     assert.strictEqual(
         options.wordSystemOptions.loadout[ABILITY_SLOT_ID.Q],
         R3_TOWER_SHOOTS_ENEMY_SENTENCE
@@ -139,6 +173,16 @@ test('두 번째 production map 선택은 폭 10 ㄹ자 10,000-body 성능 세�
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
     assert.strictEqual(
+        options.r9WaveRunPlan,
+        R9_PERFORMANCE_PRODUCTION_WAVE_RUN_PLAN
+    );
+    assert.equal(options.r9WaveRunPlan.waves.length, 1);
+    assert.equal(options.r9WaveRunPlan.finalContinueResult,
+        'MAP_CLEAR_READY');
+    assert.equal(options.nextMapId, undefined);
+    assert.equal(options.r8ShopOptions.mode, 'PRODUCTION');
+    assert.equal(options.r9WarmExposureApproved, true);
+    assert.strictEqual(
         options.wordSystemOptions.loadout[ABILITY_SLOT_ID.Q],
         R3_TOWER_SHOOTS_ENEMY_SENTENCE
     );
@@ -188,6 +232,12 @@ test('--r9-qa는 configured Shop과 동일 GPU world의 data-owned 3-Wave plan�
     assert.equal(first.r8ShopOptions.autoOpen, false);
     assert.equal(first.r8ShopOptions.allowEconomicallyRedundantOffers, true);
     assert.equal(first.r9RunSessionId, 'run.r9.qa');
+    assert.strictEqual(
+        first.r9WaveResolutionProfile,
+        R9_WAVE_RESOLUTION_PROFILE_BY_ID[
+            R9_QA_THREE_WAVE_RUN_PLAN.waves[0].resolutionProfileId
+        ]
+    );
     assert.equal(first.r9WarmExposureApproved, true);
     assert.equal(first.r9QaRuntimeAuthorized, true);
     assert.equal(first.enemyWaveEnabled, true);
@@ -299,6 +349,12 @@ test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
     assert.equal(options.enemyRecoveryEnabled, true);
+    assert.strictEqual(
+        options.r9WaveRunPlan,
+        R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN
+    );
+    assert.equal(options.r8ShopOptions.mode, 'PRODUCTION');
+    assert.equal(options.r9WarmExposureApproved, true);
     assert.strictEqual(
         options.wordSystemOptions.loadout[ABILITY_SLOT_ID.E],
         R3_ENEMIES_SHOOT_ENEMIES_SENTENCE
