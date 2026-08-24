@@ -145,6 +145,33 @@ function comparePulseIdentity(left, right) {
         || left.pulseSequence - right.pulseSequence;
 }
 
+function mergeSortedPulseEntries(leftEntries, rightEntries) {
+    if (leftEntries.length === 0) return rightEntries;
+    if (rightEntries.length === 0) return leftEntries;
+    const merged = new Array(leftEntries.length + rightEntries.length);
+    let leftIndex = 0;
+    let rightIndex = 0;
+    let writeIndex = 0;
+    while (leftIndex < leftEntries.length
+        && rightIndex < rightEntries.length) {
+        if (comparePulseIdentity(
+            leftEntries[leftIndex],
+            rightEntries[rightIndex]
+        ) <= 0) {
+            merged[writeIndex++] = leftEntries[leftIndex++];
+        } else {
+            merged[writeIndex++] = rightEntries[rightIndex++];
+        }
+    }
+    while (leftIndex < leftEntries.length) {
+        merged[writeIndex++] = leftEntries[leftIndex++];
+    }
+    while (rightIndex < rightEntries.length) {
+        merged[writeIndex++] = rightEntries[rightIndex++];
+    }
+    return merged;
+}
+
 /**
  * Pentagon Effect capability의 exact-handle roster와 pulse cadence만 소유합니다.
  * Effect instance/summary/pose는 GPU authority이며 roster는 bounded SoA입니다.
@@ -215,6 +242,7 @@ export class PentagonEffectDirector {
         this.indexByEntityId = new Map();
         this.count = 0;
         this.pulseScheduleHeap = [];
+        this.duePulseBacklog = [];
         this.sourceAuditIterator = null;
         this.maximumSourceAuditsPerFixedTick = Math.min(
             this.maximumPulseProgramsPerFixedTick,
@@ -578,7 +606,10 @@ export class PentagonEffectDirector {
         let dueEntries;
         try {
             this.#auditSources(tick);
-            dueEntries = this.#takeDuePulseEntries(tick);
+            dueEntries = mergeSortedPulseEntries(
+                this.#takeDueBacklogEntries(tick),
+                this.#takeDuePulseEntries(tick)
+            );
         } catch (error) {
             this.#fail('effect-stage-preflight', String(error?.message ?? error));
             return this.stageForFixedTick({ targetFixedTick: tick });
@@ -595,19 +626,18 @@ export class PentagonEffectDirector {
             ? 0
             : this.nextDueCursor % dueEntries.length;
         const stagedEntries = [];
-        const deferredEntries = [];
+        let deferredEntries;
         try {
-            for (let offset = 0; offset < dueEntries.length; offset++) {
+            for (let offset = 0;
+                offset < dueEntries.length
+                    && stagedEntries.length
+                        < this.maximumPulseProgramsPerFixedTick;
+                offset++) {
                 const entry = dueEntries[
                     (startCursor + offset) % dueEntries.length
                 ];
                 const index = this.#resolveScheduledPulseIndex(entry);
                 if (index < 0) {
-                    continue;
-                }
-                if (stagedEntries.length
-                    >= this.maximumPulseProgramsPerFixedTick) {
-                    deferredEntries.push(entry);
                     continue;
                 }
                 const disposition = this.lastLivenessAuditTicks[index] === tick
@@ -623,14 +653,22 @@ export class PentagonEffectDirector {
                     );
                 }
                 this.lastLivenessAuditTicks[index] = tick;
+                entry.selectedForStage = true;
                 stagedEntries.push(entry);
             }
-            for (const entry of deferredEntries) {
+            deferredEntries = [];
+            for (const entry of dueEntries) {
+                if (entry.selectedForStage) {
+                    entry.selectedForStage = false;
+                    continue;
+                }
                 const index = this.#resolveScheduledPulseIndex(entry);
                 if (index >= 0) {
-                    this.#schedulePulseAt(index, tick + 1, entry);
+                    this.#deferPulseEntryAt(index, entry, tick + 1);
+                    deferredEntries.push(entry);
                 }
             }
+            this.duePulseBacklog = deferredEntries;
         } catch (error) {
             this.#fail('effect-stage-preflight', String(error?.message ?? error));
             return this.stageForFixedTick({ targetFixedTick: tick });
@@ -712,12 +750,18 @@ export class PentagonEffectDirector {
                     'effect-command-history-capacity'
                 ].includes(receipt.reason);
             if (retryableCapacity) {
+                const retryEntries = [];
                 for (const entry of stagedEntries) {
                     const index = this.#resolveScheduledPulseIndex(entry);
                     if (index >= 0) {
-                        this.#schedulePulseAt(index, tick + 1, entry);
+                        this.#deferPulseEntryAt(index, entry, tick + 1);
+                        retryEntries.push(entry);
                     }
                 }
+                this.duePulseBacklog = mergeSortedPulseEntries(
+                    this.duePulseBacklog,
+                    retryEntries
+                );
                 this.telemetry.capacityRejectedStageCount++;
             } else if (receipt?.reason !== 'effect-command-port-revoked') {
                 this.#fail(
@@ -869,6 +913,7 @@ export class PentagonEffectDirector {
             this.pendingPhases[index] = PULSE_PENDING_PHASE.NONE;
         }
         this.pulseScheduleHeap.length = 0;
+        this.duePulseBacklog.length = 0;
         this.sourceAuditIterator = null;
         return Object.freeze({
             closed: true,
@@ -1185,12 +1230,13 @@ export class PentagonEffectDirector {
         this.indexByExactHandle.clear();
         this.indexByEntityId.clear();
         this.pulseScheduleHeap.length = 0;
+        this.duePulseBacklog.length = 0;
         this.sourceAuditIterator = null;
         this.count = 0;
         this.nextDueCursor = 0;
     }
 
-    #schedulePulseAt(index, nextPulseTick, reusableEntry = null) {
+    #schedulePulseAt(index, nextPulseTick) {
         const tick = requirePositiveSafeInteger(
             nextPulseTick,
             'nextPulseTick'
@@ -1206,18 +1252,28 @@ export class PentagonEffectDirector {
         const pulseSequence = this.pulseSequences[index];
         this.nextPulseTicks[index] = tick;
         this.scheduleVersions[index] = version;
-        const entry = reusableEntry ?? {};
+        const entry = {};
         entry.key = `${entityId}:${incarnation}`;
         entry.entityId = entityId;
         entry.incarnation = incarnation;
         entry.pulseSequence = pulseSequence;
         entry.nextPulseTick = tick;
         entry.version = version;
+        entry.selectedForStage = false;
         pushMinHeap(
             this.pulseScheduleHeap,
             entry,
             comparePulseScheduleEntry
         );
+    }
+
+    #deferPulseEntryAt(index, entry, nextPulseTick) {
+        const tick = requirePositiveSafeInteger(
+            nextPulseTick,
+            'nextPulseTick'
+        );
+        this.nextPulseTicks[index] = tick;
+        entry.nextPulseTick = tick;
     }
 
     #resolveScheduledPulseIndex(entry) {
@@ -1258,6 +1314,19 @@ export class PentagonEffectDirector {
             ));
         }
         return dueEntries;
+    }
+
+    #takeDueBacklogEntries(fixedTick) {
+        const entries = this.duePulseBacklog;
+        this.duePulseBacklog = [];
+        for (const entry of entries) {
+            if (entry.nextPulseTick !== fixedTick) {
+                throw new RangeError(
+                    `Effect pulse backlog cadence가 다릅니다: ${entry.nextPulseTick}/${fixedTick}`
+                );
+            }
+        }
+        return entries;
     }
 
     #auditSources(fixedTick) {
