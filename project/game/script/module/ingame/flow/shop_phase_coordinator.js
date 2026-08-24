@@ -21,6 +21,8 @@ export const SHOP_OPEN_SOURCE_KIND = Object.freeze({
 });
 
 export const SHOP_PHASE_RESULT_CODE = Object.freeze({
+    OPEN_PREFLIGHT_READY: 'OPEN_PREFLIGHT_READY',
+    OPEN_PREFLIGHT_REJECTED: 'OPEN_PREFLIGHT_REJECTED',
     OPEN_REQUESTED: 'OPEN_REQUESTED',
     OPEN_DEFERRED: 'OPEN_DEFERRED',
     OPENED: 'OPENED',
@@ -82,7 +84,15 @@ function normalizeOpenRequest(source) {
         minimumFixedTick: requireR8NonNegativeSafeInteger(
             source.minimumFixedTick ?? 0,
             'shop open minimumFixedTick'
-        )
+        ),
+        expectedCommerceRevision:
+            source.expectedCommerceRevision === undefined
+                || source.expectedCommerceRevision === null
+                ? null
+                : requireR8NonNegativeSafeInteger(
+                    source.expectedCommerceRevision,
+                    'shop open expectedCommerceRevision'
+                )
     });
 }
 
@@ -159,10 +169,12 @@ export class ShopPhaseCoordinator {
             ['wordSystem', options.wordSystem, [
                 'setRuntimePhase',
                 'getStatusView',
+                'cancelPendingActivationRequests',
                 'captureRuntimePhaseCheckpoint',
                 'restoreRuntimePhaseCheckpoint'
             ]],
             ['shopSession', options.shopSession, [
+                'previewOpen',
                 'open',
                 'close',
                 'getStatus',
@@ -214,6 +226,81 @@ export class ShopPhaseCoordinator {
         this.destroyed = false;
     }
 
+    /** R9 settlement가 reward commit 전에 호출하는 immutable Shop readiness seam입니다. */
+    preflightOpen(source = {}) {
+        const request = normalizeOpenRequest(source);
+        const commerceStatus = this.commerce.getStatus();
+        const rejection = (reason, extra = {}) => freezeReceipt({
+            accepted: false,
+            code: SHOP_PHASE_RESULT_CODE.OPEN_PREFLIGHT_REJECTED,
+            transactionId: request.transactionId,
+            request,
+            reason,
+            runtimeMode: this.shopRuntimeMode,
+            phase: this.phase,
+            commerceRevision: commerceStatus.commerceRevision,
+            mutationCount: 0,
+            ...extra
+        });
+        if (this.destroyed) return rejection('DESTROYED');
+        if (!this.shopConfigured) return rejection('SHOP_NOT_CONFIGURED');
+        if (this.phase !== SHOP_RUNTIME_PHASE.COMBAT) {
+            return rejection('WRONG_PHASE');
+        }
+        if (request.sourceKind === SHOP_OPEN_SOURCE_KIND.WAVE_SETTLEMENT
+            && source.warmExposureApproved !== true) {
+            return rejection('WARM_EXPOSURE_GATE');
+        }
+        if (commerceStatus.pendingTransactionCount !== 0) {
+            return rejection('PENDING_COMMERCE', {
+                pendingTransactionCount:
+                    commerceStatus.pendingTransactionCount
+            });
+        }
+        const shopPreview = this.shopSession.previewOpen({
+            transactionId: request.transactionId,
+            shopSessionOrdinal: request.settlementOrdinal,
+            expectedCommerceRevision: commerceStatus.commerceRevision
+        });
+        if (shopPreview.accepted !== true
+            || shopPreview.code !== WORD_SHOP_RESULT_CODE.OPEN_PREFLIGHT_READY) {
+            return rejection('SHOP_PREFLIGHT_REJECTED', { shopPreview });
+        }
+        const preflightFingerprint = fingerprintR8Record(
+            'shop-phase-open-preflight.r9',
+            {
+                request,
+                runtimeMode: this.shopRuntimeMode,
+                commerceRevision: commerceStatus.commerceRevision,
+                inventoryRevision: commerceStatus.inventoryRevision,
+                shopPreflightFingerprint: shopPreview.preflightFingerprint,
+                warmExposureApproved: source.warmExposureApproved === true
+            }
+        );
+        return freezeReceipt({
+            accepted: true,
+            code: SHOP_PHASE_RESULT_CODE.OPEN_PREFLIGHT_READY,
+            transactionId: request.transactionId,
+            request,
+            requestFingerprint: fingerprintR8Record(
+                'shop-phase-open.r8',
+                request
+            ),
+            preflightFingerprint,
+            runtimeMode: this.shopRuntimeMode,
+            commerceRevision: commerceStatus.commerceRevision,
+            inventoryRevision: commerceStatus.inventoryRevision,
+            meaningfulOfferPool: Object.freeze({
+                count: shopPreview.meaningfulOfferCount,
+                fingerprint: shopPreview.meaningfulOfferPoolFingerprint,
+                requiredCount: shopPreview.requiredOfferCount
+            }),
+            shopPreview,
+            phase: this.phase,
+            mutationCount: 0
+        });
+    }
+
     requestOpen(source = {}) {
         const request = normalizeOpenRequest(source);
         const requestFingerprint = fingerprintR8Record(
@@ -262,12 +349,29 @@ export class ShopPhaseCoordinator {
                 mutationCount: 0
             });
         }
+        let ingressCancellation = null;
+        if (request.sourceKind === SHOP_OPEN_SOURCE_KIND.WAVE_SETTLEMENT) {
+            ingressCancellation = this.wordSystem
+                .cancelPendingActivationRequests('wave-settlement');
+            if (this.wordSystem.setRuntimePhase(SENTENCE_RUNTIME_PHASE.PAUSE)
+                !== true) {
+                return this.#remember(request.transactionId, requestFingerprint, {
+                    accepted: false,
+                    code: SHOP_PHASE_RESULT_CODE.OPEN_REJECTED,
+                    transactionId: request.transactionId,
+                    phase: this.phase,
+                    ingressCancellation,
+                    mutationCount: 0
+                });
+            }
+        }
         const receipt = freezeReceipt({
             accepted: true,
             code: SHOP_PHASE_RESULT_CODE.OPEN_REQUESTED,
             transactionId: request.transactionId,
             requestFingerprint,
             request,
+            ingressCancellation,
             phase: SHOP_RUNTIME_PHASE.SHOP_OPENING,
             mutationCount: 1
         });
@@ -327,7 +431,9 @@ export class ShopPhaseCoordinator {
             shopReceipt = this.shopSession.open({
                 transactionId: pending.request.transactionId,
                 shopSessionOrdinal: pending.request.settlementOrdinal,
-                expectedCommerceRevision: this.commerce.getRevision()
+                expectedCommerceRevision:
+                    pending.request.expectedCommerceRevision
+                        ?? this.commerce.getRevision()
             });
             if (shopReceipt.code !== WORD_SHOP_RESULT_CODE.OPENED) {
                 throw new Error(`ShopSession open rejected: ${shopReceipt.code}`);

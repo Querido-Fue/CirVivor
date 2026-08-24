@@ -155,6 +155,152 @@ export class WordShopSession {
         this.destroyed = false;
     }
 
+    /** Settlement가 open/rollback 없이 production row readiness를 검사하는 pure seam입니다. */
+    previewOpen(source = {}) {
+        const transactionId = requireR8NonEmptyString(
+            source.transactionId,
+            'shop open preview transactionId'
+        );
+        const shopSessionOrdinal = requireR8NonNegativeSafeInteger(
+            source.shopSessionOrdinal,
+            'shop open preview shopSessionOrdinal'
+        );
+        const expectedCommerceRevision = requireR8NonNegativeSafeInteger(
+            source.expectedCommerceRevision,
+            'shop open preview expectedCommerceRevision'
+        );
+        const base = {
+            transactionId,
+            runtimeMode: this.runtimeMode,
+            shopSessionOrdinal,
+            expectedCommerceRevision,
+            commerceRevision: this.commerce.getRevision(),
+            inventoryRevision: this.commerce.getInventorySnapshot().revision,
+            catalogFingerprint: this.catalogFingerprint,
+            requiredOfferCount: this.offerCount,
+            mutationCount: 0
+        };
+        if (!this.configured) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.SHOP_NOT_CONFIGURED,
+                ...base
+            });
+        }
+        const unlockedDefinitionIds = normalizeUnlockedWordPool(
+            source.unlockedWordDefinitionIds
+                ?? this.defaultUnlockedDefinitionIds,
+            this.catalogByDefinitionId
+        );
+        const unlockedPoolFingerprint = fingerprintUnlockedWordPool(
+            unlockedDefinitionIds
+        );
+        const meaningfulDefinitionIds
+            = this.#resolveMeaningfulOfferDefinitionIds(
+                unlockedDefinitionIds
+            );
+        const meaningfulOfferPoolFingerprint
+            = meaningfulDefinitionIds.length === 0
+                ? 0
+                : fingerprintUnlockedWordPool(meaningfulDefinitionIds);
+        const requestFingerprint = fingerprintR8Record(
+            'word-shop-open-preview.r9',
+            {
+                transactionId,
+                runSeed: this.runSeed,
+                shopSessionOrdinal,
+                expectedCommerceRevision,
+                unlockedPoolFingerprint,
+                catalogFingerprint: this.catalogFingerprint,
+                meaningfulOfferPoolFingerprint,
+                meaningfulOfferCount: meaningfulDefinitionIds.length
+            }
+        );
+        const details = {
+            ...base,
+            requestFingerprint,
+            runSeed: this.runSeed,
+            unlockedDefinitionIds,
+            unlockedPoolFingerprint,
+            configuredUnlockedPoolFingerprint:
+                this.configuredUnlockedPoolFingerprint,
+            meaningfulOfferDefinitionIds: meaningfulDefinitionIds,
+            meaningfulOfferCount: meaningfulDefinitionIds.length,
+            meaningfulOfferPoolFingerprint
+        };
+        if (this.destroyed) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.DESTROYED,
+                ...details
+            });
+        }
+        if (this.active) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.WRONG_PHASE,
+                ...details
+            });
+        }
+        if (shopSessionOrdinal !== this.lastShopSessionOrdinal + 1) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.STALE_SESSION_ORDINAL,
+                expectedShopSessionOrdinal: this.lastShopSessionOrdinal + 1,
+                ...details
+            });
+        }
+        if (expectedCommerceRevision !== this.commerce.getRevision()) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.STALE_COMMERCE_REVISION,
+                ...details
+            });
+        }
+        if (this.runtimeMode === SHOP_RUNTIME_CONFIGURATION_MODE.PRODUCTION
+            && unlockedPoolFingerprint
+                !== this.configuredUnlockedPoolFingerprint) {
+            return freezeReceipt({
+                accepted: false,
+                code: WORD_SHOP_RESULT_CODE.RUNTIME_IDENTITY_MISMATCH,
+                ...details
+            });
+        }
+        if (meaningfulDefinitionIds.length < this.offerCount) {
+            return freezeReceipt({
+                accepted: false,
+                code: this.allowEconomicallyRedundantOffers
+                    ? WORD_SHOP_RESULT_CODE.INSUFFICIENT_OFFER_POOL
+                    : WORD_SHOP_RESULT_CODE
+                        .INSUFFICIENT_MEANINGFUL_OFFER_POOL,
+                ...details
+            });
+        }
+        const preflightFingerprint = fingerprintR8Record(
+            'word-shop-open-preflight.r9',
+            {
+                runtimeMode: this.runtimeMode,
+                runSeed: this.runSeed,
+                shopSessionOrdinal,
+                commerceRevision: this.commerce.getRevision(),
+                inventoryRevision:
+                    this.commerce.getInventorySnapshot().revision,
+                catalogFingerprint: this.catalogFingerprint,
+                unlockedPoolFingerprint,
+                meaningfulOfferPoolFingerprint,
+                meaningfulOfferCount: meaningfulDefinitionIds.length,
+                requiredOfferCount: this.offerCount
+            },
+            transactionId
+        );
+        return freezeReceipt({
+            accepted: true,
+            code: WORD_SHOP_RESULT_CODE.OPEN_PREFLIGHT_READY,
+            ...details,
+            preflightFingerprint
+        });
+    }
+
     open(source = {}) {
         const transactionId = requireR8NonEmptyString(
             source.transactionId,

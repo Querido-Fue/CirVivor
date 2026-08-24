@@ -652,6 +652,59 @@ export class WaveRunCoordinator {
         });
     }
 
+    /** WaveSettlementCoordinator가 mutable plan 배열 없이 읽는 O(1) authority view입니다. */
+    getSettlementView() {
+        const metadata = this.currentWaveMetadata;
+        let nextProgression = null;
+        if (metadata) {
+            if (this.currentWaveOrdinal < this.plan.waves.length) {
+                const nextMetadata = getWaveRunPlanWaveMetadata(
+                    this.plan,
+                    this.currentWaveOrdinal + 1
+                );
+                nextProgression = Object.freeze({
+                    type: 'NEXT_WAVE',
+                    waveOrdinal: this.currentWaveOrdinal + 1,
+                    waveId: nextMetadata.waveId,
+                    resolutionProfileId: this.plan.waves[
+                        this.currentWaveOrdinal
+                    ].resolutionProfileId
+                });
+            } else {
+                nextProgression = Object.freeze({
+                    type: WAVE_RUN_STATE.MAP_CLEAR_READY,
+                    finalContinueResult: this.plan.finalContinueResult
+                });
+            }
+        }
+        return Object.freeze({
+            runSessionId: this.runSessionId,
+            planId: this.plan.planId,
+            planFingerprint: this.planFingerprint,
+            mapId: this.plan.mapId,
+            state: this.state,
+            waveCount: this.plan.waves.length,
+            waveId: metadata?.waveId ?? null,
+            waveOrdinal: this.currentWaveOrdinal,
+            waveAttemptOrdinal: this.waveAttemptOrdinal,
+            resolutionProfileId: this.currentWaveOrdinal > 0
+                ? this.plan.waves[
+                    this.currentWaveOrdinal - 1
+                ].resolutionProfileId
+                : null,
+            clearProofFingerprint: this.clearProofFingerprint,
+            completionRevision: this.completionRevision,
+            completedInOvertime: this.overtimeStarted,
+            overtimeStarted: this.overtimeStarted,
+            elapsedCombatTicks: this.elapsedCombatTicks,
+            completionGoldBonus:
+                metadata?.resolutionProfile.settlement.completionGoldBonus ?? 0,
+            shopAfterEveryWave: this.plan.shopAfterEveryWave,
+            nextProgression,
+            destroyed: this.destroyed
+        });
+    }
+
     getStatus() {
         const metadata = this.currentWaveMetadata;
         return Object.freeze({

@@ -303,6 +303,7 @@ export class CoreOvertimePressureDirector {
         this.activeWaveIdentity = null;
         this.observedOvertimeStartFactRevision = 0;
         this.overtimePulseOrdinal = 0;
+        this.overtimeDamageTotalFixedPoint = 0;
         this.nextPulseFixedTick = 0;
         this.lastPulseFact = null;
         this.coreDepletedFact = null;
@@ -514,8 +515,21 @@ export class CoreOvertimePressureDirector {
         ].join(':');
         const before = this.coreIntegrity.getCurrentIntegrity();
         const appliedDamage = this.coreIntegrity.applyIntegrityDamage(damage.damage);
+        const appliedDamageFixedPoint = Math.round(
+            appliedDamage * WAVE_RESOLUTION_FIXED_POINT_SCALE
+        );
         const after = this.coreIntegrity.getCurrentIntegrity();
         this.overtimePulseOrdinal = pulseOrdinal;
+        if (!Number.isSafeInteger(appliedDamageFixedPoint)
+            || appliedDamageFixedPoint < 0
+            || this.overtimeDamageTotalFixedPoint
+                > Number.MAX_SAFE_INTEGER - appliedDamageFixedPoint) {
+            this.failure = Object.freeze({
+                reason: 'overtime-damage-total-overflow'
+            });
+        } else {
+            this.overtimeDamageTotalFixedPoint += appliedDamageFixedPoint;
+        }
         try {
             this.nextPulseFixedTick = checkedUint32Sum(
                 scheduledFixedTick,
@@ -547,6 +561,7 @@ export class CoreOvertimePressureDirector {
             damageFixedPoint: damage.damageFixedPoint,
             requestedDamage: damage.damage,
             appliedDamage,
+            appliedDamageFixedPoint,
             pressureKey
         });
         this.lastPulseFact = pulseFact;
@@ -609,6 +624,8 @@ export class CoreOvertimePressureDirector {
         return Object.freeze({
             activeWaveIdentity: this.activeWaveIdentity,
             overtimePulseOrdinal: this.overtimePulseOrdinal,
+            overtimeDamageTotalFixedPoint:
+                this.overtimeDamageTotalFixedPoint,
             nextPulseFixedTick: this.nextPulseFixedTick,
             lastPulseFact: this.lastPulseFact,
             coreDepletedFact: this.coreDepletedFact,
@@ -630,6 +647,7 @@ export class CoreOvertimePressureDirector {
         this.transactionOrder.fill(undefined);
         this.transactionSize = 0;
         this.activeWaveIdentity = null;
+        this.overtimeDamageTotalFixedPoint = 0;
     }
 
     #observeOvertimeStart(view, facts) {
@@ -642,6 +660,7 @@ export class CoreOvertimePressureDirector {
         if (this.activeWaveIdentity !== null
             && this.activeWaveIdentity !== waveIdentity) {
             this.overtimePulseOrdinal = 0;
+            this.overtimeDamageTotalFixedPoint = 0;
             this.nextPulseFixedTick = 0;
             this.coreDepletedFact = null;
             this.lastPulseFact = null;
@@ -749,6 +768,8 @@ export class CoreOvertimePressureDirector {
             facts: Object.freeze([...(outcome.facts ?? [])]),
             coreDepletedFact: outcome.coreDepletedFact ?? this.coreDepletedFact,
             overtimePulseOrdinal: this.overtimePulseOrdinal,
+            overtimeDamageTotalFixedPoint:
+                this.overtimeDamageTotalFixedPoint,
             nextPulseFixedTick: this.nextPulseFixedTick,
             pendingTerminalCleanup:
                 outcome.pendingTerminalCleanup === true
