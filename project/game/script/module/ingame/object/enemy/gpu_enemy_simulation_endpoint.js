@@ -313,6 +313,15 @@ function projectileCaptureHandleKey(handle) {
     return `${handle.entityId}:${handle.incarnation}`;
 }
 
+function exactHandleKeyOrNull(handle) {
+    const entityId = Number(handle?.entityId);
+    const incarnation = Number(handle?.incarnation);
+    return Number.isSafeInteger(entityId) && entityId > 0
+            && Number.isSafeInteger(incarnation) && incarnation > 0
+        ? `${entityId}:${incarnation}`
+        : null;
+}
+
 function fingerprintRouteAvailabilityBatch(sourceTick, availabilityVersion, records) {
     const text = JSON.stringify([
         sourceTick,
@@ -891,6 +900,7 @@ export class GpuEnemySimulationEndpoint {
     #activeMetadataMutationRegistryAuthority;
     #fixedCanonicalHostileCommandPort;
     #hostileCommandPort;
+    #canonicalPriorityTargetEvidenceKeys;
     #projectileCaptureTransactionPort;
     #projectileCaptureCommandPort;
     #authenticProjectileCaptureCoreImpactReceipts;
@@ -1545,6 +1555,7 @@ export class GpuEnemySimulationEndpoint {
         );
         this.#fixedCanonicalHostileCommandPort = this.fixedCommandOwner
             .getCanonicalHostileCommandPort();
+        this.#canonicalPriorityTargetEvidenceKeys = new Set();
         this.#hostileCommandPort = Object.freeze({
             requestSpawn: (
                 intent,
@@ -1864,7 +1875,10 @@ export class GpuEnemySimulationEndpoint {
                 reason: 'priority-target-control-contract'
             });
         }
-        const contractFailure = this.#validatePriorityTargetControl(snapshot);
+        const contractFailure = this.#validatePriorityTargetControl(
+            snapshot,
+            canonicalSnapshot
+        );
         if (contractFailure) {
             return contractFailure;
         }
@@ -1981,7 +1995,10 @@ export class GpuEnemySimulationEndpoint {
                 reason: 'selected-target-spawn-contract'
             });
         }
-        const contractFailure = this.#validateSelectedTargetSpawn(snapshot);
+        const contractFailure = this.#validateSelectedTargetSpawn(
+            snapshot,
+            canonicalSnapshot
+        );
         if (contractFailure) {
             return contractFailure;
         }
@@ -5830,6 +5847,7 @@ export class GpuEnemySimulationEndpoint {
         this.deferredCompletedEventBatches.length = 0;
         this.deferredAbilityEntityMetadataPublications.clear();
         this.pendingFixedSpawnAbilityEntityMetadataByCommandId.clear();
+        this.#canonicalPriorityTargetEvidenceKeys.clear();
         this.knownCompletedBatchKeys.clear();
         this.completedBatchKeys.length = 0;
         this.completedBatchKeyHead = 0;
@@ -6960,50 +6978,72 @@ export class GpuEnemySimulationEndpoint {
         }
     }
 
-    #validatePriorityTargetControl(command) {
+    #validatePriorityTargetControl(command, canonicalSnapshot = false) {
         if (!command || typeof command !== 'object') {
             return this.#fixedTargetRejection(
                 'priority-target-control-contract'
             );
         }
-        const source = this.#readExactRuntimeCandidate(
-            command.sourceHandle,
-            'enemy',
-            BASIC_RHOM_ENEMY_DEFINITION_ID,
-            'priority-source'
-        );
-        if (source.failure) {
-            return source.failure;
-        }
-        const metadata = source.view.metadata;
-        if (!metadata
-            || metadata.enemyDefinitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
-            || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
-            || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
-            || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
-            || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
-            || metadata.behaviorProfileId !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
-            return this.#fixedTargetRejection('priority-source-metadata-invalid');
-        }
-        const core = this.#readExactRuntimeCandidate(
-            command.coreTargetHandle,
-            GPU_CORE_PROXY_WORLD_KIND_ID,
-            GPU_CORE_PROXY_DEFINITION_ID,
-            'priority-core'
-        );
-        if (core.failure) {
-            return core.failure;
-        }
-        if (command.towerTargetHandle !== undefined
-            && command.towerTargetHandle !== null) {
-            const tower = this.#readExactRuntimeCandidate(
-                command.towerTargetHandle,
-                GPU_TOWER_WORLD_KIND_ID,
-                GPU_TOWER_DEFINITION_ID,
-                'priority-tower'
+        const sourceKey = exactHandleKeyOrNull(command.sourceHandle);
+        const coreKey = exactHandleKeyOrNull(command.coreTargetHandle);
+        const hasTower = command.towerTargetHandle !== undefined
+            && command.towerTargetHandle !== null;
+        const towerKey = hasTower
+            ? exactHandleKeyOrNull(command.towerTargetHandle)
+            : 'none';
+        const canonicalEvidenceKey = canonicalSnapshot
+                && sourceKey !== null
+                && coreKey !== null
+                && towerKey !== null
+            ? `${sourceKey}|${coreKey}|${towerKey}`
+            : null;
+        const requiresRuntimeEvidence = canonicalEvidenceKey === null
+            || !this.#canonicalPriorityTargetEvidenceKeys.has(
+                canonicalEvidenceKey
             );
-            if (tower.failure) {
-                return tower.failure;
+        if (requiresRuntimeEvidence) {
+            const source = this.#readExactRuntimeCandidate(
+                command.sourceHandle,
+                'enemy',
+                BASIC_RHOM_ENEMY_DEFINITION_ID,
+                'priority-source'
+            );
+            if (source.failure) {
+                return source.failure;
+            }
+            const metadata = source.view.metadata;
+            if (!metadata
+                || metadata.enemyDefinitionId
+                    !== BASIC_RHOM_ENEMY_DEFINITION_ID
+                || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+                || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
+                || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
+                || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
+                || metadata.behaviorProfileId
+                    !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
+                return this.#fixedTargetRejection(
+                    'priority-source-metadata-invalid'
+                );
+            }
+            const core = this.#readExactRuntimeCandidate(
+                command.coreTargetHandle,
+                GPU_CORE_PROXY_WORLD_KIND_ID,
+                GPU_CORE_PROXY_DEFINITION_ID,
+                'priority-core'
+            );
+            if (core.failure) {
+                return core.failure;
+            }
+            if (hasTower) {
+                const tower = this.#readExactRuntimeCandidate(
+                    command.towerTargetHandle,
+                    GPU_TOWER_WORLD_KIND_ID,
+                    GPU_TOWER_DEFINITION_ID,
+                    'priority-tower'
+                );
+                if (tower.failure) {
+                    return tower.failure;
+                }
             }
         }
         if (command.attackDefinitionId !== BASIC_RHOM_ATTACK_DATA.id
@@ -7026,53 +7066,80 @@ export class GpuEnemySimulationEndpoint {
                 'priority-target-control-evidence-invalid'
             );
         }
+        if (canonicalEvidenceKey !== null
+            && this.#canonicalPriorityTargetEvidenceKeys.size
+                < this.capacity * 2) {
+            this.#canonicalPriorityTargetEvidenceKeys.add(
+                canonicalEvidenceKey
+            );
+        }
         return null;
     }
 
-    #validateSelectedTargetSpawn(intent) {
+    #validateSelectedTargetSpawn(intent, canonicalSnapshot = false) {
         if (!intent || typeof intent !== 'object'
             || intent.mode
                 !== GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_SELECTED_TARGET) {
             return this.#fixedTargetRejection('selected-target-spawn-contract');
         }
-        const source = this.#readExactRuntimeCandidate(
-            intent.sourceHandle,
-            'enemy',
-            BASIC_RHOM_ENEMY_DEFINITION_ID,
-            'selected-source'
-        );
-        if (source.failure) {
-            return source.failure;
-        }
-        const metadata = source.view.metadata;
-        if (!metadata
-            || metadata.enemyDefinitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
-            || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
-            || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
-            || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
-            || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
-            || metadata.behaviorProfileId !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
-            return this.#fixedTargetRejection('selected-source-metadata-invalid');
-        }
-        const core = this.#readExactRuntimeCandidate(
-            intent.coreTargetHandle,
-            GPU_CORE_PROXY_WORLD_KIND_ID,
-            GPU_CORE_PROXY_DEFINITION_ID,
-            'selected-core'
-        );
-        if (core.failure) {
-            return core.failure;
-        }
-        if (intent.towerTargetHandle !== undefined
-            && intent.towerTargetHandle !== null) {
-            const tower = this.#readExactRuntimeCandidate(
-                intent.towerTargetHandle,
-                GPU_TOWER_WORLD_KIND_ID,
-                GPU_TOWER_DEFINITION_ID,
-                'selected-tower'
+        const sourceHandleKey = exactHandleKeyOrNull(intent.sourceHandle);
+        const coreHandleKey = exactHandleKeyOrNull(intent.coreTargetHandle);
+        const hasTower = intent.towerTargetHandle !== undefined
+            && intent.towerTargetHandle !== null;
+        const towerHandleKey = hasTower
+            ? exactHandleKeyOrNull(intent.towerTargetHandle)
+            : 'none';
+        if (canonicalSnapshot
+            && (sourceHandleKey === null
+                || coreHandleKey === null
+                || towerHandleKey === null)) {
+            return this.#fixedTargetRejection(
+                'selected-target-spawn-contract'
             );
-            if (tower.failure) {
-                return tower.failure;
+        }
+        if (!canonicalSnapshot) {
+            const source = this.#readExactRuntimeCandidate(
+                intent.sourceHandle,
+                'enemy',
+                BASIC_RHOM_ENEMY_DEFINITION_ID,
+                'selected-source'
+            );
+            if (source.failure) {
+                return source.failure;
+            }
+            const metadata = source.view.metadata;
+            if (!metadata
+                || metadata.enemyDefinitionId
+                    !== BASIC_RHOM_ENEMY_DEFINITION_ID
+                || metadata.definitionId !== BASIC_RHOM_ENEMY_DEFINITION_ID
+                || metadata.capabilityMask !== BASIC_RHOM_CAPABILITY_MASK
+                || metadata.physicsProfileId !== BASIC_RHOM_PHYSICS_PROFILE_ID
+                || metadata.combatProfileId !== BASIC_RHOM_COMBAT_PROFILE_ID
+                || metadata.behaviorProfileId
+                    !== BASIC_RHOM_BEHAVIOR_PROFILE_ID) {
+                return this.#fixedTargetRejection(
+                    'selected-source-metadata-invalid'
+                );
+            }
+            const core = this.#readExactRuntimeCandidate(
+                intent.coreTargetHandle,
+                GPU_CORE_PROXY_WORLD_KIND_ID,
+                GPU_CORE_PROXY_DEFINITION_ID,
+                'selected-core'
+            );
+            if (core.failure) {
+                return core.failure;
+            }
+            if (hasTower) {
+                const tower = this.#readExactRuntimeCandidate(
+                    intent.towerTargetHandle,
+                    GPU_TOWER_WORLD_KIND_ID,
+                    GPU_TOWER_DEFINITION_ID,
+                    'selected-tower'
+                );
+                if (tower.failure) {
+                    return tower.failure;
+                }
             }
         }
         const destination = intent.destinationSpawn;

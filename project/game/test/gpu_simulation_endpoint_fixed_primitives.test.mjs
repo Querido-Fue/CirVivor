@@ -830,6 +830,16 @@ test('Hostile command port는 frozen canonical M control/projectile만 public과
     );
     assert.equal(acceptedControl.accepted, true);
     assert.ok(acceptedControl.attackFingerprint > 0);
+    assert.deepEqual({ ...port.requestPriorityTargetControl(
+        Object.freeze(createRhomPriorityControl(handles, {
+            projectileDefinitionId: 'forged-after-canonical-cache'
+        })),
+        3,
+        'rhom:canonical:forged-control'
+    ) }, {
+        accepted: false,
+        reason: 'priority-target-control-evidence-invalid'
+    });
 
     const selectedIntent = createRhomSelectedIntent(handles);
     assert.equal(Object.isFrozen(selectedIntent), true);
@@ -838,6 +848,16 @@ test('Hostile command port는 frozen canonical M control/projectile만 public과
         2,
         'rhom:canonical:spawn'
     ).accepted, true);
+    assert.deepEqual({ ...port.requestSelectedTargetSpawn(Object.freeze({
+        ...selectedIntent,
+        destinationSpawn: Object.freeze({
+            ...selectedIntent.destinationSpawn,
+            definitionId: 'forged-after-canonical-cache'
+        })
+    }), 3, 'rhom:canonical:forged-spawn') }, {
+        accepted: false,
+        reason: 'selected-target-spawn-evidence-invalid'
+    });
 
     const committed = endpoint.commitAtFixedBoundary(2);
     assert.equal(committed.fixedCommands.controls.length, 1);
