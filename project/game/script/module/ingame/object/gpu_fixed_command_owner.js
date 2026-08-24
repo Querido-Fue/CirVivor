@@ -248,6 +248,30 @@ function sameOptionalHandle(left, right) {
         : right !== null && handleKey(left) === handleKey(right);
 }
 
+function rawHandleMatches(source, expected, label) {
+    if (!source || typeof source !== 'object') {
+        throw new TypeError(`${label}은 exact handle 객체여야 합니다.`);
+    }
+    const entityId = requirePositiveSafeInteger(
+        source.entityId,
+        `${label}.entityId`
+    );
+    const incarnation = requirePositiveSafeInteger(
+        source.incarnation,
+        `${label}.incarnation`
+    );
+    return expected !== null
+        && entityId === expected.entityId
+        && incarnation === expected.incarnation;
+}
+
+function rawOptionalHandleMatches(source, expected, label) {
+    if (source === undefined || source === null) {
+        return expected === null;
+    }
+    return rawHandleMatches(source, expected, label);
+}
+
 function normalizeSelectedTargetIntent(source, subjectTeamId, controlPayload) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('selected-target spawn intent가 필요합니다.');
@@ -675,26 +699,23 @@ function normalizePriorityControlCompletionOutcome(
     source,
     pending,
     sourceTick,
+    sourceEntityId,
+    sourceIncarnation,
     isValidRosterTowerTarget
 ) {
     if (!source || typeof source !== 'object') {
         throw new TypeError('BodyControlProgram priority outcome 객체가 필요합니다.');
     }
-    const sourceHandle = normalizeHandle(
-        source.sourceHandle ?? source.handle,
-        'priorityControlOutcome.sourceHandle'
-    );
-    const coreTargetHandle = normalizeHandle(
+    const coreTargetMatches = rawHandleMatches(
         source.coreTargetHandle,
+        pending.payload.coreTargetHandle,
         'priorityControlOutcome.coreTargetHandle'
     );
-    const towerTargetHandle = source.towerTargetHandle === undefined
-        || source.towerTargetHandle === null
-        ? null
-        : normalizeHandle(
-            source.towerTargetHandle,
-            'priorityControlOutcome.towerTargetHandle'
-        );
+    const towerTargetMatches = rawOptionalHandleMatches(
+        source.towerTargetHandle,
+        pending.payload.towerTargetHandle,
+        'priorityControlOutcome.towerTargetHandle'
+    );
     const outcomeSourceTick = requirePositiveSafeInteger(
         source.sourceTick,
         'priorityControlOutcome.sourceTick'
@@ -713,12 +734,10 @@ function normalizePriorityControlCompletionOutcome(
     );
     if (sourceTick !== pending.targetFixedTick
         || outcomeSourceTick !== sourceTick
-        || !sameOptionalHandle(sourceHandle, pending.payload.sourceHandle)
-        || !sameOptionalHandle(coreTargetHandle, pending.payload.coreTargetHandle)
-        || !sameOptionalHandle(
-            towerTargetHandle,
-            pending.payload.towerTargetHandle
-        )
+        || sourceEntityId !== pending.payload.sourceHandle.entityId
+        || sourceIncarnation !== pending.payload.sourceHandle.incarnation
+        || !coreTargetMatches
+        || !towerTargetMatches
         || selectionSequence !== pending.payload.selectionSequence
         || attackFingerprint !== pending.payload.attackFingerprint
         || attackRangeTiles !== pending.payload.attackRangeTiles) {
@@ -739,13 +758,25 @@ function normalizePriorityControlCompletionOutcome(
         source.stateFlags,
         'priorityControlOutcome.stateFlags'
     );
-    const selectedTargetHandle = source.selectedTargetHandle === undefined
-        || source.selectedTargetHandle === null
-        ? null
-        : normalizeHandle(
-            source.selectedTargetHandle,
-            'priorityControlOutcome.selectedTargetHandle'
+    const rawSelectedTargetHandle = source.selectedTargetHandle;
+    let selectedTargetEntityId = null;
+    let selectedTargetIncarnation = null;
+    if (rawSelectedTargetHandle !== undefined
+        && rawSelectedTargetHandle !== null) {
+        if (typeof rawSelectedTargetHandle !== 'object') {
+            throw new TypeError(
+                'priorityControlOutcome.selectedTargetHandle은 exact handle 객체여야 합니다.'
+            );
+        }
+        selectedTargetEntityId = requirePositiveSafeInteger(
+            rawSelectedTargetHandle.entityId,
+            'priorityControlOutcome.selectedTargetHandle.entityId'
         );
+        selectedTargetIncarnation = requirePositiveSafeInteger(
+            rawSelectedTargetHandle.incarnation,
+            'priorityControlOutcome.selectedTargetHandle.incarnation'
+        );
+    }
     let outcome;
     let expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.NONE;
     let expectedStateFlags = 0;
@@ -764,7 +795,6 @@ function normalizePriorityControlCompletionOutcome(
         expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
         expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
             | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
-        expectedTargetHandle = selectedTargetHandle;
     } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
         outcome = 'source-invalid';
     } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
@@ -774,10 +804,27 @@ function normalizePriorityControlCompletionOutcome(
             `지원하지 않는 BodyControlProgram priority result입니다: ${result}`
         );
     }
-    const targetMatches = outcome === 'tower'
-        ? selectedTargetHandle !== null
-            && isValidRosterTowerTarget(selectedTargetHandle)
-        : sameOptionalHandle(selectedTargetHandle, expectedTargetHandle);
+    let selectedTargetHandle = null;
+    let targetMatches;
+    if (outcome === 'tower') {
+        selectedTargetHandle = selectedTargetEntityId === null
+            ? null
+            : Object.freeze({
+                entityId: selectedTargetEntityId,
+                incarnation: selectedTargetIncarnation
+            });
+        targetMatches = selectedTargetHandle !== null
+            && isValidRosterTowerTarget(selectedTargetHandle);
+    } else if (selectedTargetEntityId === null) {
+        targetMatches = expectedTargetHandle === null;
+    } else {
+        targetMatches = expectedTargetHandle !== null
+            && selectedTargetEntityId === expectedTargetHandle.entityId
+            && selectedTargetIncarnation === expectedTargetHandle.incarnation;
+        if (targetMatches) {
+            selectedTargetHandle = expectedTargetHandle;
+        }
+    }
     if (source.outcome !== outcome
         || selectedTargetKind !== expectedKind
         || stateFlags !== expectedStateFlags
@@ -1010,6 +1057,7 @@ export class GpuFixedCommandOwner {
         this.selectionBindingClaims = new Map();
         this.pendingPriorityControlsByKey = new Map();
         this.pendingPriorityControlsByCommandId = new Map();
+        this.pendingPriorityControlsBySourceTick = new Map();
         this.pendingDestinations = new Map();
         this.bodyControlCompletionScratch = [];
         this.spawnCompletionScratch = [];
@@ -1468,7 +1516,7 @@ export class GpuFixedCommandOwner {
             ? [...priorResult.completed]
             : [];
         const preparedControlResults = [];
-        const preparedControlKeys = new Set();
+        const preparedControlPendings = new Set();
         const preparedOutcomes = [];
         const preparedDestinationKeys = new Set();
         let protocolFailure = null;
@@ -1518,13 +1566,14 @@ export class GpuFixedCommandOwner {
                         'BodyControlProgram completion outcomes 배열이 필요합니다.'
                     );
                 }
-                const expectedKeys = new Set();
-                for (const pending of this.pendingPriorityControlsByKey.values()) {
-                    if (pending.targetFixedTick === sourceTick) {
-                        expectedKeys.add(pending.bindingKey);
-                    }
+                const pendingByEntityId =
+                    this.pendingPriorityControlsBySourceTick.get(sourceTick);
+                let expectedControlCount = 0;
+                for (const pendingByIncarnation of
+                    pendingByEntityId?.values() ?? []) {
+                    expectedControlCount += pendingByIncarnation.size;
                 }
-                if (batch.outcomes.length !== expectedKeys.size) {
+                if (batch.outcomes.length !== expectedControlCount) {
                     protocolFailure = Object.freeze({
                         stage: 'body-control-program-completion',
                         code: 'missing-control-result',
@@ -1533,25 +1582,32 @@ export class GpuFixedCommandOwner {
                     break;
                 }
                 for (const outcome of batch.outcomes) {
-                    const sourceHandle = normalizeHandle(
-                        outcome?.sourceHandle ?? outcome?.handle,
-                        'bodyControlCompletion.outcome.sourceHandle'
+                    const rawSourceHandle =
+                        outcome?.sourceHandle ?? outcome?.handle;
+                    if (!rawSourceHandle
+                        || typeof rawSourceHandle !== 'object') {
+                        throw new TypeError(
+                            'bodyControlCompletion.outcome.sourceHandle은 exact handle 객체여야 합니다.'
+                        );
+                    }
+                    const sourceEntityId = requirePositiveSafeInteger(
+                        rawSourceHandle.entityId,
+                        'bodyControlCompletion.outcome.sourceHandle.entityId'
                     );
-                    const bindingKey = priorityControlBindingKey(
-                        sourceTick,
-                        sourceHandle
+                    const sourceIncarnation = requirePositiveSafeInteger(
+                        rawSourceHandle.incarnation,
+                        'bodyControlCompletion.outcome.sourceHandle.incarnation'
                     );
-                    const pending = this.pendingPriorityControlsByKey.get(
-                        bindingKey
-                    );
+                    const pending = pendingByEntityId
+                        ?.get(sourceEntityId)
+                        ?.get(sourceIncarnation);
                     if (!pending
-                        || preparedControlKeys.has(bindingKey)
-                        || !expectedKeys.has(bindingKey)
+                        || preparedControlPendings.has(pending)
                         || !sameProtocol(batchProtocol, pending.protocol)) {
                         protocolFailure = Object.freeze({
                             stage: 'body-control-program-completion',
                             code: 'control-result-contract',
-                            message: `등록되지 않았거나 중복된 priority control outcome입니다: ${bindingKey}`
+                            message: `등록되지 않았거나 중복된 priority control outcome입니다: ${sourceTick}:${sourceEntityId}:${sourceIncarnation}`
                         });
                         break;
                     }
@@ -1559,6 +1615,8 @@ export class GpuFixedCommandOwner {
                         outcome,
                         pending,
                         sourceTick,
+                        sourceEntityId,
+                        sourceIncarnation,
                         (handle) => hasAuthoritativeTowerRoster(this.backend)
                             ? isCanonicalLivingTowerTarget(
                                 this.registry,
@@ -1570,9 +1628,8 @@ export class GpuFixedCommandOwner {
                                 pending.payload.towerTargetHandle
                             )
                     );
-                    preparedControlKeys.add(bindingKey);
+                    preparedControlPendings.add(pending);
                     preparedControlResults.push(Object.freeze({
-                        bindingKey,
                         pending,
                         result
                     }));
@@ -1580,13 +1637,19 @@ export class GpuFixedCommandOwner {
                 if (protocolFailure) {
                     break;
                 }
-                for (const expectedKey of expectedKeys) {
-                    if (!preparedControlKeys.has(expectedKey)) {
-                        protocolFailure = Object.freeze({
-                            stage: 'body-control-program-completion',
-                            code: 'missing-control-result',
-                            message: `priority control outcome이 누락되었습니다: ${expectedKey}`
-                        });
+                for (const pendingByIncarnation of
+                    pendingByEntityId?.values() ?? []) {
+                    for (const pending of pendingByIncarnation.values()) {
+                        if (!preparedControlPendings.has(pending)) {
+                            protocolFailure = Object.freeze({
+                                stage: 'body-control-program-completion',
+                                code: 'missing-control-result',
+                                message: `priority control outcome이 누락되었습니다: ${pending.bindingKey}`
+                            });
+                            break;
+                        }
+                    }
+                    if (protocolFailure) {
                         break;
                     }
                 }
@@ -1599,15 +1662,29 @@ export class GpuFixedCommandOwner {
                 );
             }
             if (!protocolFailure) {
-                for (const pending of this.pendingPriorityControlsByKey.values()) {
-                    if (pending.targetFixedTick
-                            <= priorityTargetControlCompletedThroughTick
-                        && !preparedControlKeys.has(pending.bindingKey)) {
-                        protocolFailure = Object.freeze({
-                            stage: 'body-control-program-completion',
-                            code: 'missing-control-result',
-                            message: `completed-through 이전 priority control이 누락되었습니다: ${pending.commandId}`
-                        });
+                for (const [pendingSourceTick, pendingByEntityId] of
+                    this.pendingPriorityControlsBySourceTick) {
+                    if (pendingSourceTick
+                        > priorityTargetControlCompletedThroughTick) {
+                        continue;
+                    }
+                    for (const pendingByIncarnation of
+                        pendingByEntityId.values()) {
+                        for (const pending of pendingByIncarnation.values()) {
+                            if (!preparedControlPendings.has(pending)) {
+                                protocolFailure = Object.freeze({
+                                    stage: 'body-control-program-completion',
+                                    code: 'missing-control-result',
+                                    message: `completed-through 이전 priority control이 누락되었습니다: ${pending.commandId}`
+                                });
+                                break;
+                            }
+                        }
+                        if (protocolFailure) {
+                            break;
+                        }
+                    }
+                    if (protocolFailure) {
                         break;
                     }
                 }
@@ -1856,10 +1933,32 @@ export class GpuFixedCommandOwner {
         // preflight한 뒤에만 pending/history/registry reservation을 변경합니다.
         if (!protocolFailure) {
             for (const prepared of preparedControlResults) {
-                this.pendingPriorityControlsByKey.delete(prepared.bindingKey);
+                this.pendingPriorityControlsByKey.delete(
+                    prepared.pending.bindingKey
+                );
                 this.pendingPriorityControlsByCommandId.delete(
                     prepared.pending.commandId
                 );
+                const pendingByEntityId =
+                    this.pendingPriorityControlsBySourceTick.get(
+                        prepared.pending.targetFixedTick
+                    );
+                const pendingByIncarnation = pendingByEntityId?.get(
+                    prepared.pending.payload.sourceHandle.entityId
+                );
+                pendingByIncarnation?.delete(
+                    prepared.pending.payload.sourceHandle.incarnation
+                );
+                if (pendingByIncarnation?.size === 0) {
+                    pendingByEntityId.delete(
+                        prepared.pending.payload.sourceHandle.entityId
+                    );
+                }
+                if (pendingByEntityId?.size === 0) {
+                    this.pendingPriorityControlsBySourceTick.delete(
+                        prepared.pending.targetFixedTick
+                    );
+                }
                 const known = this.knownCommands.get(
                     prepared.pending.commandId
                 );
@@ -2392,6 +2491,30 @@ export class GpuFixedCommandOwner {
                     command.commandId,
                     pendingControl
                 );
+                let pendingByEntityId =
+                    this.pendingPriorityControlsBySourceTick.get(tick);
+                if (!pendingByEntityId) {
+                    pendingByEntityId = new Map();
+                    this.pendingPriorityControlsBySourceTick.set(
+                        tick,
+                        pendingByEntityId
+                    );
+                }
+                const sourceEntityId = command.payload.sourceHandle.entityId;
+                let pendingByIncarnation = pendingByEntityId.get(
+                    sourceEntityId
+                );
+                if (!pendingByIncarnation) {
+                    pendingByIncarnation = new Map();
+                    pendingByEntityId.set(
+                        sourceEntityId,
+                        pendingByIncarnation
+                    );
+                }
+                pendingByIncarnation.set(
+                    command.payload.sourceHandle.incarnation,
+                    pendingControl
+                );
             }
             consumed.add(command.commandId);
         }
@@ -2520,6 +2643,7 @@ export class GpuFixedCommandOwner {
         }
         this.pendingPriorityControlsByKey.clear();
         this.pendingPriorityControlsByCommandId.clear();
+        this.pendingPriorityControlsBySourceTick.clear();
         this.selectionBindingClaims.clear();
         this.bodyControlCompletionScratch.length = 0;
         this.spawnCompletionScratch.length = 0;
@@ -2676,6 +2800,7 @@ export class GpuFixedCommandOwner {
         this.freePendingSlots.length = 0;
         this.pendingPriorityControlsByKey.clear();
         this.pendingPriorityControlsByCommandId.clear();
+        this.pendingPriorityControlsBySourceTick.clear();
         this.destroyed = true;
     }
 
