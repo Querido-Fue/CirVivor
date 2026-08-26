@@ -45,6 +45,7 @@ const {
 const SOURCE = Object.freeze({ entityId: 10, incarnation: 2 });
 const CORE = Object.freeze({ entityId: 20, incarnation: 3 });
 const TOWER = Object.freeze({ entityId: 30, incarnation: 4 });
+const ROSTER_TOWER = Object.freeze({ entityId: 31, incarnation: 5 });
 const PROTOCOL = Object.freeze({
     sessionGeneration: 7,
     deviceGeneration: 1,
@@ -619,6 +620,129 @@ test('resolved Tower projectile authority는 launch 뒤 source exact death와 �
         attackFingerprint: afterSourceDeath.metadata.attackFingerprint
     }, authorityBeforeSourceDeath);
     assert.equal(owner.commitCompletedAtFixedBoundary(53).protocolFailure, null);
+});
+
+test('authoritative Tower completion은 비동기 readback 전 roster 변경과 target retirement를 허용한다', () => {
+    const registry = new RegistryFixture();
+    const backend = new BackendFixture();
+    let rosterReady = true;
+    backend.getTowerGroupRuntimeStatus = () => rosterReady
+        ? Object.freeze({
+            state: 'ready',
+            groupRevision: 3,
+            rosterFingerprint: 0x12345678
+        })
+        : Object.freeze({ state: 'unavailable' });
+    registry.add(SOURCE, {
+        kindId: 'enemy',
+        definitionId: 'basic_rhom_01',
+        createdAtTick: 1,
+        metadata: Object.freeze({ teamId: GAMEPLAY_TEAM_ID.HOSTILE })
+    });
+    registry.add(CORE, {
+        kindId: 'core-proxy',
+        definitionId: 'the-core-interaction-proxy',
+        createdAtTick: 1,
+        metadata: Object.freeze({})
+    });
+    for (const towerHandle of [TOWER, ROSTER_TOWER]) {
+        registry.add(towerHandle, {
+            kindId: 'tower',
+            definitionId: 'the-tower',
+            createdAtTick: 1,
+            metadata: Object.freeze({
+                definitionId: 'the-tower',
+                teamId: GAMEPLAY_TEAM_ID.PLAYER
+            })
+        });
+        backend.add(towerHandle);
+    }
+    backend.add(SOURCE);
+    backend.add(CORE);
+    const owner = new GpuFixedCommandOwner(backend, registry);
+    assert.equal(owner.requestPriorityTargetControl({
+        sourceHandle: SOURCE,
+        coreTargetHandle: CORE,
+        towerTargetHandle: TOWER,
+        attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+        targetSelectionPolicyId: BASIC_RHOM_ATTACK_DATA.targetSelectionPolicy,
+        distancePolicyId: BASIC_RHOM_ATTACK_DATA.distancePolicy,
+        stopWhileTargetInRange: true,
+        selectionSequence: 10,
+        attackDefinitionId: BASIC_RHOM_ATTACK_DATA.id,
+        projectileDefinitionId: HOSTILE_RHOM_PROJECTILE_DATA.id,
+        producerId: BASIC_RHOM_ATTACK_DATA.producerId,
+        sourceAbilityId: BASIC_RHOM_ATTACK_DATA.sourceAbilityId
+    }, 61, 'rhom-roster-control:61').accepted, true);
+    assert.equal(owner.requestSelectedTargetSpawn(
+        createSelectedIntent(10),
+        61,
+        'rhom-roster-shot:61:10'
+    ).accepted, true);
+
+    const committed = owner.commitAtFixedBoundary(61);
+    const destinationHandle = committed.selectedTargetSpawns[0].handle;
+    const stagedControl = backend.plans[0].controls[0];
+    backend.add(destinationHandle);
+    backend.bodyControlCompletionBatches.push(Object.freeze({
+        ...PROTOCOL,
+        sourceTick: 61,
+        outcomes: Object.freeze([Object.freeze({
+            sourceHandle: SOURCE,
+            coreTargetHandle: CORE,
+            towerTargetHandle: TOWER,
+            sourceTick: 61,
+            selectionSequence: 10,
+            attackFingerprint: stagedControl.attackFingerprint,
+            attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+            result: GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED,
+            outcome: 'tower',
+            selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER,
+            stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED,
+            selectedTargetHandle: ROSTER_TOWER
+        })])
+    }));
+    backend.completionBatches.push(Object.freeze({
+        ...PROTOCOL,
+        sourceTick: 61,
+        outcomes: Object.freeze([Object.freeze({
+            destinationHandle,
+            sourceHandle: SOURCE,
+            targetHandle: ROSTER_TOWER,
+            selectedTargetKind: 'tower',
+            reason: 'resolved'
+        })])
+    }));
+
+    rosterReady = false;
+    assert.equal(registry.remove(ROSTER_TOWER), true);
+    assert.equal(backend.active.delete(key(ROSTER_TOWER)), true);
+    const completed = owner.commitCompletedAtFixedBoundary(62);
+
+    assert.equal(completed.protocolFailure, null);
+    assert.equal(owner.requiresRecovery(), false);
+    assert.deepEqual(completed.priorityTargetControlResults[0].selectedTargetHandle, {
+        ...ROSTER_TOWER
+    });
+    assert.deepEqual(completed.completed[0].targetHandle, { ...ROSTER_TOWER });
+    const projectile = registry.copyEntityView(destinationHandle, {});
+    assert.equal(
+        projectile.metadata.selectedTargetEntityId,
+        ROSTER_TOWER.entityId
+    );
+    assert.equal(
+        projectile.metadata.selectedTargetIncarnation,
+        ROSTER_TOWER.incarnation
+    );
+    assert.equal(
+        projectile.metadata.towerTargetEntityId,
+        ROSTER_TOWER.entityId
+    );
+    assert.equal(
+        projectile.metadata.towerTargetIncarnation,
+        ROSTER_TOWER.incarnation
+    );
 });
 
 test('completion activation metadata는 whole-batch preflight 뒤에만 registry와 history를 변경한다', () => {

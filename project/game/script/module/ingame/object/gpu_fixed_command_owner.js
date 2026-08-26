@@ -350,6 +350,15 @@ function sameOptionalHandle(left, right) {
         : right !== null && handleKey(left) === handleKey(right);
 }
 
+function hasExactHandleIdentity(source) {
+    return source !== null
+        && typeof source === 'object'
+        && Number.isSafeInteger(source.entityId)
+        && source.entityId > 0
+        && Number.isSafeInteger(source.incarnation)
+        && source.incarnation > 0;
+}
+
 function rawHandleMatches(source, expected, label) {
     if (!source || typeof source !== 'object') {
         throw new TypeError(`${label}은 exact handle 객체여야 합니다.`);
@@ -955,19 +964,6 @@ function normalizePriorityControlCompletionOutcome(
         selectedTargetHandle,
         stateFlags
     });
-}
-
-function isCanonicalLivingTowerTarget(registry, backend, handle) {
-    if (!handle || !registry.has(handle) || !backend.hasBody(handle)) {
-        return false;
-    }
-    const view = registry.copyEntityView(handle, {});
-    return view?.entityId === handle.entityId
-        && view?.incarnation === handle.incarnation
-        && view?.kindId === GPU_TOWER_WORLD_KIND_ID
-        && view?.definitionId === GPU_TOWER_DEFINITION_ID
-        && view?.metadata?.definitionId === GPU_TOWER_DEFINITION_ID
-        && view?.metadata?.teamId === GAMEPLAY_TEAM_ID.PLAYER;
 }
 
 function hasAuthoritativeTowerRoster(backend) {
@@ -1819,12 +1815,8 @@ export class GpuFixedCommandOwner {
                         sourceTick,
                         sourceEntityId,
                         sourceIncarnation,
-                        (handle) => hasAuthoritativeTowerRoster(this.backend)
-                            ? isCanonicalLivingTowerTarget(
-                                this.registry,
-                                this.backend,
-                                handle
-                            )
+                        (handle) => pending.usesAuthoritativeTowerRoster === true
+                            ? hasExactHandleIdentity(handle)
                             : sameOptionalHandle(
                                 handle,
                                 pending.payload.towerTargetHandle
@@ -1920,7 +1912,8 @@ export class GpuFixedCommandOwner {
                             === GPU_SPAWN_PROGRAM_MODE.SOURCE_RELATIVE_TARGET_ENTITY
                         && (pending?.payload?.requestFlags
                             & GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL)
-                            !== 0;
+                            !== 0
+                        && pending?.usesAuthoritativeTowerRoster === true;
                     if (!pending
                         || preparedDestinationKeys.has(key)
                         || batch.sourceTick !== pending.targetFixedTick
@@ -1943,12 +1936,8 @@ export class GpuFixedCommandOwner {
                                     ? pending.payload.towerTargetHandle
                                     : null;
                             const targetAccepted = selectedTargetKind === 'tower'
-                                ? hasAuthoritativeTowerRoster(this.backend)
-                                    ? isCanonicalLivingTowerTarget(
-                                        this.registry,
-                                        this.backend,
-                                        outcomeTargetHandle
-                                    )
+                                ? pending.usesAuthoritativeTowerRoster === true
+                                    ? hasExactHandleIdentity(outcomeTargetHandle)
                                     : expectedTargetHandle
                                         && outcomeTargetHandle
                                         && handleKey(outcomeTargetHandle)
@@ -2003,15 +1992,11 @@ export class GpuFixedCommandOwner {
                     }
                     if (rosterTowerQuery
                         && outcomeTargetHandle !== null
-                        && !isCanonicalLivingTowerTarget(
-                            this.registry,
-                            this.backend,
-                            outcomeTargetHandle
-                        )) {
+                        && !hasExactHandleIdentity(outcomeTargetHandle)) {
                         protocolFailure = Object.freeze({
                             stage: 'spawn-program-completion',
                             code: 'tower-roster-target-contract',
-                            message: 'Archer GPU roster target이 living PLAYER Tower가 아닙니다.'
+                            message: 'Archer GPU roster target exact identity가 올바르지 않습니다.'
                         });
                         break;
                     }
@@ -2085,19 +2070,30 @@ export class GpuFixedCommandOwner {
                             message: 'selected SpawnProgram exact Core candidate가 invalid입니다.'
                         });
                     }
+                    let activationIntent = pending.payload.destinationSpawn;
+                    if (outcome.reason === 'resolved'
+                        && selectedTargetSpawn
+                        && activationEvidence?.selectedTargetKind === 'tower'
+                        && pending.usesAuthoritativeTowerRoster === true) {
+                        activationIntent = Object.freeze({
+                            ...activationIntent,
+                            towerTargetEntityId: outcomeTargetHandle.entityId,
+                            towerTargetIncarnation: outcomeTargetHandle.incarnation
+                        });
+                    } else if (outcome.reason === 'resolved'
+                        && rosterTowerQuery) {
+                        activationIntent = Object.freeze({
+                            ...activationIntent,
+                            targetEntityId: outcomeTargetHandle.entityId,
+                            targetIncarnation: outcomeTargetHandle.incarnation
+                        });
+                    }
                     preparedOutcomes.push({
                         key,
                         outcome,
                         pending,
                         activationEvidence,
-                        activationIntent: rosterTowerQuery
-                                && outcome.reason === 'resolved'
-                            ? Object.freeze({
-                                ...pending.payload.destinationSpawn,
-                                targetEntityId: outcomeTargetHandle.entityId,
-                                targetIncarnation: outcomeTargetHandle.incarnation
-                            })
-                            : pending.payload.destinationSpawn,
+                        activationIntent,
                         rosterTowerQuery
                     });
                 }
@@ -2334,6 +2330,11 @@ export class GpuFixedCommandOwner {
             this.recoveryRequired = true;
             return this.#saveResult(result);
         }
+        // Completion은 source tick의 과거 증거이므로 current roster/liveness를
+        // 재조회하지 않습니다. GPU stage 시점의 roster authority를 pending에 고정합니다.
+        const authoritativeTowerRosterAtStage = hasAuthoritativeTowerRoster(
+            this.backend
+        );
         const controls = [];
         const sourceCommands = [];
         const consumed = new Set();
@@ -2381,7 +2382,7 @@ export class GpuFixedCommandOwner {
                 && (((command.payload.requestFlags
                     & GPU_SPAWN_PROGRAM_REQUEST_FLAGS.TOWER_DAMAGE_CHANNEL)
                     === 0)
-                    || !hasAuthoritativeTowerRoster(this.backend))) {
+                    || !authoritativeTowerRosterAtStage)) {
                 const targetDisposition = this.#getExactActiveDisposition(
                     command.payload.targetHandle
                 );
@@ -2683,7 +2684,9 @@ export class GpuFixedCommandOwner {
                     commandId: command.commandId,
                     targetFixedTick: tick,
                     payload: command.payload,
-                    protocol: command.protocol
+                    protocol: command.protocol,
+                    usesAuthoritativeTowerRoster:
+                        authoritativeTowerRosterAtStage
                 };
                 this.pendingPriorityControlsByKey.set(
                     bindingKey,
@@ -2732,7 +2735,8 @@ export class GpuFixedCommandOwner {
                 targetFixedTick: tick,
                 payload: command.payload,
                 handle,
-                selectionBindingKey: command.selectionBindingKey ?? null
+                selectionBindingKey: command.selectionBindingKey ?? null,
+                usesAuthoritativeTowerRoster: authoritativeTowerRosterAtStage
             });
             if (command.selectionBindingKey) {
                 const claim = this.selectionBindingClaims.get(
