@@ -272,6 +272,19 @@ export class GpuTowerActorFacade {
         if (ageTicks > GPU_TOWER_TRACKED_POSE_MAX_AGE_TICKS) {
             return this.#rejectObservedPose('stale-sample', frame);
         }
+        // Lossy GPU readback은 새 summary가 끝날 때까지 마지막 exact sample을
+        // 여러 렌더 프레임 반복합니다. 같은 source tick을 새 관측으로 다시
+        // 적재하면 TowerGroup facade가 유도한 속도가 0으로 덮여 카메라가
+        // 이전 위치로 되감깁니다. exact tick 재전달은 멱등 재투영만 합니다.
+        if (this.hasObservedPose && sourceTick === this.lastObservedSourceTick) {
+            if (!this.#projectObservedPose(frame)) {
+                this.followEnabled = false;
+                this.lastPoseRejection = 'non-finite-presentation';
+                return false;
+            }
+            this.lastPoseRejection = null;
+            return true;
+        }
         const position = finitePoint(pose.position);
         const previous = finitePoint(pose.previousPosition);
         const velocity = finitePoint(pose.velocity);

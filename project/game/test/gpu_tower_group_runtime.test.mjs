@@ -517,6 +517,67 @@ test('group facade 하나가 move와 primary Aim을 소비하고 tick당 backend
     });
 });
 
+test('같은 TowerGroup summary를 반복 관측해도 camera presentation 속도를 보존한다', () => {
+    const facade = new GpuTowerGroupFacade();
+    facade.bindGpuBody({ entityId: 7, incarnation: 2 }, 3);
+    const createFrame = (currentFixedTick) => ({
+        currentFixedTick,
+        fixedAlpha: 0.5,
+        fixedDelta: 0.1,
+        presentationProfile: 'reference-clock-extrapolation',
+        predictionDelta: 0.05,
+        sessionGeneration: PROTOCOL.sessionGeneration,
+        deviceGeneration: PROTOCOL.deviceGeneration,
+        authoritativeEpoch: PROTOCOL.authoritativeEpoch
+    });
+    const createSummary = (sourceTick, centroidX) => ({
+        valid: true,
+        livingCount: 1,
+        sourceTick,
+        centroid: { x: centroidX, y: 2 },
+        bounds: {
+            minX: centroidX - 1,
+            minY: 1,
+            maxX: centroidX + 1,
+            maxY: 3
+        },
+        primaryHandle: { entityId: 7, incarnation: 2 },
+        ...PROTOCOL
+    });
+
+    assert.equal(facade.updateObservedSummary(
+        createSummary(10, 10),
+        createFrame(10)
+    ), true);
+    const movingSummary = createSummary(11, 11);
+    assert.equal(facade.updateObservedSummary(
+        movingSummary,
+        createFrame(12)
+    ), true);
+    assert.deepEqual(facade.copyCameraFollowPositionInto({}), {
+        x: 12.5,
+        y: 2
+    });
+
+    assert.equal(facade.updateObservedSummary(
+        movingSummary,
+        createFrame(12)
+    ), true);
+    assert.deepEqual(
+        facade.copyCameraFollowPositionInto({}),
+        { x: 12.5, y: 2 },
+        '같은 readback을 다시 읽은 렌더 프레임은 속도를 0으로 덮지 않습니다.'
+    );
+    assert.equal(facade.updateObservedSummary(
+        movingSummary,
+        createFrame(13)
+    ), true);
+    assert.deepEqual(facade.copyCameraFollowPositionInto({}), {
+        x: 13.5,
+        y: 2
+    });
+});
+
 test('pending Tower creation의 source roster는 stateRevision 변화에도 같은 tick control을 허용한다', () => {
     let stateRevision = 2;
     const state = {
