@@ -193,6 +193,11 @@ function isReciprocalInteractionPairEnabled(left, right) {
         && (right.interactionMask & left.interactionLayer) !== 0;
 }
 
+function isReciprocalPhysicalPairEnabled(left, right) {
+    return (left.collisionMask & right.bodyLayer) !== 0
+        && (right.collisionMask & left.bodyLayer) !== 0;
+}
+
 function createProjectileIntent(teamId, targetPolicyId) {
     return createGpuProjectileSpawnIntent({
         definition: {
@@ -263,6 +268,9 @@ test('enter 시점 platform snapshot이 immutable GPU/fallback mode와 wave poli
 test('Tower intent는 HP 30과 별도 player-damageable interaction capability를 사용한다', () => {
     const authoredPosition = { x: 27, y: 15 };
     const tower = createGpuTowerSpawnIntent({ position: authoredPosition });
+    const otherTower = createGpuTowerSpawnIntent({
+        position: { x: authoredPosition.x + 1, y: authoredPosition.y }
+    });
     const enemy = createEnemyIntent();
     const core = createGpuCoreProxySpawnIntent({ position: { x: 27, y: 22 } });
     const basicBullet = createProjectileIntent(
@@ -314,11 +322,12 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
     assert.equal(
         tower.collisionMask,
         GPU_CIRCLE_BODY_COLLISION_LAYER.ENEMY
+            | GPU_CIRCLE_BODY_COLLISION_LAYER.KINEMATIC_OBSTACLE
             | GPU_CIRCLE_BODY_COLLISION_LAYER.TERRAIN
             | GPU_CIRCLE_BODY_COLLISION_LAYER.ROUTE_BLOCKER
     );
     assert.equal(tower.bodyLayer, 64);
-    assert.equal(tower.collisionMask, 1153);
+    assert.equal(tower.collisionMask, 1217);
     assert.equal(
         tower.interactionLayer,
         GPU_CIRCLE_BODY_COLLISION_LAYER.PLAYER_DAMAGEABLE
@@ -346,6 +355,21 @@ test('Tower intent는 HP 30과 별도 player-damageable interaction capability�
         tower.collisionMask & enemy.bodyLayer,
         enemy.bodyLayer,
         'Tower는 Enemy를 physical acceptance 대상으로 포함한다.'
+    );
+    assert.equal(
+        isReciprocalPhysicalPairEnabled(tower, otherTower),
+        true,
+        'Tower끼리는 reciprocal physical pair로 서로 겹치지 않는다.'
+    );
+    assert.equal(
+        isReciprocalInteractionPairEnabled(tower, otherTower),
+        false,
+        'Tower끼리의 물리 충돌은 같은 팀 gameplay interaction을 만들지 않는다.'
+    );
+    assert.equal(
+        isReciprocalPhysicalPairEnabled(tower, core),
+        false,
+        'Core proxy의 no-physical 계약은 유지한다.'
     );
     assert.equal(
         isReciprocalInteractionPairEnabled(basicBullet, enemy),
