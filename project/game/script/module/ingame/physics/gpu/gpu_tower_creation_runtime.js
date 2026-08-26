@@ -18,6 +18,7 @@ import {
 } from './gpu_tower_creation_shaders.js';
 
 const DEFAULT_READBACK_SLOT_COUNT = 3;
+const DEFAULT_SUBMITTED_READBACK_TIMEOUT_MS = 15_000;
 const PIPELINES_BY_DEVICE = new WeakMap();
 
 function requirePositiveInteger(value, label) {
@@ -34,6 +35,18 @@ function requireNonNegativeInteger(value, label) {
         throw new RangeError(`${label}는 uint32 범위의 정수여야 합니다.`);
     }
     return number;
+}
+
+function requirePositiveFinite(value, label) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) {
+        throw new RangeError(`${label}는 양의 유한수여야 합니다.`);
+    }
+    return number;
+}
+
+function defaultNow() {
+    return globalThis.performance?.now?.() ?? Date.now();
 }
 
 function normalizeProtocol(source = {}) {
@@ -236,6 +249,15 @@ export class GpuTowerCreationRuntime {
             options.readbackSlotCount ?? DEFAULT_READBACK_SLOT_COUNT,
             'Tower creation readbackSlotCount'
         );
+        this.submittedReadbackTimeoutMs = requirePositiveFinite(
+            options.submittedReadbackTimeoutMs
+                ?? DEFAULT_SUBMITTED_READBACK_TIMEOUT_MS,
+            'Tower creation submittedReadbackTimeoutMs'
+        );
+        if (options.now !== undefined && typeof options.now !== 'function') {
+            throw new TypeError('Tower creation now는 함수여야 합니다.');
+        }
+        this.now = options.now ?? defaultNow;
         this.host = createGpuTowerCreationHostStorage(this.recordCapacity);
         this.device = null;
         this.protocol = null;
@@ -256,6 +278,10 @@ export class GpuTowerCreationRuntime {
         this.rejectedCount = 0;
         this.protocolFailureCount = 0;
         this.ringRejectedCount = 0;
+        this.validationScopeCount = 0;
+        this.pendingValidationScopeCount = 0;
+        this.validationFailureCount = 0;
+        this.readbackTimeoutCount = 0;
         this.lastSubmittedTick = 0;
         this.lastCompletedTick = 0;
         this.recordCountHighWater = 0;
@@ -379,6 +405,7 @@ export class GpuTowerCreationRuntime {
     canAccept() {
         return this.state === 'ready'
             && this.pending === null
+            && this.pendingValidationScopeCount === 0
             && this.readbackSlots.some((slot) => slot.state === 'free');
     }
 
@@ -559,7 +586,9 @@ export class GpuTowerCreationRuntime {
             slot,
             program,
             actorActionPlacementBinding,
-            actorBindGroup
+            actorBindGroup,
+            validationScopeActive: false,
+            submittedAtMs: null
         };
         this.stagedCount++;
         this.recordCountHighWater = Math.max(
@@ -601,6 +630,7 @@ export class GpuTowerCreationRuntime {
             || this.pending.envelope.sourceTick !== tick) {
             throw new Error('Tower creation encode 순서가 유효하지 않습니다.');
         }
+        this.#openValidationScope(this.pending);
         const dispatchRecords = Math.ceil(
             this.pending.envelope.recordCount
                 / GPU_TOWER_CREATION_WORKGROUP_SIZE
@@ -688,13 +718,16 @@ export class GpuTowerCreationRuntime {
         }
         this.pending.state = 'submitted';
         this.pending.slot.state = 'in-flight';
+        this.pending.submittedAtMs = this.#readNow();
         this.lastSubmittedTick = tick;
         this.#beginReadback(this.pending);
+        this.#settleValidationScope(this.pending);
         return true;
     }
 
     failEncoded(error) {
         if (!this.pending) return false;
+        this.#discardValidationScope(this.pending);
         this.failure = captureFailure('tower-creation-fixed-submit', error);
         this.state = 'failed';
         this.#releaseSlot(this.pending.slot);
@@ -728,6 +761,7 @@ export class GpuTowerCreationRuntime {
                 recoveryRequired: true
             });
         }
+        this.#discardValidationScope(this.pending);
         this.#releaseSlot(this.pending.slot);
         this.pending = null;
         return Object.freeze({
@@ -739,6 +773,8 @@ export class GpuTowerCreationRuntime {
     }
 
     getStatus() {
+        this.#checkSubmittedReadbackLiveness();
+        const submittedReadbackAgeMs = this.#getSubmittedReadbackAgeMs();
         return Object.freeze({
             state: this.state,
             failure: this.failure,
@@ -759,8 +795,16 @@ export class GpuTowerCreationRuntime {
             rejectedCount: this.rejectedCount,
             protocolFailureCount: this.protocolFailureCount,
             ringRejectedCount: this.ringRejectedCount,
+            validationScopeCount: this.validationScopeCount,
+            pendingValidationScopeCount: this.pendingValidationScopeCount,
+            validationFailureCount: this.validationFailureCount,
+            readbackTimeoutCount: this.readbackTimeoutCount,
             lastSubmittedTick: this.lastSubmittedTick,
             lastCompletedTick: this.lastCompletedTick,
+            submittedReadbackTimeoutMs: this.submittedReadbackTimeoutMs,
+            submittedReadbackAgeMs,
+            validationScopeActive:
+                this.pending?.validationScopeActive === true,
             recordCountHighWater: this.recordCountHighWater,
             actorTransitBufferAvailable:
                 Boolean(this.resources?.actorTransit),
@@ -776,10 +820,12 @@ export class GpuTowerCreationRuntime {
     }
 
     requiresRecovery() {
+        this.#checkSubmittedReadbackLiveness();
         return this.state === 'failed';
     }
 
     retire(reason = 'resource-retired') {
+        this.#discardValidationScope(this.pending);
         this.resourceLease++;
         for (const slot of this.readbackSlots) {
             try { slot.buffer?.unmap?.(); } catch { /* not mapped */ }
@@ -799,6 +845,7 @@ export class GpuTowerCreationRuntime {
         this.bindGroup = null;
         this.mapReadMode = null;
         this.pending = null;
+        this.pendingValidationScopeCount = 0;
         this.completed.length = 0;
         this.state = 'idle';
         this.failure = reason === 'destroyed' ? this.failure : null;
@@ -992,7 +1039,7 @@ export class GpuTowerCreationRuntime {
         }).catch((error) => {
             const authentic = slot.lease === this.resourceLease
                 && envelope.resourceLease === this.resourceLease;
-            if (authentic) {
+            if (authentic && this.state === 'ready') {
                 this.protocolFailureCount++;
                 this.state = 'failed';
                 this.failure = captureFailure('tower-creation-result-map', error);
@@ -1000,6 +1047,123 @@ export class GpuTowerCreationRuntime {
             this.#releaseSlot(slot);
             if (this.pending === pending) this.pending = null;
         });
+    }
+
+    #openValidationScope(pending) {
+        if (!pending || pending.validationScopeActive
+            || typeof this.device?.pushErrorScope !== 'function'
+            || typeof this.device?.popErrorScope !== 'function') {
+            return false;
+        }
+        this.device.pushErrorScope('validation');
+        pending.validationScopeActive = true;
+        this.validationScopeCount++;
+        return true;
+    }
+
+    #settleValidationScope(pending) {
+        if (!pending?.validationScopeActive) return false;
+        pending.validationScopeActive = false;
+        const scopeLease = this.resourceLease;
+        this.pendingValidationScopeCount++;
+        let result;
+        try {
+            result = this.device.popErrorScope();
+        } catch (error) {
+            this.pendingValidationScopeCount = Math.max(
+                0,
+                this.pendingValidationScopeCount - 1
+            );
+            this.#failSubmittedPending(
+                pending,
+                'tower-creation-fixed-validation-scope',
+                error,
+                'validation'
+            );
+            return true;
+        }
+        void Promise.resolve(result).then((error) => {
+            if (!error) return;
+            this.#failSubmittedPending(
+                pending,
+                'tower-creation-fixed-validation',
+                error,
+                'validation'
+            );
+        }).catch((error) => {
+            this.#failSubmittedPending(
+                pending,
+                'tower-creation-fixed-validation-scope',
+                error,
+                'validation'
+            );
+        }).finally(() => {
+            if (scopeLease !== this.resourceLease) return;
+            this.pendingValidationScopeCount = Math.max(
+                0,
+                this.pendingValidationScopeCount - 1
+            );
+        });
+        return true;
+    }
+
+    #discardValidationScope(pending) {
+        if (!pending?.validationScopeActive) return false;
+        pending.validationScopeActive = false;
+        try {
+            void Promise.resolve(this.device?.popErrorScope?.()).catch(() => {});
+        } catch {
+            // 이미 실패/retire 중인 scope 정리는 best-effort입니다.
+        }
+        return true;
+    }
+
+    #readNow() {
+        const now = Number(this.now());
+        if (!Number.isFinite(now) || now < 0) {
+            throw new RangeError('Tower creation monotonic clock가 유효하지 않습니다.');
+        }
+        return now;
+    }
+
+    #getSubmittedReadbackAgeMs() {
+        const submittedAtMs = this.pending?.submittedAtMs;
+        if (this.pending?.state !== 'submitted'
+            || !Number.isFinite(submittedAtMs)) {
+            return 0;
+        }
+        return Math.max(0, this.#readNow() - submittedAtMs);
+    }
+
+    #checkSubmittedReadbackLiveness() {
+        const pending = this.pending;
+        if (this.state !== 'ready' || pending?.state !== 'submitted') {
+            return false;
+        }
+        const ageMs = this.#getSubmittedReadbackAgeMs();
+        if (ageMs < this.submittedReadbackTimeoutMs) return false;
+        return this.#failSubmittedPending(
+            pending,
+            'tower-creation-result-timeout',
+            new Error(
+                `Tower creation result readback이 ${Math.round(ageMs)}ms 동안 완료되지 않았습니다.`
+            ),
+            'timeout'
+        );
+    }
+
+    #failSubmittedPending(pending, stage, error, failureKind) {
+        const authentic = this.state === 'ready'
+            && pending?.envelope?.resourceLease === this.resourceLease
+            && sameProtocol(pending.envelope, this.protocol);
+        if (!authentic) return false;
+        this.protocolFailureCount++;
+        if (failureKind === 'validation') this.validationFailureCount++;
+        if (failureKind === 'timeout') this.readbackTimeoutCount++;
+        this.state = 'failed';
+        this.failure = captureFailure(stage, error);
+        if (this.pending === pending) this.pending = null;
+        return true;
     }
 
     #releaseSlot(slot) {

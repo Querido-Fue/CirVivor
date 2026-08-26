@@ -550,7 +550,7 @@ function drainExactTowerTerminalReceipt(harness, expected, label) {
     return receipts[0];
 }
 
-async function executeTowerPayload(harness, fixedTick, label) {
+async function executeTowerPayload(harness, fixedTick, label, options = {}) {
     const snapshots = await stageSnapshots(
         harness,
         [ABILITY_SLOT_ID.Q],
@@ -711,6 +711,28 @@ async function executeTowerPayload(harness, fixedTick, label) {
     const materializerObservation = harness.materializer
         .observeTowerCreationCompletion(towerReceipt, fixedTick + 3);
     const committed = towerReceipt.result === TOWER_CREATION_RESULT.COMMITTED;
+    const sourceChanged = towerReceipt.result
+        === TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED;
+    if (!committed && sourceChanged && options.allowSourceChanged === true) {
+        assert(materializerObservation.committedCount === 0
+            && materializerObservation.recoveryRequired !== true,
+        `${label} source-change rejection was not clean`);
+        return Object.freeze({
+            snapshots,
+            payloadStage,
+            coordinatorStage,
+            placementReady,
+            creationStage,
+            towerRequest,
+            towerReceipt,
+            materializerObservation,
+            outcome: harness.wordSystem.getStatusView().lastExecutionOutcome,
+            rejected: true,
+            rejectedAt: 'creation-result',
+            nextFixedTick: fixedTick + 4,
+            storageMaximum: storageMaximum(harness)
+        });
+    }
     assert(committed
         && materializerObservation.committedCount === 1
         && materializerObservation.recoveryRequired !== true,
@@ -1114,6 +1136,92 @@ async function runTowerGrowth(device) {
             ordinalMaximum: livingOrdinals.at(-1),
             telemetry,
             recoveryRequired: recoveryRequired(harness)
+        });
+    } finally {
+        destroyedTeardown = await destroyHarness(harness);
+    }
+    return Object.freeze({ ...result, destroyedTeardown });
+}
+
+async function runTowerGrowthUnderHostilePressure(device) {
+    const hostileCount = 3_000;
+    const harness = createHarness(
+        device,
+        4_096,
+        loadoutFor(TOWER_SHOOT_TOWER_X2),
+        { actorActionPlacementDestinationCapacity: 256 }
+    );
+    let result = null;
+    let destroyedTeardown = false;
+    try {
+        await initializePrimaryTower(harness);
+        requestEnemyBatch(
+            harness,
+            hostileCount,
+            2,
+            'tower-growth-hostile-pressure'
+        );
+        const towerCounts = [1];
+        const attempts = [];
+        let fixedTick = 2;
+        for (const expectedLivingCount of [3, 9, 27, 81]) {
+            const cast = await executeTowerPayload(
+                harness,
+                fixedTick,
+                `tower-growth-hostile-${hostileCount}-to-${expectedLivingCount}`,
+                { allowSourceChanged: true }
+            );
+            const livingCount = harness.towerGroupState
+                .getStatus().livingTowerCount;
+            attempts.push(Object.freeze({
+                requestedLivingCount: expectedLivingCount,
+                result: cast.towerReceipt?.result ?? null,
+                resultingLivingCount: livingCount
+            }));
+            fixedTick = cast.nextFixedTick;
+            if (cast.rejected) break;
+            assert(livingCount === expectedLivingCount,
+                `hostile pressure Tower count mismatch: ${livingCount}`);
+            towerCounts.push(livingCount);
+        }
+        await openGenericBoundary(harness.device, harness.endpoint, fixedTick);
+        const continuationLifecycle = harness.endpoint
+            .commitAtFixedBoundary(fixedTick);
+        assert(continuationLifecycle.recoveryRequired !== true
+            && continuationLifecycle.rejected.length === 0,
+        'hostile pressure continuation lifecycle failed');
+        const continuationSubmitted = harness.endpoint.fixedUpdate(
+            FIXED_DELTA,
+            fixedTick
+        );
+        assert(continuationSubmitted === true,
+            'source-change rejection 뒤 fixed submit이 재개되지 않았습니다.');
+        await harness.device.queue.onSubmittedWorkDone();
+        const telemetry = assertClean(
+            harness,
+            'tower-growth-hostile-pressure'
+        );
+        const towerRuntime = harness.backend
+            .getTowerCreationRuntimeStatus();
+        assert(telemetry.activeEnemyCount === hostileCount
+            && towerRuntime.pendingReadbackCount === 0
+            && towerRuntime.pendingValidationScopeCount === 0
+            && towerRuntime.validationFailureCount === 0
+            && towerRuntime.readbackTimeoutCount === 0,
+        `hostile pressure Tower runtime mismatch: ${JSON.stringify({
+            telemetry,
+            towerRuntime
+        })}`);
+        result = Object.freeze({
+            hostileCount,
+            towerCounts: Object.freeze(towerCounts),
+            attempts: Object.freeze(attempts),
+            activeBodyCount: telemetry.activeBodyCount,
+            continuationSubmitted,
+            validationFailureCount: towerRuntime.validationFailureCount,
+            readbackTimeoutCount: towerRuntime.readbackTimeoutCount,
+            recoveryRequired: recoveryRequired(harness),
+            telemetry
         });
     } finally {
         destroyedTeardown = await destroyHarness(harness);
@@ -1922,6 +2030,9 @@ async function run() {
 
         checkpoint('r7:tower-growth');
         const towerGrowth = await runTowerGrowth(device);
+        checkpoint('r7:tower-growth-hostile-pressure');
+        const towerGrowthUnderHostilePressure
+            = await runTowerGrowthUnderHostilePressure(device);
 
         const positiveDefinitions = [
             {
@@ -2053,6 +2164,7 @@ async function run() {
             scenario: 'r7-actor-payload-multiplicity-actual-webgpu',
             positives: Object.freeze(positives),
             towerGrowth,
+            towerGrowthUnderHostilePressure,
             stackedTimingAndGridPressure,
             pressures,
             negatives: Object.freeze({
@@ -2077,6 +2189,7 @@ async function run() {
                 ringPressure.telemetry.storageMaximum,
                 staleCompletion.telemetry.storageMaximum,
                 towerGrowth.telemetry.storageMaximum,
+                towerGrowthUnderHostilePressure.telemetry.storageMaximum,
                 stackedTimingAndGridPressure.telemetry.storageMaximum,
                 registryOneShort.telemetry.storageMaximum,
                 bodyOneShort.telemetry.storageMaximum,
@@ -2094,6 +2207,7 @@ async function run() {
                 ringPressure,
                 staleCompletion,
                 towerGrowth,
+                towerGrowthUnderHostilePressure,
                 stackedTimingAndGridPressure,
                 registryOneShort,
                 bodyOneShort,
@@ -2115,6 +2229,14 @@ async function run() {
             && towerGrowth.capReject.cooldownConsumed === false
             && towerGrowth.capReject.mutationCount === 0,
         `R7 Tower growth evidence mismatch: ${JSON.stringify(towerGrowth)}`);
+        assert(JSON.stringify(towerGrowthUnderHostilePressure.towerCounts)
+                !== JSON.stringify([1])
+            && towerGrowthUnderHostilePressure.hostileCount === 3_000
+            && towerGrowthUnderHostilePressure.continuationSubmitted === true
+            && towerGrowthUnderHostilePressure.recoveryRequired === false,
+        `R7 hostile pressure Tower growth mismatch: ${JSON.stringify(
+            towerGrowthUnderHostilePressure
+        )}`);
         const lostPromise = device.lost;
         device.destroy();
         const lost = await lostPromise;

@@ -826,6 +826,8 @@ class FakeDevice {
             },
             submit() {}
         };
+        this.errorScopes = [];
+        this.validationResults = [];
     }
 
     createBuffer(descriptor) {
@@ -842,6 +844,15 @@ class FakeDevice {
             label: descriptor.label,
             entryPoint: descriptor.compute.entryPoint
         });
+    }
+
+    pushErrorScope(filter) {
+        this.errorScopes.push(filter);
+    }
+
+    popErrorScope() {
+        assert.equal(this.errorScopes.pop(), 'validation');
+        return Promise.resolve(this.validationResults.shift() ?? null);
     }
 }
 
@@ -1007,6 +1018,40 @@ async function flushMicrotasks() {
     await Promise.resolve();
 }
 
+function stageRuntimeCreation(runtime, sourceTick, transactionId) {
+    const records = creationRecords();
+    const fingerprints = creationRosterFingerprints(records);
+    return runtime.stage({
+        transactionId,
+        transactionFingerprint: 12345,
+        sourceTick,
+        sourceGroupRevision: 1,
+        targetGroupRevision: 2,
+        sourceRosterFingerprint: fingerprints.source,
+        targetRosterFingerprint: fingerprints.target,
+        existingCount: 1,
+        childCount: 1,
+        towerDefinitionCode: 777,
+        records,
+        protocol: PROTOCOL
+    });
+}
+
+function encodeRuntimeCreation(runtime, sourceTick) {
+    runtime.encode({
+        setPipeline() {},
+        setBindGroup() {},
+        dispatchWorkgroups() {}
+    }, sourceTick);
+    runtime.encodeReadback({
+        copyBufferToBuffer(source, sourceOffset, target, targetOffset, size) {
+            new Uint8Array(target.data, targetOffset, size).set(
+                new Uint8Array(source.data, sourceOffset, size)
+            );
+        }
+    }, sourceTick);
+}
+
 test('creation ABI/runtime은 main pass 6단계와 bounded 결과 ring만 사용한다', async () => {
     const restore = installFakeWebGpuGlobals();
     const device = new FakeDevice();
@@ -1068,6 +1113,80 @@ test('creation ABI/runtime은 main pass 6단계와 bounded 결과 ring만 사용
             runtime.getStatus().resultReadbackBytes,
             GPU_TOWER_CREATION_ABI.RESULT.STRIDE
         );
+    } finally {
+        runtime.destroy();
+        restore();
+    }
+});
+
+test('Tower creation submit validation 오류는 pending map을 기다리지 않고 recovery로 전환한다', async () => {
+    const restore = installFakeWebGpuGlobals();
+    const device = new FakeDevice();
+    const runtime = new GpuTowerCreationRuntime({
+        bodyCapacity: 4,
+        recordCapacity: 4,
+        readbackSlotCount: 1
+    });
+    try {
+        runtime.initialize(device, gpuResources(device), PROTOCOL);
+        const staged = stageRuntimeCreation(
+            runtime,
+            18,
+            'runtime-validation-failure'
+        );
+        assert.equal(staged.accepted, true);
+        encodeRuntimeCreation(runtime, 18);
+        device.validationResults.push(new Error('invalid fixed command buffer'));
+        runtime.markSubmitted(18);
+        await flushMicrotasks();
+
+        const status = runtime.getStatus();
+        assert.equal(status.state, 'failed');
+        assert.equal(status.requiresRecovery, true);
+        assert.equal(status.pendingTransaction, null);
+        assert.equal(status.validationScopeCount, 1);
+        assert.equal(status.validationFailureCount, 1);
+        assert.equal(status.failure.stage, 'tower-creation-fixed-validation');
+        assert.equal(runtime.requiresRecovery(), true);
+    } finally {
+        runtime.destroy();
+        restore();
+    }
+});
+
+test('Tower creation readback 무응답은 bounded wall-clock 뒤 recovery로 전환한다', async () => {
+    const restore = installFakeWebGpuGlobals();
+    const device = new FakeDevice();
+    let now = 1_000;
+    const runtime = new GpuTowerCreationRuntime({
+        bodyCapacity: 4,
+        recordCapacity: 4,
+        readbackSlotCount: 1,
+        submittedReadbackTimeoutMs: 100,
+        now: () => now
+    });
+    try {
+        runtime.initialize(device, gpuResources(device), PROTOCOL);
+        const staged = stageRuntimeCreation(
+            runtime,
+            19,
+            'runtime-readback-timeout'
+        );
+        assert.equal(staged.accepted, true);
+        encodeRuntimeCreation(runtime, 19);
+        runtime.markSubmitted(19);
+        await flushMicrotasks();
+
+        now = 1_099;
+        assert.equal(runtime.requiresRecovery(), false);
+        assert.equal(runtime.getStatus().submittedReadbackAgeMs, 99);
+        now = 1_100;
+        assert.equal(runtime.requiresRecovery(), true);
+        const status = runtime.getStatus();
+        assert.equal(status.state, 'failed');
+        assert.equal(status.readbackTimeoutCount, 1);
+        assert.equal(status.pendingTransaction, null);
+        assert.equal(status.failure.stage, 'tower-creation-result-timeout');
     } finally {
         runtime.destroy();
         restore();
