@@ -420,12 +420,19 @@ export class CoreOvertimePressureDirector {
         }
         if (recoveryRequired
             || source.snapshot.run.recoveryRequired
-            || !source.snapshot.events.contiguous) {
+            || source.snapshot.events.protocolFailure) {
             return this.#rememberAndCreateResult(
                 transactionId,
                 transactionFingerprint,
                 CORE_OVERTIME_PRESSURE_RESULT_CODE.RECOVERY_REQUIRED,
                 { recoveryRequired: true }
+            );
+        }
+        if (!source.snapshot.events.contiguous) {
+            return this.#rememberAndCreateResult(
+                transactionId,
+                transactionFingerprint,
+                CORE_OVERTIME_PRESSURE_RESULT_CODE.DEFERRED
             );
         }
 

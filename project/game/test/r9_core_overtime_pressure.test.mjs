@@ -547,6 +547,64 @@ test('pause/backpressure/recovery boundary는 pulse를 만들지 않고 recovery
     assert.equal(afterRecovery.nextPulseFixedTick, 5);
 });
 
+test('정상 event watermark 지연은 같은 fixed tick을 defer하고 protocol failure만 recovery로 승격한다', () => {
+    const delayed = createHarness();
+    const delayedSnapshot = createSnapshot(delayed, {
+        fixedTick: 4,
+        liveHostileActorCount: 2,
+        lastSubmittedTick: 1,
+        lastCompletedTick: 0,
+        completedThroughTick: 0
+    });
+    const deferred = observe(delayed, {
+        completedFixedTick: 3,
+        fixedTick: 4,
+        snapshot: delayedSnapshot,
+        hostileStatus: createHostileStatus(delayedSnapshot, 8)
+    });
+    assert.equal(deferred.code, CORE_OVERTIME_PRESSURE_RESULT_CODE.DEFERRED);
+    assert.equal(deferred.recoveryRequired, false);
+    assert.equal(deferred.pulsed, false);
+    assert.equal(delayed.director.requiresRecovery(), false);
+    assert.equal(delayed.coreIntegrity.getCurrentIntegrity(), 100);
+
+    const contiguousSnapshot = createSnapshot(delayed, {
+        fixedTick: 4,
+        liveHostileActorCount: 2,
+        lastSubmittedTick: 1,
+        lastCompletedTick: 1,
+        completedThroughTick: 1
+    });
+    const retried = observe(delayed, {
+        completedFixedTick: 3,
+        fixedTick: 4,
+        snapshot: contiguousSnapshot,
+        hostileStatus: createHostileStatus(contiguousSnapshot, 8)
+    });
+    assert.equal(retried.pulsed, true);
+    assert.equal(retried.recoveryRequired, false);
+    assert.equal(retried.overtimePulseOrdinal, 1);
+
+    const failed = createHarness();
+    const failedSnapshot = createSnapshot(failed, {
+        fixedTick: 4,
+        liveHostileActorCount: 2,
+        protocolFailure: true
+    });
+    const recovery = observe(failed, {
+        completedFixedTick: 3,
+        fixedTick: 4,
+        snapshot: failedSnapshot,
+        hostileStatus: createHostileStatus(failedSnapshot, 8)
+    });
+    assert.equal(
+        recovery.code,
+        CORE_OVERTIME_PRESSURE_RESULT_CODE.RECOVERY_REQUIRED
+    );
+    assert.equal(recovery.recoveryRequired, true);
+    assert.equal(recovery.pulsed, false);
+});
+
 test('Sentence-created fractional siege와 countsTowardSiege=false aggregate를 그대로 소비한다', () => {
     const sentence = createHarness({ hostileActorCount: 3 });
     const sentencePulse = observe(sentence, {
