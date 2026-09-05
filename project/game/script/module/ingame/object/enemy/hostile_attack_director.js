@@ -1,38 +1,10 @@
-import { pushMinHeap, popMinHeap } from 'util/min_heap.js';
 import {
-    INGAME_ENEMY_DEFINITION_BY_ID
-} from 'data/object/enemy/basic_circle_enemy_data.js';
-import {
-    HOSTILE_ATTACK_DEFINITION_BY_ID
-} from 'data/object/enemy/archer_attack_data.js';
-import {
-    BASIC_RHOM_ATTACK_DEFINITION_BY_ID,
-    HOSTILE_RANGED_DISTANCE_POLICY_ID,
-    HOSTILE_RANGED_MOVEMENT_POLICY_ID,
-    HOSTILE_RANGED_TARGET_SELECTION_POLICY_ID,
-    HOSTILE_RANGED_TARGET_SNAPSHOT_POLICY_ID
-} from 'data/object/enemy/basic_rhom_attack_data.js';
+    pushMinHeap,
+    popMinHeap
+} from 'util/min_heap.js';
 import {
     HOSTILE_ATTACK_RUNTIME_DATA
 } from 'data/object/enemy/hostile_attack_runtime_data.js';
-import {
-    HOSTILE_BASIC_BULLET_DATA
-} from 'data/object/projectile/hostile_basic_bullet_data.js';
-import {
-    HOSTILE_RHOM_PROJECTILE_DATA
-} from 'data/object/projectile/hostile_rhom_projectile_data.js';
-import {
-    GAMEPLAY_ALLEGIANCE_POLICY,
-    GAMEPLAY_TEAM_ID
-} from '../../contract/gameplay_team_contract.js';
-import {
-    PROJECTILE_TARGET_POLICY_ID
-} from '../../contract/projectile_target_policy_contract.js';
-import {
-    createEnemyCapabilityMask,
-    ENEMY_CAPABILITY_ID,
-    hasEnemyCapability
-} from '../../contract/enemy_capability_contract.js';
 import {
     GPU_PROJECTILE_SPAWN_MODE,
     GpuProjectileSpawnAdapter
@@ -53,489 +25,38 @@ import {
 import {
     ENEMY_LIFECYCLE_DISPOSITION_ID
 } from '../../contract/enemy_lifecycle_disposition_contract.js';
+import {
+    HOSTILE_ATTACK_TARGET_MODE,
+    HOSTILE_ATTACK_COMMAND_NAMESPACE,
+    HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE,
+    HOSTILE_ATTACK_SHOT_STATE,
+    requirePositiveSafeInteger,
+    requireNonNegativeSafeInteger,
+    freezeHandle,
+    sameHandle,
+    handleKey,
+    checkedTickSum,
+    computeHostileAttackPhaseOffset,
+    createHostileAttackCommandId,
+    createHostileAttackControlCommandId,
+    createCanonicalHostileControlCommandId,
+    createCanonicalHostileShotCommandId
+} from './hostile_attack_protocol.js';
+import { compileHostileAttackCatalog } from './hostile_attack_catalog.js';
+export {
+    HOSTILE_ATTACK_COMMAND_NAMESPACE,
+    HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE,
+    HOSTILE_ATTACK_SHOT_STATE,
+    computeHostileAttackPhaseOffset,
+    createHostileAttackCommandId,
+    createHostileAttackControlCommandId
+} from './hostile_attack_protocol.js';
 
-const INVALID_HANDLE_COMPONENT = 0xffffffff;
 const DEFAULT_COMPLETION_HISTORY_CAPACITY = 2048;
 const EMPTY_COMMAND_IDS = Object.freeze([]);
-const CANONICAL_EXACT_HANDLES = new WeakSet();
-const CURRENT_TOWER_TARGET_POLICY = 'current-single-living-tower';
-const CAST_START_TARGET_SNAPSHOT_POLICY = 'cast-start-exact-handle';
+
 const GPU_DEATH_EVENT_TYPE = 'death';
 const GPU_DEATH_DISPOSITION = 'despawn-requested';
-const HOSTILE_ATTACK_TARGET_MODE = Object.freeze({
-    CURRENT_TOWER: 'current-tower',
-    CORE_PRIORITY_SELECTED: 'core-priority-selected'
-});
-
-export const HOSTILE_ATTACK_COMMAND_NAMESPACE = 'gpu-hostile-archer-shot';
-export const HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE
-    = 'gpu-hostile-rhom-priority-control';
-export const HOSTILE_ATTACK_SHOT_STATE = Object.freeze({
-    IDLE: 'IDLE',
-    REQUESTED_FOR_FIXED_TICK: 'REQUESTED_FOR_FIXED_TICK',
-    GPU_RESOLVE_PENDING: 'GPU_RESOLVE_PENDING'
-});
-
-const DEFAULT_HOSTILE_ENEMY_DEFINITION_BY_ID = INGAME_ENEMY_DEFINITION_BY_ID;
-const DEFAULT_HOSTILE_ATTACK_DEFINITION_BY_ID = Object.freeze({
-    ...HOSTILE_ATTACK_DEFINITION_BY_ID,
-    ...BASIC_RHOM_ATTACK_DEFINITION_BY_ID
-});
-const DEFAULT_HOSTILE_PROJECTILE_DEFINITION_BY_ID = Object.freeze({
-    [HOSTILE_BASIC_BULLET_DATA.id]: HOSTILE_BASIC_BULLET_DATA,
-    [HOSTILE_RHOM_PROJECTILE_DATA.id]: HOSTILE_RHOM_PROJECTILE_DATA
-});
-
-function requireNonEmptyString(value, label) {
-    if (typeof value !== 'string' || value.length === 0) {
-        throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
-    }
-    return value;
-}
-
-function requirePositiveSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number <= 0) {
-        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
-    }
-    return number;
-}
-
-function requireExactIdentityComponent(value, label) {
-    const number = requirePositiveSafeInteger(value, label);
-    if (number >= INVALID_HANDLE_COMPONENT) {
-        throw new RangeError(`${label}은 reserved sentinel보다 작아야 합니다.`);
-    }
-    return number;
-}
-
-function requireNonNegativeSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number < 0) {
-        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
-    }
-    return number;
-}
-
-function requirePositiveFloat32(value, label) {
-    const number = Number(value);
-    if (!Number.isFinite(number)
-        || !Number.isFinite(Math.fround(number))
-        || Math.fround(number) <= 0) {
-        throw new RangeError(`${label}은 양의 유한 float32 범위 숫자여야 합니다.`);
-    }
-    return number;
-}
-
-function requireFiniteFloat32(value, label) {
-    const number = Number(value);
-    if (!Number.isFinite(number) || !Number.isFinite(Math.fround(number))) {
-        throw new RangeError(`${label}은 유한한 float32 범위 숫자여야 합니다.`);
-    }
-    return number;
-}
-
-function freezeHandle(source, label) {
-    if (!source || typeof source !== 'object') {
-        throw new TypeError(`${label}은 exact handle 객체여야 합니다.`);
-    }
-    if (CANONICAL_EXACT_HANDLES.has(source)) {
-        return source;
-    }
-    const handle = Object.freeze({
-        entityId: requireExactIdentityComponent(source.entityId, `${label}.entityId`),
-        incarnation: requireExactIdentityComponent(
-            source.incarnation,
-            `${label}.incarnation`
-        )
-    });
-    CANONICAL_EXACT_HANDLES.add(handle);
-    return handle;
-}
-
-function sameHandle(left, right) {
-    return left?.entityId === right?.entityId
-        && left?.incarnation === right?.incarnation;
-}
-
-function handleKey(handle) {
-    return `${handle.entityId}:${handle.incarnation}`;
-}
-
-function freezeVector(source, label) {
-    if (!source || typeof source !== 'object') {
-        throw new TypeError(`${label} 벡터가 필요합니다.`);
-    }
-    return Object.freeze({
-        x: requireFiniteFloat32(source.x, `${label}.x`),
-        y: requireFiniteFloat32(source.y, `${label}.y`)
-    });
-}
-
-function requireCatalog(source, label) {
-    if (!source || typeof source !== 'object' || Array.isArray(source)) {
-        throw new TypeError(`${label} catalog 객체가 필요합니다.`);
-    }
-    return source;
-}
-
-function checkedTickSum(left, right, label) {
-    const result = left + right;
-    if (!Number.isSafeInteger(result) || result <= 0) {
-        throw new RangeError(`${label}이 안전한 fixed tick 범위를 벗어났습니다.`);
-    }
-    return result;
-}
-
-function normalizeAttackDefinition(source, label) {
-    if (!source || typeof source !== 'object') {
-        throw new TypeError(`${label} attack definition이 필요합니다.`);
-    }
-    const allegiancePolicy = requireNonEmptyString(
-        source.allegiancePolicy,
-        `${label}.allegiancePolicy`
-    );
-    const targetPolicyId = requireNonEmptyString(
-        source.targetPolicyId,
-        `${label}.targetPolicyId`
-    );
-    if (allegiancePolicy !== GAMEPLAY_ALLEGIANCE_POLICY.INHERIT_SUBJECT) {
-        throw new RangeError(`${label}은 inherit-subject allegiance를 사용해야 합니다.`);
-    }
-    const common = {
-        id: requireNonEmptyString(source.id, `${label}.id`),
-        sourceEnemyDefinitionId: requireNonEmptyString(
-            source.sourceEnemyDefinitionId,
-            `${label}.sourceEnemyDefinitionId`
-        ),
-        projectileDefinitionId: requireNonEmptyString(
-            source.projectileDefinitionId,
-            `${label}.projectileDefinitionId`
-        ),
-        launchSpeed: requirePositiveFloat32(
-            source.launchSpeed,
-            `${label}.launchSpeed`
-        ),
-        positionOffset: freezeVector(source.positionOffset, `${label}.positionOffset`),
-        targetOffset: freezeVector(source.targetOffset, `${label}.targetOffset`),
-        initialDelayTicks: requirePositiveSafeInteger(
-            source.initialDelayTicks,
-            `${label}.initialDelayTicks`
-        ),
-        intervalTicks: requirePositiveSafeInteger(
-            source.intervalTicks,
-            `${label}.intervalTicks`
-        ),
-        phaseSpreadTicks: requireNonNegativeSafeInteger(
-            source.phaseSpreadTicks,
-            `${label}.phaseSpreadTicks`
-        ),
-        allegiancePolicy,
-        targetPolicyId,
-        producerId: requireNonEmptyString(source.producerId, `${label}.producerId`),
-        sourceAbilityId: requireNonEmptyString(
-            source.sourceAbilityId,
-            `${label}.sourceAbilityId`
-        )
-    };
-    const isCorePrioritySelected = source.targetSelectionPolicy
-        === HOSTILE_RANGED_TARGET_SELECTION_POLICY_ID
-            .CORE_FIRST_IN_RANGE_THEN_TOWER;
-    if (!isCorePrioritySelected) {
-        if (targetPolicyId
-            !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN) {
-            throw new RangeError(
-                `${label}은 Player-damageable target policy를 사용해야 합니다.`
-            );
-        }
-        if (source.targetPolicy !== CURRENT_TOWER_TARGET_POLICY
-            || source.targetSnapshotPolicy !== CAST_START_TARGET_SNAPSHOT_POLICY) {
-            throw new RangeError(
-                `${label}의 Tower target snapshot policy가 올바르지 않습니다.`
-            );
-        }
-        return Object.freeze({
-            ...common,
-            targetMode: HOSTILE_ATTACK_TARGET_MODE.CURRENT_TOWER,
-            targetPolicy: source.targetPolicy,
-            targetSnapshotPolicy: source.targetSnapshotPolicy
-        });
-    }
-    if (targetPolicyId
-        !== PROJECTILE_TARGET_POLICY_ID
-            .GPU_SELECTED_CORE_OR_PLAYER_DAMAGEABLE_AND_TERRAIN
-        || source.targetSnapshotPolicy
-            !== HOSTILE_RANGED_TARGET_SNAPSHOT_POLICY_ID
-                .GPU_FIXED_TICK_EXACT_PRIORITY
-        || source.distancePolicy
-            !== HOSTILE_RANGED_DISTANCE_POLICY_ID.TICK_START_CENTER_INCLUSIVE
-        || source.movementPolicy
-            !== HOSTILE_RANGED_MOVEMENT_POLICY_ID.STOP_WHILE_TARGET_IN_RANGE
-        || source.towerTargetPolicyId
-            !== PROJECTILE_TARGET_POLICY_ID.PLAYER_DAMAGEABLE_AND_TERRAIN
-        || source.coreTargetPolicyId
-            !== PROJECTILE_TARGET_POLICY_ID.CORE_PROXY_AND_TERRAIN) {
-        throw new RangeError(`${label}의 Core-priority ranged policy가 올바르지 않습니다.`);
-    }
-    return Object.freeze({
-        ...common,
-        targetMode: HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED,
-        targetSelectionPolicy: source.targetSelectionPolicy,
-        targetSnapshotPolicy: source.targetSnapshotPolicy,
-        distancePolicy: source.distancePolicy,
-        movementPolicy: source.movementPolicy,
-        attackRangeTiles: requirePositiveFloat32(
-            source.attackRangeTiles,
-            `${label}.attackRangeTiles`
-        ),
-        coreDamage: requirePositiveFloat32(source.coreDamage, `${label}.coreDamage`),
-        towerTargetPolicyId: source.towerTargetPolicyId,
-        coreTargetPolicyId: source.coreTargetPolicyId
-    });
-}
-
-function compileAttackDefinitions(
-    enemyDefinitions,
-    attackDefinitions,
-    projectileDefinitions
-) {
-    const byEnemyDefinitionId = new Map();
-    for (const catalogId of Object.keys(attackDefinitions)) {
-        const attack = normalizeAttackDefinition(
-            attackDefinitions[catalogId],
-            `attackDefinitions.${catalogId}`
-        );
-        if (catalogId !== attack.id) {
-            throw new RangeError(`attack catalog key와 definition ID가 다릅니다: ${catalogId}`);
-        }
-        const enemyDefinition = enemyDefinitions[attack.sourceEnemyDefinitionId];
-        if (!enemyDefinition
-            || enemyDefinition.id !== attack.sourceEnemyDefinitionId
-            || enemyDefinition.attackDefinitionId !== attack.id) {
-            throw new RangeError(
-                `attack source enemy catalog 연결이 올바르지 않습니다: ${attack.id}`
-            );
-        }
-        const capabilityMask = createEnemyCapabilityMask(
-            enemyDefinition.capabilityIds,
-            `enemyDefinitions.${attack.sourceEnemyDefinitionId}.capabilityIds`
-        );
-        if (!hasEnemyCapability(
-            capabilityMask,
-            ENEMY_CAPABILITY_ID.TARGETING,
-            `enemyDefinitions.${attack.sourceEnemyDefinitionId}.capabilityMask`
-        )) {
-            throw new RangeError(
-                `attack source enemy에는 TARGETING capability가 필요합니다: ${attack.id}`
-            );
-        }
-        const projectileDefinition = projectileDefinitions[
-            attack.projectileDefinitionId
-        ];
-        if (!projectileDefinition
-            || projectileDefinition.id !== attack.projectileDefinitionId
-            || projectileDefinition.targetPolicyId !== attack.targetPolicyId
-            || projectileDefinition.producerId !== attack.producerId) {
-            throw new RangeError(
-                `attack projectile catalog 연결이 올바르지 않습니다: ${attack.id}`
-            );
-        }
-        if (attack.targetMode === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-            && (projectileDefinition.coreDamage !== attack.coreDamage
-                || projectileDefinition.requiresExactSelectedTarget !== true
-                || projectileDefinition.towerTargetPolicyId
-                    !== attack.towerTargetPolicyId
-                || projectileDefinition.coreTargetPolicyId
-                    !== attack.coreTargetPolicyId)) {
-            throw new RangeError(
-                `Core-priority projectile metadata 연결이 올바르지 않습니다: ${attack.id}`
-            );
-        }
-        if (byEnemyDefinitionId.has(attack.sourceEnemyDefinitionId)) {
-            throw new RangeError(
-                `enemy definition에 attack이 중복 연결되었습니다: ${attack.sourceEnemyDefinitionId}`
-            );
-        }
-        byEnemyDefinitionId.set(attack.sourceEnemyDefinitionId, Object.freeze({
-            attack,
-            projectileDefinition,
-            expectedSourceMetadata: Object.freeze({
-                definitionId: enemyDefinition.id,
-                enemyDefinitionId: enemyDefinition.id,
-                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
-                capabilityMask,
-                physicsProfileId: requireNonEmptyString(
-                    enemyDefinition.physicsProfileId,
-                    `enemyDefinitions.${enemyDefinition.id}.physicsProfileId`
-                ),
-                combatProfileId: requireNonEmptyString(
-                    enemyDefinition.combatProfileId,
-                    `enemyDefinitions.${enemyDefinition.id}.combatProfileId`
-                ),
-                behaviorProfileId: requireNonEmptyString(
-                    enemyDefinition.behaviorProfileId,
-                    `enemyDefinitions.${enemyDefinition.id}.behaviorProfileId`
-                )
-            })
-        }));
-    }
-    if (byEnemyDefinitionId.size === 0) {
-        throw new RangeError('HostileAttackDirector에는 하나 이상의 attack definition이 필요합니다.');
-    }
-    return Object.freeze({
-        byEnemyDefinitionId
-    });
-}
-
-/** Exact source identity에서 replay-stable한 attack phase를 계산합니다. */
-export function computeHostileAttackPhaseOffset(options = {}) {
-    const entityId = requireExactIdentityComponent(options.entityId, 'entityId');
-    const incarnation = requireExactIdentityComponent(
-        options.incarnation,
-        'incarnation'
-    );
-    const spread = requireNonNegativeSafeInteger(
-        options.phaseSpreadTicks,
-        'phaseSpreadTicks'
-    );
-    if (spread === 0) {
-        return 0;
-    }
-    let hash = Math.imul(entityId >>> 0, 0x9e3779b1)
-        ^ Math.imul(incarnation >>> 0, 0x85ebca6b);
-    hash ^= hash >>> 16;
-    hash = Math.imul(hash, 0x7feb352d);
-    hash ^= hash >>> 15;
-    return (hash >>> 0) % spread;
-}
-
-/** Archer targeted shot의 모든 exact cast identity를 포함하는 command ID입니다. */
-export function createHostileAttackCommandId(options = {}) {
-    const sourceHandle = freezeHandle(options.sourceHandle, 'sourceHandle');
-    const common = [
-        HOSTILE_ATTACK_COMMAND_NAMESPACE,
-        requirePositiveSafeInteger(options.sessionGeneration, 'sessionGeneration'),
-        sourceHandle.entityId,
-        sourceHandle.incarnation
-    ];
-    if (options.coreTargetHandle !== undefined
-        && options.coreTargetHandle !== null) {
-        const coreTargetHandle = freezeHandle(
-            options.coreTargetHandle,
-            'coreTargetHandle'
-        );
-        const towerTargetHandle = options.towerTargetHandle === undefined
-            || options.towerTargetHandle === null
-            ? null
-            : freezeHandle(options.towerTargetHandle, 'towerTargetHandle');
-        common.push(
-            'selected',
-            'core',
-            coreTargetHandle.entityId,
-            coreTargetHandle.incarnation,
-            'tower',
-            towerTargetHandle?.entityId ?? 'none',
-            towerTargetHandle?.incarnation ?? 'none',
-            'range',
-            Math.fround(requirePositiveFloat32(
-                options.attackRangeTiles,
-                'attackRangeTiles'
-            ))
-        );
-    } else {
-        const targetHandle = freezeHandle(options.targetHandle, 'targetHandle');
-        // Legacy Archer command identity를 바꾸지 않습니다.
-        common.push(targetHandle.entityId, targetHandle.incarnation);
-    }
-    common.push(
-        requirePositiveSafeInteger(options.targetFixedTick, 'targetFixedTick'),
-        requireNonNegativeSafeInteger(options.shotSequence, 'shotSequence'),
-        encodeURIComponent(requireNonEmptyString(
-            options.attackDefinitionId,
-            'attackDefinitionId'
-        ))
-    );
-    return common.join(':');
-}
-
-/** M priority control의 exact candidate/range/tick/sequence/attack fingerprint입니다. */
-export function createHostileAttackControlCommandId(options = {}) {
-    const sourceHandle = freezeHandle(options.sourceHandle, 'sourceHandle');
-    const coreTargetHandle = freezeHandle(
-        options.coreTargetHandle,
-        'coreTargetHandle'
-    );
-    const towerTargetHandle = options.towerTargetHandle === undefined
-        || options.towerTargetHandle === null
-        ? null
-        : freezeHandle(options.towerTargetHandle, 'towerTargetHandle');
-    return [
-        HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE,
-        requirePositiveSafeInteger(options.sessionGeneration, 'sessionGeneration'),
-        sourceHandle.entityId,
-        sourceHandle.incarnation,
-        'core',
-        coreTargetHandle.entityId,
-        coreTargetHandle.incarnation,
-        'tower',
-        towerTargetHandle?.entityId ?? 'none',
-        towerTargetHandle?.incarnation ?? 'none',
-        'range',
-        Math.fround(requirePositiveFloat32(
-            options.attackRangeTiles,
-            'attackRangeTiles'
-        )),
-        requirePositiveSafeInteger(options.targetFixedTick, 'targetFixedTick'),
-        requireNonNegativeSafeInteger(
-            options.selectionSequence,
-            'selectionSequence'
-        ),
-        encodeURIComponent(requireNonEmptyString(
-            options.attackDefinitionId,
-            'attackDefinitionId'
-        ))
-    ].join(':');
-}
-
-function createCanonicalHostileControlCommandId(
-    sessionGeneration,
-    record,
-    coreTargetHandle,
-    towerTargetHandle,
-    targetFixedTick
-) {
-    return `${HOSTILE_ATTACK_CONTROL_COMMAND_NAMESPACE}:${sessionGeneration}`
-        + `:${record.handle.entityId}:${record.handle.incarnation}`
-        + `:core:${coreTargetHandle.entityId}:${coreTargetHandle.incarnation}`
-        + `:tower:${towerTargetHandle?.entityId ?? 'none'}`
-        + `:${towerTargetHandle?.incarnation ?? 'none'}`
-        + `:range:${Math.fround(record.attack.attackRangeTiles)}`
-        + `:${targetFixedTick}:${record.shotSequence}`
-        + `:${record.encodedAttackDefinitionId}`;
-}
-
-function createCanonicalHostileShotCommandId(
-    sessionGeneration,
-    record,
-    targetHandle,
-    coreTargetHandle,
-    towerTargetHandle,
-    targetFixedTick
-) {
-    const prefix = `${HOSTILE_ATTACK_COMMAND_NAMESPACE}:${sessionGeneration}`
-        + `:${record.handle.entityId}:${record.handle.incarnation}`;
-    const targetIdentity = record.attack.targetMode
-        === HOSTILE_ATTACK_TARGET_MODE.CORE_PRIORITY_SELECTED
-        ? `:selected:core:${coreTargetHandle.entityId}`
-            + `:${coreTargetHandle.incarnation}`
-            + `:tower:${towerTargetHandle?.entityId ?? 'none'}`
-            + `:${towerTargetHandle?.incarnation ?? 'none'}`
-            + `:range:${Math.fround(record.attack.attackRangeTiles)}`
-        : `:${targetHandle.entityId}:${targetHandle.incarnation}`;
-    return prefix + targetIdentity
-        + `:${targetFixedTick}:${record.shotSequence}`
-        + `:${record.encodedAttackDefinitionId}`;
-}
 
 function resolveEndpointDependency(options, methodName, explicitName) {
     if (options[explicitName] !== undefined && options[explicitName] !== null) {
@@ -621,24 +142,8 @@ export class HostileAttackDirector {
             options.sessionGeneration ?? endpointStatus?.sessionGeneration,
             'sessionGeneration'
         );
-        this.enemyDefinitions = requireCatalog(
-            options.enemyDefinitions ?? DEFAULT_HOSTILE_ENEMY_DEFINITION_BY_ID,
-            'enemyDefinitions'
-        );
-        const attackDefinitions = requireCatalog(
-            options.attackDefinitions ?? DEFAULT_HOSTILE_ATTACK_DEFINITION_BY_ID,
-            'attackDefinitions'
-        );
-        const projectileDefinitions = requireCatalog(
-            options.projectileDefinitions
-                ?? DEFAULT_HOSTILE_PROJECTILE_DEFINITION_BY_ID,
-            'projectileDefinitions'
-        );
-        const compiled = compileAttackDefinitions(
-            this.enemyDefinitions,
-            attackDefinitions,
-            projectileDefinitions
-        );
+        const compiled = compileHostileAttackCatalog(options);
+        this.enemyDefinitions = compiled.enemyDefinitions;
         this.attackByEnemyDefinitionId = compiled.byEnemyDefinitionId;
         this.maximumStartsPerFixedTick = requirePositiveSafeInteger(
             options.maximumStartsPerFixedTick

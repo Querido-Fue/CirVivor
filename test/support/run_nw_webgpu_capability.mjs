@@ -100,6 +100,8 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/enemy/gpu_enemy_spawn_adapter.js',
     'module/ingame/object/enemy/gpu_enemy_simulation_endpoint.js',
     'module/ingame/object/enemy/hostile_attack_director.js',
+    'module/ingame/object/enemy/hostile_attack_catalog.js',
+    'module/ingame/object/enemy/hostile_attack_protocol.js',
     'module/ingame/object/enemy/jorang_split_lineage_director.js',
     'module/ingame/object/enemy/pentagon_effect_director.js',
     'module/ingame/object/enemy/formation_runtime_director.js',
