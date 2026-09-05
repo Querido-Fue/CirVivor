@@ -1,3 +1,4 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -32,10 +33,7 @@ const { GpuCircleBodySimulation } = await loadGameModule(
     'ingame/physics/gpu/gpu_circle_body_simulation.js'
 );
 
-const simulationSource = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const simulationSource = await readGpuCircleImplementationSource();
 const formationRunnerSource = await readFile(new URL(
     'nw_webgpu_capability/enemy_hexa_formation_runner.js',
     import.meta.url

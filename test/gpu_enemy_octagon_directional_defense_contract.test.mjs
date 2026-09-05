@@ -1,3 +1,4 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -22,10 +23,7 @@ const {
     GPU_DIRECTIONAL_DEFENSE_CONTACT_MARKER
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
 
-const SIMULATION_SOURCE = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const SIMULATION_SOURCE = await readGpuCircleImplementationSource();
 const LIFECYCLE_SOURCE = await readFile(new URL(
     '../project/game/script/module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     import.meta.url

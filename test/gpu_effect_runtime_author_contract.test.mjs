@@ -1,3 +1,4 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -39,10 +40,7 @@ const {
     writeGpuSpawnProgramRecord
 } = await loadGameModule('ingame/physics/gpu/gpu_fixed_primitive_abi.js');
 
-const simulationSource = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const simulationSource = await readGpuCircleImplementationSource();
 const backendSource = await readFile(new URL(
     '../project/game/script/module/ingame/object/enemy/enemy_simulation_backend.js',
     import.meta.url
@@ -626,7 +624,7 @@ test('zero-body fast path는 staged Effect completion을 삼키지 않고 Core b
     );
     assert.match(
         simulationSource,
-        /computeSourceResolveLayout[\s\S]*?storageLayoutEntry\(12\)[\s\S]*?computeSourceResolve = device\.createBindGroup[\s\S]*?binding: 12, resource: resource\(this\.buffers\.effectSummaries\)/
+        /computeSourceResolveLayout[\s\S]*?storageLayoutEntry\(12\)[\s\S]*?computeSourceResolve = device\.createBindGroup[\s\S]*?binding: 12, resource: resource\(resourceBuffers\.effectSummaries\)/
     );
 });
 

@@ -1,3 +1,4 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -31,10 +32,7 @@ const {
     GAMEPLAY_TEAM_ID
 } = await loadGameModule('ingame/contract/gameplay_team_contract.js');
 
-const SIMULATION_SOURCE = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const SIMULATION_SOURCE = await readGpuCircleImplementationSource();
 const ABI_SOURCE = await readFile(new URL(
     '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_abi.js',
     import.meta.url

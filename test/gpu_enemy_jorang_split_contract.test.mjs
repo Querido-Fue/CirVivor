@@ -1,3 +1,4 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
@@ -46,10 +47,7 @@ const {
 const { GPU_COLLISION_COMPUTE_WGSL: COLLISION_SHADER_SOURCE } = await loadGameModule(
     'ingame/physics/gpu/gpu_collision_shaders.js'
 );
-const SIMULATION_SOURCE = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const SIMULATION_SOURCE = await readGpuCircleImplementationSource();
 const GAME_OBJECT_SYSTEM_SOURCE = await readFile(new URL(
     '../project/game/script/module/ingame/object/game_object_system.js',
     import.meta.url

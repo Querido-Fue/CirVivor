@@ -1,5 +1,5 @@
+import { readGpuCircleImplementationSource } from './support/gpu_circle_source.mjs';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
@@ -12,10 +12,7 @@ const {
     GPU_COLLISION_RENDER_WGSL
 } = await loadGameModule('ingame/physics/gpu/gpu_collision_shaders.js');
 
-const simulationSource = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
-    import.meta.url
-), 'utf8');
+const simulationSource = await readGpuCircleImplementationSource();
 
 function sourceBetween(source, startToken, endToken) {
     const start = source.indexOf(startToken);
@@ -128,7 +125,7 @@ test('Effect 결과 렌더링은 CPU pose readback 없이 GPU indirect instancin
     assert.doesNotMatch(drawBlock, /readbackBodies|mapAsync|getMappedRange/);
     assert.match(
         simulationSource,
-        /binding: 6, resource: resource\(this\.buffers\.effectSummaries\)/
+        /binding: 6, resource: resource\(resourceBuffers\.effectSummaries\)/
     );
     assert.match(
         GPU_COLLISION_RENDER_WGSL,
