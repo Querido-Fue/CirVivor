@@ -182,6 +182,7 @@ function summarizeRenderDifference(
 ) {
     let changedPixelCount = 0;
     let saturatedCyanPixelCount = 0;
+    let minimumCyanRadiusPixels = Number.POSITIVE_INFINITY;
     let minimumChangedRadiusPixels = Number.POSITIVE_INFINITY;
     let maximumChangedRadiusPixels = 0;
     let premultiplied = true;
@@ -211,12 +212,16 @@ function summarizeRenderDifference(
                 && rgba.g >= rgba.r + 24
                 && rgba.b >= rgba.r + 24) {
                 saturatedCyanPixelCount++;
+                minimumCyanRadiusPixels = Math.min(minimumCyanRadiusPixels, radiusPixels);
             }
         }
     }
     return Object.freeze({
         changedPixelCount,
         saturatedCyanPixelCount,
+        minimumCyanRadiusPixels: Number.isFinite(minimumCyanRadiusPixels)
+            ? minimumCyanRadiusPixels
+            : null,
         minimumChangedRadiusPixels: Number.isFinite(minimumChangedRadiusPixels)
             ? minimumChangedRadiusPixels
             : null,
@@ -1281,6 +1286,8 @@ async function runProjectileAttackSnapshotFixture(device, format) {
     }), 394, 1);
     assert(backend.replaceBodies([pentaA, pentaB, archer, tower]).accepted === 4,
         'Effect projectile snapshot replacement failed');
+    assert(backend.configureTowerGameplayTarget(tower).accepted === true,
+        'Effect projectile snapshot Tower target configuration failed');
 
     const stage = backend.stageEffectPulseProgramBatch({
         abiVersion: GPU_EFFECT_PULSE_PROGRAM_ABI_VERSION,
@@ -1406,7 +1413,7 @@ async function runProjectileAttackSnapshotFixture(device, format) {
     assert(towerBeforeReplacement, 'Effect replacement Tower readback missing');
     const replacementTower = Object.freeze({
         ...tower,
-        health: towerBeforeReplacement.health
+        healthFixedPoint: towerBeforeReplacement.healthFixedPoint
     });
     assert(backend.replaceBodies([pentaA, pentaB, archer, replacementTower]).accepted === 4,
         'Effect transient world replacement failed');
@@ -1434,6 +1441,91 @@ async function runProjectileAttackSnapshotFixture(device, format) {
         replacementTowerHealth: towerAfterReplacement.health,
         replacementBoostStackCount: resetPlanes.summary(2).boostStackCount
     });
+}
+
+async function runTowerTargetLossFixture(device, format) {
+    const evidence = [];
+    for (const mode of ['unconfigured', 'gpu-dead']) {
+        const tileMap = createTileMap();
+        const route = tileMap.getSpawnRoutes()[0];
+        const backend = new EnemySimulationBackend({
+            webGpuPlatformPort: createPlatformPort(device, format)
+        }, { capacity: 3, spawnProgramCapacity: 1, sessionGeneration: 43 });
+        backend.init(tileMap);
+        try {
+            const archer = withIdentity(createGpuEnemySpawnIntent({
+                definition: ARCHER_ENEMY_DATA, route, spawnSequence: 0
+            }), 431, 1, { contactHandler: null });
+            const tower = withIdentity(createGpuTowerSpawnIntent({
+                position: { x: archer.position.x + 2, y: archer.position.y }
+            }), 432, 1, mode === 'gpu-dead' ? { healthFixedPoint: 0 } : {});
+            assert(backend.replaceBodies([archer, tower]).accepted === 2,
+                'Target-loss fixture replacement failed');
+            let tick = 1;
+            if (mode === 'gpu-dead') {
+                assert(backend.configureTowerGameplayTarget(tower).accepted,
+                    'Target-loss exact Tower configuration failed');
+                assert(backend.fixedUpdate(1 / 60, tick++),
+                    'Target-loss Tower death submit failed');
+                await device.queue.onSubmittedWorkDone();
+                const bodies = await backend.simulation.readbackBodies();
+                assert(backend.hasBody(tower)
+                    && !bodies.some(({ handle }) => handle.entityId === tower.entityId),
+                'Target-loss fixture must have a GPU-dead/host-live Tower');
+            }
+            let intent;
+            requestGpuProjectile({
+                mode: GPU_PROJECTILE_SPAWN_MODE.SOURCE_RELATIVE_TARGET_ENTITY,
+                endpoint: {
+                    requestSourceRelativeSpawn(request, targetFixedTick, commandId) {
+                        intent = request;
+                        return { accepted: true, targetFixedTick, commandId };
+                    }
+                },
+                definition: HOSTILE_BASIC_BULLET_DATA,
+                targetFixedTick: tick,
+                spawnSequence: 0,
+                sourceHandle: archer,
+                ownerHandle: archer,
+                targetHandle: tower,
+                positionOffset: ARCHER_ATTACK_DATA.positionOffset,
+                targetOffset: ARCHER_ATTACK_DATA.targetOffset,
+                launchSpeed: ARCHER_ATTACK_DATA.launchSpeed,
+                producerId: ARCHER_ATTACK_DATA.producerId,
+                sourceAbilityId: ARCHER_ATTACK_DATA.sourceAbilityId,
+                teamId: GAMEPLAY_TEAM_ID.HOSTILE,
+                allegiancePolicy: ARCHER_ATTACK_DATA.allegiancePolicy,
+                targetPolicyId: ARCHER_ATTACK_DATA.targetPolicyId
+            });
+            const destinationHandle = { entityId: 433, incarnation: 1 };
+            const stage = backend.stageFixedPrograms({
+                targetFixedTick: tick,
+                controls: [],
+                sourceRelativeSpawns: [{ ...intent, destinationHandle }]
+            });
+            assert(stage.accepted === 1, 'Target-loss shot stage failed');
+            assert(backend.fixedUpdate(1 / 60, tick), 'Target-loss shot submit failed');
+            const completion = await waitForSpawnCompletion(backend, device);
+            assert(completion.failure === null && completion.outcomes.length === 1,
+                `Target-loss completion failed: ${JSON.stringify(completion)}`);
+            const outcome = completion.outcomes[0];
+            assert(outcome.reason === 'target-invalid' && outcome.targetHandle === null,
+                `Target-loss must cancel normally: ${JSON.stringify(outcome)}`);
+            assert(!backend.hasBody(destinationHandle)
+                && !backend.hasPendingSpawnProgramThroughTick(tick)
+                && !backend.requiresRecovery(), 'Target-loss cleanup/recovery mismatch');
+            const bodies = await backend.simulation.readbackBodies();
+            assert(!bodies.some(({ handle }) => handle.entityId === destinationHandle.entityId),
+                'Target-loss cancellation materialized a projectile');
+            evidence.push(Object.freeze({
+                mode, reason: outcome.reason, targetHandle: outcome.targetHandle,
+                projectileCreated: false, pending: false, requiresRecovery: false
+            }));
+        } finally {
+            backend.destroy();
+        }
+    }
+    return Object.freeze(evidence);
 }
 
 async function runEffectPresentationPixelFixture(device, format) {
@@ -1588,8 +1680,10 @@ async function runEffectPresentationPixelFixture(device, format) {
         'Effect PULSE tag did not expand rendered source pixels');
     assert(renderPixelsEqual(pulsedSourceCenterPixel, sourceCenterPixel),
         'Effect PULSE changed authored source center fill');
+    // PULSE scales the silhouette, so the existing inward entity glow also
+    // changes. The effect's cyan accent must stay outside the authored center.
     assert(pulseDifference.changedPixelCount > 0
-        && pulseDifference.minimumChangedRadiusPixels >= 3
+        && pulseDifference.minimumCyanRadiusPixels >= 3
         && pulseDifference.saturatedCyanPixelCount > 0,
     `Effect PULSE radius/halo accent missing: ${JSON.stringify(pulseDifference)}`);
     assert(pulseDifference.premultiplied === true,
@@ -1817,6 +1911,7 @@ async function run() {
         );
         const format = navigator.gpu.getPreferredCanvasFormat();
         result.enemyPentagonEffectExtended = Object.freeze({
+            targetLossCancellation: await runTowerTargetLossFixture(device, format),
             instanceCapacityAtomicity: await runEffectCapacityAtomicityFixture(
                 device,
                 format,

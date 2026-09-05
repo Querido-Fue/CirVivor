@@ -681,6 +681,11 @@ fn resolve_source_relative_spawns(@builtin(global_invocation_id) global_id: vec3
     if (program.mode_flags == SPAWN_PROGRAM_MODE_SOURCE_RELATIVE_TARGET_ENTITY
         && program.request_flags == SPAWN_PROGRAM_REQUEST_TOWER_DAMAGE_CHANNEL
         && program.result == SPAWN_PROGRAM_RESULT_NO_TARGET) {
+        // The query pass uses NO_TARGET as an internal empty-roster marker.
+        // Legacy target-entity completion uses TARGET_INVALID for a cancelled
+        // shot, including GPU death before the host observes that death.
+        spawn_program.records[program_index].result
+            = SPAWN_PROGRAM_RESULT_TARGET_INVALID;
         return;
     }
     if (program.mode_flags

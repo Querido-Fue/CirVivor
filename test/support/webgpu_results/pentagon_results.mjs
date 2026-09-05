@@ -7,6 +7,7 @@ export function validateEnemyPentagonEffect(result) {
     const instanceCapacity = extended?.instanceCapacityAtomicity;
     const eventCapacity = extended?.eventCapacityAtomicity;
     const progress = extended?.phaseAlignedCapacityProgress;
+    const targetLoss = extended?.targetLossCancellation;
     const firstResults = progress?.firstTick?.results ?? [];
     scenarioValid = fixture?.scenario
             === 'penta-independent-boost-pulse-whole-tick'
@@ -56,6 +57,15 @@ export function validateEnemyPentagonEffect(result) {
         && progress.highWater?.candidate === 3
         && progress.highWater.instance === 6
         && progress.highWater.event === 4
-        && progress.requiresRecovery === false;
+        && progress.requiresRecovery === false
+        && Array.isArray(targetLoss)
+        && targetLoss.length === 2
+        && targetLoss[0].mode === 'unconfigured'
+        && targetLoss[1].mode === 'gpu-dead'
+        && targetLoss.every((entry) => entry.reason === 'target-invalid'
+            && entry.targetHandle === null
+            && entry.projectileCreated === false
+            && entry.pending === false
+            && entry.requiresRecovery === false);
     return { fixture, scenarioValid };
 }

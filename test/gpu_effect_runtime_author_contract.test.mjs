@@ -659,7 +659,7 @@ test('전용 NW stage는 big-bucket dedupe와 offscreen pulse/boost/expiry pixel
     );
     assert.match(
         nwEffectRunnerSource,
-        /sourceCenterPixel[\s\S]*?pulsedSourceCenterPixel[\s\S]*?PULSE changed authored source center fill[\s\S]*?pulseDifference\.minimumChangedRadiusPixels >= 3[\s\S]*?pulseDifference\.saturatedCyanPixelCount > 0/
+        /sourceCenterPixel[\s\S]*?pulsedSourceCenterPixel[\s\S]*?PULSE changed authored source center fill[\s\S]*?pulseDifference\.minimumCyanRadiusPixels >= 3[\s\S]*?pulseDifference\.saturatedCyanPixelCount > 0/
     );
     assert.match(
         nwEffectRunnerSource,
