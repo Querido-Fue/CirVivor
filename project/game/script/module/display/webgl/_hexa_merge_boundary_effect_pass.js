@@ -1,7 +1,7 @@
+import { createFullscreenBuffer, buildEffectScissorRect, applyScissorRect } from './_fullscreen_pass.js';
 import { clamp01 } from 'util/number_util.js';
 import {
-    compileShader,
-    createProgram,
+    createProgramFromSources,
     FULLSCREEN_VERTEX_SHADER,
     HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER
 } from './_shader_utils.js';
@@ -18,7 +18,7 @@ export class HexaMergeBoundaryEffectPass {
     constructor(gl) {
         this.gl = gl;
         this.programInfo = this.#createProgramInfo();
-        this.fullscreenBuffer = this.#createFullscreenBuffer();
+        this.fullscreenBuffer = createFullscreenBuffer(this.gl);
     }
 
     /**
@@ -31,7 +31,7 @@ export class HexaMergeBoundaryEffectPass {
      * @returns {void} GL 상태와 대상 framebuffer를 변경하며 값을 반환하지 않습니다.
      */
     draw(command, width, height) {
-        if (!this.programInfo || !command) {
+        if (!this.programInfo || !this.fullscreenBuffer || !command) {
             return;
         }
 
@@ -49,7 +49,7 @@ export class HexaMergeBoundaryEffectPass {
         const renderHeight = Math.max(1, gl.drawingBufferHeight || height);
         const lineWidth = Number.isFinite(command.lineWidth) ? Math.max(0.5, command.lineWidth) : 3;
         const glowWidth = Number.isFinite(command.glowWidth) ? Math.max(lineWidth, command.glowWidth) : 14;
-        const scissorRect = this.#buildScissorRect(x1, y1, x2, y2, glowWidth + (lineWidth * 2), renderWidth, renderHeight);
+        const scissorRect = buildEffectScissorRect(x1, y1, x2, y2, glowWidth + (lineWidth * 2), renderWidth, renderHeight);
         if (!scissorRect) {
             return;
         }
@@ -71,7 +71,7 @@ export class HexaMergeBoundaryEffectPass {
         gl.uniform3fv(this.programInfo.uniforms.u_glowColor, command.glowColor || [0.82, 0.95, 1.0]);
         gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, command.highlightColor || [1.0, 1.0, 1.0]);
 
-        this.#applyScissorRect(scissorRect, renderHeight);
+        applyScissorRect(this.gl, scissorRect, renderHeight);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.disable(gl.SCISSOR_TEST);
     }
@@ -98,20 +98,7 @@ export class HexaMergeBoundaryEffectPass {
      */
     #createProgramInfo() {
         const gl = this.gl;
-        const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
-        const fragmentShader = compileShader(gl, HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
-        if (!vertexShader || !fragmentShader) {
-            if (vertexShader) {
-                gl.deleteShader(vertexShader);
-            }
-            if (fragmentShader) {
-                gl.deleteShader(fragmentShader);
-            }
-            return null;
-        }
-        const program = createProgram(gl, vertexShader, fragmentShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
+        const program = createProgramFromSources(gl, FULLSCREEN_VERTEX_SHADER, HEXA_MERGE_BOUNDARY_FRAGMENT_SHADER);
         if (!program) {
             return null;
         }
@@ -137,69 +124,4 @@ export class HexaMergeBoundaryEffectPass {
         };
     }
 
-    /**
-     * @private
-     * @returns {WebGLBuffer} 풀스크린 쿼드 버퍼입니다.
-     */
-    #createFullscreenBuffer() {
-        const gl = this.gl;
-        const buffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-            -1, -1,
-            1, -1,
-            -1, 1,
-            1, 1
-        ]), gl.STATIC_DRAW);
-        return buffer;
-    }
-
-    /**
-     * 선분 이펙트가 보일 수 있는 화면 영역을 scissor 사각형으로 계산합니다.
-     * @param {number} x1 - 시작 X 좌표입니다.
-     * @param {number} y1 - 시작 Y 좌표입니다.
-     * @param {number} x2 - 끝 X 좌표입니다.
-     * @param {number} y2 - 끝 Y 좌표입니다.
-     * @param {number} padding - 이펙트 여백입니다.
-     * @param {number} width - 렌더 타깃 너비입니다.
-     * @param {number} height - 렌더 타깃 높이입니다.
-     * @returns {{x:number, y:number, w:number, h:number}|null} scissor 사각형입니다.
-     * @private
-     */
-    #buildScissorRect(x1, y1, x2, y2, padding, width, height) {
-        const safePadding = Number.isFinite(padding) ? Math.max(0, padding) : 0;
-        const left = Math.max(0, Math.floor(Math.min(x1, x2) - safePadding));
-        const top = Math.max(0, Math.floor(Math.min(y1, y2) - safePadding));
-        const right = Math.min(width, Math.ceil(Math.max(x1, x2) + safePadding));
-        const bottom = Math.min(height, Math.ceil(Math.max(y1, y2) + safePadding));
-        const rectWidth = right - left;
-        const rectHeight = bottom - top;
-        if (rectWidth <= 0 || rectHeight <= 0) {
-            return null;
-        }
-
-        return {
-            x: left,
-            y: top,
-            w: rectWidth,
-            h: rectHeight
-        };
-    }
-
-    /**
-     * WebGL 하단 원점 좌표계에 맞춰 scissor 영역을 적용합니다.
-     * @param {{x:number, y:number, w:number, h:number}} rect - 상단 원점 기준 scissor 영역입니다.
-     * @param {number} renderHeight - 렌더 타깃 높이입니다.
-     * @private
-     */
-    #applyScissorRect(rect, renderHeight) {
-        const gl = this.gl;
-        gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(
-            rect.x,
-            Math.max(0, renderHeight - rect.y - rect.h),
-            rect.w,
-            rect.h
-        );
-    }
 }

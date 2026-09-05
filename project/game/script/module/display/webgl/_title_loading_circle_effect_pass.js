@@ -1,9 +1,9 @@
+import { createFullscreenBuffer, buildCircleScissorRect, applyScissorRect } from './_fullscreen_pass.js';
 import { TITLE_LOADING_CONSTANTS } from 'scene/title/_title_runtime_constants.js';
 import { clamp01 } from 'util/number_util.js';
 import {
     COMPOSITE_TEXTURE_FRAGMENT_SHADER,
-    compileShader,
-    createProgram,
+    createProgramFromSources,
     FULLSCREEN_VERTEX_SHADER,
     KAWASE_DOWNSAMPLE_FRAGMENT_SHADER,
     KAWASE_UPSAMPLE_FRAGMENT_SHADER,
@@ -26,7 +26,7 @@ export class TitleLoadingCircleEffectPass {
     constructor(gl) {
         this.gl = gl;
         this.programInfo = this.#createProgramInfo();
-        this.fullscreenBuffer = this.#createFullscreenBuffer();
+        this.fullscreenBuffer = createFullscreenBuffer(this.gl);
         this.width = 0;
         this.height = 0;
         this.sceneTarget = null;
@@ -64,7 +64,7 @@ export class TitleLoadingCircleEffectPass {
      * @returns {void} GL 상태와 framebuffer/texture 내용을 변경하며 값을 반환하지 않습니다.
      */
     draw(command, width, height) {
-        if (!command || !Number.isFinite(command.radius) || command.radius <= 0 || !this.programInfo?.program) {
+        if (!this.programInfo?.program || !this.fullscreenBuffer || !command || !Number.isFinite(command.radius) || command.radius <= 0 || !this.programInfo?.program) {
             return;
         }
 
@@ -82,7 +82,7 @@ export class TitleLoadingCircleEffectPass {
             Number.isFinite(command.scissorPaddingMin) ? command.scissorPaddingMin : 28,
             radius * (Number.isFinite(command.scissorPaddingRatio) ? Math.max(0, command.scissorPaddingRatio) : 0.86)
         );
-        const scissorRect = this.#buildScissorRect(
+        const scissorRect = buildCircleScissorRect(
             centerX,
             centerY,
             radius + scissorPadding + (outlineWidth * 4),
@@ -144,7 +144,7 @@ export class TitleLoadingCircleEffectPass {
         );
         this.#uploadColors(command.colors);
 
-        this.#applyScissorRect(scissorRect, renderHeight);
+        applyScissorRect(this.gl, scissorRect, renderHeight);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.disable(gl.SCISSOR_TEST);
     }
@@ -204,21 +204,7 @@ export class TitleLoadingCircleEffectPass {
      */
     #createProgramInfo() {
         const gl = this.gl;
-        const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
-        const fragmentShader = compileShader(gl, TITLE_LOADING_CIRCLE_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
-        if (!vertexShader || !fragmentShader) {
-            if (vertexShader) {
-                gl.deleteShader(vertexShader);
-            }
-            if (fragmentShader) {
-                gl.deleteShader(fragmentShader);
-            }
-            return null;
-        }
-
-        const program = createProgram(gl, vertexShader, fragmentShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
+        const program = createProgramFromSources(gl, FULLSCREEN_VERTEX_SHADER, TITLE_LOADING_CIRCLE_FRAGMENT_SHADER);
         if (!program) {
             return null;
         }
@@ -252,23 +238,6 @@ export class TitleLoadingCircleEffectPass {
     }
 
     /**
-     * @private
-     * @returns {WebGLBuffer} 풀스크린 쿼드 버퍼입니다.
-     */
-    #createFullscreenBuffer() {
-        const gl = this.gl;
-        const buffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-            -1, -1,
-            1, -1,
-            -1, 1,
-            1, 1
-        ]), gl.STATIC_DRAW);
-        return buffer;
-    }
-
-    /**
      * 보조 fullscreen pass 프로그램 정보를 생성합니다.
      * @param {string} fragmentSource - 프래그먼트 셰이더 소스입니다.
      * @param {string[]} uniformNames - 조회할 uniform 이름 목록입니다.
@@ -277,21 +246,7 @@ export class TitleLoadingCircleEffectPass {
      */
     #createAuxiliaryProgramInfo(fragmentSource, uniformNames) {
         const gl = this.gl;
-        const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
-        const fragmentShader = compileShader(gl, fragmentSource, gl.FRAGMENT_SHADER);
-        if (!vertexShader || !fragmentShader) {
-            if (vertexShader) {
-                gl.deleteShader(vertexShader);
-            }
-            if (fragmentShader) {
-                gl.deleteShader(fragmentShader);
-            }
-            return null;
-        }
-
-        const program = createProgram(gl, vertexShader, fragmentShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
+        const program = createProgramFromSources(gl, FULLSCREEN_VERTEX_SHADER, fragmentSource);
         if (!program) {
             return null;
         }
@@ -700,53 +655,4 @@ export class TitleLoadingCircleEffectPass {
         gl.uniform3fv(this.programInfo.uniforms.u_highlightColor, colors?.highlight || DEFAULT_CIRCLE_SHADER_COLORS.highlight);
     }
 
-    /**
-     * 실제로 보일 수 있는 화면 영역을 scissor 사각형으로 계산합니다.
-     * @param {number} centerX - 중심 X 좌표입니다.
-     * @param {number} centerY - 중심 Y 좌표입니다.
-     * @param {number} boundsRadius - 렌더링 경계 반경입니다.
-     * @param {number} width - 렌더 타깃 너비입니다.
-     * @param {number} height - 렌더 타깃 높이입니다.
-     * @returns {{x:number, y:number, w:number, h:number}|null} scissor 사각형입니다.
-     * @private
-     */
-    #buildScissorRect(centerX, centerY, boundsRadius, width, height) {
-        if (!(Number.isFinite(boundsRadius) && boundsRadius > 0)) {
-            return null;
-        }
-
-        const left = Math.max(0, Math.floor(centerX - boundsRadius));
-        const top = Math.max(0, Math.floor(centerY - boundsRadius));
-        const right = Math.min(width, Math.ceil(centerX + boundsRadius));
-        const bottom = Math.min(height, Math.ceil(centerY + boundsRadius));
-        const rectWidth = right - left;
-        const rectHeight = bottom - top;
-        if (rectWidth <= 0 || rectHeight <= 0) {
-            return null;
-        }
-
-        return {
-            x: left,
-            y: top,
-            w: rectWidth,
-            h: rectHeight
-        };
-    }
-
-    /**
-     * WebGL 하단 원점 좌표계에 맞춰 scissor 영역을 적용합니다.
-     * @param {{x:number, y:number, w:number, h:number}} rect - 상단 원점 기준 scissor 영역입니다.
-     * @param {number} renderHeight - 렌더 타깃 높이입니다.
-     * @private
-     */
-    #applyScissorRect(rect, renderHeight) {
-        const gl = this.gl;
-        gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(
-            rect.x,
-            Math.max(0, renderHeight - rect.y - rect.h),
-            rect.w,
-            rect.h
-        );
-    }
 }

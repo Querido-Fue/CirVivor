@@ -1,7 +1,7 @@
+import { createFullscreenBuffer, buildCircleScissorRect, applyScissorRect } from './_fullscreen_pass.js';
 import { clamp01 } from 'util/number_util.js';
 import {
-    compileShader,
-    createProgram,
+    createProgramFromSources,
     FULLSCREEN_VERTEX_SHADER,
     MAGNETIC_SHIELD_FRAGMENT_SHADER,
     MAGNETIC_SHIELD_MAX_DENTS,
@@ -20,7 +20,7 @@ export class MagneticShieldEffectPass {
     constructor(gl) {
         this.gl = gl;
         this.programInfo = this.#createProgramInfo();
-        this.fullscreenBuffer = this.#createFullscreenBuffer();
+        this.fullscreenBuffer = createFullscreenBuffer(this.gl);
         this.impactBuffer = new Float32Array(MAGNETIC_SHIELD_MAX_IMPACTS * 4);
         this.dentBuffer = new Float32Array(MAGNETIC_SHIELD_MAX_DENTS * 4);
     }
@@ -35,7 +35,7 @@ export class MagneticShieldEffectPass {
      * @returns {void} GL 상태와 대상 framebuffer를 변경하며 값을 반환하지 않습니다.
      */
     draw(command, width, height) {
-        if (!command || !Number.isFinite(command.radius) || command.radius <= 0) {
+        if (!this.programInfo?.program || !this.fullscreenBuffer || !command || !Number.isFinite(command.radius) || command.radius <= 0) {
             return;
         }
 
@@ -58,7 +58,7 @@ export class MagneticShieldEffectPass {
             fieldRadius,
             command.radius + (glowWidth * 3) + (ringThickness * 8) + 16
         );
-        const scissorRect = this.#buildScissorRect(centerX, centerY, boundsRadius, renderWidth, renderHeight);
+        const scissorRect = buildCircleScissorRect(centerX, centerY, boundsRadius, renderWidth, renderHeight);
         if (!scissorRect) {
             return;
         }
@@ -89,7 +89,7 @@ export class MagneticShieldEffectPass {
         gl.uniform1i(this.programInfo.uniforms.u_dentCount, dentCount);
         gl.uniform4fv(this.programInfo.uniforms.u_dents, this.dentBuffer);
 
-        this.#applyScissorRect(scissorRect, renderHeight);
+        applyScissorRect(this.gl, scissorRect, renderHeight);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         gl.disable(gl.SCISSOR_TEST);
     }
@@ -116,20 +116,7 @@ export class MagneticShieldEffectPass {
      */
     #createProgramInfo() {
         const gl = this.gl;
-        const vertexShader = compileShader(gl, FULLSCREEN_VERTEX_SHADER, gl.VERTEX_SHADER);
-        const fragmentShader = compileShader(gl, MAGNETIC_SHIELD_FRAGMENT_SHADER, gl.FRAGMENT_SHADER);
-        if (!vertexShader || !fragmentShader) {
-            if (vertexShader) {
-                gl.deleteShader(vertexShader);
-            }
-            if (fragmentShader) {
-                gl.deleteShader(fragmentShader);
-            }
-            return null;
-        }
-        const program = createProgram(gl, vertexShader, fragmentShader);
-        gl.deleteShader(vertexShader);
-        gl.deleteShader(fragmentShader);
+        const program = createProgramFromSources(gl, FULLSCREEN_VERTEX_SHADER, MAGNETIC_SHIELD_FRAGMENT_SHADER);
         if (!program) {
             return null;
         }
@@ -158,73 +145,6 @@ export class MagneticShieldEffectPass {
                 a_position: gl.getAttribLocation(program, 'a_position')
             }
         };
-    }
-
-    /**
-     * @private
-     * @returns {WebGLBuffer} 풀스크린 쿼드 버퍼입니다.
-     */
-    #createFullscreenBuffer() {
-        const gl = this.gl;
-        const buffer = gl.createBuffer();
-        gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
-            -1, -1,
-            1, -1,
-            -1, 1,
-            1, 1
-        ]), gl.STATIC_DRAW);
-        return buffer;
-    }
-
-    /**
-     * 실드가 실제로 보일 수 있는 화면 영역을 scissor 사각형으로 계산합니다.
-     * @param {number} centerX - 실드 중심 X 좌표입니다.
-     * @param {number} centerY - 실드 중심 Y 좌표입니다.
-     * @param {number} boundsRadius - 실드 렌더링 경계 반경입니다.
-     * @param {number} width - 렌더 타깃 너비입니다.
-     * @param {number} height - 렌더 타깃 높이입니다.
-     * @returns {{x:number, y:number, w:number, h:number}|null} scissor 사각형입니다.
-     * @private
-     */
-    #buildScissorRect(centerX, centerY, boundsRadius, width, height) {
-        if (!(Number.isFinite(boundsRadius) && boundsRadius > 0)) {
-            return null;
-        }
-
-        const left = Math.max(0, Math.floor(centerX - boundsRadius));
-        const top = Math.max(0, Math.floor(centerY - boundsRadius));
-        const right = Math.min(width, Math.ceil(centerX + boundsRadius));
-        const bottom = Math.min(height, Math.ceil(centerY + boundsRadius));
-        const rectWidth = right - left;
-        const rectHeight = bottom - top;
-        if (rectWidth <= 0 || rectHeight <= 0) {
-            return null;
-        }
-
-        return {
-            x: left,
-            y: top,
-            w: rectWidth,
-            h: rectHeight
-        };
-    }
-
-    /**
-     * WebGL 하단 원점 좌표계에 맞춰 scissor 영역을 적용합니다.
-     * @param {{x:number, y:number, w:number, h:number}} rect - 상단 원점 기준 scissor 영역입니다.
-     * @param {number} renderHeight - 렌더 타깃 높이입니다.
-     * @private
-     */
-    #applyScissorRect(rect, renderHeight) {
-        const gl = this.gl;
-        gl.enable(gl.SCISSOR_TEST);
-        gl.scissor(
-            rect.x,
-            Math.max(0, renderHeight - rect.y - rect.h),
-            rect.w,
-            rect.h
-        );
     }
 
     /**
