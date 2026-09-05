@@ -1,3 +1,4 @@
+import { GpuResourceAllocation } from './gpu_resource_allocation.js';
 import {
     GPU_CIRCLE_BODY_ABI,
     GPU_CIRCLE_BODY_ABI_VERSION,
@@ -1640,6 +1641,7 @@ export class GpuCircleBodySimulation {
         this.device = null;
         this.deviceGeneration = -1;
         this.canvasFormat = null;
+        this.pendingGpuAllocation = null;
         this.buffers = null;
         this.flowTexture = null;
         this.flowIntegrationTexture = null;
@@ -1891,8 +1893,11 @@ export class GpuCircleBodySimulation {
         this.canvasFormat = format;
         try {
             this.#validateDeviceLimits(device);
+            this.pendingGpuAllocation = new GpuResourceAllocation(device);
             this.#createGpuResources(device, format);
             this.#uploadHostState();
+            this.pendingGpuAllocation.commit();
+            this.pendingGpuAllocation = null;
             this.state = 'ready';
             this.failure = null;
             return true;
@@ -14652,6 +14657,7 @@ export class GpuCircleBodySimulation {
     }
 
     #createGpuResources(device, format) {
+        const allocation = this.pendingGpuAllocation;
         const usage = globalThis.GPUBufferUsage;
         const textureUsage = globalThis.GPUTextureUsage;
         const stage = globalThis.GPUShaderStage;
@@ -14662,416 +14668,349 @@ export class GpuCircleBodySimulation {
         this.mapReadMode = mapMode.READ;
         const storageUsage = usage.STORAGE | usage.COPY_DST | usage.COPY_SRC;
         this.buffers = {
-            counts: createBuffer(
-                device,
+            counts: allocation.createBuffer(
                 'cirvivor-gpu-circle-counts',
                 GPU_CIRCLE_BODY_ABI.COUNTS.STRIDE,
                 storageUsage
             ),
-            physics: createBuffer(
-                device,
+            physics: allocation.createBuffer(
                 'cirvivor-gpu-circle-physics',
                 GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE * this.capacity,
                 storageUsage
             ),
-            simulation: createBuffer(
-                device,
+            simulation: allocation.createBuffer(
                 'cirvivor-gpu-circle-simulation',
                 GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE * this.capacity,
                 storageUsage
             ),
-            temporary: createBuffer(
-                device,
+            temporary: allocation.createBuffer(
                 'cirvivor-gpu-circle-temporary',
                 GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * this.capacity,
                 storageUsage
             ),
-            contactHandlers: createBuffer(
-                device,
+            contactHandlers: allocation.createBuffer(
                 'cirvivor-gpu-circle-contact-handlers',
                 GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * this.capacity,
                 storageUsage
             ),
-            combatStates: createBuffer(
-                device,
+            combatStates: allocation.createBuffer(
                 'cirvivor-gpu-circle-combat-states',
                 GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformStates: createBuffer(
-                device,
+            atomicTransformStates: allocation.createBuffer(
                 'cirvivor-gpu-circle-atomic-transform-states',
                 GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformCandidates: createBuffer(
-                device,
+            atomicTransformCandidates: allocation.createBuffer(
                 'cirvivor-gpu-circle-atomic-transform-candidates',
                 GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_CANDIDATE.STRIDE
                     * this.capacity,
                 storageUsage
             ),
-            projectileCaptureStates: createBuffer(
-                device,
+            projectileCaptureStates: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-states',
                 GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            projectileCaptureCandidates: createBuffer(
-                device,
+            projectileCaptureCandidates: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-candidates',
                 GPU_CIRCLE_BODY_ABI.PROJECTILE_CAPTURE_CANDIDATE.STRIDE
                     * this.capacity,
                 storageUsage
             ),
-            projectileCaptureRuntime: createBuffer(
-                device,
+            projectileCaptureRuntime: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-runtime',
                 this.hostProjectileCaptureTick.buffer.byteLength,
                 storageUsage
             ),
-            projectileCaptureReleaseProgram: createBuffer(
-                device,
+            projectileCaptureReleaseProgram: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-release-program',
                 this.hostProjectileCaptureReleaseProgram.buffer.byteLength,
                 storageUsage
             ),
-            projectileCaptureParams: createBuffer(
-                device,
+            projectileCaptureParams: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-params',
                 PROJECTILE_CAPTURE_PARAMS_BYTE_SIZE,
                 usage.UNIFORM | usage.COPY_DST
             ),
-            projectileCaptureTargetConfig: createBuffer(
-                device,
+            projectileCaptureTargetConfig: allocation.createBuffer(
                 'cirvivor-gpu-projectile-capture-target-config',
                 PROJECTILE_CAPTURE_TARGET_CONFIG_BYTE_SIZE,
                 usage.UNIFORM | usage.COPY_DST
             ),
-            routeRuntimeStates: createBuffer(
-                device,
+            routeRuntimeStates: allocation.createBuffer(
                 'cirvivor-gpu-route-runtime-states',
                 GPU_ROUTE_RUNTIME_ABI.BODY_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            routeRuntimeTopology: createBuffer(
-                device,
+            routeRuntimeTopology: allocation.createBuffer(
                 'cirvivor-gpu-route-runtime-topology',
                 this.routeRuntimeTopology.buffer.byteLength,
                 usage.STORAGE | usage.COPY_DST
             ),
-            routeAvailability: createBuffer(
-                device,
+            routeAvailability: allocation.createBuffer(
                 'cirvivor-gpu-route-availability',
                 this.hostRouteAvailability.byteLength,
                 storageUsage
             ),
-            routeCleanupProgram: createBuffer(
-                device,
+            routeCleanupProgram: allocation.createBuffer(
                 'cirvivor-gpu-route-cleanup-program',
                 this.hostRouteCleanupProgram.buffer.byteLength,
                 storageUsage
             ),
-            routeRuntimeParams: createBuffer(
-                device,
+            routeRuntimeParams: allocation.createBuffer(
                 'cirvivor-gpu-route-runtime-params',
                 GPU_ROUTE_RUNTIME_ABI.PARAMS.STRIDE,
                 usage.UNIFORM | usage.COPY_DST
             ),
-            enemyBehaviorStates: createBuffer(
-                device,
+            enemyBehaviorStates: allocation.createBuffer(
                 'cirvivor-gpu-circle-enemy-behavior-states',
                 GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            enemyChargeImpacts: createBuffer(
-                device,
+            enemyChargeImpacts: allocation.createBuffer(
                 'cirvivor-gpu-circle-enemy-charge-impacts',
                 GPU_CIRCLE_BODY_ABI.ENEMY_CHARGE_IMPACT_STATE.STRIDE
                     * this.capacity,
                 storageUsage
             ),
-            effectSummaries: createBuffer(
-                device,
+            effectSummaries: allocation.createBuffer(
                 'cirvivor-gpu-effect-summaries',
                 GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE * this.capacity,
                 storageUsage
             ),
-            effectEmitterStates: createBuffer(
-                device,
+            effectEmitterStates: allocation.createBuffer(
                 'cirvivor-gpu-effect-emitter-states',
                 GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            effectInstancesA: createBuffer(
-                device,
+            effectInstancesA: allocation.createBuffer(
                 'cirvivor-gpu-effect-instances-a',
                 GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE
                     * this.effectInstanceCapacity,
                 storageUsage
             ),
-            effectInstancesB: createBuffer(
-                device,
+            effectInstancesB: allocation.createBuffer(
                 'cirvivor-gpu-effect-instances-b',
                 GPU_EFFECT_RUNTIME_ABI.INSTANCE.STRIDE
                     * this.effectInstanceCapacity,
                 storageUsage
             ),
-            effectPulseProgram: createBuffer(
-                device,
+            effectPulseProgram: allocation.createBuffer(
                 'cirvivor-gpu-effect-pulse-program',
                 this.hostEffectPulseProgram.buffer.byteLength,
                 storageUsage
             ),
-            effectPoolState: createBuffer(
-                device,
+            effectPoolState: allocation.createBuffer(
                 'cirvivor-gpu-effect-pool-state',
                 GPU_EFFECT_RUNTIME_ABI.POOL_STATE.STRIDE,
                 storageUsage
             ),
-            effectCandidates: createBuffer(
-                device,
+            effectCandidates: allocation.createBuffer(
                 'cirvivor-gpu-effect-candidates',
                 GPU_EFFECT_RUNTIME_ABI.CANDIDATE.STRIDE
                     * this.effectCandidateCapacity,
                 storageUsage
             ),
-            effectEvents: createBuffer(
-                device,
+            effectEvents: allocation.createBuffer(
                 'cirvivor-gpu-effect-events',
                 GPU_EFFECT_RUNTIME_ABI.EVENT.STRIDE * this.effectEventCapacity,
                 storageUsage
             ),
-            formationStates: createBuffer(
-                device,
+            formationStates: allocation.createBuffer(
                 'cirvivor-gpu-formation-states',
                 GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            formationCandidates: createBuffer(
-                device,
+            formationCandidates: allocation.createBuffer(
                 'cirvivor-gpu-formation-candidates',
                 GPU_FORMATION_RUNTIME_ABI.CANDIDATE_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            formationPrepareProgram: createBuffer(
-                device,
+            formationPrepareProgram: allocation.createBuffer(
                 'cirvivor-gpu-formation-prepare-program',
                 this.hostFormationPrepareProgram.buffer.byteLength,
                 storageUsage
             ),
-            formationTransformProgram: createBuffer(
-                device,
+            formationTransformProgram: allocation.createBuffer(
                 'cirvivor-gpu-formation-transform-program',
                 this.hostFormationTransformProgram.buffer.byteLength,
                 storageUsage
             ),
-            atomicTransformPrepareProgram: createBuffer(
-                device,
+            atomicTransformPrepareProgram: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-prepare-program',
                 this.hostAtomicTransformPrepareProgram.buffer.byteLength,
                 storageUsage
             ),
-            atomicTransformProgram: createBuffer(
-                device,
+            atomicTransformProgram: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-program',
                 this.hostAtomicTransformProgram.buffer.byteLength,
                 storageUsage
             ),
-            atomicTransformTemplatePhysics: createBuffer(
-                device,
+            atomicTransformTemplatePhysics: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-physics',
                 GPU_CIRCLE_BODY_ABI.PHYSICS.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateSimulation: createBuffer(
-                device,
+            atomicTransformTemplateSimulation: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-simulation',
                 GPU_CIRCLE_BODY_ABI.SIMULATION.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateTemporary: createBuffer(
-                device,
+            atomicTransformTemplateTemporary: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-temporary',
                 GPU_CIRCLE_BODY_ABI.TEMPORARY.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateContactHandlers: createBuffer(
-                device,
+            atomicTransformTemplateContactHandlers: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-contact-handlers',
                 GPU_CIRCLE_BODY_ABI.CONTACT_HANDLER.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateCombatStates: createBuffer(
-                device,
+            atomicTransformTemplateCombatStates: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-combat-states',
                 GPU_CIRCLE_BODY_ABI.COMBAT_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateStates: createBuffer(
-                device,
+            atomicTransformTemplateStates: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-states',
                 GPU_CIRCLE_BODY_ABI.ATOMIC_TRANSFORM_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateEffectSummaries: createBuffer(
-                device,
+            atomicTransformTemplateEffectSummaries: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-effect-summaries',
                 GPU_EFFECT_RUNTIME_ABI.SUMMARY.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateEffectEmitters: createBuffer(
-                device,
+            atomicTransformTemplateEffectEmitters: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-effect-emitters',
                 GPU_EFFECT_RUNTIME_ABI.EMITTER_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateFormationStates: createBuffer(
-                device,
+            atomicTransformTemplateFormationStates: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-formation-states',
                 GPU_FORMATION_RUNTIME_ABI.BODY_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateRenderStyles: createBuffer(
-                device,
+            atomicTransformTemplateRenderStyles: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-render-styles',
                 BODY_RENDER_STYLE_STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateEnemyBehaviorStates: createBuffer(
-                device,
+            atomicTransformTemplateEnemyBehaviorStates: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-enemy-behavior',
                 GPU_CIRCLE_BODY_ABI.ENEMY_BEHAVIOR_STATE.STRIDE * this.capacity,
                 storageUsage
             ),
-            atomicTransformTemplateBodyControlStates: createBuffer(
-                device,
+            atomicTransformTemplateBodyControlStates: allocation.createBuffer(
                 'cirvivor-gpu-atomic-transform-template-body-control',
                 BODY_CONTROL_STATE_STRIDE * this.capacity,
                 storageUsage
             ),
-            bodyControlStates: createBuffer(
-                device,
+            bodyControlStates: allocation.createBuffer(
                 'cirvivor-gpu-circle-body-control-states',
                 BODY_CONTROL_STATE_STRIDE * this.capacity,
                 storageUsage
             ),
-            bodyControlProgram: createBuffer(
-                device,
+            bodyControlProgram: allocation.createBuffer(
                 'cirvivor-gpu-circle-body-control-program',
                 this.hostBodyControlProgram.buffer.byteLength,
                 storageUsage
             ),
-            spawnProgram: createBuffer(
-                device,
+            spawnProgram: allocation.createBuffer(
                 'cirvivor-gpu-circle-spawn-program',
                 this.hostSpawnProgram.buffer.byteLength,
                 storageUsage
             ),
-            trackedPoseConfig: createBuffer(
-                device,
+            trackedPoseConfig: allocation.createBuffer(
                 'cirvivor-gpu-circle-tracked-pose-config',
                 TRACKED_POSE_CONFIG_BYTE_SIZE,
                 usage.STORAGE | usage.COPY_DST
             ),
-            trackedPoseOutput: createBuffer(
-                device,
+            trackedPoseOutput: allocation.createBuffer(
                 'cirvivor-gpu-circle-tracked-pose-output',
                 TRACKED_POSE_RECORD_BYTE_SIZE,
                 usage.STORAGE | usage.COPY_SRC | usage.COPY_DST
             ),
-            towerGameplayTargetConfig: createBuffer(
-                device,
+            towerGameplayTargetConfig: allocation.createBuffer(
                 'cirvivor-gpu-circle-tower-gameplay-target-config',
                 TOWER_GAMEPLAY_TARGET_CONFIG_BYTE_SIZE,
                 usage.STORAGE | usage.COPY_DST
             ),
-            towerTargetQueryResults: createBuffer(
-                device,
+            towerTargetQueryResults: allocation.createBuffer(
                 'cirvivor-gpu-circle-tower-target-query-results',
                 GPU_TOWER_TARGET_QUERY_ABI.RESULT.STRIDE * this.capacity,
                 usage.STORAGE | usage.COPY_SRC | usage.COPY_DST
             ),
-            gridCounts: createBuffer(
-                device,
+            gridCounts: allocation.createBuffer(
                 'cirvivor-gpu-circle-grid-counts',
                 this.gridCellTotal * GRID_BUCKET_COUNT * Uint32Array.BYTES_PER_ELEMENT,
                 storageUsage
             ),
-            gridBodies: createBuffer(
-                device,
+            gridBodies: allocation.createBuffer(
                 'cirvivor-gpu-circle-grid-bodies',
                 this.gridEntryCapacity * GPU_CIRCLE_BODY_ABI.GRID_BODY.STRIDE,
                 storageUsage
             ),
-            sdf: createBuffer(
-                device,
+            sdf: allocation.createBuffer(
                 'cirvivor-gpu-circle-sdf',
                 this.sdf.values.byteLength,
                 usage.STORAGE | usage.COPY_DST
             ),
-            gridOverflow: createBuffer(
-                device,
+            gridOverflow: allocation.createBuffer(
                 'cirvivor-gpu-circle-grid-overflow',
                 GRID_OVERFLOW_BYTE_SIZE,
                 storageUsage
             ),
-            contactState: createBuffer(
-                device,
+            contactState: allocation.createBuffer(
                 'cirvivor-gpu-circle-contact-state',
                 CONTACT_STATE_BYTE_SIZE,
                 storageUsage
             ),
-            contacts: createBuffer(
-                device,
+            contacts: allocation.createBuffer(
                 'cirvivor-gpu-circle-contacts',
                 CONTACT_RECORD_BYTE_SIZE * this.contactCapacity,
                 storageUsage
             ),
-            appliedEvents: createBuffer(
-                device,
+            appliedEvents: allocation.createBuffer(
                 'cirvivor-gpu-circle-applied-events',
                 APPLIED_EVENT_BYTE_SIZE * this.eventCapacity,
                 storageUsage
             ),
-            deathEvents: createBuffer(
-                device,
+            deathEvents: allocation.createBuffer(
                 'cirvivor-gpu-circle-death-events',
                 DEATH_EVENT_BYTE_SIZE * this.deathEventCapacity,
                 storageUsage
             ),
-            computeParams: createBuffer(
-                device,
+            computeParams: allocation.createBuffer(
                 'cirvivor-gpu-circle-compute-params',
                 COMPUTE_PARAMS_BYTE_SIZE,
                 usage.UNIFORM | usage.COPY_DST
             ),
-            renderStyles: createBuffer(
-                device,
+            renderStyles: allocation.createBuffer(
                 'cirvivor-gpu-circle-render-styles',
                 BODY_RENDER_STYLE_STRIDE * this.capacity,
                 usage.STORAGE | usage.COPY_DST
             ),
-            renderParams: createBuffer(
-                device,
+            renderParams: allocation.createBuffer(
                 'cirvivor-gpu-circle-render-params',
                 RENDER_PARAMS_BYTE_SIZE,
                 usage.UNIFORM | usage.COPY_DST
             ),
-            dispatchIndirect: createBuffer(
-                device,
+            dispatchIndirect: allocation.createBuffer(
                 'cirvivor-gpu-circle-dispatch-indirect',
                 DISPATCH_INDIRECT_BYTE_SIZE,
                 usage.STORAGE | usage.INDIRECT | usage.COPY_DST
             ),
-            drawIndirect: createBuffer(
-                device,
+            drawIndirect: allocation.createBuffer(
                 'cirvivor-gpu-circle-draw-indirect',
                 DRAW_INDIRECT_BYTE_SIZE,
                 usage.STORAGE | usage.INDIRECT | usage.COPY_DST
             )
         };
-        this.flowTexture = device.createTexture({
+        this.flowTexture = allocation.createTexture({
             label: 'cirvivor-gpu-circle-route-flow-atlas',
             size: {
                 width: this.flowFieldAtlas.cols,
@@ -15083,7 +15022,7 @@ export class GpuCircleBodySimulation {
                 | textureUsage.COPY_DST
                 | this.#requireFlowTextureStorageUsage(textureUsage)
         });
-        this.flowIntegrationTexture = device.createTexture({
+        this.flowIntegrationTexture = allocation.createTexture({
             label: 'cirvivor-gpu-circle-route-flow-integration-atlas',
             size: {
                 width: this.flowFieldAtlas.cols,
@@ -15099,8 +15038,7 @@ export class GpuCircleBodySimulation {
         this.overflowReadbackSlots = Array.from(
             { length: OVERFLOW_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-circle-overflow-readback-${index}`,
                     GRID_OVERFLOW_BYTE_SIZE,
                     usage.COPY_DST | usage.MAP_READ
@@ -15121,8 +15059,7 @@ export class GpuCircleBodySimulation {
         this.eventReadbackSlots = Array.from(
             { length: EVENT_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-circle-event-readback-${index}`,
                     eventReadbackByteSize,
                     usage.COPY_DST | usage.MAP_READ
@@ -15144,8 +15081,7 @@ export class GpuCircleBodySimulation {
         this.projectileCaptureReadbackSlots = Array.from(
             { length: PROJECTILE_CAPTURE_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-projectile-capture-readback-${index}`,
                     projectileCaptureReadbackByteSize,
                     usage.COPY_DST | usage.MAP_READ
@@ -15164,8 +15100,7 @@ export class GpuCircleBodySimulation {
         this.routeRuntimeReadbackSlots = Array.from(
             { length: ROUTE_RUNTIME_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-route-runtime-readback-${index}`,
                     this.hostRouteAvailability.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15183,8 +15118,7 @@ export class GpuCircleBodySimulation {
         this.spawnProgramReadbackSlots = [];
         for (let index = 0; index < SPAWN_PROGRAM_READBACK_SLOT_COUNT; index++) {
             this.spawnProgramReadbackSlots.push({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-circle-spawn-program-readback-${index}`,
                     this.hostSpawnProgram.buffer.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15199,8 +15133,7 @@ export class GpuCircleBodySimulation {
         this.effectProgramReadbackSlots = [];
         for (let index = 0; index < EFFECT_PROGRAM_READBACK_SLOT_COUNT; index++) {
             this.effectProgramReadbackSlots.push({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-effect-program-readback-${index}`,
                     effectReadbackByteSize(
                         this.effectPulseProgramCapacity,
@@ -15218,8 +15151,7 @@ export class GpuCircleBodySimulation {
         this.formationPrepareReadbackSlots = Array.from(
             { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-formation-prepare-readback-${index}`,
                     this.hostFormationPrepareProgram.buffer.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15234,8 +15166,7 @@ export class GpuCircleBodySimulation {
         this.formationTransformReadbackSlots = Array.from(
             { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-formation-transform-readback-${index}`,
                     this.hostFormationTransformProgram.buffer.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15250,8 +15181,7 @@ export class GpuCircleBodySimulation {
         this.atomicTransformPrepareReadbackSlots = Array.from(
             { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-atomic-transform-prepare-readback-${index}`,
                     this.hostAtomicTransformPrepareProgram.buffer.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15266,8 +15196,7 @@ export class GpuCircleBodySimulation {
         this.atomicTransformReadbackSlots = Array.from(
             { length: FORMATION_PROGRAM_READBACK_SLOT_COUNT },
             (_, index) => ({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-atomic-transform-readback-${index}`,
                     this.hostAtomicTransformProgram.buffer.byteLength,
                     usage.COPY_DST | usage.MAP_READ
@@ -15282,8 +15211,7 @@ export class GpuCircleBodySimulation {
         this.trackedPoseReadbackSlots = [];
         for (let index = 0; index < TRACKED_POSE_READBACK_SLOT_COUNT; index++) {
             this.trackedPoseReadbackSlots.push({
-                buffer: createBuffer(
-                    device,
+                buffer: allocation.createBuffer(
                     `cirvivor-gpu-circle-tracked-pose-readback-${index}`,
                     TRACKED_POSE_RECORD_BYTE_SIZE,
                     usage.COPY_DST | usage.MAP_READ
@@ -17421,6 +17349,8 @@ export class GpuCircleBodySimulation {
     }
 
     #releaseGpuResources() {
+        this.pendingGpuAllocation?.rollback();
+        this.pendingGpuAllocation = null;
         this.idleReleasePending = false;
         this.flowFieldRebuildToken++;
         this.flowFieldRebuildJob?.cancel();
