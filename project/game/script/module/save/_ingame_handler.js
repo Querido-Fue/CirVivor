@@ -1,6 +1,7 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
 import { INGAME_DEFAULT_DATA } from 'data/save/save_defaults.js';
 import { cloneJsonData, ensureSaveDirectory, pathExists } from './_save_file_helper.js';
+import { writeSaveFile } from './_save_file_writer.js';
 
 /**
  * @class IngameHandler
@@ -78,7 +79,7 @@ export class IngameHandler {
         const dataStr = JSON.stringify(this.data, null, 4);
 
         try {
-            await fsPromises.writeFile(this.filePath, dataStr);
+            await writeSaveFile(this.filePath, dataStr);
         } catch (err) {
             console.error('인게임 데이터 저장 실패:', err);
             throw err;

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { test } from 'node:test';
 import vm from 'node:vm';
+import { randomUUID } from 'node:crypto';
 
 const SETTING_DEFINITIONS = Object.freeze({
     theme: Object.freeze({
@@ -143,6 +144,14 @@ async function createHarness({
             trace.push(['write', targetPath, contents]);
             if (writeError) throw writeError;
             files.set(targetPath, contents);
+        },
+        async rename(source, target) {
+            trace.push(['rename', target]);
+            files.set(target, files.get(source));
+            files.delete(source);
+        },
+        async unlink(targetPath) {
+            files.delete(targetPath);
         }
     };
     const path = {
@@ -179,7 +188,8 @@ async function createHarness({
     const syntheticModules = new Map([
         ['util/nw_bridge.js', createSyntheticModule(context, 'util/nw_bridge.js', {
             fsPromises,
-            path
+            path,
+            randomUUID
         })],
         ['display/_theme_handler.js', createSyntheticModule(context, 'display/_theme_handler.js', {
             ColorSchemes,
@@ -538,11 +548,11 @@ test('save observes live schema and filePath after deferred directory access and
     await firstSave;
 
     assert.deepEqual(
-        harness.trace.filter(([name]) => name === 'access' || name === 'mkdir' || name === 'write')
+        harness.trace.filter(([name]) => name === 'access' || name === 'mkdir' || name === 'rename')
             .map(([name, targetPath]) => [name, targetPath]),
         [
             ['access', harness.dataDir],
-            ['write', nextFilePath]
+            ['rename', nextFilePath]
         ]
     );
     assert.equal(JSON.parse(harness.files.get(nextFilePath)).width, 2048);
@@ -550,12 +560,12 @@ test('save observes live schema and filePath after deferred directory access and
     harness.trace.length = 0;
     await handler.save();
     assert.deepEqual(
-        harness.trace.filter(([name]) => name === 'access' || name === 'mkdir' || name === 'write')
+        harness.trace.filter(([name]) => name === 'access' || name === 'mkdir' || name === 'rename')
             .map(([name, targetPath]) => [name, targetPath]),
         [
             ['access', nextDataDir],
             ['mkdir', nextDataDir],
-            ['write', nextFilePath]
+            ['rename', nextFilePath]
         ]
     );
 });

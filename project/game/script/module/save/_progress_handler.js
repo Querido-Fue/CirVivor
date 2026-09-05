@@ -1,6 +1,7 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
 import { PROGRESS_DEFAULT_BYTE_LENGTH } from 'data/save/save_defaults.js';
 import { ensureSaveDirectory, pathExists } from './_save_file_helper.js';
+import { writeSaveFile } from './_save_file_writer.js';
 
 /**
  * @class ProgressHandler
@@ -92,7 +93,7 @@ export class ProgressHandler {
         await ensureSaveDirectory(this.dataDir, '진행 데이터');
 
         try {
-            await fsPromises.writeFile(this.filePath, this.data);
+            await writeSaveFile(this.filePath, this.data);
         } catch (err) {
             console.error('진행 데이터 저장 실패:', err);
             throw err;

@@ -11,13 +11,15 @@ const SOURCE_PATHS = Object.freeze({
     progress: path.join(SAVE_ROOT, '_progress_handler.js'),
     ingame: path.join(SAVE_ROOT, '_ingame_handler.js'),
     helper: path.join(SAVE_ROOT, '_save_file_helper.js'),
+    writer: path.join(SAVE_ROOT, '_save_file_writer.js'),
     defaults: path.join(SAVE_DATA_ROOT, 'save_defaults.js')
 });
 
-const [progressSource, ingameSource, helperSource, defaultsSource] = await Promise.all([
+const [progressSource, ingameSource, helperSource, writerSource, defaultsSource] = await Promise.all([
     readFile(SOURCE_PATHS.progress, 'utf8'),
     readFile(SOURCE_PATHS.ingame, 'utf8'),
     readFile(SOURCE_PATHS.helper, 'utf8'),
+    readFile(SOURCE_PATHS.writer, 'utf8'),
     readFile(SOURCE_PATHS.defaults, 'utf8')
 ]);
 
@@ -41,6 +43,8 @@ async function createSaveHarness(overrides = {}) {
         mkdir: [],
         readFile: [],
         writeFile: [],
+        rename: [],
+        unlink: [],
         join: [],
         consoleError: []
     };
@@ -48,11 +52,13 @@ async function createSaveHarness(overrides = {}) {
         access: overrides.access ?? (async () => undefined),
         mkdir: overrides.mkdir ?? (async () => undefined),
         readFile: overrides.readFile ?? (async () => Buffer.alloc(0)),
-        writeFile: overrides.writeFile ?? (async () => undefined)
+        writeFile: overrides.writeFile ?? (async () => undefined),
+        rename: overrides.rename ?? (async () => undefined),
+        unlink: overrides.unlink ?? (async () => undefined)
     };
     const fsPromises = {};
 
-    for (const methodName of ['access', 'mkdir', 'readFile', 'writeFile']) {
+    for (const methodName of Object.keys(implementations)) {
         fsPromises[methodName] = async (...args) => {
             calls[methodName].push(args);
             return implementations[methodName](...args);
@@ -82,16 +88,21 @@ async function createSaveHarness(overrides = {}) {
     }
     const context = vm.createContext(contextGlobals);
     const nwBridgeModule = new vm.SyntheticModule(
-        ['fsPromises', 'path'],
+        ['fsPromises', 'path', 'randomUUID'],
         function initializeNwBridge() {
             this.setExport('fsPromises', fsPromises);
             this.setExport('path', pathApi);
+            this.setExport('randomUUID', () => `test-${calls.writeFile.length}`);
         },
         { context, identifier: 'util/nw_bridge.js' }
     );
     const helperModule = new vm.SourceTextModule(helperSource, {
         context,
         identifier: 'save/_save_file_helper.js'
+    });
+    const writerModule = new vm.SourceTextModule(writerSource, {
+        context,
+        identifier: 'save/_save_file_writer.js'
     });
     const progressModule = new vm.SourceTextModule(progressSource, {
         context,
@@ -115,6 +126,7 @@ async function createSaveHarness(overrides = {}) {
         if (specifier === './_save_file_helper.js') {
             return helperModule;
         }
+        if (specifier === './_save_file_writer.js') return writerModule;
         throw new Error(`지원하지 않는 테스트 import입니다: ${specifier}`);
     };
 
@@ -271,8 +283,9 @@ test('ProgressHandler는 128바이트 새 배열, live 참조, Uint8 변환과 �
     assert.deepEqual(harness.calls.access.at(-1), ['C:/save-root']);
     assert.equal(harness.calls.mkdir.length, 0);
     assert.equal(harness.calls.writeFile.length, 1);
-    assert.equal(harness.calls.writeFile[0][0], 'C:/save-root/progress.dat');
-    assert.equal(harness.calls.writeFile[0][1], dataAtWriteTime);
+    assert.equal(harness.calls.rename[0][1], 'C:/save-root/progress.dat');
+    assert.notEqual(harness.calls.writeFile[0][1], dataAtWriteTime);
+    assert.deepEqual(Array.from(harness.calls.writeFile[0][1]), Array.from(dataAtWriteTime));
 });
 
 test('ProgressHandler는 same-realm Uint8Array와 Buffer를 처리하고 foreign Uint8Array는 기본값으로 대체한다', async () => {
@@ -394,7 +407,7 @@ test('IngameHandler는 live 단일 키 API와 누락된 최상위 기본값만 �
     assert.equal(mergeHandler.getValue('profile').existing, 9);
     assert.equal('nestedDefault' in mergeHandler.getValue('profile'), false);
     assert.equal(mergeHarness.calls.writeFile.length, 1);
-    assert.equal(mergeHarness.calls.writeFile[0][0], 'save/ingame.dat');
+    assert.equal(mergeHarness.calls.rename[0][1], 'save/ingame.dat');
     assert.equal(mergeHarness.calls.writeFile[0][1], JSON.stringify(mergeHandler.getData(), null, 4));
     mergeHandler.getValue('items').push('live-item');
     assert.deepEqual(Array.from(mergeHandler.defaultData.items), []);

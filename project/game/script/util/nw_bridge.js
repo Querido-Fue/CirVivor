@@ -38,3 +38,6 @@ export const fsPromises = window.require('fs').promises;
  * @type {typeof import('path')}
  */
 export const path = window.require('path');
+
+/** 저장 임시 파일 이름에 사용하는 Node.js UUID 생성기입니다. */
+export const randomUUID = window.require('crypto').randomUUID;

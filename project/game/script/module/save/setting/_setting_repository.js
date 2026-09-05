@@ -1,5 +1,6 @@
 import { fsPromises, path } from 'util/nw_bridge.js';
 import { ensureSaveDirectory, pathExists } from '../_save_file_helper.js';
+import { writeSaveFile } from '../_save_file_writer.js';
 
 /**
  * @class SettingRepository
@@ -85,7 +86,7 @@ export class SettingRepository {
         }
 
         try {
-            await fsPromises.writeFile(this.#getFilePath(), JSON.stringify(out, null, 4));
+            await writeSaveFile(this.#getFilePath(), JSON.stringify(out, null, 4));
         } catch (error) {
             console.error("설정 파일 저장 실패:", error);
             throw error;
