@@ -17,6 +17,7 @@ import { createFontString } from "util/font_util.js";
  */
 export class SegmentControlElement extends BaseUIElement {
     #value;
+    #selectionAnimation = null;
     constructor(properties) {
         super(properties);
         this.init(properties);
@@ -28,11 +29,13 @@ export class SegmentControlElement extends BaseUIElement {
     init(properties) {
         super.init(properties);
         if (!properties) return;
+        this.#stopSelectionAnimation();
         this.items = properties.items || [];
         this.onChange = properties.onChange || (() => { });
 
         this.width = properties.width || 200;
         this.height = properties.height || 40;
+        this.padding = this.height * 0.1;
         this.radius = properties.radius || 8;
 
 
@@ -52,12 +55,13 @@ export class SegmentControlElement extends BaseUIElement {
 
         this.selectionProgress = 0;
 
-        this.clickAble = true;
         this.hoverScaleMultiplier = 1.01;
         this.pressScaleMultiplier = 1.01;
 
         if (properties.value !== undefined) {
-            this.value = properties.value;
+            this.#value = properties.value;
+            this.selectedIndex = Math.max(0,
+                this.items.findIndex(item => item.value === properties.value));
             this.selectionProgress = this.selectedIndex;
         }
     }
@@ -67,7 +71,17 @@ export class SegmentControlElement extends BaseUIElement {
          */
     reset() {
         super.reset();
+        this.#stopSelectionAnimation();
+        this.items = [];
+        this.#value = null;
+        this.selectedIndex = 0;
+        this.selectionProgress = 0;
         this.onChange = () => { };
+    }
+
+    #stopSelectionAnimation() {
+        this.#selectionAnimation?.remove();
+        this.#selectionAnimation = null;
     }
 
     get value() { return this.#value; }
@@ -81,7 +95,16 @@ export class SegmentControlElement extends BaseUIElement {
             this.selectedIndex = newIndex;
 
             if (this.visible && Math.abs(this.selectionProgress - this.selectedIndex) > 0.01) {
-                animate(this, {
+                if (this.#selectionAnimation?.isActive() === true
+                    && this.#selectionAnimation.retarget({
+                        endValue: this.selectedIndex,
+                        type: 'easeOutExpo',
+                        duration: 0.3
+                    }, false) === true) {
+                    return;
+                }
+                this.#stopSelectionAnimation();
+                this.#selectionAnimation = animate(this, {
                     animationCategory: ANIMATION_CATEGORY.UI,
                     variable: 'selectionProgress',
                     startValue: this.selectionProgress,
@@ -90,6 +113,7 @@ export class SegmentControlElement extends BaseUIElement {
                     duration: 0.3
                 });
             } else {
+                this.#stopSelectionAnimation();
                 this.selectionProgress = this.selectedIndex;
             }
         }
@@ -99,7 +123,7 @@ export class SegmentControlElement extends BaseUIElement {
          * @override
          */
     update() {
-        if (!this.visible) return;
+        if (!this.visible || this.items.length === 0) return;
 
         this.padding = this.height * 0.1;
         this.segmentWidth = (this.width - (this.padding * 2)) / this.items.length;
@@ -142,7 +166,7 @@ export class SegmentControlElement extends BaseUIElement {
          * @override
          */
     draw() {
-        if (!this.visible) return;
+        if (!this.visible || this.items.length === 0) return;
 
         // 스케일 적용 (중심점 기준 축소/확대가 아니라 top-left 부터 시작하는 LayoutHandler 룰에 맞춤)
         const scale = this.scale;
