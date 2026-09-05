@@ -140,10 +140,7 @@ export class AnimationSystem {
      * 애니메이션 풀을 미리 워밍업합니다.
      */
     async warmup() {
-        // 애니메이션 풀 미리 할당
-        for (let i = 0; i < ANIMATOR_POOL_WARMUP_COUNT; i++) {
-            standardAnimationPool.release(standardAnimationPool.get());
-        }
+        standardAnimationPool.warmUp(ANIMATOR_POOL_WARMUP_COUNT);
     }
 
     /**
@@ -392,6 +389,8 @@ export class AnimationSystem {
 
         // 가능하다면 풀로 반환
         if (anim instanceof StandardAnimation) {
+            // 유휴 풀에서도 장면과 값 콜백의 참조를 즉시 해제합니다.
+            anim.reset();
             standardAnimationPool.release(anim);
         }
     }
@@ -435,9 +434,8 @@ export class AnimationSystem {
      * @private
      */
     #resolveUpdateDelta(injectedDelta, useFixedTick) {
-        const safeInjectedDelta = clampFiniteNumber(injectedDelta, 0, Infinity, 0);
-        if (safeInjectedDelta > 0) {
-            return safeInjectedDelta;
+        if (Number.isFinite(injectedDelta) && injectedDelta >= 0) {
+            return injectedDelta;
         }
 
         const frameDelta = useFixedTick ? getFixedDelta() : getDelta();

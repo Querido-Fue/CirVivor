@@ -572,3 +572,75 @@ test('standard pool reset은 재사용 전 category와 공통 owner/state를 지
     assert.equal(reused.animationCategory, ANIMATION_CATEGORY.EFFECT);
     pool.release(reused);
 });
+
+test('warmup은 첫 동시 애니메이션 500개를 추가 할당 없이 시작한다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.animation.AnimationSystem();
+    const pool = harness.standardAnimationPool;
+    await system.warmup();
+    const createdAfterWarmup = pool.createdCount;
+    for (let i = 0; i < 500; i++) {
+        animateLinear(system, harness.constants.ANIMATION_CATEGORY.UI, { value: 0 });
+    }
+    assert.equal(new Set(system.activeAnimations).size, 500);
+    assert.equal(pool.createdCount, createdAfterWarmup);
+    assert.equal(pool.inUseCount, 500);
+});
+
+test('완료 후 유휴 풀은 이전 owner와 값 콜백을 보관하지 않는다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.animation.AnimationSystem();
+    const handle = animateLinear(system, harness.constants.ANIMATION_CATEGORY.UI, { value: 0 }, {
+        endValue: () => 1,
+        duration: 0
+    });
+    const completion = handle.promise;
+    const animation = system.animationsById.get(handle.id);
+    system.update({ delta: 0.1 });
+    await completion;
+    assert.equal(handle.isActive(), false);
+    assert.strictEqual(harness.standardAnimationPool.pool[0], animation);
+    assert.equal(animation.owner, null);
+    assert.equal(animation.rawEndValue, null);
+    await handle.promise;
+});
+
+test('명시적 delta 0은 시간이 흘러도 활성 애니메이션을 진행시키지 않는다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.animation.AnimationSystem();
+    harness.setFrameDelta(0.5);
+    harness.setFixedDelta(0.5);
+    for (const useFixedTick of [false, true]) {
+        const owner = { value: 0 };
+        animateLinear(system, harness.constants.ANIMATION_CATEGORY.UI, owner, { useFixedTick });
+        system.update({ delta: 0, useFixedTick });
+        assert.equal(owner.value, 0);
+    }
+    assert.deepEqual(harness.getDeltaReadCounts(), { frame: 0, fixed: 0 });
+});
+
+test('혼합 프리셋은 frozen 상태로 재사용해도 대상별 값과 시간이 독립적이다', async () => {
+    const harness = await createAnimationHarness();
+    const system = new harness.animation.AnimationSystem();
+    const segment = Object.freeze({
+        startValue: 'current', endValue: value => value + 10, duration: 1, type: 'linear'
+    });
+    const definitions = Object.freeze([Object.freeze({
+        variable: 'value', animations: Object.freeze([segment])
+    })]);
+    const first = { value: 0 };
+    const second = { value: 100 };
+    const properties = { animationCategory: harness.constants.ANIMATION_CATEGORY.UI };
+    const firstResult = system.animateMixed(first, definitions, properties);
+    system.update({ delta: 0.25 });
+    const secondResult = system.animateMixed(second, definitions, properties);
+    system.update({ delta: 0.25 });
+    assert.equal(first.value, 5);
+    assert.equal(second.value, 102.5);
+    assert.equal(Object.hasOwn(segment, 'currentTime'), false);
+    system.update({ delta: 1 });
+    system.update({ delta: Number.EPSILON });
+    await Promise.all([firstResult.promise, secondResult.promise]);
+    assert.equal(first.value, 10);
+    assert.equal(second.value, 110);
+});

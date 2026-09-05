@@ -33,14 +33,13 @@ export class MixedAnimation extends AnimationBase {
      */
     init(id, owner, variable, animationCategory, animationDefs, useFixedTick = false) {
         super.init(id, owner, variable, animationCategory, useFixedTick);
-        this.animationDefs = animationDefs;
-
         try {
             const initialValue = this.owner[this.variable];
             this.baseValue = initialValue;
 
-            this.animationDefs.forEach(def => {
-                def.currentTime = 0;
+            // 작성된 프리셋과 실행 시간을 분리해 여러 대상에서 안전하게 재사용합니다.
+            this.animationDefs = animationDefs.map(source => {
+                const def = { ...source, currentTime: 0 };
                 if (typeof def.startValue === 'function') def.startValue = def.startValue(initialValue);
                 else if (def.startValue === 'current' || def.startValue === undefined) def.startValue = initialValue;
 
@@ -48,6 +47,9 @@ export class MixedAnimation extends AnimationBase {
 
                 // 이징 함수 미리 바인딩
                 def.easingFn = Easing[def.type] || Easing.linear;
+                def.duration = clampFiniteNumber(Number(def.duration), 0, Infinity, 0);
+                def.delay = clampFiniteNumber(Number(def.delay), 0, Infinity, 0);
+                return def;
             });
         } catch (e) {
             console.error('MixedAnimation 초기화 실패:', e);
@@ -66,8 +68,7 @@ export class MixedAnimation extends AnimationBase {
         let allAnimationsFinished = true;
 
         this.animationDefs.forEach(def => {
-            const duration = clampFiniteNumber(Number(def.duration), 0, Infinity, 0);
-            const delay = clampFiniteNumber(Number(def.delay), 0, Infinity, 0);
+            const { duration, delay } = def;
 
             if (def.currentTime >= delay + duration) {
                 totalContribution += (def.endValue - def.startValue);
