@@ -59,9 +59,6 @@ export class MouseInputHandler {
         window.addEventListener('mousemove', (e) => {
             this.#updateMousePosition(e);
         });
-        document.addEventListener('mousemove', (e) => {
-            this.#updateMousePosition(e);
-        });
         window.addEventListener('mousedown', (e) => {
             this.#updateMousePosition(e);
             this.buttonStateMachine.queueButtonStateChange(e.button, 'press', e.timeStamp);
