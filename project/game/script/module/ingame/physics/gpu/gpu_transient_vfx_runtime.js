@@ -355,19 +355,28 @@ function getComputePipelines(device, stage) {
     if (cached) {
         return cached;
     }
+    const entries = [
+        { binding: 0, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 1, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
+        { binding: 3, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 4, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 5, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 6, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 7, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
+        { binding: 8, visibility: stage.COMPUTE, buffer: { type: 'uniform' } }
+    ];
+    const indirectLayout = device.createBindGroupLayout({
+        label: 'cirvivor-gpu-transient-vfx-indirect-layout',
+        entries
+    });
     const layout = device.createBindGroupLayout({
         label: 'cirvivor-gpu-transient-vfx-compute-layout',
-        entries: [
-            { binding: 0, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 1, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
-            { binding: 2, visibility: stage.COMPUTE, buffer: { type: 'read-only-storage' } },
-            { binding: 3, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 4, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 5, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 6, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 7, visibility: stage.COMPUTE, buffer: { type: 'storage' } },
-            { binding: 8, visibility: stage.COMPUTE, buffer: { type: 'uniform' } }
-        ]
+        entries: entries.filter((entry) => entry.binding !== 6)
+    });
+    const indirectPipelineLayout = device.createPipelineLayout({
+        label: 'cirvivor-gpu-transient-vfx-indirect-pipeline-layout',
+        bindGroupLayouts: [indirectLayout]
     });
     const pipelineLayout = device.createPipelineLayout({
         label: 'cirvivor-gpu-transient-vfx-compute-pipeline-layout',
@@ -377,14 +386,15 @@ function getComputePipelines(device, stage) {
         label: 'cirvivor-gpu-transient-vfx-compute-shader',
         code: GPU_TRANSIENT_VFX_COMPUTE_WGSL
     });
-    const create = (entryPoint) => device.createComputePipeline({
+    const create = (entryPoint, selectedLayout = pipelineLayout) => device.createComputePipeline({
         label: `cirvivor-gpu-transient-vfx-${entryPoint}`,
-        layout: pipelineLayout,
+        layout: selectedLayout,
         compute: { module, entryPoint }
     });
     cached = Object.freeze({
         layout,
-        updateIndirect: create('update_vfx_indirect_args'),
+        indirectLayout,
+        updateIndirect: create('update_vfx_indirect_args', indirectPipelineLayout),
         decay: create('decay_vfx'),
         spawn: create('spawn_death_vfx')
     });
@@ -470,6 +480,7 @@ export class GpuTransientVfxRuntime {
         this.computePipelines = null;
         this.renderPipeline = null;
         this.computeBindGroup = null;
+        this.indirectBindGroup = null;
         this.renderBindGroups = null;
         this.bodyCapacity = 0;
         this.deathEventCapacity = 0;
@@ -562,20 +573,26 @@ export class GpuTransientVfxRuntime {
             new Uint32Array([6, 0, 0, 0])
         );
         const resource = (buffer) => ({ buffer });
+        const entries = [
+            { binding: 0, resource: resource(resources.contactState) },
+            { binding: 1, resource: resource(resources.deathEvents) },
+            { binding: 2, resource: resource(resources.physics) },
+            { binding: 3, resource: resource(resources.simulation) },
+            { binding: 4, resource: resource(this.buffers.state) },
+            { binding: 5, resource: resource(this.buffers.records) },
+            { binding: 6, resource: resource(this.buffers.dispatchIndirect) },
+            { binding: 7, resource: resource(this.buffers.drawIndirect) },
+            { binding: 8, resource: resource(this.buffers.params) }
+        ];
+        this.indirectBindGroup = device.createBindGroup({
+            label: 'cirvivor-gpu-transient-vfx-indirect-bind-group',
+            layout: this.computePipelines.indirectLayout,
+            entries
+        });
         this.computeBindGroup = device.createBindGroup({
             label: 'cirvivor-gpu-transient-vfx-compute-bind-group',
             layout: this.computePipelines.layout,
-            entries: [
-                { binding: 0, resource: resource(resources.contactState) },
-                { binding: 1, resource: resource(resources.deathEvents) },
-                { binding: 2, resource: resource(resources.physics) },
-                { binding: 3, resource: resource(resources.simulation) },
-                { binding: 4, resource: resource(this.buffers.state) },
-                { binding: 5, resource: resource(this.buffers.records) },
-                { binding: 6, resource: resource(this.buffers.dispatchIndirect) },
-                { binding: 7, resource: resource(this.buffers.drawIndirect) },
-                { binding: 8, resource: resource(this.buffers.params) }
-            ]
+            entries: entries.filter((entry) => entry.binding !== 6)
         });
         this.renderBindGroups = [
             device.createBindGroup({
@@ -614,13 +631,13 @@ export class GpuTransientVfxRuntime {
         view.setUint32(24, 0, true);
         view.setUint32(28, 0, true);
         this.device.queue.writeBuffer(this.buffers.params, 0, this.paramsBytes);
-        // WebGPU의 pass usage scope에서는 같은 buffer를 STORAGE_WRITE와
-        // INDIRECT로 동시에 사용할 수 없습니다. 먼저 별도 pass에서 indirect
-        // args를 기록한 뒤 다음 pass에서 소비합니다.
+        // 사용하지 않는 WGSL binding도 explicit layout에 있으면 usage에
+        // 포함됩니다. 소비 pass에서는 dispatch args의 STORAGE binding 자체를
+        // 제거해야 INDIRECT와 writable storage가 충돌하지 않습니다.
         const indirectPass = encoder.beginComputePass({
             label: 'cirvivor-gpu-transient-vfx-indirect-pass'
         });
-        indirectPass.setBindGroup(0, this.computeBindGroup);
+        indirectPass.setBindGroup(0, this.indirectBindGroup);
         indirectPass.setPipeline(this.computePipelines.updateIndirect);
         indirectPass.dispatchWorkgroups(1);
         indirectPass.end();
@@ -686,6 +703,7 @@ export class GpuTransientVfxRuntime {
         this.computePipelines = null;
         this.renderPipeline = null;
         this.computeBindGroup = null;
+        this.indirectBindGroup = null;
         this.renderBindGroups = null;
         this.device = null;
         this.bodyCapacity = 0;

@@ -560,6 +560,9 @@ function createFixedPrimitiveBackendPort(backend, sessionGeneration) {
         getTerminalFixedProgramCancelStatus: () => (
             backend.getTerminalFixedProgramCancelStatus?.() ?? null
         ),
+        getTowerGroupRuntimeStatus: () => (
+            backend.getTowerGroupRuntimeStatus?.() ?? null
+        ),
         getEventProtocolState: () => backend.getEventProtocolState?.()
             ?? Object.freeze({
                 sessionGeneration,

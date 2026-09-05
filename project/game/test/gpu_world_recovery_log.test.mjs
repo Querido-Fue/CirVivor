@@ -14,6 +14,9 @@ const {
     findGpuWorldRecoveryCause,
     writeGpuWorldRecoveryLog
 } = await loadGameModule('scene/game/gpu_world_recovery_log.js');
+const { GPU_PROJECTILE_CAPTURE_TICK_STATUS } = await loadGameModule(
+    'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
+);
 
 function createDiagnosticGameSystem() {
     const objectSystem = Object.freeze({
@@ -99,6 +102,70 @@ test('R3 Ability/Actor/Bounty 복구 원인은 generic game-object fallback 전�
             code: 'ability-subject-protocol-rejected'
         }
     });
+});
+
+test('정상 projectile capture 진행/완료 상태는 실제 backend 복구 원인을 가리지 않는다', () => {
+    const failure = { stage: 'fixed-submit', reason: 'fixture' };
+    for (const runtimeStatus of [
+        GPU_PROJECTILE_CAPTURE_TICK_STATUS.RESET,
+        GPU_PROJECTILE_CAPTURE_TICK_STATUS.SEALED,
+        GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE
+    ]) {
+        const projectileCapture = { runtimeStatus, errorFlags: 0 };
+        assert.deepEqual(findGpuWorldRecoveryCause({
+            endpoint: { projectileCapture, backend: { gpu: { failure } } }
+        }), { domain: 'endpoint.backend', detail: failure });
+        assert.equal(findGpuWorldRecoveryCause({
+            endpoint: { projectileCapture }
+        }).domain, 'game-object-system');
+    }
+});
+
+test('projectile capture의 실제 protocol/capacity 실패는 복구 원인으로 보존한다', () => {
+    for (const status of [
+        { runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED },
+        { runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.PROTOCOL_FAILURE },
+        { runtimeStatus: GPU_PROJECTILE_CAPTURE_TICK_STATUS.COMPLETE, errorFlags: 1 },
+        { capacityRejected: true },
+        { retryableCapacityRejected: true },
+        { capacityRejectionFlags: 1 },
+        { failure: { stage: 'projectile-capture-observe' } }
+    ]) {
+        assert.deepEqual(findGpuWorldRecoveryCause({
+            endpoint: { projectileCapture: status }
+        }), { domain: 'endpoint.projectileCapture', detail: status });
+    }
+});
+
+test('복구 snapshot은 공유 handle/failure를 보존하고 실제 순환 참조만 생략한다', () => {
+    const handle = { entityId: 604, incarnation: 93 };
+    const failure = { stage: 'completion-contract', targetHandle: handle };
+    const cycle = { handle };
+    cycle.self = cycle;
+    const system = createDiagnosticGameSystem();
+    const diagnostic = captureGpuWorldRecoveryDiagnostic({
+        gameSystem: {
+            ...system,
+            getGpuSimulationEndpoint: () => ({
+                getStatus: () => ({
+                    targetHandle: handle,
+                    fixedCommands: { recoveryRequired: true, failure },
+                    cycle
+                })
+            }),
+            getObjectSystem: () => ({
+                ...system.getObjectSystem(),
+                getHostileAttackStatus: () => ({ recoveryRequired: true, failure }),
+                getGpuWorldActorStatus: () => ({ towerHandle: handle })
+            })
+        }
+    });
+    assert.deepEqual(diagnostic.endpoint.targetHandle, handle);
+    assert.deepEqual(diagnostic.endpoint.fixedCommands.failure, failure);
+    assert.deepEqual(diagnostic.object.hostileAttack.failure, failure);
+    assert.deepEqual(diagnostic.object.gpuWorldActors.towerHandle, handle);
+    assert.deepEqual(diagnostic.cause.detail.failure, failure);
+    assert.deepEqual(diagnostic.endpoint.cycle, { handle, self: '[Circular]' });
 });
 
 test('GPU world reset 파일은 project/logs에 충돌 없이 기록된다', async () => {

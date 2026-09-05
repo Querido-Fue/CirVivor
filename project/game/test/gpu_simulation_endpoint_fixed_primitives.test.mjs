@@ -866,6 +866,117 @@ test('Hostile command port는 frozen canonical M control/projectile만 public과
     endpoint.destroy();
 });
 
+for (const scenario of [
+    { name: 'living roster target', roster: true },
+    { name: 'retired roster target', roster: true, retire: true },
+    { name: 'legacy exact target mismatch', roster: false, reject: true },
+    { name: 'malformed roster outcome', roster: true, malformed: true, reject: true }
+]) {
+    test(`public endpoint priority completion: ${scenario.name}`, () => {
+        const backend = createPrimitiveBackend({ capacity: 12 });
+        const endpoint = createEndpoint(backend);
+        try {
+            const handles = createRhomPriorityFixture(endpoint);
+            assert.equal(endpoint.requestSpawn(
+                createGpuTowerSpawnIntent({ position: { x: 5, y: 1 } }),
+                2,
+                'rhom:second-tower'
+            ).accepted, true);
+            const secondTower = endpoint.commitAtFixedBoundary(2).spawned[0].handle;
+            const port = endpoint.getHostileCommandPort();
+            assert.equal(port.requestPriorityTargetControl(
+                Object.freeze(createRhomPriorityControl(handles)),
+                3,
+                'rhom:roster-control'
+            ).accepted, true);
+            assert.equal(port.requestSelectedTargetSpawn(
+                createRhomSelectedIntent(handles),
+                3,
+                'rhom:roster-shot'
+            ).accepted, true);
+
+            // Roster authority must reach the owner through the production
+            // backend adapter, and be captured at stage rather than at drain.
+            let roster = Object.freeze({
+                state: 'ready', groupRevision: 2, rosterFingerprint: 1039395697
+            });
+            if (scenario.roster) backend.getTowerGroupRuntimeStatus = () => roster;
+            const commit = endpoint.commitAtFixedBoundary(3);
+            assert.equal(commit.recoveryRequired, false);
+            const destination = commit.fixedCommands.selectedTargetSpawns[0].handle;
+            const control = backend.calls.findLast(
+                ({ type }) => type === 'stageFixedPrograms'
+            ).plan.controls[0];
+            const protocol = backend.getEventProtocolState();
+            backend.queueBodyControlProgramBatch(Object.freeze({
+                ...protocol,
+                sourceTick: 3,
+                outcomes: Object.freeze([Object.freeze({
+                    sourceHandle: handles.source,
+                    coreTargetHandle: handles.core,
+                    towerTargetHandle: handles.tower,
+                    sourceTick: 3,
+                    selectionSequence: 0,
+                    attackFingerprint: control.attackFingerprint,
+                    attackRangeTiles: BASIC_RHOM_ATTACK_DATA.attackRangeTiles,
+                    result: GPU_BODY_CONTROL_PROGRAM_RESULT.TOWER_SELECTED,
+                    outcome: 'tower',
+                    selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER,
+                    selectedTargetHandle: secondTower,
+                    stateFlags: scenario.malformed ? 0
+                        : GPU_BODY_CONTROL_STATE_FLAGS.STOP
+                            | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED
+                })])
+            }));
+            backend.queueSpawnProgramBatch(Object.freeze({
+                ...protocol,
+                sourceTick: 3,
+                outcomes: Object.freeze([Object.freeze({
+                    sourceHandle: handles.source,
+                    destinationHandle: destination,
+                    targetHandle: secondTower,
+                    selectedTargetKind: 'tower',
+                    reason: 'resolved'
+                })])
+            }));
+            backend.queueEventBatch(createEventBatch(protocol, destination, 3));
+            roster = Object.freeze({ state: 'unavailable' });
+            if (scenario.retire) {
+                assert.equal(endpoint.getRegistry().remove(secondTower), true);
+                assert.equal(backend.bodies.delete(handleKey(secondTower)), true);
+            }
+
+            const completed = endpoint.commitCompletedEventsAtFixedBoundary(4);
+            if (scenario.reject) {
+                assert.equal(completed.protocolFailure.code, 'completion-contract');
+                assert.equal(endpoint.requiresRecovery(), true);
+                assert.equal(endpoint.getRegistry().has(destination), false);
+                assert.equal(endpoint.getStatus().reservedCount, 1);
+                assert.equal(endpoint.fixedUpdate(1 / 60, 4), false);
+                return;
+            }
+            assert.equal(completed.protocolFailure, null);
+            assert.equal(completed.completedThroughTick, 3);
+            assert.equal(completed.contactEvents[0].disposition, 'applied');
+            assert.equal(endpoint.requiresRecovery(), false);
+            const status = endpoint.getStatus();
+            assert.equal(status.reservedCount, 0);
+            assert.equal(status.pendingPriorityTargetControlCount, 0);
+            assert.equal(status.pendingSourceRelativeDestinationCount, 0);
+            const metadata = endpoint.getRegistry().copyEntityView(destination, {}).metadata;
+            assert.equal(metadata.selectedTargetEntityId, secondTower.entityId);
+            assert.equal(metadata.selectedTargetIncarnation, secondTower.incarnation);
+            assert.equal(metadata.towerTargetEntityId, secondTower.entityId);
+            assert.equal(metadata.towerTargetIncarnation, secondTower.incarnation);
+            assert.strictEqual(endpoint.commitCompletedEventsAtFixedBoundary(4), completed);
+            assert.equal(endpoint.commitAtFixedBoundary(4).recoveryRequired, false);
+            assert.equal(endpoint.fixedUpdate(1 / 60, 4), true);
+        } finally {
+            endpoint.destroy();
+        }
+    });
+}
+
 test('tracked body observation은 exact handle만 구성하고 immutable observed snapshot을 반환한다', () => {
     const backend = createPrimitiveBackend();
     const endpoint = createEndpoint(backend);

@@ -1,9 +1,13 @@
+import {
+    GPU_PROJECTILE_CAPTURE_TICK_STATUS
+} from 'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js';
+
 const RECOVERY_LOG_SCHEMA_VERSION = 1;
 
 function clonePlain(value) {
-    const seen = new WeakSet();
+    const ancestors = [];
     try {
-        return JSON.parse(JSON.stringify(value, (_key, current) => {
+        return JSON.parse(JSON.stringify(value, function replacer(_key, current) {
             if (typeof current === 'bigint') {
                 return current.toString();
             }
@@ -15,10 +19,13 @@ function clonePlain(value) {
                 };
             }
             if (current && typeof current === 'object') {
-                if (seen.has(current)) {
+                while (ancestors.length > 0 && ancestors.at(-1) !== this) {
+                    ancestors.pop();
+                }
+                if (ancestors.includes(current)) {
                     return '[Circular]';
                 }
-                seen.add(current);
+                ancestors.push(current);
             }
             return current;
         }));
@@ -84,7 +91,9 @@ function findProjectileCaptureOwnedFailure(status) {
     if (!status || typeof status !== 'object') {
         return null;
     }
-    const ownsProtocolFailure = (Number(status.runtimeStatus) || 0) !== 0
+    const runtimeStatus = Number(status.runtimeStatus);
+    const ownsProtocolFailure = runtimeStatus === GPU_PROJECTILE_CAPTURE_TICK_STATUS.REJECTED
+        || runtimeStatus === GPU_PROJECTILE_CAPTURE_TICK_STATUS.PROTOCOL_FAILURE
         || (Number(status.errorFlags) || 0) !== 0
         || status.capacityRejected === true
         || status.retryableCapacityRejected === true

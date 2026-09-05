@@ -132,9 +132,11 @@ class FakeDevice {
             beginComputePass(descriptor) {
                 const operations = [];
                 let pipeline = null;
+                const bindGroups = new Map();
                 device.computePasses.push({ descriptor, operations });
                 return {
                     setBindGroup(index, bindGroup) {
+                        bindGroups.set(index, bindGroup);
                         operations.push(['bind', index, bindGroup.label]);
                     },
                     setPipeline(value) {
@@ -145,6 +147,22 @@ class FakeDevice {
                         operations.push(['direct', pipeline.entryPoint, count]);
                     },
                     dispatchWorkgroupsIndirect(buffer, offset) {
+                        // Explicit layouts use every bound resource, including
+                        // bindings the current WGSL entry point never reads.
+                        for (const [index, layout] of
+                            pipeline.layout.bindGroupLayouts.entries()) {
+                            const group = bindGroups.get(index);
+                            for (const entry of layout.entries) {
+                                const resource = group.entries.find(
+                                    (bound) => bound.binding === entry.binding
+                                )?.resource;
+                                assert.ok(
+                                    entry.buffer?.type !== 'storage'
+                                        || resource?.buffer !== buffer,
+                                    `${pipeline.entryPoint}: indirect buffer is also bound as writable storage`
+                                );
+                            }
+                        }
                         operations.push(['indirect', pipeline.entryPoint, buffer.label, offset]);
                     },
                     end() {
