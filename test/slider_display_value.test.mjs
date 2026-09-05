@@ -367,3 +367,30 @@ await precisionSlider.waitForDisplayValueSettle();
 assert.equal(precisionSlider.displayValue, 0.27);
 
 console.log('slider display value contract: ok');
+
+const disabledChanges = [];
+const disabledCommits = [];
+const disabledSlider = new SliderElement({
+    width: 100, height: 20, trackHeight: 4, knobRadius: 2, value: 20,
+    clickAble: false, valueFormatter: () => 'retained callback',
+    onChange: (value) => disabledChanges.push(value),
+    onCommit: (value) => disabledCommits.push(value)
+});
+Object.assign(mouse, { x: 80, y: 8, pressing: true, click: true });
+disabledSlider.update();
+assert.equal(disabledSlider.value, 20);
+assert.equal(disabledSlider.dragging, false);
+assert.deepEqual(disabledChanges, []);
+disabledSlider.clickAble = true;
+disabledSlider.update();
+assert.equal(disabledSlider.value, 80);
+disabledSlider.clickAble = false;
+mouse.x = 90;
+disabledSlider.update();
+disabledSlider.update();
+assert.equal(disabledSlider.value, 80);
+assert.equal(disabledSlider.dragging, false);
+assert.deepEqual(disabledChanges, [80]);
+assert.deepEqual(disabledCommits, [80]);
+disabledSlider.reset();
+assert.equal(disabledSlider.valueFormatter, null);

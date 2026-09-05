@@ -12,6 +12,7 @@ const source = await readFile(
 const animations = [];
 const renderCalls = [];
 let nextAnimationId = 1;
+let pointerClicked = false;
 
 class BaseUIElementStub {
     constructor(properties = {}) {
@@ -67,7 +68,7 @@ const dependencies = new Map([
     ['input/input_system.js', createSyntheticModule(context, {
         getMouseInput: () => 0,
         getMouseFocus: () => ['ui'],
-        hasMouseState: () => false,
+        hasMouseState: () => pointerClicked,
         isMousePressing: () => false
     })],
     ['display/_theme_handler.js', createSyntheticModule(context, {
@@ -162,5 +163,17 @@ assert.deepEqual({ ...animations[2].properties }, {
 animations[2].finish();
 await rollbackPromise;
 assert.equal(toggle.animValue, 1);
+
+const disabledToggle = new ToggleElement({
+    value: false, clickAble: false,
+    onChange: () => assert.fail('disabled toggle emitted a change')
+});
+pointerClicked = true;
+disabledToggle.update();
+assert.equal(disabledToggle.value, false);
+disabledToggle.onChange = null;
+disabledToggle.clickAble = true;
+disabledToggle.update();
+assert.equal(disabledToggle.value, true);
 
 console.log('toggle animation contract: ok');

@@ -363,7 +363,7 @@ export class DropdownElement extends BaseUIElement {
             return;
         }
 
-        if (!getMouseFocus().includes(this.layer)) {
+        if (this.clickAble === false || !getMouseFocus().includes(this.layer)) {
             if (this.isOpen) this.#setOpen(false);
             if (DropdownElement.inputBlocker?.ownerId === this.id) {
                 DropdownElement.inputBlocker = null;

@@ -151,7 +151,8 @@ export class ToggleElement extends BaseUIElement {
         const isOver = mx >= this.x && mx <= this.x + this.width &&
             my >= this.y && my <= this.y + this.height;
 
-        if (hasMouseState('left', 'clicked') && getMouseFocus().includes(this.layer)) {
+        if (this.clickAble !== false && hasMouseState('left', 'clicked')
+            && getMouseFocus().includes(this.layer)) {
             if (isOver) {
                 this.setValue(!this.value);
             }

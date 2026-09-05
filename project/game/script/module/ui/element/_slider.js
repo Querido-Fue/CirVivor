@@ -85,6 +85,7 @@ export class SliderElement extends BaseUIElement {
         if (this.#overflowAnim) { remove(this.#overflowAnim.id); this.#overflowAnim = null; }
         this.onChange = null;
         this.onCommit = null;
+        this.valueFormatter = null;
     }
 
     /**
@@ -176,8 +177,8 @@ export class SliderElement extends BaseUIElement {
         const isLeftPressing = isMousePressing('left');
         const isLeftClick = hasMouseState('left', 'click');
 
-        // 포커스 확인: 현재 포커스 레이어와 다르면 입력 무시
-        if (!getMouseFocus().includes(this.layer)) {
+        // 입력 소유권을 잃으면 마지막 유효한 drag 값만 확정합니다.
+        if (this.clickAble === false || !getMouseFocus().includes(this.layer)) {
             if (this.dragging) {
                 this.#commitDragValue();
                 this.dragging = false;

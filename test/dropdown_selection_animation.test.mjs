@@ -12,6 +12,7 @@ const source = await readFile(
 const animations = [];
 const renderCalls = [];
 let nextAnimationId = 1;
+const pointer = { x: 10, y: 10, clicked: false };
 
 class BaseUIElementStub {
     constructor() {
@@ -74,8 +75,8 @@ const dependencies = new Map([
         shadowOn: () => {}, shadowOff: () => {}, measureText: (text) => text.length * 8
     })],
     ['input/input_system.js', createSyntheticModule(context, {
-        consumeMouseState: () => {}, getMouseInput: () => 0, getMouseFocus: () => ['ui'],
-        hasMouseState: () => false, isMousePressing: () => false
+        consumeMouseState: () => {}, getMouseInput: (axis) => pointer[axis], getMouseFocus: () => ['ui'],
+        hasMouseState: () => pointer.clicked, isMousePressing: () => false
     })],
     ['display/_theme_handler.js', createSyntheticModule(context, { ColorSchemes: colors })],
     ['util/color_util.js', createSyntheticModule(context, {
@@ -137,5 +138,21 @@ const finalLabels = renderCalls.filter((command) => command.shape === 'text');
 assert.deepEqual(finalLabels.map(({ text, alpha }) => ({ text, alpha })), [
     { text: 'Original', alpha: 1 }
 ]);
+
+dropdown.clickAble = false;
+pointer.clicked = true;
+dropdown.update();
+assert.equal(dropdown.isOpen, false, 'disabled dropdown opened its option panel');
+dropdown.clickAble = true;
+dropdown.update();
+assert.equal(dropdown.isOpen, true);
+animations.at(-1).finish();
+pointer.clicked = false;
+dropdown.update();
+assert.ok(DropdownElement.inputBlocker);
+dropdown.clickAble = false;
+dropdown.update();
+assert.equal(dropdown.isOpen, false);
+assert.equal(DropdownElement.inputBlocker, null);
 
 console.log('dropdown selection animation contract: ok');
