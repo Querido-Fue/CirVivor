@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { loadGameModule } from './support/source_module_loader.mjs';
 
 import {
     GPU_TOWER_TARGET_QUERY_ABI,
@@ -165,11 +166,10 @@ test('runtime은 CPU roster/pose readback 없이 query와 spawn rewrite를 한 f
     }
 });
 
-test('A/O/M/Archer와 R3 actor payload 소비자는 roster query 결과를 사용한다', () => {
-    const collision = readFileSync(new URL(
-        '../project/game/script/module/ingame/physics/gpu/gpu_collision_shaders.js',
-        import.meta.url
-    ), 'utf8');
+test('A/O/M/Archer와 R3 actor payload 소비자는 roster query 결과를 사용한다', async () => {
+    const { GPU_COLLISION_COMPUTE_WGSL: collision } = await loadGameModule(
+        'ingame/physics/gpu/gpu_collision_shaders.js'
+    );
     const actor = readFileSync(new URL(
         '../project/game/script/module/ingame/physics/gpu/gpu_actor_payload_materialization_runtime.js',
         import.meta.url

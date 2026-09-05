@@ -43,10 +43,9 @@ const {
     'ingame/physics/gpu/gpu_atomic_transform_positive_damage_hit_shaders.js'
 );
 
-const COLLISION_SHADER_SOURCE = await readFile(new URL(
-    '../project/game/script/module/ingame/physics/gpu/gpu_collision_shaders.js',
-    import.meta.url
-), 'utf8');
+const { GPU_COLLISION_COMPUTE_WGSL: COLLISION_SHADER_SOURCE } = await loadGameModule(
+    'ingame/physics/gpu/gpu_collision_shaders.js'
+);
 const SIMULATION_SOURCE = await readFile(new URL(
     '../project/game/script/module/ingame/physics/gpu/gpu_circle_body_simulation.js',
     import.meta.url

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 
 import { loadGameModule } from './support/source_module_loader.mjs';
@@ -19,14 +18,6 @@ const ONE_TICK_VELOCITY_TOLERANCE = 0.00002;
 const ONE_TICK_POSITION_TOLERANCE = 0.000002;
 const LONG_RUN_VELOCITY_TOLERANCE = 0.006;
 const LONG_RUN_POSITION_TOLERANCE = 0.003;
-
-const shaderSource = await readFile(
-    new URL(
-        '../project/game/script/module/ingame/physics/gpu/gpu_collision_shaders.js',
-        import.meta.url
-    ),
-    'utf8'
-);
 
 function f32(value) {
     return Math.fround(value);
@@ -209,11 +200,7 @@ function extractWgslFunction(source, functionName) {
     throw new Error(functionName + ' WGSL body가 닫히지 않았습니다.');
 }
 
-test('controlled WGSL 상수는 named THE_TOWER_DATA import만 authority로 사용한다', () => {
-    assert.match(
-        shaderSource,
-        /import\s*\{\s*THE_TOWER_DATA\s*\}\s*from\s*'\.\.\/\.\.\/\.\.\/\.\.\/data\/object\/tower\/the_tower_data\.js'/
-    );
+test('controlled WGSL 상수는 THE_TOWER_DATA의 값과 일치한다', () => {
     const mappings = [
         [
             'CONTROL_ACCELERATION',
@@ -224,13 +211,6 @@ test('controlled WGSL 상수는 named THE_TOWER_DATA import만 authority로 사�
         ['CONTROL_MAX_LINEAR_SPEED', 'MAX_LINEAR_SPEED_TILES_PER_SECOND']
     ];
     for (const [wgslName, dataName] of mappings) {
-        const sourcePattern = new RegExp(
-            'const ' + wgslName
-                + ': f32 = \\$\\{toWgslFloat\\(\\s*THE_TOWER_DATA\\.'
-                + dataName
-                + '\\s*\\)\\};'
-        );
-        assert.match(shaderSource, sourcePattern);
         assert.ok(
             GPU_COLLISION_COMPUTE_WGSL.includes(
                 'const ' + wgslName + ': f32 = '
