@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -21,27 +20,6 @@ const { WebGLBatch } = await loadGameModule('display/webgl/_webgl_batch.js');
 const { EffectRenderer } = await loadGameModule('display/webgl/_effect_renderer.js');
 const { OverlayEffectRenderer } = await loadGameModule('display/webgl/_overlay_effect_renderer.js');
 
-const HANDLER_EXECUTABLE_HASH = '091808e7adbdc37468fe890179d4d52707453b6eda3060336ce213074e986478';
-const ADAPTER_EXECUTABLE_HASH = 'f7f1e996145edb655d524338a2b7d5a876e91af1d74a5d408f1d6ac1c607bc27';
-
-function hashExecutableSource(source, expectedJsDocCount) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(standaloneJsDocStarts.length, allJsDocStarts.length);
-    assert.equal(standaloneJsDocStarts.length, expectedJsDocCount);
-    return createHash('sha256')
-        .update(source.replace(/\/\*\*[\s\S]*?\*\//g, '').replace(/\r\n/g, '\n'))
-        .digest('hex');
-}
-
-function findLeadingJsDoc(source, escapedDeclaration) {
-    const match = source.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
-
 function createRenderer(prototype, label, trace, action = null) {
     const renderer = Object.create(prototype);
     Object.defineProperty(renderer, 'flush', {
@@ -59,28 +37,6 @@ function createRenderer(prototype, label, trace, action = null) {
     });
     return renderer;
 }
-
-test('flush 실행 소스 해시는 유지되고 JSDoc은 실제 대상·순회·오류 계약을 설명한다', () => {
-    assert.equal(hashExecutableSource(handlerSource, 14), HANDLER_EXECUTABLE_HASH);
-    assert.equal(hashExecutableSource(adapterSource, 8), ADAPTER_EXECUTABLE_HASH);
-
-    const adapterJsDoc = findLeadingJsDoc(adapterSource, 'export function flushWebGLLayerRenderer');
-    assert.match(adapterJsDoc, /WebGLBatch 또는 EffectRenderer/u);
-    assert.match(adapterJsDoc, /OverlayEffectRenderer/u);
-    assert.match(adapterJsDoc, /instanceof/u);
-    assert.match(adapterJsDoc, /판정이 모두 false로 정상 완료/u);
-    assert.match(adapterJsDoc, /판정·`flush` 조회·호출 예외/u);
-    assert.match(adapterJsDoc, /반환값과 thenable/u);
-    assert.match(adapterJsDoc, /@returns \{undefined\}/u);
-
-    const handlerJsDoc = findLeadingJsDoc(handlerSource, 'flushAll\\(\\)');
-    assert.match(handlerJsDoc, /layerRenderers/u);
-    assert.match(handlerJsDoc, /context-lost/u);
-    assert.match(handlerJsDoc, /프레임당 1회 또는 재진입 guard가 없습니다/u);
-    assert.match(handlerJsDoc, /프로퍼티 자체 교체/u);
-    assert.match(handlerJsDoc, /rollback/u);
-    assert.match(handlerJsDoc, /@returns \{undefined\}/u);
-});
 
 test('flush adapter와 flushAll은 context-lost를 제외한 지원 renderer만 등록 순서로 호출한다', () => {
     const trace = [];

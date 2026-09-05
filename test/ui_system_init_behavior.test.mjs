@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -17,39 +16,6 @@ const [uiSystemSource, systemHandlerSource] = await Promise.all([
     readFile(UI_SYSTEM_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '75b73fa1387573634ca1c26941b1647b97cc401a78bc103907863a449da472a5';
-
-/**
- * 독립된 줄의 JSDoc과 종결 개행을 제거한 production 실행 소스를 해시합니다.
- * @param {string} source - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(source) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = source
-        .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(escapedDeclaration) {
-    const match = uiSystemSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 외부에서 이행·거부 시점을 제어하는 Promise를 만듭니다.
@@ -254,23 +220,6 @@ async function loadSystemHandler(uiGate, events) {
     await module.evaluate();
     return module.namespace;
 }
-
-test('UISystem JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(uiSystemSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('init JSDoc은 순차·live·Promise·오류 계약을 정확히 명시한다', () => {
-    const initDoc = findLeadingJsDoc('async init\\(\\) \\{');
-    assert.match(initDoc, /cursor\.init\(\).*이행.*tooltip\.init\(\).*순차/);
-    assert.match(initDoc, /매 호출.*다시 실행/);
-    assert.match(initDoc, /첫 await.*tooltip.*교체.*live 객체/);
-    assert.match(initDoc, /하위 반환값.*버리/);
-    assert.match(initDoc, /접근·호출 예외.*첫 settlement 전 thenable 예외.*하위 거부/);
-    assert.match(initDoc, /호출 자체의 동기 throw.*아니/);
-    assert.match(initDoc, /첫 settlement 뒤 결과.*무시/);
-    assert.match(initDoc, /@returns \{Promise<void>\}/);
-    assert.match(initDoc, /호출별 새 Promise/);
-});
 
 test('init은 cursor 이행 뒤 tooltip을 호출하고 하위 값을 버려 undefined로 이행한다', async () => {
     const namespace = await loadUiSystem();

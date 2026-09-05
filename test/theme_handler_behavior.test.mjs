@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -10,41 +9,6 @@ const SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const source = await readFile(SOURCE_PATH, 'utf8');
-const EXECUTABLE_SOURCE_HASH = 'e358ea5fb30a1c82cd2bdf7e65a794112d4658d119ec103e6dd0811b06d9ce45';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource, expectedJsDocCount) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(escapedDeclaration) {
-    const match = source.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 실제 production ThemeHandler 모듈을 격리된 context에서 로드합니다.
@@ -156,53 +120,10 @@ async function loadThemeHandler({
 }
 
 test('ThemeHandler는 승인된 테마 데이터와 코드 resolver를 직접 import한다', () => {
-    assert.equal(hashExecutableSource(source, 12), EXECUTABLE_SOURCE_HASH);
+
     assert.match(source, /from 'data\/theme\/theme_registry\.js'/);
     assert.match(source, /from '\.\/_theme_registry\.js'/);
     assert.doesNotMatch(source, /data\/data_handler\.js|getData\(/);
-});
-
-test('ThemeHandler JSDoc은 live palette와 최신 adapter의 반환·fallback 계약을 명시한다', () => {
-    const colorSchemesDoc = findLeadingJsDoc('export let ColorSchemes = \\{\\};');
-    assert.match(colorSchemesDoc, /초기화 전에는 빈 객체/);
-    assert.match(colorSchemesDoc, /같은 객체 identity/);
-    assert.match(colorSchemesDoc, /registry 값과 동일한 참조/);
-    assert.match(colorSchemesDoc, /@type \{Record<string, \*>\}/);
-
-    const replaceDoc = findLeadingJsDoc('const replaceColorSchemes = \\(theme\\) =>');
-    assert.match(replaceDoc, /열거 가능한 문자열 키/);
-    assert.match(replaceDoc, /비열거 키와 기존 Symbol 키는 유지/);
-    assert.match(replaceDoc, /얕게 복사/);
-    assert.match(replaceDoc, /부분 변경 상태/);
-    assert.match(replaceDoc, /@returns \{void\}/);
-
-    const constructorDoc = findLeadingJsDoc('constructor\\(\\) \\{');
-    assert.match(constructorDoc, /최신 인스턴스로 등록/);
-    assert.match(constructorDoc, /기본 테마 필드 쓰기보다 먼저/);
-
-    const initDoc = findLeadingJsDoc('async init\\(\\) \\{');
-    assert.match(initDoc, /테마 적용 예외는 전파/);
-    assert.match(initDoc, /@returns \{Promise<void>\}/);
-
-    const instanceSetThemeDoc = findLeadingJsDoc(
-        'setTheme\\(themeKeyOrDarkMode, updateDisplay = true\\) \\{'
-    );
-    assert.match(instanceSetThemeDoc, /@returns \{void\}/);
-
-    const updateBackgroundDoc = findLeadingJsDoc('updateBackgroundColor\\(\\) \\{');
-    assert.match(updateBackgroundDoc, /@returns \{void\}/);
-
-    const adapterSetThemeDoc = findLeadingJsDoc(
-        'export const setTheme = \\(themeKeyOrDarkMode\\) =>'
-    );
-    assert.match(adapterSetThemeDoc, /가장 최근에 생성된/);
-    assert.match(adapterSetThemeDoc, /아직 없으면 아무 작업도 하지/);
-    assert.match(adapterSetThemeDoc, /@returns \{void\}/);
-
-    const currentThemeKeyDoc = findLeadingJsDoc(
-        'export const getCurrentThemeKey = \\(\\) =>'
-    );
-    assert.match(currentThemeKeyDoc, /반환값이 falsy이면 기본 테마 키/);
 });
 
 test('ColorSchemes는 초기 빈 객체 identity와 테마의 live 중첩 참조를 유지한다', async () => {

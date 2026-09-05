@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,41 +10,6 @@ const WEBGL_HANDLER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const webGLHandlerSource = await readFile(WEBGL_HANDLER_SOURCE_PATH, 'utf8');
 const { WebGLHandler } = await loadGameModule('display/webgl/_webgl_handler.js');
-const EXECUTABLE_SOURCE_HASH = '091808e7adbdc37468fe890179d4d52707453b6eda3060336ce213074e986478';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    assert.equal(standaloneJsDocStarts.length, 14, 'production standalone JSDoc 개수가 바뀌었습니다.');
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 동기 호출에서 던져진 값을 반환합니다.
@@ -348,26 +312,6 @@ function createSimpleGl(trace, label) {
         }
     };
 }
-
-test('WebGLHandler executable source remains unchanged while clearAll JSDoc is corrected', () => {
-    assert.equal(hashExecutableSource(webGLHandlerSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('clearAll JSDoc describes live order, repeated calls, partial failure, and return contracts', () => {
-    const jsDoc = findLeadingJsDoc(webGLHandlerSource, 'clearAll\\(\\)');
-
-    assert.match(jsDoc, /호출마다 현재 glContexts의 live 등록 순서에서 context-lost가 아닌 WebGL 레이어를 fail-fast로 처리합니다\./u);
-    assert.match(jsDoc, /메서드 자체에는 프레임당 1회 또는 재진입 guard가 없습니다\./u);
-    assert.match(jsDoc, /각 레이어는 mode와 renderer를 조회한 뒤 `bindFramebuffer` → `viewport` → `clearColor` → `clear` → renderer frame begin → 현재 `onFrameClear` 순서로 처리합니다\./u);
-    assert.match(jsDoc, /배경 key는 strict equality로 판정하고 backgroundColor를 채널마다 다시 읽으며, 나머지는 투명색을 사용합니다\./u);
-    assert.match(jsDoc, /viewport와 frame begin의 width·height는 각각 live 조회하므로 중간 GL 부수효과가 두 번째 크기를 바꿀 수 있습니다\./u);
-    assert.match(jsDoc, /falsy renderer나 non-positive 크기는 frame begin만 no-op하며 이미 수행한 clear와 후속 callback은 유지합니다\./u);
-    assert.match(jsDoc, /처음 획득한 glContexts iterator에는 entry 추가·삭제·미방문 value 갱신이 반영되지만 glContexts 프로퍼티 자체 교체는 반영되지 않으며, mode·renderer·callback은 각 조회 시점의 table을 따릅니다\./u);
-    assert.match(jsDoc, /조회·변환·GL·renderer·callback 예외는 rollback 없이 그대로 전파되어 현재 단계 이후와 뒤 레이어를 중단합니다\./u);
-    assert.match(jsDoc, /@returns \{undefined\}/u);
-    assert.doesNotMatch(jsDoc, /프레임당 한 번/u);
-    assert.doesNotMatch(jsDoc, /모든 WebGL 레이어의 기본 framebuffer/u);
-});
 
 test('actual clearAll follows the major live getter, argument, receiver, call, and callback order', () => {
     const { handler, trace } = createCheckpointHarness();

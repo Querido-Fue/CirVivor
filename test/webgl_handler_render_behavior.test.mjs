@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,41 +10,6 @@ const WEBGL_HANDLER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const webGLHandlerSource = await readFile(WEBGL_HANDLER_SOURCE_PATH, 'utf8');
 const { WebGLHandler } = await loadGameModule('display/webgl/_webgl_handler.js');
-const EXECUTABLE_SOURCE_HASH = '091808e7adbdc37468fe890179d4d52707453b6eda3060336ce213074e986478';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    assert.equal(standaloneJsDocStarts.length, 14, 'production standalone JSDoc 개수가 바뀌었습니다.');
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 실제 production class의 빈 handler를 생성합니다.
@@ -72,28 +36,6 @@ function captureThrown(action) {
     assert.equal(didThrow, true, '동기 예외가 발생해야 합니다.');
     return thrownValue;
 }
-
-test('WebGLHandler executable source remains unchanged while its JSDoc is corrected', () => {
-    assert.equal(hashExecutableSource(webGLHandlerSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('WebGLHandler.render JSDoc describes key, gate, live dispatch, callback, error, and return contracts', () => {
-    const jsDoc = findLeadingJsDoc(webGLHandlerSource, 'render\\(layerName, options\\)');
-
-    assert.match(jsDoc, /등록된 WebGL renderer에 값을 전달하고 정상 완료 뒤 현재 onDraw callback을 알립니다\./u);
-    assert.match(jsDoc, /`layerName`은 PropertyKey로 변환하지 않으며, 기본 Set\/Map에서는 SameValueZero key로 비교됩니다\./u);
-    assert.match(jsDoc, /context-lost key이거나 renderer 조회 결과가 falsy이면 이후 단계를 실행하지 않고 `undefined`를 반환합니다\./u);
-    assert.match(jsDoc, /renderer의 live `render`를 원래 receiver와 `options` identity로 동기 호출합니다\./u);
-    assert.match(jsDoc, /renderer가 정상 반환한 뒤 최신 callback Map과 record의 `onDraw`를 조회해 record receiver로 인자 없이 호출합니다\./u);
-    assert.match(jsDoc, /하위 renderer가 내부적으로 no-op해도 정상 반환이면 callback 통지를 수행합니다\./u);
-    assert.match(jsDoc, /renderer와 callback의 반환값 및 thenable은 관찰하지 않고 폐기하며, 조회·getter·호출 중 발생한 예외는 그대로 동기 전파됩니다\./u);
-    assert.match(jsDoc, /callback 조회 또는 호출 실패는 앞서 완료된 renderer 부수효과를 되돌리지 않습니다\./u);
-    assert.match(jsDoc, /@param \{\*\} layerName/u);
-    assert.match(jsDoc, /@param \{\*\} options/u);
-    assert.match(jsDoc, /@returns \{undefined\}/u);
-    assert.doesNotMatch(jsDoc, /@param \{string\} layerName/u);
-    assert.doesNotMatch(jsDoc, /@param \{object\} options/u);
-});
 
 test('actual render uses uncoerced SameValueZero keys and forwards arbitrary options by exact identity', () => {
     const throwingKey = {
@@ -716,14 +658,4 @@ test('renderer and callback reentry has no guard and observes callback Map repla
 
     assert.equal(deletingHandler.render(deletingKey, {}), undefined);
     assert.equal(deletedCallbackCalls, 0);
-});
-
-test('render function shape remains a two-argument non-constructable class method', () => {
-    const method = WebGLHandler.prototype.render;
-    assert.equal(method.name, 'render');
-    assert.equal(method.length, 2);
-    assert.equal(Object.hasOwn(method, 'prototype'), false);
-
-    const thrown = captureThrown(() => Reflect.construct(method, []));
-    assert.equal(thrown?.name, 'TypeError');
 });

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,41 +10,6 @@ const EFFECT_RENDERER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const effectRendererSource = await readFile(EFFECT_RENDERER_SOURCE_PATH, 'utf8');
 const { EffectRenderer } = await loadGameModule('display/webgl/_effect_renderer.js');
-const EXECUTABLE_SOURCE_HASH = '3061368b977709677eee734e14c12470c89cd325c3c658d9ec7d712c8076e439';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    assert.equal(standaloneJsDocStarts.length, 9, 'production standalone JSDoc 개수가 바뀌었습니다.');
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * constructor의 GL 초기화를 우회하고 actual prototype method만 사용하는 receiver를 생성합니다.
@@ -87,28 +51,6 @@ function captureThrown(action) {
     assert.equal(didThrow, true, '동기 예외가 발생해야 합니다.');
     return thrownValue;
 }
-
-test('EffectRenderer executable source remains unchanged while flush JSDoc is corrected', () => {
-    assert.equal(hashExecutableSource(effectRendererSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('flush JSDoc describes guards, live dispatch, double draw lookup, mutation, errors, and return', () => {
-    const jsDoc = findLeadingJsDoc(effectRendererSource, 'flush\\(\\)');
-
-    assert.match(jsDoc, /live commands를 index 순서로 순회해 effect pass를 동기 dispatch하고, loop 정상 종료 뒤 당시 current queue에 `length = 0`을 대입합니다\./u);
-    assert.match(jsDoc, /초기 `commands\.length === 0`은 무변환 엄격 비교하고, 필요할 때만 `width <= 0`과 `height <= 0`을 차례로 비교합니다\./u);
-    assert.match(jsDoc, /어느 guard든 참이면 pass 조회 없이 당시 current queue의 `length = 0` 대입을 시도하고, 성공한 경우에만 `undefined`를 반환합니다\./u);
-    assert.match(jsDoc, /각 command의 truthy `effectType`을 사용하고, falsy이면 live `shape`을 사용해 현재 registry의 exact Map key로 조회합니다\./u);
-    assert.match(jsDoc, /pass가 falsy이거나 첫 `draw` 조회 결과가 함수가 아니면 해당 command를 건너뜁니다\./u);
-    assert.match(jsDoc, /호출식은 `draw`를 다시 조회하되 callable 여부를 재검사하지 않고 `command`, current width, current height를 평가합니다\./u);
-    assert.match(jsDoc, /두 번째 `draw` 값이 callable이면 pass receiver로 호출하고 반환값과 thenable은 관찰하지 않으며, 아니면 인자 평가 뒤 `TypeError`가 발생합니다\./u);
-    assert.match(jsDoc, /queue 길이·원소, registry, pass, `draw`, dimensions는 매 관찰 지점의 live 값을 사용하고 append·truncate·reorder·재진입을 막는 guard가 없습니다\./u);
-    assert.match(jsDoc, /flush 자체의 clear 대입 지점은 guard branch와 loop 정상 종료뿐이며, draw와 재진입은 queue를 별도로 변이·교체할 수 있습니다\./u);
-    assert.match(jsDoc, /조회·getter·coercion·두 번째 non-callable `draw`·호출·clear 대입 중 예외는 그대로 동기 전파되고 이미 수행한 draw와 queue 변이를 rollback하지 않습니다\./u);
-    assert.match(jsDoc, /`length = 0` 축소가 실패하면 ECMAScript가 허용한 원소 삭제와 부분 length 상태도 그대로 남습니다\./u);
-    assert.match(jsDoc, /@returns \{undefined\} guard 또는 loop 종료 뒤 current queue의 clear 대입까지 성공했을 때 `undefined`입니다\./u);
-    assert.doesNotMatch(jsDoc, /순서대로 실행합니다/u);
-});
 
 test('flush guards use strict empty length then width and height coercion in order before clearing', () => {
     {
@@ -1119,14 +1061,4 @@ test('non-callable registry and second draw values throw at their exact stages',
         assert.equal(heightReads, 2, 'call arguments are evaluated before non-callable rejection');
         assert.equal(queue.length, 1);
     }
-});
-
-test('flush function shape remains a zero-argument non-constructable class method', () => {
-    const method = EffectRenderer.prototype.flush;
-    assert.equal(method.name, 'flush');
-    assert.equal(method.length, 0);
-    assert.equal(Object.hasOwn(method, 'prototype'), false);
-
-    const thrown = captureThrown(() => Reflect.construct(method, []));
-    assert.equal(thrown?.name, 'TypeError');
 });

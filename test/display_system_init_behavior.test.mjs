@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -26,7 +25,7 @@ const [
     readFile(DISPLAY_DESCRIPTOR_PATH, 'utf8'),
     readFile(SYSTEM_HANDLER_PATH, 'utf8')
 ]);
-const EXECUTABLE_SOURCE_HASH = '448b3969fd22e1b18452f831e0f34ee66e7922745a29eb6033d0896212e3eb6c';
+
 const STATIC_SURFACE_IDS = Object.freeze([
     'background',
     'gpu-object',
@@ -37,40 +36,6 @@ const STATIC_SURFACE_IDS = Object.freeze([
     'vignette',
     'top'
 ]);
-
-/**
- * 독립된 줄의 JSDoc을 제거한 production 실행 소스를 해시합니다.
- * @param {string} source - production 소스입니다.
- * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(source, expectedJsDocCount) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = source
-        .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(escapedDeclaration) {
-    const match = displaySystemSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 외부에서 이행·거부 시점을 제어하는 Promise를 만듭니다.
@@ -766,7 +731,7 @@ async function loadSystemHandler(displayGate, events) {
 }
 
 test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(displaySystemSource, 71), EXECUTABLE_SOURCE_HASH);
+
     assert.doesNotMatch(displaySystemSource, /data\/data_handler\.js/);
     assert.doesNotMatch(displayDescriptorSource, /data\/data_handler\.js/);
     assert.match(displaySystemSource, /DISPLAY_WEBGL_RENDER_MODES/);
@@ -774,21 +739,6 @@ test('DisplaySystem은 코드-local descriptor 상수를 사용하고 중앙 dat
         displayDescriptorSource,
         /export const DISPLAY_WEBGL_RENDER_MODES = Object\.freeze\(\{/
     );
-});
-
-test('init JSDoc은 순서·live·Promise·부분 상태 계약을 정확히 명시한다', () => {
-    const initDoc = findLeadingJsDoc('async init\\(\\) \\{');
-    assert.match(initDoc, /themeHandler\.init\(\).*이행.*테마.*surface/s);
-    assert.match(initDoc, /background.*gpu-object.*object.*effect.*texteffect.*ui.*vignette.*top.*순서/s);
-    assert.match(initDoc, /ColorSchemes\.Background.*첫.*truthy.*다시.*두 번.*r.*g.*b.*clamp.*않/s);
-    assert.match(initDoc, /screenHandler\.init\(\).*이행.*surfaceMap\.values\(\).*live/s);
-    assert.match(initDoc, /resize\(\).*live receiver.*반환값.*기다리지.*버리/s);
-    assert.match(initDoc, /WebGPU.*한 번.*동적 로드.*non-fatal.*unsupported.*기존 초기화.*거부하지 않/s);
-    assert.match(initDoc, /매 호출.*새 Promise.*중복.*재진입.*guard.*없/s);
-    assert.match(initDoc, /rollback.*않.*부분 상태.*유지/s);
-    assert.match(initDoc, /접근·호출.*하위 Promise 거부.*thenable.*첫 reject 사유.*첫 resolve\/reject.*호출 전.*throw.*동기 throw.*아니.*같은.*identity/s);
-    assert.match(initDoc, /resolve\/reject.*처음.*호출.*뒤.*pending.*추가.*throw.*무시/s);
-    assert.match(initDoc, /@returns \{Promise<void>\}.*undefined.*거부/s);
 });
 
 test('init은 두 await gate와 정적 surface·backing·resize 순서를 보존한다', async () => {

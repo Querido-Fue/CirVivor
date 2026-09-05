@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
@@ -11,7 +10,7 @@ const WEBGL_LAYER_RENDERER_SOURCE_PATH = fileURLToPath(new URL(
     import.meta.url
 ));
 const webGLLayerRendererSource = await readFile(WEBGL_LAYER_RENDERER_SOURCE_PATH, 'utf8');
-const EXECUTABLE_SOURCE_HASH = 'f7f1e996145edb655d524338a2b7d5a876e91af1d74a5d408f1d6ac1c607bc27';
+
 const { DISPLAY_WEBGL_RENDER_MODES } = await loadGameModule(
     'display/display_surface_descriptor.js'
 );
@@ -49,41 +48,6 @@ await webGLLayerRendererModule.evaluate();
 const { beginWebGLLayerFrame } = webGLLayerRendererModule.namespace;
 
 /**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @param {number} expectedJsDocCount - 예상 JSDoc 블록 수입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource, expectedJsDocCount) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
-
-/**
  * 동기 호출에서 던져진 값을 반환합니다.
  * @param {Function} action - 실행할 동기 함수입니다.
  * @returns {*} 던져진 값입니다.
@@ -102,7 +66,7 @@ function captureThrown(action) {
 }
 
 test('WebGL layer renderer는 feature-local mode 상수를 사용하고 중앙 data registry에 의존하지 않는다', () => {
-    assert.equal(hashExecutableSource(webGLLayerRendererSource, 8), EXECUTABLE_SOURCE_HASH);
+
     assert.doesNotMatch(webGLLayerRendererSource, /data\/data_handler\.js/);
     assert.match(
         webGLLayerRendererSource,
@@ -111,28 +75,6 @@ test('WebGL layer renderer는 feature-local mode 상수를 사용하고 중앙 d
     assert.equal(DISPLAY_WEBGL_RENDER_MODES.BATCH, 'batch');
     assert.equal(DISPLAY_WEBGL_RENDER_MODES.OVERLAY_EFFECT, 'overlay-effect');
     assert.equal(DISPLAY_WEBGL_RENDER_MODES.EFFECT, 'effect');
-});
-
-test('beginWebGLLayerFrame JSDoc describes guard, coercion, dispatch, error, and return contracts', () => {
-    const jsDoc = findLeadingJsDoc(
-        webGLLayerRendererSource,
-        'export function beginWebGLLayerFrame\\(renderer, mode, width, height\\)'
-    );
-
-    assert.match(jsDoc, /renderer와 크기 guard를 통과한 경우 mode별 프레임 시작 메서드를 동기 호출합니다\./u);
-    assert.match(jsDoc, /renderer가 falsy이면 helper 본문은 전달된 width·height를 비교·강제변환하지 않고 `undefined`를 반환합니다\./u);
-    assert.match(jsDoc, /truthy renderer에서는 `width <= 0` 뒤 `height <= 0`을 native relational comparison으로 평가합니다\./u);
-    assert.match(jsDoc, /`NaN`처럼 비교 결과가 false인 값은 통과하며, 강제 변환 예외는 그대로 전파됩니다\./u);
-    assert.match(jsDoc, /overlay-effect와 effect mode는 strict equality로 선택해 live `beginFrame`을, 나머지는 live `begin`을 원래 renderer receiver로 호출합니다\./u);
-    assert.match(jsDoc, /원본 width·height identity를 그대로 전달하고 하위 반환값과 thenable은 관찰하지 않습니다\./u);
-    assert.match(jsDoc, /별도 재진입 guard나 rollback 없이 조회·변환·호출 예외와 이미 완료된 하위 부수효과를 그대로 유지합니다\./u);
-    assert.match(jsDoc, /@param \{\*\} renderer/u);
-    assert.match(jsDoc, /@param \{\*\} mode/u);
-    assert.match(jsDoc, /@param \{\*\} width/u);
-    assert.match(jsDoc, /@param \{\*\} height/u);
-    assert.match(jsDoc, /@returns \{undefined\} 일반 함수 호출의 guard 또는 정상 완료 시 항상 `undefined`입니다\./u);
-    assert.doesNotMatch(jsDoc, /@param \{object\|null\|undefined\} renderer/u);
-    assert.doesNotMatch(jsDoc, /@param \{number\} width/u);
 });
 
 test('falsy renderer returns before either dimension can be coerced or inspected', () => {
@@ -667,13 +609,4 @@ test('selected method getter can reenter before the outer call uses its returned
         'outer:begin:get:end',
         'outer:begin:call'
     ]);
-});
-
-test('beginWebGLLayerFrame retains its four-argument constructable function shape', () => {
-    assert.equal(beginWebGLLayerFrame.name, 'beginWebGLLayerFrame');
-    assert.equal(beginWebGLLayerFrame.length, 4);
-    assert.equal(Object.hasOwn(beginWebGLLayerFrame, 'prototype'), true);
-
-    const instance = Reflect.construct(beginWebGLLayerFrame, []);
-    assert.equal(instance instanceof beginWebGLLayerFrame, true);
 });

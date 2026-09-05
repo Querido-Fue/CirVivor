@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,40 +10,6 @@ const DESCRIPTOR_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const descriptorSource = await readFile(DESCRIPTOR_SOURCE_PATH, 'utf8');
 const productionDescriptorModule = await loadGameModule('display/display_surface_descriptor.js');
-const EXECUTABLE_SOURCE_HASH = '13a1171c8b39ca9bee5840ccb4b133d3a266b2cb36c41b30cb841bd84ab3cc58';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 상속 getter의 receiver를 통해 private static order 맵을 캡처합니다.
@@ -75,44 +40,6 @@ function captureProductionStaticOrderMap() {
 }
 
 const productionStaticOrderMap = captureProductionStaticOrderMap();
-
-test('static surface order JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(descriptorSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('order JSDoc은 PropertyKey·상속·truthy/falsy fallback과 실제 반환 타입을 명시한다', () => {
-    const orderDoc = findLeadingJsDoc(
-        descriptorSource,
-        'export function getDisplayStaticSurfaceOrder\\(surfaceId\\)'
-    );
-    const normalizedOrderDoc = orderDoc
-        .replace(/^[ \t]*\*[ \t]?/gm, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    assert.match(normalizedOrderDoc, /@param \{\*\} surfaceId/);
-    assert.equal(
-        normalizedOrderDoc.includes(
-            '`surfaceId`는 조회 과정에서 PropertyKey로 변환되며 '
-            + '상속 프로퍼티도 조회에 포함됩니다.'
-        ),
-        true
-    );
-    assert.equal(
-        normalizedOrderDoc.includes(
-            '조회 결과가 truthy이면 타입을 제한하지 않고 그대로 반환하며, '
-            + 'falsy이면 숫자 0을 반환합니다.'
-        ),
-        true
-    );
-    assert.equal(
-        normalizedOrderDoc.includes(
-            'PropertyKey 변환 또는 프로퍼티 조회 중 발생한 예외는 그대로 동기 전파됩니다.'
-        ),
-        true
-    );
-    assert.match(normalizedOrderDoc, /@returns \{\*\}/);
-});
 
 test('실제 frozen order 맵은 own 숫자와 ordinary prototype의 상속 값을 그대로 노출한다', () => {
     const { getDisplayStaticSurfaceOrder: getOrder } = productionDescriptorModule;

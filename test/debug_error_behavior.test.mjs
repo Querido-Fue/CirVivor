@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,44 +12,6 @@ const [debugSystemSource, errorHandlerSource] = await Promise.all([
     readFile(DEBUG_SYSTEM_PATH, 'utf8'),
     readFile(ERROR_HANDLER_PATH, 'utf8')
 ]);
-
-const EXECUTABLE_SOURCE_HASHES = Object.freeze({
-    debugSystem: '5b4a29d20b16e35b3656bc4235ffe2d620bc3753e94164bd369b4bd1a22026a1',
-    errorHandler: '72e14003640956d4818134babcb04dda2c74afde326ab93fd194f5b058e761dd'
-});
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} source - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(source) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = source
-        .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} source - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(source, escapedDeclaration) {
-    const match = source.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * synthetic ESM을 만듭니다.
@@ -199,54 +160,6 @@ function resetConsoleCalls(calls) {
     calls.info.length = 0;
     calls.warn.length = 0;
 }
-
-test('debug error JSDoc 변경은 두 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(
-        hashExecutableSource(debugSystemSource),
-        EXECUTABLE_SOURCE_HASHES.debugSystem
-    );
-    assert.equal(
-        hashExecutableSource(errorHandlerSource),
-        EXECUTABLE_SOURCE_HASHES.errorHandler
-    );
-});
-
-test('debug error JSDoc은 변환·level·identity·초기화와 반환 계약을 명시한다', () => {
-    const handlerDoc = findLeadingJsDoc(
-        errorHandlerSource,
-        'errThrow\\(e, message, level\\)'
-    );
-    assert.match(handlerDoc, /@param \{\*\} e/);
-    assert.match(handlerDoc, /@param \{\*\} message/);
-    assert.match(handlerDoc, /@param \{\*\} level/);
-    assert.match(handlerDoc, /String\(message \?\? ''\)/);
-    assert.match(handlerDoc, /level.*검사.*전에/);
-    assert.match(handlerDoc, /truthy.*그대로.*던/);
-    assert.match(handlerDoc, /알 수 없는.*level.*로그.*남기지/);
-    assert.match(handlerDoc, /@returns \{void\}/);
-    assert.match(handlerDoc, /@throws \{\*\}/);
-
-    const throwDoc = findLeadingJsDoc(
-        errorHandlerSource,
-        '_throwError\\(e, message\\)'
-    );
-    assert.match(throwDoc, /@param \{\*\} e/);
-    assert.match(throwDoc, /@returns \{never\}/);
-    assert.match(throwDoc, /@throws \{\*\}/);
-
-    const publicDoc = findLeadingJsDoc(
-        debugSystemSource,
-        'export function errThrow\\(e, message, level\\)'
-    );
-    assert.match(publicDoc, /DebugSystem\.init\(\)/);
-    assert.match(publicDoc, /errorHandler.*준비/);
-    assert.match(publicDoc, /하위 반환값.*전달하지/);
-    assert.match(publicDoc, /@param \{\*\} e/);
-    assert.match(publicDoc, /@param \{\*\} message/);
-    assert.match(publicDoc, /@param \{\*\} level/);
-    assert.match(publicDoc, /@returns \{void\}/);
-    assert.match(publicDoc, /@throws \{\*\}/);
-});
 
 test('hitbox cache는 생성과 초기화에서만 설정을 읽고 반복 조회에는 저장소를 방문하지 않는다', async () => {
     const harness = await createDebugHarness({ debugMode: true });

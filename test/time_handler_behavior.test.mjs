@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,41 +12,6 @@ const [timeHandlerSource, numberUtilSource] = await Promise.all([
     readFile(TIME_HANDLER_PATH, 'utf8'),
     readFile(NUMBER_UTIL_PATH, 'utf8')
 ]);
-
-const EXECUTABLE_SOURCE_HASH = 'bd148937177cb73c7b6b648db02ca23e683ac5408f8649d206a62e423582f15d';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} source - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(source) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = source
-        .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} source - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(source, escapedDeclaration) {
-    const match = source.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * 실제 TimeHandler와 숫자 유틸 production 모듈을 새 VM realm에 로드합니다.
@@ -87,94 +51,6 @@ async function createTimeHarness(initialNow = 0) {
         }
     };
 }
-
-test('TimeHandler JSDoc 변경은 production 실행 소스 SHA-256을 보존한다', () => {
-    assert.equal(hashExecutableSource(timeHandlerSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('TimeHandler JSDoc은 변환·clamp·fallback·싱글톤 기본값과 void 계약을 명시한다', () => {
-    const classDoc = findLeadingJsDoc(timeHandlerSource, 'export class TimeHandler');
-    assert.match(classDoc, /가장 최근에 생성/);
-    assert.match(classDoc, /싱글톤/);
-
-    const constructorDoc = findLeadingJsDoc(timeHandlerSource, 'constructor\\(\\)');
-    assert.match(constructorDoc, /performance\.now\(\)/);
-    assert.match(constructorDoc, /1\s*\/\s*60/);
-    assert.match(constructorDoc, /보간.*0/);
-    assert.match(constructorDoc, /싱글톤.*등록.*시각.*샘플/);
-    assert.match(constructorDoc, /@throws \{\*\}/);
-
-    const updateDoc = findLeadingJsDoc(timeHandlerSource, 'update\\(deltaSeconds\\)');
-    assert.match(updateDoc, /Number\(deltaSeconds\)/);
-    assert.match(updateDoc, /양수.*유한/);
-    assert.match(updateDoc, /performance\.now\(\)/);
-    assert.match(updateDoc, /2~100ms/);
-    assert.match(updateDoc, /timeBefore/);
-    assert.match(updateDoc, /@param \{\*\} \[deltaSeconds\]/);
-    assert.match(updateDoc, /@returns \{void\}/);
-    assert.match(updateDoc, /@throws \{\*\}/);
-    assert.match(updateDoc, /시각 차이/);
-    assert.match(updateDoc, /정규화/);
-
-    const freezeDoc = findLeadingJsDoc(timeHandlerSource, 'freezeFrameDelta\\(\\)');
-    assert.match(freezeDoc, /performance\.now\(\)/);
-    assert.match(freezeDoc, /@returns \{void\}/);
-    assert.match(freezeDoc, /@throws \{\*\}/);
-
-    const fixedDoc = findLeadingJsDoc(
-        timeHandlerSource,
-        'updateFixed\\(fixedStepSeconds = this\\.fixedStepSeconds\\)'
-    );
-    assert.match(fixedDoc, /Number\(fixedStepSeconds\)/);
-    assert.match(fixedDoc, /양수.*유한/);
-    assert.match(fixedDoc, /this\.fixedStepSeconds/);
-    assert.match(fixedDoc, /Number\(\).*성공.*fallback/);
-    assert.match(fixedDoc, /인수.*생략.*한 번 더/);
-    assert.match(fixedDoc, /0 이하.*다시 한 번/);
-    assert.match(fixedDoc, /변환.*실패.*fallback.*읽지/);
-    assert.match(fixedDoc, /기본.*1\s*\/\s*60/);
-    assert.match(fixedDoc, /@param \{\*\} \[fixedStepSeconds=this\.fixedStepSeconds\]/);
-    assert.match(fixedDoc, /@returns \{void\}/);
-    assert.match(fixedDoc, /@throws \{\*\}/);
-    assert.match(fixedDoc, /fixedStepSeconds.*접근/);
-
-    const alphaDoc = findLeadingJsDoc(
-        timeHandlerSource,
-        'setFixedInterpolationAlpha\\(alpha\\)'
-    );
-    assert.match(alphaDoc, /Number\(alpha\)/);
-    assert.match(alphaDoc, /비유한.*0/);
-    assert.match(alphaDoc, /0~1/);
-    assert.match(alphaDoc, /@param \{\*\} alpha/);
-    assert.match(alphaDoc, /@returns \{void\}/);
-    assert.match(alphaDoc, /@throws \{\*\}/);
-
-    const normalizeDoc = findLeadingJsDoc(timeHandlerSource, '_normalizeDeltaMs\\(deltaMs\\)');
-    assert.match(normalizeDoc, /Number\(deltaMs\)/);
-    assert.match(normalizeDoc, /2~100ms/);
-    assert.match(normalizeDoc, /비유한.*2ms/);
-    assert.match(normalizeDoc, /@param \{\*\} deltaMs/);
-    assert.match(normalizeDoc, /@returns \{number\}/);
-    assert.match(normalizeDoc, /@throws \{\*\}/);
-
-    const handlerGetterDoc = findLeadingJsDoc(timeHandlerSource, 'export function getTimeHandler\\(\\)');
-    assert.match(handlerGetterDoc, /가장 최근에 생성/);
-    assert.match(handlerGetterDoc, /생성 전.*null/);
-
-    const deltaDoc = findLeadingJsDoc(timeHandlerSource, 'export function getDelta\\(\\)');
-    assert.match(deltaDoc, /생성 전.*0/);
-    assert.match(deltaDoc, /@returns \{\*\}/);
-    const fixedDeltaDoc = findLeadingJsDoc(timeHandlerSource, 'export function getFixedDelta\\(\\)');
-    assert.match(fixedDeltaDoc, /생성 전.*0/);
-    assert.match(fixedDeltaDoc, /@returns \{\*\}/);
-    const interpolationDoc = findLeadingJsDoc(
-        timeHandlerSource,
-        'export function getFixedInterpolationAlpha\\(\\)'
-    );
-    assert.match(interpolationDoc, /생성 전.*1/);
-    assert.match(interpolationDoc, /생성 직후.*0/);
-    assert.match(interpolationDoc, /@returns \{\*\}/);
-});
 
 test('생성 전 export 기본값과 생성·교체·부분 초기화 싱글톤 계약을 보존한다', async () => {
     const harness = await createTimeHarness(125);

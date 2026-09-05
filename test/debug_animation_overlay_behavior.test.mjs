@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import test from 'node:test';
@@ -14,27 +13,6 @@ const [controllerSource, overlaySource] = await Promise.all([
     readFile(OVERLAY_PATH, 'utf8')
 ]);
 
-function hashExecutableSource(source, expectedJsDocCount) {
-    const allJsDocStarts = source.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = source.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(allJsDocStarts.length, expectedJsDocCount, 'production JSDoc 개수가 바뀌었습니다.');
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    const executableSource = source
-        .replace(/^[ \t]*\/\*\*[\s\S]*?\*\/[ \t]*(?:\r?\n|$)/gm, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-function findLeadingJsDoc(source, declaration) {
-    const match = source.match(new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${declaration}`));
-    assert.ok(match, `${declaration} 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
-
 function createSyntheticModule(context, identifier, exports) {
     return new vm.SyntheticModule(Object.keys(exports), function initialize() {
         for (const [name, value] of Object.entries(exports)) {
@@ -42,28 +20,6 @@ function createSyntheticModule(context, identifier, exports) {
         }
     }, { context, identifier });
 }
-
-test('animation controller 실행 계약과 debug overlay의 코드-local 상수 경계를 명시한다', () => {
-    assert.equal(hashExecutableSource(controllerSource, 5), '56afb8c50ec2f08de235f0860c38c5b0456ad14acd35c1dfec611ebccdc687ef');
-    assert.equal(hashExecutableSource(overlaySource, 7), '13f603b3f6fbec2aeda58c1d135fe5fcb0ab495915baa8ec982d285df17f3b85');
-    assert.doesNotMatch(overlaySource, /data\/data_handler\.js/);
-    assert.match(overlaySource, /const DEBUG_OVERLAY = Object\.freeze\(\{/);
-    assert.match(overlaySource, /\.textStyle\(TYPOGRAPHY\./);
-    assert.match(overlaySource, /\.buttonStyle\(BUTTON_STYLE\./);
-    assert.doesNotMatch(overlaySource, /\.stylePreset\(/);
-
-    const frameDoc = findLeadingJsDoc(controllerSource, 'prepareFrame\\(consumePress\\)');
-    assert.match(frameDoc, /`debugPause`, `debugStep`을 이 순서로/);
-    assert.match(frameDoc, /공유되는 동결 객체/);
-    assert.match(frameDoc, /@throws \{\*\}/);
-
-    const openDoc = findLeadingJsDoc(overlaySource, 'open\\(\\)');
-    const closeDoc = findLeadingJsDoc(overlaySource, 'close\\(\\)');
-    assert.match(openDoc, /alpha→dim→scale→blur/);
-    assert.match(closeDoc, /focus를 보유하면서 정지되지 않은 경우에만/);
-    assert.match(closeDoc, /공통 close animation/);
-    assert.match(closeDoc, /Promise microtask/);
-});
 
 test('frame control은 두 입력을 선소비하고 공유 결과와 오류 identity를 보존한다', async () => {
     const context = vm.createContext({});

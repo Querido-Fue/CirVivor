@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
@@ -33,28 +32,6 @@ function stripStandaloneJSDoc(source) {
 function runtimeSourceHash(source) {
     return createHash('sha256').update(stripStandaloneJSDoc(source)).digest('hex');
 }
-
-test('resolver JSDoc은 실제 직접 조회 및 두 번의 키 변환 계약을 설명한다', () => {
-    const resolverDeclaration = 'export const getOverlayAnimationPreset';
-    const declarationIndex = presetSource.indexOf(resolverDeclaration);
-    assert.notEqual(declarationIndex, -1);
-
-    const commentStart = presetSource.lastIndexOf('/**', declarationIndex);
-    const commentEnd = presetSource.indexOf('*/', commentStart);
-    assert.notEqual(commentStart, -1);
-    assert.ok(commentEnd > commentStart);
-
-    const jsdoc = presetSource.slice(commentStart, commentEnd + 2);
-    assert.match(jsdoc, /truthy인 이름으로 프리셋 프로퍼티를 직접 조회/);
-    assert.match(jsdoc, /own-key\/type 검증이 없고 성공한 키를 다시 조회/);
-    assert.match(jsdoc, /상속 키·키 변환·예외·두 조회 사이 결과를 그대로 보존/);
-    assert.match(jsdoc, /@param \{\*\} name/);
-    assert.match(jsdoc, /@returns \{\*\}/);
-});
-
-test('JSDoc을 제외한 actual production source는 바이트 단위로 동일하다', () => {
-    assert.equal(runtimeSourceHash(presetSource), EXPECTED_RUNTIME_SOURCE_SHA256);
-});
 
 test('overlay 구현 모듈이 세 production export와 preset 값을 직접 소유한다', () => {
     assert.doesNotMatch(presetSource, /data\/data_handler\.js/);

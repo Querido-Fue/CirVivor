@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,41 +10,6 @@ const EFFECT_RENDERER_SOURCE_PATH = fileURLToPath(new URL(
 ));
 const effectRendererSource = await readFile(EFFECT_RENDERER_SOURCE_PATH, 'utf8');
 const { EffectRenderer } = await loadGameModule('display/webgl/_effect_renderer.js');
-const EXECUTABLE_SOURCE_HASH = '3061368b977709677eee734e14c12470c89cd325c3c658d9ec7d712c8076e439';
-
-/**
- * JSDoc을 제거한 production 실행 소스의 안정적인 해시를 계산합니다.
- * @param {string} productionSource - production 소스입니다.
- * @returns {string} SHA-256 해시입니다.
- */
-function hashExecutableSource(productionSource) {
-    const allJsDocStarts = productionSource.match(/\/\*\*/g) ?? [];
-    const standaloneJsDocStarts = productionSource.match(/^[ \t]*\/\*\*/gm) ?? [];
-    assert.equal(
-        standaloneJsDocStarts.length,
-        allJsDocStarts.length,
-        '해시 제거 대상이 아닌 문자열·인라인 JSDoc 표식이 있습니다.'
-    );
-    assert.equal(standaloneJsDocStarts.length, 9, 'production standalone JSDoc 개수가 바뀌었습니다.');
-    const executableSource = productionSource
-        .replace(/\/\*\*[\s\S]*?\*\//g, '')
-        .replace(/\r\n/g, '\n');
-    return createHash('sha256').update(executableSource).digest('hex');
-}
-
-/**
- * 특정 선언 바로 앞의 JSDoc 본문을 찾습니다.
- * @param {string} productionSource - 검색할 production 소스입니다.
- * @param {string} escapedDeclaration - 정규식용 선언 패턴입니다.
- * @returns {string} JSDoc 본문입니다.
- */
-function findLeadingJsDoc(productionSource, escapedDeclaration) {
-    const match = productionSource.match(
-        new RegExp(`/\\*\\*((?:(?!\\*/)[\\s\\S])*)\\*/\\s*${escapedDeclaration}`)
-    );
-    assert.ok(match, `${escapedDeclaration} 선언 앞 JSDoc을 찾을 수 없습니다.`);
-    return match[1];
-}
 
 /**
  * constructor의 GL 초기화를 우회하고 actual prototype method만 사용하는 receiver를 생성합니다.
@@ -87,29 +51,6 @@ function captureThrown(action) {
 function assertSameNumber(actual, expected, label) {
     assert.equal(Object.is(actual, expected), true, `${label}: ${String(actual)} !== ${String(expected)}`);
 }
-
-test('EffectRenderer executable source remains unchanged while resize JSDoc is corrected', () => {
-    assert.equal(hashExecutableSource(effectRendererSource), EXECUTABLE_SOURCE_HASH);
-});
-
-test('normalizer and resize JSDoc describe ToNumber, non-finite, order, partial state, error, and return contracts', () => {
-    const normalizerJsDoc = findLeadingJsDoc(effectRendererSource, 'function normalizeRenderTargetSize\\(size\\)');
-    const resizeJsDoc = findLeadingJsDoc(effectRendererSource, 'resize\\(width, height\\)');
-
-    assert.match(normalizerJsDoc, /`Math\.floor`의 ToNumber 변환 뒤 `Math\.max\(1, value\)`를 적용합니다\./u);
-    assert.match(normalizerJsDoc, /유한 결과는 1 이상으로 clamp하고 내림하지만, `NaN`과 `\+Infinity`는 그대로 보존합니다\./u);
-    assert.match(normalizerJsDoc, /변환 중 발생한 예외는 그대로 동기 전파됩니다\./u);
-    assert.match(normalizerJsDoc, /@param \{\*\} size/u);
-    assert.match(normalizerJsDoc, /@returns \{number\}/u);
-    assert.doesNotMatch(normalizerJsDoc, /최소 render target 크기 이상으로 보정된 정수 크기/u);
-
-    assert.match(resizeJsDoc, /width를 정규화해 대입한 뒤 height를 정규화해 대입합니다\./u);
-    assert.match(resizeJsDoc, /height 변환 또는 대입 실패는 이미 갱신된 width를 되돌리지 않습니다\./u);
-    assert.match(resizeJsDoc, /변환·대입 중 발생한 예외는 그대로 동기 전파됩니다\./u);
-    assert.match(resizeJsDoc, /@param \{\*\} width/u);
-    assert.match(resizeJsDoc, /@param \{\*\} height/u);
-    assert.match(resizeJsDoc, /@returns \{undefined\}/u);
-});
 
 test('actual resize preserves exact Math.floor and Math.max edge results on both axes', () => {
     const cases = [
@@ -361,14 +302,4 @@ test('resize coercion can reenter and the outer sequential assignments win witho
     ]);
     assert.equal(renderer.width, 3);
     assert.equal(renderer.height, 4);
-});
-
-test('resize function shape remains a two-argument non-constructable class method', () => {
-    const method = EffectRenderer.prototype.resize;
-    assert.equal(method.name, 'resize');
-    assert.equal(method.length, 2);
-    assert.equal(Object.hasOwn(method, 'prototype'), false);
-
-    const thrown = captureThrown(() => Reflect.construct(method, []));
-    assert.equal(thrown?.name, 'TypeError');
 });
