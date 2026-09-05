@@ -1,0 +1,26 @@
+{
+    "schemaVersion": 1,
+    "themeFingerprint": 2118235027,
+    "surfaces": {
+        "game.purple-crystal-map.empty": {
+            "mapDrawCommandCount": 20,
+            "mapSpriteCount": 2924,
+            "walkableTileCount": 828,
+            "facetCount": 109,
+            "perimeterEdgeCount": 264,
+            "ambientFragmentCount": 44
+        },
+        "game.purple-crystal-map.crowded": {
+            "actorGlowAdditionalPassCount": 0,
+            "actorRenderStorageBindingCount": 9,
+            "projectileGlowKind": 0,
+            "minimumProjectedRadiusForHalo": 4.5
+        },
+        "game.purple-crystal-map.core-and-spawn": {
+            "gateCount": 1,
+            "gateWorldPosition": [3, 3],
+            "coreIntegritySegmentCapacity": 12,
+            "coreIntegritySegmentsAtHalf": 6
+        }
+    }
+}

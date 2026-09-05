@@ -116,6 +116,20 @@ export function createGameSceneDependencies() {
         gameplayStatusRenderPort: GAME_SCENE_STATUS_RENDER_PORT,
         recoveryLogPort: GPU_WORLD_RECOVERY_LOG_PORT,
         worldRenderPort: {
+            drawShape(options) {
+                renderGL(options.layer, options);
+            },
+            drawShapeInstances(options) {
+                renderGLShapeInstances(
+                    options.layer,
+                    options,
+                    options.centers,
+                    options.originX ?? 0,
+                    options.originY ?? 0,
+                    options.localScale ?? 1,
+                    options.cacheKey ?? null
+                );
+            },
             drawCircle(options) {
                 circleRenderOptions.x = options.x;
                 circleRenderOptions.y = options.y;

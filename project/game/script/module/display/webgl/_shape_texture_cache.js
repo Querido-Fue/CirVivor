@@ -36,7 +36,9 @@ export class ShapeTextureCache {
         this.textureSize = WEBGL_CONSTANTS.SHAPE_TEXTURE_SIZE;
         this.shapeOrder = [
             ...BASE_SHAPE_ATLAS_ORDER,
-            ...ENEMY_WEBGL_SHAPES
+            ...ENEMY_WEBGL_SHAPES,
+            // Legacy/enemy UV 뒤에 append해 기존 atlas slot ABI를 보존합니다.
+            'ring'
         ];
         this.shapeDrawer = new ShapeDrawer();
         this.atlasCanvases = [];

@@ -16,6 +16,8 @@ const UPRIGHT_POLYGON_ANGLE_OFFSET = -Math.PI / 2;
 const ARROW_OUTER_POINT_RATIO = 0.7;
 /** 화살표 안쪽 접점이 반지름에서 차지하는 비율입니다. */
 const ARROW_INNER_POINT_RATIO = 0.3;
+/** Portal/Core presentation ring의 내부 반지름 비율입니다. */
+const RING_INNER_RADIUS_RATIO = 0.62;
 
 /**
  * @typedef {object} ShapeDrawOptions
@@ -65,6 +67,9 @@ export class ShapeDrawer {
                 ctx.beginPath();
                 ctx.arc(cx, cy, radius, 0, FULL_CIRCLE_RADIANS);
                 ctx.fill();
+                break;
+            case 'ring':
+                this.#drawRing(ctx, cx, cy, radius);
                 break;
             case 'triangle':
                 this.#drawPolygon(ctx, cx, cy, radius, 3);
@@ -164,5 +169,26 @@ export class ShapeDrawer {
         ctx.lineTo(x, y + innerPoint);
         ctx.closePath();
         ctx.fill();
+    }
+
+    /**
+     * WebGL shape atlas에서 재사용할 얇은 presentation ring을 그립니다.
+     * @param {CanvasRenderingContext2D} ctx - 렌더링 컨텍스트입니다.
+     * @param {number} x - 중심 X입니다.
+     * @param {number} y - 중심 Y입니다.
+     * @param {number} radius - 외부 반지름입니다.
+     * @private
+     */
+    #drawRing(ctx, x, y, radius) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, FULL_CIRCLE_RADIANS);
+        ctx.arc(
+            x,
+            y,
+            radius * RING_INNER_RADIUS_RATIO,
+            0,
+            FULL_CIRCLE_RADIANS
+        );
+        ctx.fill('evenodd');
     }
 }

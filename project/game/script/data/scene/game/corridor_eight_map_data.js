@@ -1,3 +1,7 @@
+import {
+    MAP_VISUAL_THEME_ID
+} from './purple_crystal_map_visual_theme_data.js';
+
 const CORRIDOR_EIGHT_DIRECTION_BLUEPRINT = Object.freeze([
     'a#kji####',
     'b#l#h####',
@@ -77,6 +81,7 @@ const WEST_FIGURE_EIGHT_ROUTE = Object.freeze([
  */
 export const CORRIDOR_EIGHT_MAP_DATA = Object.freeze({
     id: 'corridor_eight_01',
+    visualThemeId: MAP_VISUAL_THEME_ID.PURPLE_CRYSTAL,
     nameKey: 'game_map_corridor_eight_name',
     descriptionKey: 'game_map_corridor_eight_description',
     macroRows: 5,

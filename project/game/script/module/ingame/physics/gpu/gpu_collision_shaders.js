@@ -69,6 +69,9 @@ import {
 import {
     GPU_COLLISION_GRID_AUTHORITY_WGSL
 } from './gpu_collision_grid_contract.js';
+import {
+    PURPLE_CRYSTAL_MAP_VISUAL_THEME
+} from '../../../../data/scene/game/purple_crystal_map_visual_theme_data.js';
 
 const WGSL_POLYGON_POINT_CAPACITY = 8;
 
@@ -106,6 +109,7 @@ const toWgslPointArray = (
 };
 
 const ENEMY_RENDER_GEOMETRY = ENEMY_NORMALIZED_RENDER_GEOMETRY;
+const ENTITY_GLOW_THEME = PURPLE_CRYSTAL_MAP_VISUAL_THEME.entityGlow;
 
 export const GPU_COLLISION_COMPUTE_WGSL = /* wgsl */`
 const BODY_ABI_VERSION: u32 = ${GPU_CIRCLE_BODY_ABI_VERSION}u;
@@ -6176,6 +6180,11 @@ struct VertexOutput {
     @location(7) @interpolate(flat) health_ratio: f32,
     @location(8) @interpolate(flat) directional_defense_active: u32,
     @location(9) @interpolate(flat) effect_presentation_tags: u32,
+    @location(10) @interpolate(flat) glow_kind: u32,
+    @location(11) @interpolate(flat) glow_intensity: f32,
+    @location(12) @interpolate(flat) glow_rim_width: f32,
+    @location(13) @interpolate(flat) glow_halo_width: f32,
+    @location(14) @interpolate(flat) glow_quad_extent: f32,
 }
 
 @group(0) @binding(0) var<storage, read> counts: BodyCounts;
@@ -6212,6 +6221,30 @@ const PROJECTILE_CAPTURE_PROFILE_MASK: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META
 const PROJECTILE_CAPTURE_PROFILE_SHIFT: u32 = ${GPU_PROJECTILE_CAPTURE_STATE_META.PROFILE_SHIFT}u;
 const PROJECTILE_CAPTURE_PROFILE_RING: u32 = ${GPU_ENEMY_PROJECTILE_CAPTURE_PROFILE_CODE.RING_SINGLE_SLOT}u;
 const BODY_FLAG_PROJECTILE_CAPTURED: u32 = ${GPU_CIRCLE_BODY_SIMULATION_FLAG.PROJECTILE_CAPTURED}u;
+const BODY_LAYER_ENEMY: u32 = ${GPU_CIRCLE_BODY_LAYER.ENEMY}u;
+const BODY_LAYER_PROJECTILE: u32 = ${GPU_CIRCLE_BODY_LAYER.PROJECTILE}u;
+const BODY_LAYER_PLAYER_DAMAGEABLE: u32 = ${GPU_CIRCLE_BODY_LAYER.PLAYER_DAMAGEABLE}u;
+const GAMEPLAY_TEAM_PLAYER: u32 = ${GAMEPLAY_TEAM_ID.PLAYER}u;
+const GAMEPLAY_META_TEAM_SHIFT: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_SHIFT}u;
+const GAMEPLAY_META_TEAM_MASK: u32 = ${GPU_CIRCLE_BODY_GAMEPLAY_META.TEAM_MASK}u;
+const ENTITY_GLOW_KIND_NONE: u32 = 0u;
+const ENTITY_GLOW_KIND_ENEMY: u32 = 1u;
+const ENTITY_GLOW_KIND_TOWER: u32 = 2u;
+const ENTITY_GLOW_TOWER_INTENSITY: f32 = ${toWgslFloat(
+    ENTITY_GLOW_THEME.towerIntensity
+)};
+const ENTITY_GLOW_ENEMY_INTENSITY: f32 = ${toWgslFloat(
+    ENTITY_GLOW_THEME.enemyIntensity
+)};
+const ENTITY_GLOW_RIM_WIDTH_PIXELS: f32 = ${toWgslFloat(
+    ENTITY_GLOW_THEME.rimWidthPixels
+)};
+const ENTITY_GLOW_HALO_WIDTH_PIXELS: f32 = ${toWgslFloat(
+    ENTITY_GLOW_THEME.haloWidthPixels
+)};
+const ENTITY_GLOW_MINIMUM_PROJECTED_RADIUS: f32 = ${toWgslFloat(
+    ENTITY_GLOW_THEME.minimumProjectedRadiusForHalo
+)};
 const ENEMY_BEHAVIOR_PROGRAM_ARROW_TOWER_CHARGE: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.ARROW_TOWER_CHARGE}u;
 const ENEMY_BEHAVIOR_PROGRAM_OCTAGON_TOWER_ORBIT: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_PROGRAM.OCTAGON_TOWER_ORBIT}u;
 const ENEMY_BEHAVIOR_STATE_WINDUP: u32 = ${GPU_CIRCLE_ENEMY_BEHAVIOR_STATE.WINDUP}u;
@@ -6505,6 +6538,11 @@ fn vertex_main(
         output.health_ratio = 0.0;
         output.directional_defense_active = 0u;
         output.effect_presentation_tags = 0u;
+        output.glow_kind = ENTITY_GLOW_KIND_NONE;
+        output.glow_intensity = 0.0;
+        output.glow_rim_width = 0.0;
+        output.glow_halo_width = 0.0;
+        output.glow_quad_extent = 1.0;
         return output;
     }
     let simulation_flags = simulations.values[instance_index].flags;
@@ -6521,6 +6559,11 @@ fn vertex_main(
         output.health_ratio = 0.0;
         output.directional_defense_active = 0u;
         output.effect_presentation_tags = 0u;
+        output.glow_kind = ENTITY_GLOW_KIND_NONE;
+        output.glow_intensity = 0.0;
+        output.glow_rim_width = 0.0;
+        output.glow_halo_width = 0.0;
+        output.glow_quad_extent = 1.0;
         return output;
     }
     let body = physics.values[instance_index];
@@ -6604,7 +6647,42 @@ fn vertex_main(
         && projectile_capture_facing_length_squared > 0.0) {
         presentation_velocity = projectile_capture.facing;
     }
-    let local = QUAD_VERTICES[vertex_index];
+    let interaction_layer = body.interaction_meta & 65535u;
+    let gameplay_team = (
+        simulations.values[instance_index].gameplay_meta
+            >> GAMEPLAY_META_TEAM_SHIFT
+    ) & GAMEPLAY_META_TEAM_MASK;
+    var glow_kind = ENTITY_GLOW_KIND_NONE;
+    var glow_intensity = 0.0;
+    if ((interaction_layer & BODY_LAYER_ENEMY) != 0u) {
+        glow_kind = ENTITY_GLOW_KIND_ENEMY;
+        glow_intensity = ENTITY_GLOW_ENEMY_INTENSITY;
+    }
+    if ((interaction_layer & BODY_LAYER_PLAYER_DAMAGEABLE) != 0u
+        && gameplay_team == GAMEPLAY_TEAM_PLAYER
+        && (interaction_layer & BODY_LAYER_PROJECTILE) == 0u) {
+        glow_kind = ENTITY_GLOW_KIND_TOWER;
+        glow_intensity = ENTITY_GLOW_TOWER_INTENSITY;
+    }
+    let projected_radius = max(
+        abs(body.radius * presentation_radius_scale * params.world_scale),
+        0.0001
+    );
+    let glow_rim_width = select(
+        0.0,
+        min(ENTITY_GLOW_RIM_WIDTH_PIXELS / projected_radius, 0.24),
+        glow_kind != ENTITY_GLOW_KIND_NONE
+    );
+    let glow_halo_width = select(
+        0.0,
+        min(ENTITY_GLOW_HALO_WIDTH_PIXELS / projected_radius, 0.6),
+        glow_kind != ENTITY_GLOW_KIND_NONE
+            && projected_radius >= ENTITY_GLOW_MINIMUM_PROJECTED_RADIUS
+    );
+    // Entity glow must not expand the authored analytic silhouette or its
+    // collider circumcircle. The wider glow value is an inward color band.
+    let glow_quad_extent = 1.0;
+    let local = QUAD_VERTICES[vertex_index] * glow_quad_extent;
     let world_position = body_position
         + (local * body.radius * presentation_radius_scale);
     let viewport_position = params.viewport_origin + (world_position * params.world_scale);
@@ -6656,12 +6734,66 @@ fn vertex_main(
         directional_defense_active
     );
     output.effect_presentation_tags = effect_presentation_tags;
+    output.glow_kind = glow_kind;
+    output.glow_intensity = glow_intensity;
+    output.glow_rim_width = glow_rim_width;
+    output.glow_halo_width = glow_halo_width;
+    output.glow_quad_extent = glow_quad_extent;
     return output;
 }
 
 struct EffectPresentation {
     rgb: vec3f,
     alpha: f32,
+}
+
+fn apply_entity_glow(
+    base_rgb: vec3f,
+    base_alpha: f32,
+    opacity: f32,
+    edge_distance: f32,
+    edge_aa: f32,
+    glow_kind: u32,
+    glow_intensity: f32,
+    rim_width: f32,
+    halo_width: f32
+) -> EffectPresentation {
+    if (glow_kind == ENTITY_GLOW_KIND_NONE || glow_intensity <= 0.0) {
+        return EffectPresentation(base_rgb, base_alpha);
+    }
+    let inside_coverage = 1.0 - smoothstep(-edge_aa, edge_aa, edge_distance);
+    let rim = (1.0 - smoothstep(
+        max(rim_width - edge_aa, 0.0),
+        rim_width + edge_aa,
+        abs(edge_distance)
+    )) * inside_coverage;
+    var halo = 0.0;
+    if (halo_width > 0.0) {
+        halo = 1.0 - smoothstep(
+            max(halo_width * 0.08 - edge_aa, 0.0),
+            halo_width + edge_aa,
+            max(-edge_distance, 0.0)
+        );
+        halo *= inside_coverage;
+    }
+    let emissive_rgb = min(
+        base_rgb * 1.28 + vec3f(0.055),
+        vec3f(1.0)
+    );
+    let glow_mix = clamp(
+        (
+            rim * (0.36 + glow_intensity * 0.5)
+            + halo * glow_intensity * 0.18
+        ) * opacity,
+        0.0,
+        0.86
+    );
+    let rgb = mix(
+        base_rgb,
+        emissive_rgb,
+        glow_mix
+    );
+    return EffectPresentation(rgb, base_alpha);
 }
 
 fn apply_effect_presentation(
@@ -6739,7 +6871,10 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
     );
     let anti_alias_width = max(fwidth(distance), 0.002);
     if (length(input.local_position) > 1.0) {
-        discard;
+        if (input.glow_kind == ENTITY_GLOW_KIND_NONE
+            || length(input.local_position) > input.glow_quad_extent) {
+            discard;
+        }
     }
     // A natural n=1 H uses the same centered, normal-sized hex silhouette as
     // every other enemy. Only merged n=2..6 bodies use the occupied-cell
@@ -6809,9 +6944,20 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
             }
         }
         if (alpha <= 0.0) { discard; }
-        let effect_presentation = apply_effect_presentation(
+        let entity_glow = apply_entity_glow(
             rgb,
             alpha,
+            input.color.a,
+            occupied_distance,
+            occupied_aa,
+            input.glow_kind,
+            input.glow_intensity,
+            input.glow_rim_width,
+            input.glow_halo_width
+        );
+        let effect_presentation = apply_effect_presentation(
+            entity_glow.rgb,
+            entity_glow.alpha,
             input.color.a,
             occupied_distance,
             occupied_aa,
@@ -6849,9 +6995,20 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4f {
             rgb = mix(rgb, vec3f(0.38, 0.94, 1.0), 0.72 * armor_rim);
         }
     }
-    let effect_presentation = apply_effect_presentation(
+    let entity_glow = apply_entity_glow(
         rgb,
         alpha,
+        input.color.a,
+        distance,
+        anti_alias_width,
+        input.glow_kind,
+        input.glow_intensity,
+        input.glow_rim_width,
+        input.glow_halo_width
+    );
+    let effect_presentation = apply_effect_presentation(
+        entity_glow.rgb,
+        entity_glow.alpha,
         input.color.a,
         distance,
         anti_alias_width,

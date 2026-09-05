@@ -1,3 +1,7 @@
+import {
+    MAP_VISUAL_THEME_ID
+} from './purple_crystal_map_visual_theme_data.js';
+
 export const PERFORMANCE_SERPENTINE_MAP_ID = 'performance_serpentine_02';
 export const PERFORMANCE_SERPENTINE_GATE_ID = 'performance-west-gate';
 export const PERFORMANCE_SERPENTINE_PATH_ID = 'performance-serpentine-core';
@@ -81,6 +85,7 @@ const PERFORMANCE_SERPENTINE_ROUTES = Object.freeze([
 /** 실제 10,000-body 성능 검증을 위한 두 번째 production map입니다. */
 export const PERFORMANCE_SERPENTINE_MAP_DATA = Object.freeze({
     id: PERFORMANCE_SERPENTINE_MAP_ID,
+    visualThemeId: MAP_VISUAL_THEME_ID.PURPLE_CRYSTAL,
     nameKey: 'game_map_performance_serpentine_name',
     descriptionKey: 'game_map_performance_serpentine_description',
     macroRows: PERFORMANCE_SERPENTINE_MACRO_ROWS,

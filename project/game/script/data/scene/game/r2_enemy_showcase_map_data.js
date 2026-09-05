@@ -6,6 +6,9 @@ import {
     ENEMY_ROUTE_GRAPH_VERSION,
     normalizeEnemyRouteGraph
 } from 'ingame/contract/enemy_route_closure_contract.js';
+import {
+    MAP_VISUAL_THEME_ID
+} from './purple_crystal_map_visual_theme_data.js';
 
 export const R2_ENEMY_SHOWCASE_MAP_ID = 'r2_enemy_showcase_01';
 export const R2_ENEMY_SHOWCASE_ROUTE_SET_ID = 'r2-showcase-west-dual-core';
@@ -285,6 +288,7 @@ const R2_SHOWCASE_ROUTE_GRAPH = normalizeEnemyRouteGraph({
 /** Turn 9 staged showcase 전용이며 default production registry에는 자동 등록하지 않습니다. */
 export const R2_ENEMY_SHOWCASE_MAP_DATA = Object.freeze({
     id: R2_ENEMY_SHOWCASE_MAP_ID,
+    visualThemeId: MAP_VISUAL_THEME_ID.PURPLE_CRYSTAL,
     nameKey: 'game_map_r2_enemy_showcase_name',
     descriptionKey: 'game_map_r2_enemy_showcase_description',
     macroRows: 7,

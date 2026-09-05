@@ -2490,10 +2490,15 @@ export class GameObjectSystem {
             || this.terminalState === GPU_WORLD_TERMINAL_STATE.SEALED_FAILED) {
             return;
         }
+        const presentationFrameDelta = this.enemySimulationPaused
+            ? 0
+            : frameDelta;
+        this.tileMapRenderer.update(presentationFrameDelta);
+        this.coreRenderer.update(presentationFrameDelta);
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
             this.tower?.updateRenderPosition(alpha);
         }
-        this.enemyPresentationFrame.frameDelta = this.enemySimulationPaused ? 0 : frameDelta;
+        this.enemyPresentationFrame.frameDelta = presentationFrameDelta;
         this.enemyPresentationFrame.fixedDelta = fixedDelta;
         this.enemyPresentationFrame.fixedAlpha = alpha;
         this.enemySimulationEndpoint.updatePresentation(this.enemyPresentationFrame);
@@ -2539,9 +2544,9 @@ export class GameObjectSystem {
         }
         this.tileMapRenderer.draw(this.tileMap, this.camera);
         this.drawEnemySimulation();
-        this.coreRenderer.draw(this.core, this.camera);
+        this.coreRenderer.draw(this.core, this.camera, this.tileMap);
         if (this.sessionMode === GAME_WORLD_SESSION_MODE.CPU_NO_WAVE_FALLBACK) {
-            this.towerRenderer.draw(this.tower, this.camera);
+            this.towerRenderer.draw(this.tower, this.camera, this.tileMap);
         }
     }
 

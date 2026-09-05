@@ -1,4 +1,7 @@
 import { INGAME_MAP_DATA } from 'data/scene/game/corridor_eight_map_data.js';
+import {
+    MAP_VISUAL_THEME_ID
+} from 'data/scene/game/purple_crystal_map_visual_theme_data.js';
 import { assertTileNavigationSource } from '../contract/tile_navigation_contract.js';
 import {
     normalizeEnemyModifierSet
@@ -94,6 +97,11 @@ function assertMapDefinition(definition) {
             'routeClosurePhysicalBlocking은 boolean이어야 합니다.'
         );
     }
+    if (definition.visualThemeId !== undefined
+        && (typeof definition.visualThemeId !== 'string'
+            || definition.visualThemeId.trim().length === 0)) {
+        throw new TypeError('visualThemeId는 비어 있지 않은 문자열이어야 합니다.');
+    }
     if (!Array.isArray(definition.directionBlueprint)
         || definition.directionBlueprint.length !== rows) {
         throw new TypeError('directionBlueprint 행 수가 맵 정의와 다릅니다.');
@@ -170,6 +178,9 @@ export class TileMap {
         assertMapDefinition(definition);
 
         this.mapId = definition.id;
+        this.visualThemeId = definition.visualThemeId?.trim()
+            || MAP_VISUAL_THEME_ID.FLAT;
+        this.visualRevision = 0;
         this.enemyModifiers = normalizeEnemyModifierSet(definition.enemyModifiers, {
             label: `${definition.id}.enemyModifiers`
         });
@@ -241,6 +252,20 @@ export class TileMap {
     /** @returns {object} SDF와 route-source 컴파일이 공유할 고정 타일 grid입니다. */
     getNavigationGrid() {
         return this.navigationGrid;
+    }
+
+    /** @returns {string} presentation-only visual theme ID입니다. */
+    getVisualThemeId() {
+        return this.visualThemeId;
+    }
+
+    /**
+     * 정적 gameplay grid를 visual cache가 관찰할 수 있는 revision입니다.
+     * 현재 TileMap은 생성 후 immutable하므로 0을 유지합니다.
+     * @returns {number} visual geometry revision입니다.
+     */
+    getVisualRevision() {
+        return this.visualRevision;
     }
 
     /** @returns {object[]} gate/path/waypoint를 포함한 복수 적 진입 route입니다. */
