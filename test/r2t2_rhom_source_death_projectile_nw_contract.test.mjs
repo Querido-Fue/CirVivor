@@ -133,13 +133,20 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
 });
 
 test('Rhom source-death stage is fail-closed and wired to only its dedicated runner', async () => {
-    const source = await readUtf8(harnessPath);
+    const [harnessSource, registrySource, validatorSource] = await Promise.all([
+        readUtf8(harnessPath),
+        readUtf8(join(testDirectory, 'support/webgpu_results/index.mjs')),
+        readUtf8(join(testDirectory, 'support/webgpu_results/hostile_attack_results.mjs'))
+    ]);
+    const source = [harnessSource, registrySource, validatorSource].join('\n');
     const stage = 'enemy-rhom-source-death-projectile';
     const runner = 'enemy_rhom_source_death_projectile_runner.js';
 
-    assert.match(source, new RegExp(
-        `fixtureStage === '${stage}'[\\s\\S]*?productionEnemyRhomSourceDeathProjectile`
+    assert.ok(registrySource.includes(
+        `['${stage}', validateEnemyRhomSourceDeathProjectile]`
     ));
+    assert.match(validatorSource,
+        /function validateEnemyRhomSourceDeathProjectile\(result\)[\s\S]*productionEnemyRhomSourceDeathProjectile/);
     assert.match(source, new RegExp(
         `fixtureStage === '${stage}'[\\s\\S]*?'${runner}'`
     ));

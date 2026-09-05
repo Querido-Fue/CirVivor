@@ -40,8 +40,12 @@ const RUNNER_SOURCE = await readFile(new URL(
     './nw_webgpu_capability/enemy_octagon_directional_defense_runner.js',
     import.meta.url
 ), 'utf8');
-const SUPPORT_SOURCE = await readFile(new URL(
+const HARNESS_SOURCE = await readFile(new URL(
     './support/run_nw_webgpu_capability.mjs',
+    import.meta.url
+), 'utf8');
+const SUPPORT_SOURCE = await readFile(new URL(
+    './support/webgpu_results/octagon_results.mjs',
     import.meta.url
 ), 'utf8');
 
@@ -318,7 +322,7 @@ test('simulation ordering/storage와 dedicated author fixture routing을 exact �
     assert.match(RUNNER_SOURCE, /oldSessionGeneration/);
     assert.match(RUNNER_SOURCE,
         /freshRawOrbitSlotBefore[\s\S]*freshOrbitSlotAfter/);
-    assert.match(SUPPORT_SOURCE, /enemy-octagon-directional-defense/);
+    assert.match(HARNESS_SOURCE, /enemy-octagon-directional-defense/);
     assert.match(SUPPORT_SOURCE, /activeHandles\.length === 3/);
     assert.match(SUPPORT_SOURCE, /frontDamageCenti === 50/);
     assert.match(SUPPORT_SOURCE, /captureDefenseActive === true/);

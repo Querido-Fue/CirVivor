@@ -200,13 +200,13 @@ test('R2 churn soak는 O/J/R/Z/H/P actual stage를 versioned bounded cycles로 �
 });
 
 test('R2 churn v2는 Cork actual 안의 단일 endpoint/device 3-cycle 증거를 fail-close한다', async () => {
-    const [runnerSource, wrapperSource] = await Promise.all([
+    const [runnerSource, validatorSource] = await Promise.all([
         readFile(new URL(
             './nw_webgpu_capability/enemy_cork_route_closure_runner.js',
             import.meta.url
         ), 'utf8'),
         readFile(new URL(
-            './support/run_nw_webgpu_capability.mjs',
+            './support/webgpu_results/cork_results.mjs',
             import.meta.url
         ), 'utf8')
     ]);
@@ -228,13 +228,13 @@ test('R2 churn v2는 Cork actual 안의 단일 endpoint/device 3-cycle 증거를
         runnerSource,
         /device\.destroy\(\)[\s\S]*runMixedSingleSessionChurn/u
     );
-    assert.match(wrapperSource, /mixedChurn\?\.contractVersion === 2/u);
-    assert.match(wrapperSource, /mixedChurn\.oneEndpoint === true/u);
-    assert.match(wrapperSource, /mixedChurn\.stableTuple === true/u);
-    assert.match(wrapperSource, /mixedChurn\.exactIncarnationChurn === true/u);
-    assert.match(wrapperSource, /cycle\.pendingAllZero === true/u);
-    assert.match(wrapperSource, /cycle\.submittedTickDelta === 2/u);
-    assert.match(wrapperSource, /mixedChurn\.storageMaximum === 9/u);
+    assert.match(validatorSource, /mixedChurn\?\.contractVersion === 2/u);
+    assert.match(validatorSource, /mixedChurn\.oneEndpoint === true/u);
+    assert.match(validatorSource, /mixedChurn\.stableTuple === true/u);
+    assert.match(validatorSource, /mixedChurn\.exactIncarnationChurn === true/u);
+    assert.match(validatorSource, /cycle\.pendingAllZero === true/u);
+    assert.match(validatorSource, /cycle\.submittedTickDelta === 2/u);
+    assert.match(validatorSource, /mixedChurn\.storageMaximum === 9/u);
 });
 
 test('final runner는 환경 stage별 실제 capability command를 직렬 실행한다', async () => {

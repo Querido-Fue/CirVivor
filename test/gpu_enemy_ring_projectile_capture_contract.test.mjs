@@ -105,8 +105,12 @@ const RUNNER_SOURCE = await readFile(new URL(
     './nw_webgpu_capability/enemy_ring_projectile_capture_runner.js',
     import.meta.url
 ), 'utf8');
-const SUPPORT_SOURCE = await readFile(new URL(
+const HARNESS_SOURCE = await readFile(new URL(
     './support/run_nw_webgpu_capability.mjs',
+    import.meta.url
+), 'utf8');
+const SUPPORT_SOURCE = await readFile(new URL(
+    './support/webgpu_results/ring_results.mjs',
     import.meta.url
 ), 'utf8');
 
@@ -898,7 +902,7 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
     assert.match(RUNNER_SOURCE,
         /new RingProjectileCaptureDirector\(\{[\s\S]*registry: endpoint\.getRegistry\(\)[\s\S]*projectileCaptureCommandPort: commandPort[\s\S]*sessionGeneration: runtime\.sessionGeneration[\s\S]*deviceGeneration: runtime\.deviceGeneration[\s\S]*authoritativeEpoch: runtime\.authoritativeEpoch[\s\S]*capacity: endpoint\.getCapacity\(\)/);
     assert.doesNotMatch(RUNNER_SOURCE, /synthetic|mockEndpoint|fakeRegistry/iu);
-    assert.match(SUPPORT_SOURCE, /enemy-ring-projectile-capture/);
+    assert.match(HARNESS_SOURCE, /enemy-ring-projectile-capture/);
     assert.match(SUPPORT_SOURCE, /productionEnemyRingProjectileCapture/);
     assert.match(SUPPORT_SOURCE, /actualRuntime/);
     assert.match(SUPPORT_SOURCE, /requiredMaximum === 9/);
@@ -910,15 +914,8 @@ test('production source와 NW stage는 actual Endpoint/Registry evidence만 허�
         /director\?\.sessionGeneration === owner\.sessionGeneration[\s\S]*director\.lastCompletedCaptureTick === finalFixedTick[\s\S]*director\.lastCompletedReleaseTick === finalFixedTick/);
     assert.doesNotMatch(SUPPORT_SOURCE,
         /productionEnemyRingProjectileCapture[\s\S]{0,300}\.passed === true/);
-    const ringStageStart = SUPPORT_SOURCE.indexOf(
-        "} else if (fixtureStage === 'enemy-ring-projectile-capture')"
-    );
-    const ringStageEnd = SUPPORT_SOURCE.indexOf(
-        '\n    }\n\n    const fixtureExists',
-        ringStageStart
-    );
-    const ringStageSource = SUPPORT_SOURCE.slice(ringStageStart, ringStageEnd);
-    assert.ok(ringStageStart >= 0 && ringStageEnd > ringStageStart);
+    const ringStageSource = SUPPORT_SOURCE;
+    assert.match(ringStageSource, /export function validateEnemyRingProjectileCapture\(result\)/);
     assert.match(ringStageSource, /actualRuntime/);
     assert.match(ringStageSource, /captureStorageValues\.length === 27/);
     assert.match(ringStageSource,
