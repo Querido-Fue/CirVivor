@@ -3,6 +3,21 @@ import { clampFiniteNumber, resolveFiniteNumber } from './number_util.js';
 
 let runtimeToolInstance = null;
 
+/** External game links are browser URLs, never local files or OS protocol commands. */
+function normalizeExternalBrowserUrl(value) {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    if (!text || /[\u0000-\u001f\u007f]/.test(text)) return null;
+    try {
+        const url = new URL(text);
+        return url.protocol === 'https:' || url.protocol === 'http:'
+            ? url.href
+            : null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * @class RuntimeTool
  * @description 런타임 환경(NW.js) 관련 유틸리티 클래스입니다.
@@ -28,7 +43,7 @@ export class RuntimeTool {
      * @returns {string|boolean|null} 처리 결과입니다.
      */
     openURL(url) {
-        const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+        const normalizedUrl = normalizeExternalBrowserUrl(url);
         if (!normalizedUrl) {
             return false;
         }
@@ -49,7 +64,7 @@ export class RuntimeTool {
      * @returns {boolean} 브라우저 열기 시도 여부입니다.
      */
     _openURLDirect(url) {
-        const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+        const normalizedUrl = normalizeExternalBrowserUrl(url);
         if (!normalizedUrl) {
             return false;
         }

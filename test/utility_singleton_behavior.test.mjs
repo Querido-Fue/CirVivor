@@ -39,11 +39,11 @@ async function loadStandaloneNamespace(source, identifier) {
  * NW.js bridge만 최소 synthetic module로 대체합니다.
  * @returns {Promise<object>} RuntimeTool 모듈 namespace입니다.
  */
-async function loadRuntimeToolNamespace() {
-    const context = vm.createContext({ console });
+async function loadRuntimeToolNamespace(openedUrls = []) {
+    const context = vm.createContext({ console, URL });
     const nwBridgeModule = new vm.SyntheticModule(['nw'], function setNwExport() {
         this.setExport('nw', {
-            Shell: { openExternal() {} },
+            Shell: { openExternal(url) { openedUrls.push(url); } },
             Window: { get: () => ({}) }
         });
     }, { context, identifier: 'synthetic:nw_bridge.js' });
@@ -154,4 +154,29 @@ test('RuntimeTool 필드 초기화 재진입은 가장 나중에 등록된 내�
     assert.equal(api.runtimeTool(), innerInstance);
     assert.equal(Object.hasOwn(outerInstance, '_externalURLHandler'), false);
     assert.equal(Object.hasOwn(innerInstance, '_externalURLHandler'), false);
+});
+
+test('외부 링크는 HTTP(S) URL만 확인 화면과 운영체제에 전달한다', async () => {
+    const openedUrls = [];
+    const { RuntimeTool } = await loadRuntimeToolNamespace(openedUrls);
+    const tool = new RuntimeTool();
+    const promptedUrls = [];
+    tool.setExternalURLHandler(url => { promptedUrls.push(url); return 'confirmation'; });
+    for (const input of [
+        'file:///C:/Windows/System32/calc.exe', 'javascript:alert(1)',
+        'data:text/html,example', 'custom-app:command', 'C:\\Windows\\test.exe',
+        '//example.com', 'https://', 'https://example.com\n/hidden', null, ''
+    ]) {
+        assert.equal(tool.openURL(input), false, String(input));
+        assert.equal(tool._openURLDirect(input), false, String(input));
+    }
+    assert.deepEqual(promptedUrls, []);
+    assert.deepEqual(openedUrls, []);
+    assert.equal(tool.openURL(' HTTPS://EXAMPLE.COM/path?q=1 '), 'confirmation');
+    assert.deepEqual(promptedUrls, ['https://example.com/path?q=1']);
+    assert.deepEqual(openedUrls, []);
+    assert.equal(tool._openURLDirect(promptedUrls[0]), true);
+    tool.setExternalURLHandler(null);
+    assert.equal(tool.openURL('http://example.com'), true);
+    assert.deepEqual(openedUrls, ['https://example.com/path?q=1', 'http://example.com/']);
 });
