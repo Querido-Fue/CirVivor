@@ -4,6 +4,8 @@
 !project/
 !project/game/
 !project/game/**
+!test/
+!test/**
 !project/package-lock.json
 !project/license
 !project/license/**

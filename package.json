@@ -1,0 +1,7 @@
+{
+    "name": "cirvivor-workspace",
+    "private": true,
+    "scripts": {
+        "test": "node --experimental-vm-modules --test test/*.test.mjs"
+    }
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>WebGL batch NW.js parity</title>
+    <style>
+        :root { color-scheme: dark; font-family: Consolas, monospace; }
+        body { margin: 32px; background: #111827; color: #e5e7eb; }
+        h1 { font-size: 24px; }
+        #status { padding: 20px; border: 1px solid #475569; border-radius: 8px; white-space: pre-wrap; }
+        .pass { border-color: #22c55e !important; color: #bbf7d0; }
+        .fail { border-color: #ef4444 !important; color: #fecaca; }
+        #canvas-host { position: fixed; left: -10000px; top: -10000px; width: 1px; height: 1px; overflow: hidden; }
+    </style>
+    <script type="importmap">
+    {
+        "imports": {
+            "display/": "../../project/game/script/module/display/",
+            "scene/": "../../project/game/script/module/scene/",
+            "simulation/": "../../project/game/script/module/simulation/",
+            "ui/": "../../project/game/script/module/ui/",
+            "util/": "../../project/game/script/util/",
+            "animation/": "../../project/game/script/module/animation/",
+            "input/": "../../project/game/script/module/input/",
+            "sound/": "../../project/game/script/module/sound/",
+            "save/": "../../project/game/script/module/save/",
+            "physics/": "../../project/game/script/module/physics/",
+            "data/": "../../project/game/script/data/",
+            "object/": "../../project/game/script/module/object/",
+            "debug/": "../../project/game/script/module/debug/",
+            "game/": "../../project/game/script/",
+            "overlay/": "../../project/game/script/module/overlay/"
+        }
+    }
+    </script>
+</head>
+<body>
+    <h1>WebGL batch begin 상태 바인딩 픽셀 동일성 검사</h1>
+    <div id="status">검사 준비 중…</div>
+    <div id="canvas-host" aria-hidden="true"></div>
+    <script type="module" src="./runner.js"></script>
+</body>
+</html>
