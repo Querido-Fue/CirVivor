@@ -529,9 +529,13 @@ test('GameObjectSystem은 proof 평가 뒤에만 gameplay ingress를 stage한다
 });
 
 test('next Wave seam은 candidate init 뒤 원자 교체하고 authentic CLOSED 뒤에만 활성화한다', async () => {
-    const [objectSource, gameSystemSource, gameSceneSource] = await Promise.all([
+    const [objectSource, progressionSource, gameSystemSource, gameSceneSource] = await Promise.all([
         readFile(new URL(
             '../project/game/script/module/ingame/object/game_object_system.js',
+            import.meta.url
+        ), 'utf8'),
+        readFile(new URL(
+            '../project/game/script/module/ingame/flow/next_wave_progression.js',
             import.meta.url
         ), 'utf8'),
         readFile(new URL(
@@ -543,34 +547,39 @@ test('next Wave seam은 candidate init 뒤 원자 교체하고 authentic CLOSED 
             import.meta.url
         ), 'utf8')
     ]);
-    const prepareStart = objectSource.indexOf('    prepareNextWave(request = {})');
-    const activateStart = objectSource.indexOf(
-        '    activatePreparedNextWave(request = {})',
+    const prepareStart = progressionSource.indexOf('    prepare(request = {})');
+    const activateStart = progressionSource.indexOf(
+        '    activate(request = {})',
         prepareStart
     );
-    const prepareSource = objectSource.slice(prepareStart, activateStart);
+    const prepareSource = progressionSource.slice(prepareStart, activateStart);
     assert.ok(prepareStart > 0 && activateStart > prepareStart);
-    assert.ok(
-        prepareSource.indexOf('candidate.init(this.tileMap)')
-            < prepareSource.indexOf('oldWaveDirector.destroy()')
-    );
-    assert.ok(
-        prepareSource.indexOf('oldWaveDirector.destroy()')
-            < prepareSource.indexOf('this.waveDirector = candidate')
-    );
+    const initIndex = prepareSource.indexOf('candidate.init(context.tileMap)');
+    const installIndex = prepareSource.indexOf('this.#ports.installPreparedWave');
+    assert.ok(initIndex >= 0 && installIndex > initIndex);
+    const installStart = objectSource.indexOf('    #installPreparedWave(');
+    const installEnd = objectSource.indexOf('    #captureNextWaveSafeBoundary(', installStart);
+    assert.ok(installStart >= 0 && installEnd > installStart);
+    const installSource = objectSource.slice(installStart, installEnd);
+    const destroyIndex = installSource.indexOf('oldWaveDirector.destroy()');
+    const publishIndex = installSource.indexOf('this.waveDirector = candidate');
+    assert.ok(destroyIndex >= 0 && publishIndex > destroyIndex);
     assert.doesNotMatch(prepareSource, /queueSpawnsForFixedTick/u);
-    assert.match(prepareSource, /this\.waveGameplayIngressSealed = true/u);
+    assert.match(installSource, /this\.waveGameplayIngressSealed = true/u);
     assert.match(
-        objectSource.slice(activateStart),
-        /this\.waveGameplayIngressSealed = false/u
+        objectSource,
+        /openGameplayIngress: \(\) => \{\s*this\.waveGameplayIngressSealed = false/u
     );
-    const activationSource = objectSource.slice(
+    assert.match(objectSource, /return this\.#nextWaveProgression\.prepare\(request\)/u);
+    assert.match(objectSource, /return this\.#nextWaveProgression\.activate\(request\)/u);
+    const activationSource = progressionSource.slice(
         activateStart,
-        objectSource.indexOf(
-            '    getNextWaveProgressionStatus()',
+        progressionSource.indexOf(
+            '    getStatus(gameplayIngressSealed)',
             activateStart
         )
     );
+    assert.match(activationSource, /this\.#ports\.openGameplayIngress\(\)/u);
     assert.ok(
         activationSource.indexOf(
             'if (known?.activationReceipt) return known.activationReceipt;'

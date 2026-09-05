@@ -1,3 +1,8 @@
+import { NextWaveProgression } from '../flow/next_wave_progression.js';
+import {
+    requireNonNegativeSafeInteger,
+    requirePositiveSafeInteger
+} from 'util/number_util.js';
 import { inspectGpuWorldTerminalEvidence } from './gpu_world_terminal_evidence.js';
 import { assertCollidable2D } from '../contract/collidable_contract.js';
 import { assertCameraFollowTarget2D } from '../contract/camera_control_contract.js';
@@ -103,10 +108,11 @@ import {
     SentenceRuntimeEstimator
 } from '../word/sentence_runtime_estimator.js';
 
+export { NEXT_WAVE_PROGRESSION_RESULT_CODE } from '../flow/next_wave_progression.js';
+
 const EMPTY_TOWER_COMBAT_FACTS = Object.freeze([]);
 const EMPTY_CORE_IMPACT_FACTS = Object.freeze([]);
 const EMPTY_CORE_OVERTIME_FACTS = Object.freeze([]);
-const NEXT_WAVE_TRANSACTION_CAPACITY = 32;
 const REPLACEMENT_GPU_ENDPOINT_INITIALIZED_STATES = new Set([
     'gpu-deferred',
     'gpu-ready'
@@ -137,46 +143,12 @@ const IDLE_GPU_RECOVERY_PROBATION = Object.freeze({
     failure: null
 });
 
-export const NEXT_WAVE_PROGRESSION_RESULT_CODE = Object.freeze({
-    PREPARED: 'PREPARED',
-    ACTIVATED: 'ACTIVATED',
-    DEFERRED_UNSAFE_BOUNDARY: 'DEFERRED_UNSAFE_BOUNDARY',
-    WRONG_PHASE: 'WRONG_PHASE',
-    SOURCE_CHANGED: 'SOURCE_CHANGED',
-    TRANSACTION_CONFLICT: 'TRANSACTION_CONFLICT',
-    DIRECTOR_INIT_FAILED: 'DIRECTOR_INIT_FAILED',
-    DESTROYED: 'DESTROYED'
-});
-
 function syncWorldViewport(target, source = {}) {
     const ww = Number(source.ww);
     const wh = Number(source.wh);
     target.ww = Number.isFinite(ww) ? Math.max(0, ww) : 0;
     target.wh = Number.isFinite(wh) ? Math.max(0, wh) : 0;
     return target;
-}
-
-function requireNonNegativeSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number < 0) {
-        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
-    }
-    return number;
-}
-
-function requirePositiveSafeInteger(value, label) {
-    const number = Number(value);
-    if (!Number.isSafeInteger(number) || number <= 0) {
-        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
-    }
-    return number;
-}
-
-function requireNonEmptyString(value, label) {
-    if (typeof value !== 'string' || value.trim().length === 0) {
-        throw new TypeError(`${label}은 비어 있지 않은 문자열이어야 합니다.`);
-    }
-    return value;
 }
 
 function readBoundedStatusCount(value) {
@@ -231,6 +203,7 @@ function sameExactHandle(left, right) {
  */
 export class GameObjectSystem {
     #coreImpactCleanupBinding;
+    #nextWaveProgression;
 
     constructor(dependencies, options) {
         const inferredMode = options?.sessionMode
@@ -561,13 +534,29 @@ export class GameObjectSystem {
         this.lastWaveQuiescenceSnapshot = null;
         this.lastWaveQuiescenceEvaluation = null;
         this.waveGameplayIngressSealed = false;
-        this.nextWaveTransactions = new Map();
-        this.nextWaveTransactionOrder = new Array(
-            NEXT_WAVE_TRANSACTION_CAPACITY
-        );
-        this.nextWaveTransactionNextIndex = 0;
-        this.nextWaveTransactionSize = 0;
-        this.preparedNextWave = null;
+        this.#nextWaveProgression = new NextWaveProgression({
+            getPreparationContext: () => ({
+                ready: this.initialized
+                    && this.sessionMode === GAME_WORLD_SESSION_MODE.GPU_WORLD
+                    && this.enemyWaveEnabled
+                    && !this.runOutcome.isDefeated(),
+                tileMap: this.tileMap,
+                waveOrdinal: this.waveOrdinal,
+                fixedTickOffset: this.lastCompletedEnemyFixedTick
+            }),
+            captureSafeBoundary: (options) => (
+                this.#captureNextWaveSafeBoundary(options)
+            ),
+            createWaveDirector: (options) => this.#createWaveDirector(options),
+            installPreparedWave: (candidate, options) => (
+                this.#installPreparedWave(candidate, options)
+            ),
+            getWaveStatus: () => this.waveDirector?.getStatus() ?? null,
+            captureEndpointIdentity: () => this.#captureGpuEndpointIdentity(),
+            openGameplayIngress: () => {
+                this.waveGameplayIngressSealed = false;
+            }
+        });
         this.lastTowerCombatFacts = EMPTY_TOWER_COMBAT_FACTS;
         this.lastCoreImpactFacts = EMPTY_CORE_IMPACT_FACTS;
         this.lastCoreOvertimeFacts = EMPTY_CORE_OVERTIME_FACTS;
@@ -1015,283 +1004,18 @@ export class GameObjectSystem {
      * 초기화해 원자 교체합니다. 이 호출은 gameplay ingress를 열지 않습니다.
      */
     prepareNextWave(request = {}) {
-        const transactionId = requireNonEmptyString(
-            request.transactionId,
-            'next Wave transactionId'
-        );
-        const waveOrdinal = requirePositiveSafeInteger(
-            request.waveOrdinal,
-            'next Wave waveOrdinal'
-        );
-        const fixedTickOffset = requireNonNegativeSafeInteger(
-            request.fixedTickOffset,
-            'next Wave fixedTickOffset'
-        );
-        const planFingerprint = requirePositiveSafeInteger(
-            request.planFingerprint,
-            'next Wave planFingerprint'
-        );
-        const waveDefinition = request.waveDefinition;
-        const waveId = requireNonEmptyString(
-            waveDefinition?.waveId,
-            'next Wave waveDefinition.waveId'
-        );
-        const mapId = requireNonEmptyString(
-            waveDefinition?.mapId,
-            'next Wave waveDefinition.mapId'
-        );
-        const intentFingerprint = [
-            mapId,
-            waveId,
-            waveOrdinal,
-            fixedTickOffset,
-            planFingerprint
-        ].join(':');
-        const known = this.nextWaveTransactions.get(transactionId);
-        if (known?.intentFingerprint !== undefined
-            && known.intentFingerprint !== intentFingerprint) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.TRANSACTION_CONFLICT,
-                transactionId,
-                intentFingerprint,
-                mutationCount: 0
-            });
-        }
-        if (known?.prepareReceipt) return known.prepareReceipt;
-        if (this.destroyed) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.DESTROYED,
-                transactionId,
-                intentFingerprint,
-                mutationCount: 0
-            });
-        }
-        if (!this.initialized
-            || this.sessionMode !== GAME_WORLD_SESSION_MODE.GPU_WORLD
-            || !this.enemyWaveEnabled
-            || this.runOutcome.isDefeated()
-            || (this.preparedNextWave !== null
-                && this.preparedNextWave.activationReceipt === null)) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.WRONG_PHASE,
-                transactionId,
-                intentFingerprint,
-                mutationCount: 0
-            });
-        }
-        if (mapId !== this.tileMap?.mapId
-            || waveOrdinal !== this.waveOrdinal + 1
-            || fixedTickOffset !== this.lastCompletedEnemyFixedTick) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.SOURCE_CHANGED,
-                transactionId,
-                intentFingerprint,
-                mutationCount: 0
-            });
-        }
-        const safeBoundary = this.#captureNextWaveSafeBoundary();
-        if (!safeBoundary.accepted) {
-            return Object.freeze({
-                accepted: false,
-                code:
-                    NEXT_WAVE_PROGRESSION_RESULT_CODE
-                        .DEFERRED_UNSAFE_BOUNDARY,
-                transactionId,
-                intentFingerprint,
-                safeBoundary,
-                mutationCount: 0
-            });
-        }
-        this.#rememberNextWaveTransactionIntent(
-            transactionId,
-            intentFingerprint
-        );
-
-        let candidate = null;
-        try {
-            candidate = this.#createWaveDirector({
-                waveDefinition,
-                fixedTickOffset
-            });
-            if (candidate.init(this.tileMap) !== true) {
-                throw new Error('next WaveDirector init이 완료되지 않았습니다.');
-            }
-            const candidateStatus = candidate.getStatus();
-            if (candidateStatus.initialized !== true
-                || candidateStatus.waveId !== waveId
-                || candidateStatus.fixedTickOffset !== fixedTickOffset
-                || candidateStatus.queuedSpawnCount !== 0
-                || candidateStatus.routeAvailabilityVersion !== null) {
-                throw new Error('next WaveDirector 초기 상태가 올바르지 않습니다.');
-            }
-        } catch (error) {
-            try {
-                candidate?.destroy();
-            } catch {
-                // 실패한 candidate만 폐기하고 settled old Wave를 보존합니다.
-            }
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.DIRECTOR_INIT_FAILED,
-                transactionId,
-                intentFingerprint,
-                failure: Object.freeze({
-                    message: String(error?.message ?? error)
-                }),
-                oldWavePreserved: true,
-                mutationCount: 0
-            });
-        }
-
-        const oldWaveDirector = this.waveDirector;
-        const oldWaveId = oldWaveDirector.getStatus().waveId;
-        oldWaveDirector.destroy();
-        this.waveDefinition = waveDefinition;
-        this.waveOrdinal = waveOrdinal;
-        this.waveDirector = candidate;
-        this.waveGameplayIngressSealed = true;
-        this.lastWaveQuiescenceSnapshot = null;
-        this.lastWaveQuiescenceEvaluation = null;
-        this.#refreshHostileParticipation();
-        const endpointIdentity = this.#captureGpuEndpointIdentity();
-        const receipt = Object.freeze({
-            accepted: true,
-            code: NEXT_WAVE_PROGRESSION_RESULT_CODE.PREPARED,
-            transactionId,
-            intentFingerprint,
-            planFingerprint,
-            oldWaveId,
-            waveId,
-            waveOrdinal,
-            fixedTickOffset,
-            earliestSpawnFixedTick: fixedTickOffset + 1,
-            endpointIdentity,
-            sameGpuWorld: true,
-            routeAvailability: safeBoundary.routeAvailability,
-            hostileBaseline: safeBoundary.hostile,
-            gameplayIngressSealed: true,
-            mutationCount: 1
-        });
-        this.preparedNextWave = {
-            transactionId,
-            intentFingerprint,
-            planFingerprint,
-            waveId,
-            waveOrdinal,
-            fixedTickOffset,
-            prepareReceipt: receipt,
-            activationReceipt: null
-        };
-        this.#publishNextWavePrepareReceipt(transactionId, receipt);
-        return receipt;
+        return this.#nextWaveProgression.prepare(request);
     }
 
     /** WaveRun begin이 확정된 뒤에만 prepared Wave의 ingress를 엽니다. */
     activatePreparedNextWave(request = {}) {
-        const transactionId = requireNonEmptyString(
-            request.transactionId,
-            'next Wave activation transactionId'
-        );
-        const planFingerprint = requirePositiveSafeInteger(
-            request.planFingerprint,
-            'next Wave activation planFingerprint'
-        );
-        if (this.destroyed) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.DESTROYED,
-                transactionId,
-                mutationCount: 0
-            });
-        }
-        const known = this.nextWaveTransactions.get(transactionId);
-        const knownPlanFingerprint
-            = known?.activationReceipt?.planFingerprint
-                ?? known?.prepareReceipt?.planFingerprint
-                ?? null;
-        if (knownPlanFingerprint !== null
-            && knownPlanFingerprint !== planFingerprint) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.TRANSACTION_CONFLICT,
-                transactionId,
-                mutationCount: 0
-            });
-        }
-        if (known?.activationReceipt) return known.activationReceipt;
-        const prepared = this.preparedNextWave;
-        if (!prepared) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.WRONG_PHASE,
-                transactionId,
-                mutationCount: 0
-            });
-        }
-        if (prepared.transactionId !== transactionId
-            || prepared.planFingerprint !== planFingerprint) {
-            return Object.freeze({
-                accepted: false,
-                code: NEXT_WAVE_PROGRESSION_RESULT_CODE.TRANSACTION_CONFLICT,
-                transactionId,
-                mutationCount: 0
-            });
-        }
-        if (prepared.activationReceipt) return prepared.activationReceipt;
-        const safeBoundary = this.#captureNextWaveSafeBoundary({
-            requireOldWaveCompleted: false
-        });
-        const status = this.waveDirector?.getStatus() ?? null;
-        if (!safeBoundary.accepted
-            || status?.waveId !== prepared.waveId
-            || status.queuedSpawnCount !== 0
-            || status.fixedTickOffset !== prepared.fixedTickOffset) {
-            return Object.freeze({
-                accepted: false,
-                code:
-                    NEXT_WAVE_PROGRESSION_RESULT_CODE
-                        .DEFERRED_UNSAFE_BOUNDARY,
-                transactionId,
-                safeBoundary,
-                mutationCount: 0
-            });
-        }
-        this.waveGameplayIngressSealed = false;
-        const receipt = Object.freeze({
-            accepted: true,
-            code: NEXT_WAVE_PROGRESSION_RESULT_CODE.ACTIVATED,
-            transactionId,
-            planFingerprint,
-            waveId: prepared.waveId,
-            waveOrdinal: prepared.waveOrdinal,
-            earliestSpawnFixedTick: prepared.fixedTickOffset + 1,
-            endpointIdentity: this.#captureGpuEndpointIdentity(),
-            gameplayIngressSealed: false,
-            mutationCount: 1
-        });
-        prepared.activationReceipt = receipt;
-        this.#publishNextWaveActivationReceipt(transactionId, receipt);
-        return receipt;
+        return this.#nextWaveProgression.activate(request);
     }
 
     getNextWaveProgressionStatus() {
-        const prepared = this.preparedNextWave;
-        return Object.freeze({
-            prepared: prepared !== null,
-            activated: prepared?.activationReceipt !== null
-                && prepared?.activationReceipt !== undefined,
-            transactionId: prepared?.transactionId ?? null,
-            planFingerprint: prepared?.planFingerprint ?? 0,
-            waveId: prepared?.waveId ?? null,
-            waveOrdinal: prepared?.waveOrdinal ?? 0,
-            fixedTickOffset: prepared?.fixedTickOffset ?? 0,
-            gameplayIngressSealed: this.waveGameplayIngressSealed,
-            rememberedTransactionCount: this.nextWaveTransactions.size
-        });
+        return this.#nextWaveProgression.getStatus(
+            this.waveGameplayIngressSealed
+        );
     }
 
     /** defeat 이후에도 presentation이 읽을 수 있는 terminal lifecycle 상태입니다. */
@@ -2874,10 +2598,7 @@ export class GameObjectSystem {
         this.coreOvertimePressureDirector = null;
         this.lastWaveQuiescenceSnapshot = null;
         this.lastWaveQuiescenceEvaluation = null;
-        this.nextWaveTransactions.clear();
-        this.nextWaveTransactionOrder.fill(undefined);
-        this.nextWaveTransactionSize = 0;
-        this.preparedNextWave = null;
+        this.#nextWaveProgression.destroy();
         this.hostileAttackDirector?.destroy();
         this.hostileAttackDirector = null;
         this.pentagonEffectDirector?.destroy();
@@ -3233,6 +2954,20 @@ export class GameObjectSystem {
         return director;
     }
 
+    #installPreparedWave(candidate, { waveDefinition, waveOrdinal }) {
+        const oldWaveDirector = this.waveDirector;
+        const oldWaveId = oldWaveDirector.getStatus().waveId;
+        oldWaveDirector.destroy();
+        this.waveDefinition = waveDefinition;
+        this.waveOrdinal = waveOrdinal;
+        this.waveDirector = candidate;
+        this.waveGameplayIngressSealed = true;
+        this.lastWaveQuiescenceSnapshot = null;
+        this.lastWaveQuiescenceEvaluation = null;
+        this.#refreshHostileParticipation();
+        return oldWaveId;
+    }
+
     #captureNextWaveSafeBoundary({ requireOldWaveCompleted = true } = {}) {
         const wave = this.waveDirector?.getStatus() ?? null;
         const hostile = this.#refreshHostileParticipation();
@@ -3333,38 +3068,6 @@ export class GameObjectSystem {
             deviceGeneration: Number(protocol.deviceGeneration ?? 0),
             authoritativeEpoch: Number(protocol.authoritativeEpoch ?? 0)
         });
-    }
-
-    #rememberNextWaveTransactionIntent(transactionId, intentFingerprint) {
-        if (this.nextWaveTransactions.has(transactionId)) return;
-        if (this.nextWaveTransactionSize === NEXT_WAVE_TRANSACTION_CAPACITY) {
-            const retiredId = this.nextWaveTransactionOrder[
-                this.nextWaveTransactionNextIndex
-            ];
-            this.nextWaveTransactions.delete(retiredId);
-        } else {
-            this.nextWaveTransactionSize++;
-        }
-        this.nextWaveTransactionOrder[this.nextWaveTransactionNextIndex]
-            = transactionId;
-        this.nextWaveTransactionNextIndex = (
-            this.nextWaveTransactionNextIndex + 1
-        ) % NEXT_WAVE_TRANSACTION_CAPACITY;
-        this.nextWaveTransactions.set(transactionId, {
-            intentFingerprint,
-            prepareReceipt: null,
-            activationReceipt: null
-        });
-    }
-
-    #publishNextWavePrepareReceipt(transactionId, receipt) {
-        const record = this.nextWaveTransactions.get(transactionId);
-        if (record) record.prepareReceipt = receipt;
-    }
-
-    #publishNextWaveActivationReceipt(transactionId, receipt) {
-        const record = this.nextWaveTransactions.get(transactionId);
-        if (record) record.activationReceipt = receipt;
     }
 
     #installGpuEndpoint(bundle) {

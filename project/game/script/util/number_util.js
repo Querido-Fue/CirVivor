@@ -88,3 +88,20 @@ export function easeOutCubic(progress) {
     const clamped = clamp01(progress);
     return 1 - Math.pow(1 - clamped, 3);
 }
+
+/** Number 변환 후 범위를 벗어난 안전 정수는 clamp 없이 거절합니다. */
+export function requireNonNegativeSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number < 0) {
+        throw new RangeError(`${label}은 0 이상의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
+
+export function requirePositiveSafeInteger(value, label) {
+    const number = Number(value);
+    if (!Number.isSafeInteger(number) || number <= 0) {
+        throw new RangeError(`${label}은 양의 안전한 정수여야 합니다.`);
+    }
+    return number;
+}
