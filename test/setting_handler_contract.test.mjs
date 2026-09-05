@@ -340,7 +340,7 @@ test('constructor preserves runtime schema defaults and coercion rules', async (
 
     const inheritedSettings = Object.create({ bgmVolume: 80 });
     handler.previewBatch(inheritedSettings);
-    assert.equal(handler.get('bgmVolume'), 80);
+    assert.equal(handler.get('bgmVolume'), 25);
 
     handler.schema = {
         ...handler.schema,
@@ -560,7 +560,7 @@ test('save observes live schema and filePath after deferred directory access and
     );
 });
 
-test('inherited and Proxy setting getters coerce with the replaced schema but assign the captured entry', async () => {
+test('own Proxy setting getters coerce with the replaced schema but assign the captured entry', async () => {
     /**
      * 설정 getter가 schema를 교체하는 두 객체 형태에 같은 경계 검증을 적용합니다.
      * @param {(replaceSchema:() => number) => object} createSettings - 설정 객체 factory입니다.
@@ -591,15 +591,6 @@ test('inherited and Proxy setting getters coerce with the replaced schema but as
         assert.equal(nextSchema.uiScale.value, 88);
     }
 
-    await verifyGetterBoundary((replaceSchema) => {
-        const prototype = {};
-        Object.defineProperty(prototype, 'uiScale', {
-            enumerable: true,
-            get: replaceSchema
-        });
-        return Object.create(prototype);
-    });
-
     await verifyGetterBoundary((replaceSchema) => new Proxy(
         { uiScale: 0 },
         {
@@ -611,6 +602,32 @@ test('inherited and Proxy setting getters coerce with the replaced schema but as
             }
         }
     ));
+});
+
+test('unknown special keys cannot mutate schema prototypes and inherited input getters are ignored', async () => {
+    const harness = await createHarness();
+    const handler = new harness.SettingHandler(harness.dataDir);
+    const prototype = Object.getPrototypeOf(handler.schema);
+    const constructor = prototype.constructor;
+    for (const key of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+        assert.equal(handler.getSchema(key), undefined);
+        await handler.set(key, { injected: true });
+        assert.equal(handler.get(key), undefined);
+    }
+    await handler.setBatch(JSON.parse('{"__proto__":{"injected":true},"constructor":1,"bgmVolume":55}'));
+    assert.equal(Object.hasOwn(prototype, 'value'), false);
+    assert.equal(Object.hasOwn(constructor, 'value'), false);
+    assert.equal(handler.get('bgmVolume'), 55);
+    const inherited = Object.create(null);
+    for (const key of ['theme', 'bgmVolume']) {
+        Object.defineProperty(inherited, key, {
+            enumerable: true,
+            get() { throw new Error('inherited getter must not run'); }
+        });
+    }
+    handler.previewBatch(Object.create(inherited));
+    assert.equal(handler.get('bgmVolume'), 55);
+    assert.equal(handler.get('theme'), 'dark');
 });
 
 test('hidden persistence state is owned by explicit load/set history, not preview', async () => {

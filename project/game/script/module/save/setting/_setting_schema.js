@@ -156,6 +156,7 @@ export class SettingValueCoercer {
      * @returns {*} 보정된 값입니다.
      */
     coerce(schema, key, value) {
+        if (!Object.hasOwn(schema, key)) return value;
         const entry = schema[key];
         if (!entry) return value;
 

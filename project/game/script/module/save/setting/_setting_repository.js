@@ -78,7 +78,7 @@ export class SettingRepository {
         await ensureSaveDirectory(this.#getDataDir(), '설정');
 
         const out = {};
-        for (const key in this.#getSchema()) {
+        for (const key of Object.keys(this.#getSchema())) {
             if (!this.#getSchema()[key].hidden || this.#presentHiddenKeys.has(key)) {
                 out[key] = this.#getSchema()[key].value;
             }

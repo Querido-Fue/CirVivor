@@ -77,8 +77,8 @@ export class SettingHandler {
         let needsSave = migrateLegacySettingData(fileData);
 
         // 스키마 기준으로 값 병합: 파일 값 우선, 없으면 기본값 사용
-        for (const key in this.schema) {
-            if (fileData[key] !== undefined) {
+        for (const key of Object.keys(this.schema)) {
+            if (Object.hasOwn(fileData, key) && fileData[key] !== undefined) {
                 this.schema[key].value = this.#capValue(key, fileData[key]);
                 if (this.schema[key].hidden) {
                     this.#repository.markHiddenKeyPresent(key);
@@ -114,7 +114,7 @@ export class SettingHandler {
      * @returns {*} 현재 설정 값입니다.
      */
     get(key) {
-        return this.schema[key]?.value;
+        return Object.hasOwn(this.schema, key) ? this.schema[key].value : undefined;
     }
 
     /**
@@ -125,7 +125,7 @@ export class SettingHandler {
      * @returns {SettingSchemaEntry} 해당 키의 live 스키마 항목입니다.
      */
     getSchema(key) {
-        return this.schema[key];
+        return Object.hasOwn(this.schema, key) ? this.schema[key] : undefined;
     }
 
     /**
@@ -149,7 +149,7 @@ export class SettingHandler {
      */
     set(key, value) {
 
-        if (!this.schema[key]) return Promise.resolve();
+        if (!Object.hasOwn(this.schema, key)) return Promise.resolve();
         this.#applyValues({ [key]: value }, { markHidden: true });
         return this.save();
     }
@@ -191,7 +191,8 @@ export class SettingHandler {
         const markHidden = options.markHidden !== false;
         const previousTheme = this.schema.theme.value;
         const previousThemeBackground = ColorSchemes.Background;
-        const nextTheme = settings.theme === undefined
+        const hasTheme = Object.hasOwn(settings, 'theme') && settings.theme !== undefined;
+        const nextTheme = !hasTheme
             ? previousTheme
             : this.#capValue('theme', settings.theme);
 
@@ -199,8 +200,8 @@ export class SettingHandler {
             beginThemeTransition(previousThemeBackground);
         }
 
-        for (const key in settings) {
-            if (!this.schema[key]) {
+        for (const key of Object.keys(settings)) {
+            if (!Object.hasOwn(this.schema, key)) {
                 continue;
             }
 
@@ -210,7 +211,7 @@ export class SettingHandler {
             }
         }
 
-        if (settings.theme !== undefined) {
+        if (hasTheme) {
             setTheme(this.schema.theme.value);
         }
     }
