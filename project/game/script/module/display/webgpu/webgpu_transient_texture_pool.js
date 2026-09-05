@@ -311,9 +311,9 @@ export class WebGpuTransientTexturePool {
 
     #trimForAllocation() {
         while (this.entries.size >= this.maxTextures) {
-            const entry = this.#findOldestIdleEntry(
-                this.allowFrameOverflow ? this.frameSerial : null
-            );
+            // release는 같은 descriptor의 재사용만 허용합니다. 현재 encoder가
+            // 참조한 texture의 폐기는 strict capacity에서도 frame 종료까지 미룹니다.
+            const entry = this.#findOldestIdleEntry(this.frameSerial);
             if (!entry) {
                 return;
             }

@@ -655,3 +655,57 @@ test('device.lost는 surface를 비우고 새 device generation으로 한 번 �
     assert.equal(harness.records.deviceDestroyCount, 1);
     assert.equal(harness.records.unconfigureCount, 2);
 });
+
+for (const phase of ['adapter', 'device', 'timestamp-device', 'fallback-device']) {
+    test(`이전 ${phase} 요청의 지연 실패는 재초기화된 device를 무효화하지 않는다`, async () => {
+        const harness = createReadyHarness(2);
+        const { WebGpuPlatformService } = await loadServiceModule();
+        const pending = createDeferred();
+        let adapterRequests = 0;
+        let oldDeviceRequests = 0;
+        const oldAdapter = {
+            ...harness.adapters[0],
+            features: new Set(phase.includes('device') && phase !== 'device'
+                ? ['timestamp-query'] : []),
+            requestDevice() {
+                oldDeviceRequests++;
+                if (phase === 'fallback-device' && oldDeviceRequests === 1) {
+                    return Promise.reject(new Error('optional timestamp unavailable'));
+                }
+                return pending.promise;
+            }
+        };
+        harness.gpu.requestAdapter = async () => {
+            adapterRequests++;
+            return adapterRequests === 1
+                ? phase === 'adapter' ? pending.promise : oldAdapter
+                : harness.adapters[1];
+        };
+        const service = new WebGpuPlatformService({
+            canvas: harness.canvas,
+            navigatorObject: { gpu: harness.gpu },
+            secureContext: true
+        });
+        try {
+            const oldInit = service.init();
+            await flushUntil(() => phase === 'adapter'
+                ? adapterRequests === 1
+                : oldDeviceRequests === (phase === 'fallback-device' ? 2 : 1),
+            '이전 probe 대기');
+            assert.equal((await service.reinitialize()).ready, true);
+            const current = service.getState();
+            pending.reject(new Error('late probe failure'));
+            await oldInit;
+            assert.equal(service.getState().status, 'ready');
+            assert.equal(service.getState().deviceGeneration, current.deviceGeneration);
+            assert.strictEqual(service.getDevice(), harness.devices[1]);
+            assert.equal(harness.records.deviceDestroyCount, 0);
+            assert.equal(oldDeviceRequests, phase === 'adapter' ? 0
+                : phase === 'fallback-device' ? 2 : 1,
+            '취소된 probe는 optional fallback을 새로 시작하면 안 됩니다.');
+            assert.equal(service.clearCanvas(), true);
+        } finally {
+            service.destroy();
+        }
+    });
+}

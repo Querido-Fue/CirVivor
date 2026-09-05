@@ -342,7 +342,12 @@ function createStorageBuffer(device, usage, label, source) {
         size: Math.max(Uint32Array.BYTES_PER_ELEMENT, source.byteLength),
         usage: usage.STORAGE | usage.COPY_DST
     });
-    device.queue.writeBuffer(buffer, 0, source);
+    try {
+        device.queue.writeBuffer(buffer, 0, source);
+    } catch (error) {
+        try { buffer.destroy?.(); } catch { /* retired device */ }
+        throw error;
+    }
     return buffer;
 }
 
@@ -585,116 +590,135 @@ export function createGpuRouteFlowFieldRebuildJob(
     const costByteSize = requireGpuCapabilities(device, generation, atlas);
     const pipelines = getGeneratorPipelines(device);
     const resources = [];
-    const params = device.createBuffer({
-        label: 'cirvivor-route-flow-rebuild-params',
-        size: PARAMS_BYTE_SIZE,
-        usage: usage.UNIFORM | usage.COPY_DST
-    });
-    resources.push(params);
-    const blocked = createStorageBuffer(
-        device,
-        usage,
-        'cirvivor-route-flow-rebuild-blocked',
-        generation.blockedLayers
-    );
-    const goals = createStorageBuffer(
-        device,
-        usage,
-        'cirvivor-route-flow-rebuild-goals',
-        generation.goalCellIndices
-    );
-    const stageLayers = createStorageBuffer(
-        device,
-        usage,
-        'cirvivor-route-flow-rebuild-stage-layers',
-        generation.stageLayerIndices
-    );
-    const costsA = device.createBuffer({
-        label: 'cirvivor-route-flow-rebuild-cost-a',
-        size: costByteSize,
-        usage: usage.STORAGE
-    });
-    const costsB = device.createBuffer({
-        label: 'cirvivor-route-flow-rebuild-cost-b',
-        size: costByteSize,
-        usage: usage.STORAGE
-    });
-    resources.push(blocked, goals, stageLayers, costsA, costsB);
-    const stagingFlowTexture = device.createTexture({
-        label: 'cirvivor-route-flow-rebuild-staging-flow',
-        size: {
-            width: atlas.cols,
-            height: atlas.rows,
-            depthOrArrayLayers: atlas.fieldCount
-        },
-        format: 'rgba32float',
-        usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
-    });
-    const stagingIntegrationTexture = device.createTexture({
-        label: 'cirvivor-route-flow-rebuild-staging-integration',
-        size: {
-            width: atlas.cols,
-            height: atlas.rows,
-            depthOrArrayLayers: atlas.fieldCount
-        },
-        format: 'r32float',
-        usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
-    });
-    resources.push(stagingFlowTexture, stagingIntegrationTexture);
-    const resource = (buffer) => ({ buffer });
-    const seedBindGroup = device.createBindGroup({
-        label: 'cirvivor-route-flow-rebuild-seed-bind-group',
-        layout: pipelines.seed.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: resource(params) },
-            { binding: 1, resource: resource(blocked) },
-            { binding: 2, resource: resource(goals) },
-            { binding: 5, resource: resource(costsA) }
-        ]
-    });
-    const makeRelaxBindGroup = (label, read, write) => device.createBindGroup({
-        label,
-        layout: pipelines.relax.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: resource(params) },
-            { binding: 1, resource: resource(blocked) },
-            { binding: 4, resource: resource(read) },
-            { binding: 5, resource: resource(write) }
-        ]
-    });
-    const relaxAB = makeRelaxBindGroup(
-        'cirvivor-route-flow-rebuild-relax-a-b',
-        costsA,
-        costsB
-    );
-    const relaxBA = makeRelaxBindGroup(
-        'cirvivor-route-flow-rebuild-relax-b-a',
-        costsB,
-        costsA
-    );
-    const finalCosts = generation.relaxationPassCount % 2 === 0
-        ? costsA
-        : costsB;
-    const finalizeBindGroup = device.createBindGroup({
-        label: 'cirvivor-route-flow-rebuild-finalize-bind-group',
-        layout: pipelines.finalize.getBindGroupLayout(0),
-        entries: [
-            { binding: 0, resource: resource(params) },
-            { binding: 1, resource: resource(blocked) },
-            { binding: 3, resource: resource(stageLayers) },
-            { binding: 4, resource: resource(finalCosts) },
-            {
-                binding: 6,
-                resource: stagingFlowTexture.createView({ dimension: '2d-array' })
+    let params;
+    let stagingFlowTexture;
+    let stagingIntegrationTexture;
+    let seedBindGroup;
+    let relaxAB;
+    let relaxBA;
+    let finalizeBindGroup;
+    try {
+        params = device.createBuffer({
+            label: 'cirvivor-route-flow-rebuild-params',
+            size: PARAMS_BYTE_SIZE,
+            usage: usage.UNIFORM | usage.COPY_DST
+        });
+        resources.push(params);
+        const blocked = createStorageBuffer(
+            device,
+            usage,
+            'cirvivor-route-flow-rebuild-blocked',
+            generation.blockedLayers
+        );
+        resources.push(blocked);
+        const goals = createStorageBuffer(
+            device,
+            usage,
+            'cirvivor-route-flow-rebuild-goals',
+            generation.goalCellIndices
+        );
+        resources.push(goals);
+        const stageLayers = createStorageBuffer(
+            device,
+            usage,
+            'cirvivor-route-flow-rebuild-stage-layers',
+            generation.stageLayerIndices
+        );
+        resources.push(stageLayers);
+        const costsA = device.createBuffer({
+            label: 'cirvivor-route-flow-rebuild-cost-a',
+            size: costByteSize,
+            usage: usage.STORAGE
+        });
+        resources.push(costsA);
+        const costsB = device.createBuffer({
+            label: 'cirvivor-route-flow-rebuild-cost-b',
+            size: costByteSize,
+            usage: usage.STORAGE
+        });
+        resources.push(costsB);
+        stagingFlowTexture = device.createTexture({
+            label: 'cirvivor-route-flow-rebuild-staging-flow',
+            size: {
+                width: atlas.cols,
+                height: atlas.rows,
+                depthOrArrayLayers: atlas.fieldCount
             },
-            {
-                binding: 7,
-                resource: stagingIntegrationTexture.createView({
-                    dimension: '2d-array'
-                })
-            }
-        ]
-    });
+            format: 'rgba32float',
+            usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
+        });
+        resources.push(stagingFlowTexture);
+        stagingIntegrationTexture = device.createTexture({
+            label: 'cirvivor-route-flow-rebuild-staging-integration',
+            size: {
+                width: atlas.cols,
+                height: atlas.rows,
+                depthOrArrayLayers: atlas.fieldCount
+            },
+            format: 'r32float',
+            usage: textureUsage.STORAGE_BINDING | textureUsage.COPY_SRC
+        });
+        resources.push(stagingIntegrationTexture);
+        const resource = (buffer) => ({ buffer });
+        seedBindGroup = device.createBindGroup({
+            label: 'cirvivor-route-flow-rebuild-seed-bind-group',
+            layout: pipelines.seed.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: resource(params) },
+                { binding: 1, resource: resource(blocked) },
+                { binding: 2, resource: resource(goals) },
+                { binding: 5, resource: resource(costsA) }
+            ]
+        });
+        const makeRelaxBindGroup = (label, read, write) => device.createBindGroup({
+            label,
+            layout: pipelines.relax.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: resource(params) },
+                { binding: 1, resource: resource(blocked) },
+                { binding: 4, resource: resource(read) },
+                { binding: 5, resource: resource(write) }
+            ]
+        });
+        relaxAB = makeRelaxBindGroup(
+            'cirvivor-route-flow-rebuild-relax-a-b',
+            costsA,
+            costsB
+        );
+        relaxBA = makeRelaxBindGroup(
+            'cirvivor-route-flow-rebuild-relax-b-a',
+            costsB,
+            costsA
+        );
+        const finalCosts = generation.relaxationPassCount % 2 === 0
+            ? costsA
+            : costsB;
+        finalizeBindGroup = device.createBindGroup({
+            label: 'cirvivor-route-flow-rebuild-finalize-bind-group',
+            layout: pipelines.finalize.getBindGroupLayout(0),
+            entries: [
+                { binding: 0, resource: resource(params) },
+                { binding: 1, resource: resource(blocked) },
+                { binding: 3, resource: resource(stageLayers) },
+                { binding: 4, resource: resource(finalCosts) },
+                {
+                    binding: 6,
+                    resource: stagingFlowTexture.createView({ dimension: '2d-array' })
+                },
+                {
+                    binding: 7,
+                    resource: stagingIntegrationTexture.createView({
+                        dimension: '2d-array'
+                    })
+                }
+            ]
+        });
+    } catch (error) {
+        for (const value of resources) {
+            try { value.destroy?.(); } catch { /* retired device */ }
+        }
+        throw error;
+    }
     const totalWorkUnits = atlas.cols * atlas.rows * (
         generation.sourceLayerCount * (1 + generation.relaxationPassCount)
         + atlas.fieldCount
@@ -814,8 +838,11 @@ export function createGpuRouteFlowFieldRebuildJob(
         );
         device.queue.submit([encoder.finish()]);
         complete = true;
-        if (!cancelled) onCommitted?.(availabilityVersion);
-        retireAfterQueue();
+        try {
+            if (!cancelled) onCommitted?.(availabilityVersion);
+        } finally {
+            retireAfterQueue();
+        }
     };
 
     return Object.freeze({

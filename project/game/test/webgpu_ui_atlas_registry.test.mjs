@@ -233,6 +233,45 @@ test('stale generation/frame와 same-generation device drift는 upload 전에 �
     assert.equal(secondGpu.calls.copy.length, 0);
 });
 
+for (const change of ['revision', 'dimensions']) {
+    test(`같은 frame의 UI ${change} 변경은 이전 draw가 참조하는 bitmap을 보존한다`, () => {
+        const gpu = createGpu('frame-revisions');
+        const registry = new WebGpuUiAtlasRegistry({ allowFrameOverflow: true });
+        const source = { width: 4, height: 4 };
+        const input = {
+            context: frame(gpu.device), source, revision: 1,
+            capacityWidth: 8, capacityHeight: 8
+        };
+        try {
+            registry.beginFrame(input.context);
+            const before = registry.getOrUpload(input);
+            if (change === 'revision') input.revision++;
+            else source.width++;
+            const after = registry.getOrUpload(input);
+            assert.notStrictEqual(after.texture, before.texture);
+            assert.notStrictEqual(gpu.calls.copy[0][1].texture, gpu.calls.copy[1][1].texture);
+            assert.strictEqual(registry.getOrUpload(input), after);
+            assert.equal(gpu.calls.copy.length, 2);
+            assert.equal(gpu.calls.destroy, 0);
+            assert.equal(registry.getDiagnostics().retiredEntryCount, 1);
+            registry.endFrame();
+            assert.equal(gpu.calls.destroy, 1);
+
+            input.context = frame(gpu.device, 1, 2);
+            input.revision++;
+            registry.beginFrame(input.context);
+            const nextFrame = registry.getOrUpload(input);
+            assert.strictEqual(nextFrame.texture, after.texture,
+                '제출을 마친 이전 frame의 slot은 재할당 없이 갱신합니다.');
+            assert.equal(gpu.calls.createTexture.length, 2);
+            registry.endFrame();
+        } finally {
+            registry.destroy();
+        }
+        assert.equal(gpu.calls.destroy, 2);
+    });
+}
+
 test('registry source는 canvas 획득/encoder finish/submit/presentation mark를 소유하지 않는다', async () => {
     const sourceText = await import('node:fs/promises').then(({ readFile }) => readFile(
         new URL('../script/module/display/webgpu/webgpu_ui_atlas_registry.js', import.meta.url),

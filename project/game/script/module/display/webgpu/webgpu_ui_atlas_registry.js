@@ -129,7 +129,17 @@ export class WebGpuUiAtlasRegistry {
         const format = requireFormat(input.format ?? DEFAULT_FORMAT);
 
         let entry = this.entries.get(source) ?? null;
+        // 제출 대기 중인 draw는 업로드 당시의 내용을 읽어야 합니다. 같은 frame에
+        // 다시 업로드하면 queue copy가 모든 draw보다 먼저 실행되므로 slot을 분리합니다.
+        const pendingContentChanges = entry
+            && this.frameActive
+            && this.allowFrameOverflow
+            && entry.lastAccessFrameSerial === this.frameSerial
+            && (entry.revision !== revision
+                || entry.sourceWidth !== sourceWidth
+                || entry.sourceHeight !== sourceHeight);
         const allocationRequired = !entry
+            || pendingContentChanges
             || entry.format !== format
             || entry.capacityWidth < capacityWidth
             || entry.capacityHeight < capacityHeight;

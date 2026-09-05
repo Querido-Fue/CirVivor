@@ -474,6 +474,9 @@ export class WebGpuPlatformService {
         try {
             adapter = await gpu.requestAdapter({ powerPreference: 'high-performance' });
         } catch (error) {
+            if (!this.#isProbeCurrent(probeSerial)) {
+                return this.getState();
+            }
             return this.#setUnsupported('adapter-request-failed', error);
         }
         if (!this.#isProbeCurrent(probeSerial)) {
@@ -515,12 +518,18 @@ export class WebGpuPlatformService {
                 }
                 : coreDeviceDescriptor);
         } catch (error) {
+            if (!this.#isProbeCurrent(probeSerial)) {
+                return this.getState();
+            }
             if (!timestampQueryAdvertised) {
                 return this.#setUnsupported('device-request-failed', error);
             }
             try {
                 device = await adapter.requestDevice(coreDeviceDescriptor);
             } catch (fallbackError) {
+                if (!this.#isProbeCurrent(probeSerial)) {
+                    return this.getState();
+                }
                 return this.#setUnsupported('device-request-failed', fallbackError);
             }
         }

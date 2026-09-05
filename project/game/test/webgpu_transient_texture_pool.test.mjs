@@ -319,6 +319,33 @@ test('opt-in frame overflow는 현재 frame idle을 exact 재사용하되 endFra
     pool.destroy();
 });
 
+test('strict capacity도 현재 encoder가 참조한 idle texture를 제출 전에 폐기하지 않는다', async () => {
+    const { WebGpuTransientTexturePool } = await loadPoolModule();
+    const harness = createDevice('strict-frame');
+    const pool = new WebGpuTransientTexturePool({ maxTextures: 1 });
+    try {
+        pool.beginFrame({ device: harness.device, deviceGeneration: 1, frameId: 1 });
+        const first = pool.acquire(createDescriptor());
+        pool.release(first);
+        assert.throws(() => pool.acquire(createDescriptor({ width: 128 })), /capacity를 초과/);
+        assert.equal(harness.records.textures[0].destroyCount, 0);
+        assert.equal(pool.getDiagnostics().textureCount, 1);
+        const reused = pool.acquire(createDescriptor());
+        assert.strictEqual(reused.texture, first.texture);
+        pool.release(reused);
+        pool.endFrame();
+
+        pool.beginFrame({ device: harness.device, deviceGeneration: 1, frameId: 2 });
+        const next = pool.acquire(createDescriptor({ width: 128 }));
+        assert.notStrictEqual(next.texture, first.texture);
+        assert.equal(harness.records.textures[0].destroyCount, 1);
+        pool.release(next);
+        pool.endFrame();
+    } finally {
+        pool.destroy();
+    }
+});
+
 test('destroy는 active texture를 정확히 한 번 폐기하고 stale lease와 이후 사용을 막는다', async () => {
     const { WebGpuTransientTexturePool } = await loadPoolModule();
     const harness = createDevice('device-destroy');

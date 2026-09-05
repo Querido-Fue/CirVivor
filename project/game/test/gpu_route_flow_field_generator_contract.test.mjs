@@ -406,3 +406,106 @@ test('incremental rebuild는 CPU 포화 시 30%/초 credit을 보장하고 여�
         else globalThis.GPUTextureUsage = previousTextureUsage;
     }
 });
+
+function installFlowGpuGlobals(t) {
+    const values = {
+        GPUBufferUsage: { COPY_DST: 1, STORAGE: 2, UNIFORM: 4 },
+        GPUTextureUsage: { STORAGE_BINDING: 8, COPY_SRC: 16 }
+    };
+    for (const [name, value] of Object.entries(values)) {
+        const previous = Object.getOwnPropertyDescriptor(globalThis, name);
+        Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+        t.after(() => {
+            if (previous) Object.defineProperty(globalThis, name, previous);
+            else delete globalThis[name];
+        });
+    }
+}
+
+function createFailureHarness(failureStage, failureIndex = 2) {
+    const resources = [];
+    const calls = new Map();
+    const run = (stage) => {
+        const count = (calls.get(stage) ?? 0) + 1;
+        calls.set(stage, count);
+        if (stage === failureStage && count === failureIndex) {
+            throw new Error(`fixture:${stage}`);
+        }
+    };
+    const allocate = (stage) => {
+        run(stage);
+        const resource = {
+            destroyCount: 0,
+            destroy() { this.destroyCount++; },
+            createView() { run('createView'); return {}; }
+        };
+        resources.push(resource);
+        return resource;
+    };
+    const device = {
+        queue: {
+            writeBuffer() { run('writeBuffer'); },
+            submit() {},
+            onSubmittedWorkDone() { run('queueDone'); return Promise.resolve(); }
+        },
+        createBuffer() { return allocate('createBuffer'); },
+        createTexture() { return allocate('createTexture'); },
+        createShaderModule() { return {}; },
+        createComputePipeline() { return { getBindGroupLayout() { return {}; } }; },
+        createBindGroup() { run('createBindGroup'); return {}; },
+        createCommandEncoder() {
+            return {
+                beginComputePass() {
+                    return { setPipeline() {}, setBindGroup() {}, dispatchWorkgroups() {}, end() {} };
+                },
+                copyTextureToTexture() {},
+                finish() { return {}; }
+            };
+        }
+    };
+    const atlas = {
+        cols: 2, rows: 2, size: 4, fieldCount: 1,
+        gpuGeneration: {
+            version: 2, sourceLayerCount: 1,
+            blockedLayers: new Uint32Array(4),
+            goalCellIndices: new Uint32Array([3]),
+            stageLayerIndices: new Uint32Array([0]),
+            relaxationPassCount: 1
+        }
+    };
+    const texture = { createView() { return {}; }, destroy() { assert.fail('borrowed texture destroyed'); } };
+    return { device, atlas, texture, resources, calls };
+}
+
+for (const mode of ['initial', 'rebuild']) {
+    const failureStages = mode === 'initial' ? ['writeBuffer']
+        : ['createBuffer', 'writeBuffer', 'createTexture', 'createView', 'createBindGroup'];
+    for (const stage of failureStages) {
+        test(`${mode} flow 생성 중 ${stage} 실패는 이미 할당한 GPU 자원을 모두 회수한다`, (t) => {
+            installFlowGpuGlobals(t);
+            const h = createFailureHarness(stage);
+            const generate = mode === 'initial' ? generateGpuRouteFlowFieldTextures
+                : createGpuRouteFlowFieldRebuildJob;
+            assert.throws(() => generate(h.device, h.atlas, h.texture, h.texture,
+                { availabilityVersion: 1 }), new RegExp(`fixture:${stage}`));
+            assert.ok(h.resources.length > 0);
+            assert.ok(h.resources.every((resource) => resource.destroyCount === 1),
+                `${mode}/${stage}: ${h.resources.map((resource) => resource.destroyCount)}`);
+        });
+    }
+}
+
+test('flow publication callback 실패 뒤에도 제출된 임시 자원은 queue 완료 후 회수한다', async (t) => {
+    installFlowGpuGlobals(t);
+    const h = createFailureHarness(null);
+    const job = createGpuRouteFlowFieldRebuildJob(h.device, h.atlas, h.texture, h.texture, {
+        availabilityVersion: 1,
+        onCommitted() { throw new Error('publication fixture'); }
+    });
+    assert.throws(() => job.pump({ elapsedSeconds: 10 }), /publication fixture/);
+    assert.equal(job.getStatus().complete, true);
+    assert.equal(h.calls.get('queueDone'), 1);
+    assert.ok(h.resources.every((resource) => resource.destroyCount === 0));
+    await Promise.resolve();
+    assert.ok(h.resources.every((resource) => resource.destroyCount === 1));
+});
