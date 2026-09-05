@@ -74,6 +74,8 @@ export class BaseUIElement {
     reset() {
         this._stopScaleAnimation();
         this._stopHoverAnimation();
+        this.parent = null;
+        this.shadow = null;
         this.tooltip = null;
         this.#hoverTooltipContent = null;
         this.#isHovering = false;

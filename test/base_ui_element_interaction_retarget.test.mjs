@@ -124,6 +124,13 @@ test('설정 공통 UI 호버·이탈 반복은 같은 scale/hover handle을 spe
     }
 
     const element = new InteractionElement();
+    const previousParent = { session: { name: 'closing-overlay' } };
+    element.init({
+        clickAble: true,
+        parent: previousParent,
+        shadow: { blur: 4, color: 'black' },
+        tooltip: () => previousParent.session.name
+    });
     element.setInteraction(true, false);
     assert.equal(harness.animationRecords.length, 2);
     const [scaleAnimation, hoverAnimation] = harness.animationRecords;
@@ -174,4 +181,16 @@ test('설정 공통 UI 호버·이탈 반복은 같은 scale/hover handle을 spe
     assert.equal(hoverAnimation.removeCount, 1);
     assert.equal(element.scaleAnimId, -1);
     assert.equal(element.hoverAnimId, -1);
+    assert.equal(element.parent, null, 'pooled controls must release their overlay owner');
+    assert.equal(element.shadow, null);
+    assert.equal(element.tooltip, null);
+
+    const nextParent = { session: { name: 'new-overlay' } };
+    element.init({ parent: nextParent });
+    assert.equal(element.parent, nextParent);
+    assert.equal(element.shadow, null);
+    element.reset();
+    assert.equal(element.parent, null);
+    assert.equal(scaleAnimation.removeCount, 1);
+    assert.equal(hoverAnimation.removeCount, 1);
 });
