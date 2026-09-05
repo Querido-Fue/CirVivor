@@ -135,7 +135,7 @@ async function createSaveHarness(overrides = {}) {
     };
 }
 
-test('save 기본값은 data 모듈이 소유하고 파일 helper 실행 소스는 유지된다', async () => {
+test('save 기본값은 data 모듈이 소유한다', async () => {
 
     assert.match(progressSource, /data\/save\/save_defaults\.js/);
     assert.match(ingameSource, /data\/save\/save_defaults\.js/);
@@ -147,7 +147,7 @@ test('save 기본값은 data 모듈이 소유하고 파일 helper 실행 소스�
     assert.deepEqual(Array.from(harness.defaults.INGAME_DEFAULT_DATA.items), []);
 });
 
-test('save file helper는 모든 access 오류를 false로 축약하고 디렉터리 생성 실패를 그대로 전파한다', async () => {
+test('save file helper는 파일 부재와 접근 오류를 구분하고 생성 실패를 전파한다', async () => {
     let accessFailure;
     let mkdirFailure;
     const harness = await createSaveHarness({
@@ -165,20 +165,24 @@ test('save file helper는 모든 access 오류를 false로 축약하고 디렉�
     const { pathExists, ensureSaveDirectory } = harness.helper;
 
     assert.equal(await pathExists('existing'), true);
-    for (const failure of [createFsError('ENOENT'), createFsError('EACCES'), 'primitive rejection']) {
+    accessFailure = createFsError('ENOENT');
+    assert.equal(await pathExists('missing'), false);
+    for (const failure of [createFsError('EACCES'), createFsError('EIO'), 'primitive rejection']) {
         accessFailure = failure;
-        assert.equal(await pathExists(`failed-${String(failure.code ?? failure)}`), false);
+        await assert.rejects(pathExists('inaccessible'), (error) => error === failure);
+        await assert.rejects(ensureSaveDirectory('inaccessible', '테스트'), (error) => error === failure);
     }
+    assert.equal(harness.calls.mkdir.length, 0);
 
     accessFailure = undefined;
     const mkdirCountBeforeExistingPath = harness.calls.mkdir.length;
     assert.equal(await ensureSaveDirectory('accessible-file-path', '테스트'), undefined);
     assert.equal(harness.calls.mkdir.length, mkdirCountBeforeExistingPath);
 
-    accessFailure = createFsError('EIO');
-    assert.equal(await ensureSaveDirectory('missing-or-inaccessible', '테스트'), undefined);
+    accessFailure = createFsError('ENOENT');
+    assert.equal(await ensureSaveDirectory('missing', '테스트'), undefined);
     const [mkdirPath, mkdirOptions] = harness.calls.mkdir.at(-1);
-    assert.equal(mkdirPath, 'missing-or-inaccessible');
+    assert.equal(mkdirPath, 'missing');
     assert.deepEqual(Object.keys(mkdirOptions), ['recursive']);
     assert.equal(mkdirOptions.recursive, true);
 
@@ -386,12 +390,14 @@ test('IngameHandler는 live 단일 키 API와 누락된 최상위 기본값만 �
     assert.equal(await mergeHandler.init(), undefined);
     assert.equal(mergeHandler.getValue('current_level'), 5);
     assert.equal(mergeHandler.getValue('current_xp'), 0);
-    assert.equal(mergeHandler.getValue('items'), mergeHandler.defaultData.items);
+    assert.notEqual(mergeHandler.getValue('items'), mergeHandler.defaultData.items);
     assert.equal(mergeHandler.getValue('profile').existing, 9);
     assert.equal('nestedDefault' in mergeHandler.getValue('profile'), false);
     assert.equal(mergeHarness.calls.writeFile.length, 1);
     assert.equal(mergeHarness.calls.writeFile[0][0], 'save/ingame.dat');
     assert.equal(mergeHarness.calls.writeFile[0][1], JSON.stringify(mergeHandler.getData(), null, 4));
+    mergeHandler.getValue('items').push('live-item');
+    assert.deepEqual(Array.from(mergeHandler.defaultData.items), []);
 });
 
 test('IngameHandler.init은 파일 부재, 파싱 오류, 배열 root와 보완 저장 실패의 실제 경계를 보존한다', async () => {
@@ -409,7 +415,7 @@ test('IngameHandler.init은 파일 부재, 파싱 오류, 배열 root와 보완 
     assert.notEqual(missingHandler.getValue('items'), missingHandler.defaultData.items);
     assert.equal(missingHarness.calls.writeFile.length, 1);
 
-    for (const invalidPayload of ['{invalid json', 'null']) {
+    for (const invalidPayload of ['{invalid json', 'null', '[]', '1', 'false', '"text"']) {
         const harness = await createSaveHarness({ readFile: async () => invalidPayload });
         const handler = new harness.ingame.IngameHandler('save');
         assert.equal(await handler.init(), undefined);
@@ -422,15 +428,6 @@ test('IngameHandler.init은 파일 부재, 파싱 오류, 배열 root와 보완 
         assert.equal(harness.calls.consoleError[0][0], '인게임 데이터 로드 실패:');
     }
 
-    const arrayHarness = await createSaveHarness({ readFile: async () => '[]' });
-    const arrayHandler = new arrayHarness.ingame.IngameHandler('save');
-    assert.equal(await arrayHandler.init(), undefined);
-    assert.equal(Array.isArray(arrayHandler.getData()), true);
-    assert.equal(arrayHandler.getValue('current_level'), 0);
-    assert.equal(arrayHandler.getValue('items'), arrayHandler.defaultData.items);
-    assert.equal(arrayHarness.calls.writeFile.length, 1);
-    assert.equal(arrayHarness.calls.writeFile[0][1], '[]');
-
     const repairWriteFailure = createFsError('ENOSPC');
     const repairHarness = await createSaveHarness({
         readFile: async () => '{"current_level": 9}',
@@ -438,14 +435,30 @@ test('IngameHandler.init은 파일 부재, 파싱 오류, 배열 root와 보완 
     });
     const repairHandler = new repairHarness.ingame.IngameHandler('save');
     assert.equal(await repairHandler.init(), undefined);
-    assert.equal(repairHandler.getValue('current_level'), 0);
+    assert.equal(repairHandler.getValue('current_level'), 9);
     assert.equal(repairHandler.getValue('current_xp'), 0);
     assert.notEqual(repairHandler.getValue('items'), repairHandler.defaultData.items);
-    assert.equal(repairHarness.calls.consoleError.length, 2);
+    assert.equal(repairHarness.calls.consoleError.length, 1);
     assert.equal(repairHarness.calls.consoleError[0][0], '인게임 데이터 저장 실패:');
     assert.equal(repairHarness.calls.consoleError[0][1], repairWriteFailure);
-    assert.equal(repairHarness.calls.consoleError[1][0], '인게임 데이터 로드 실패:');
-    assert.equal(repairHarness.calls.consoleError[1][1], repairWriteFailure);
+});
+
+test('저장 접근 실패는 기존 파일을 기본값으로 덮어쓰지 않고 특수 키는 prototype을 변경하지 않는다', async () => {
+    const denied = createFsError('EACCES');
+    const harness = await createSaveHarness({ access: async () => { throw denied; } });
+    for (const Handler of [harness.ingame.IngameHandler, harness.progress.ProgressHandler]) {
+        await assert.rejects(new Handler('save').init(), (error) => error === denied);
+    }
+    assert.equal(harness.calls.writeFile.length, 0);
+    assert.equal(harness.calls.mkdir.length, 0);
+
+    const handler = new harness.ingame.IngameHandler('save');
+    const prototype = Object.getPrototypeOf(handler.getData());
+    assert.equal(handler.getValue('constructor'), undefined);
+    handler.setData('__proto__', { injected: true });
+    assert.equal(Object.getPrototypeOf(handler.getData()), prototype);
+    assert.equal(handler.getValue('injected'), undefined);
+    assert.equal(handler.getValue('__proto__').injected, true);
 });
 
 test('IngameHandler.save는 JSON 직렬화 예외와 파일 쓰기 실패 순서를 보존한다', async () => {

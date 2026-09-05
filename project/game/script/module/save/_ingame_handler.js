@@ -28,8 +28,8 @@ export class IngameHandler {
      * @private
      * JSON 파일을 로드하고 값이 `undefined`인 기본 최상위 키만 직접 보완합니다.
      * 중첩 병합은 하지 않으며 `null`·`false`·`0`과 알 수 없는 키는 보존합니다.
-     * 보완한 기본 배열·객체는 `defaultData`의 값과 같은 참조이고, 보완이 있으면 파일을 다시 저장합니다.
-     * 읽기·파싱·병합·자동 보완 저장 실패 시 메모리를 기본 데이터 복사본으로 교체하므로 이전 live 참조는 stale 상태가 됩니다.
+     * JSON 최상위 값은 객체여야 하며, 보완한 기본 배열·객체는 독립 사본입니다.
+     * 읽기·파싱 실패는 메모리를 기본값으로 복구하지만 보완 저장 실패는 정상 로드한 데이터를 유지합니다.
      * @returns {Promise<void>} 로드 또는 파일 부재 시 기본 데이터 저장이 끝나면 이행됩니다.
      */
     async #load() {
@@ -38,23 +38,28 @@ export class IngameHandler {
         if (fileExists) {
             try {
                 this.data = JSON.parse(await fsPromises.readFile(this.filePath, 'utf-8'));
-
-                // 병합 로직 (새로운 키가 추가되었을 경우를 대비)
-                let updated = false;
-                for (const key in this.defaultData) {
-                    if (this.data[key] === undefined) {
-                        this.data[key] = this.defaultData[key];
-                        updated = true;
-                    }
+                if (!this.data || typeof this.data !== 'object' || Array.isArray(this.data)) {
+                    throw new TypeError('인게임 저장 데이터의 최상위 값은 객체여야 합니다.');
                 }
-
-                if (updated) {
-                    await this.save();
-                }
-
             } catch (e) {
                 console.error('인게임 데이터 로드 실패:', e);
                 this.data = cloneJsonData(this.defaultData);
+                return;
+            }
+
+            let updated = false;
+            for (const key of Object.keys(this.defaultData)) {
+                if (!Object.hasOwn(this.data, key) || this.data[key] === undefined) {
+                    this.setData(key, cloneJsonData(this.defaultData[key]));
+                    updated = true;
+                }
+            }
+            if (updated) {
+                try {
+                    await this.save();
+                } catch {
+                    // save()가 오류를 기록했습니다. 읽기에 성공한 진행 상태는 유지합니다.
+                }
             }
         } else {
             this.data = cloneJsonData(this.defaultData);
@@ -97,7 +102,12 @@ export class IngameHandler {
      * @returns {void}
      */
     setData(key, value) {
-        this.data[key] = value;
+        Object.defineProperty(this.data, key, {
+            value,
+            writable: true,
+            enumerable: true,
+            configurable: true
+        });
     }
 
     /**
@@ -106,6 +116,6 @@ export class IngameHandler {
      * @returns {*} 해당하는 인게임 값 또는 live 객체·배열 참조입니다.
      */
     getValue(key) {
-        return this.data[key];
+        return Object.hasOwn(this.data, key) ? this.data[key] : undefined;
     }
 }

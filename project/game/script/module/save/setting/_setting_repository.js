@@ -27,8 +27,8 @@ export class SettingRepository {
     }
 
     /**
-     * 설정 파일을 읽고 파싱합니다. 파일이 없거나 읽기에 실패하면 빈 객체와 `false`를 반환합니다.
-     * 읽기 실패는 기존 설정 로드 계약에 맞춰 기록하되 호출을 거부하지 않습니다.
+     * 설정 파일을 읽고 파싱합니다. 파일 부재나 잘못된 JSON 객체는 기본값으로 복구합니다.
+     * I/O 오류는 기존 설정을 덮어쓰지 않도록 기록한 뒤 전파합니다.
      * @returns {Promise<{fileData: Record<string, *>, fileExists: boolean}>} 파일 데이터와 유효한 파일 존재 여부입니다.
      */
     async load() {
@@ -36,10 +36,21 @@ export class SettingRepository {
         let fileExists = await pathExists(this.#getFilePath());
 
         if (fileExists) {
+            let source;
             try {
-                fileData = JSON.parse(await fsPromises.readFile(this.#getFilePath(), 'utf-8'));
+                source = await fsPromises.readFile(this.#getFilePath(), 'utf-8');
             } catch (error) {
                 console.error("설정 파일 로드 실패:", error);
+                throw error;
+            }
+            try {
+                fileData = JSON.parse(source);
+                if (!fileData || typeof fileData !== 'object' || Array.isArray(fileData)) {
+                    throw new TypeError('설정 파일의 최상위 값은 객체여야 합니다.');
+                }
+            } catch (error) {
+                console.error("설정 파일 로드 실패:", error);
+                fileData = {};
                 fileExists = false;
             }
         }

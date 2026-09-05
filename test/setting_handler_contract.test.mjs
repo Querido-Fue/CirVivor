@@ -126,7 +126,7 @@ async function createHarness({
             await accessHook?.(targetPath);
             if (accessError) throw accessError;
             if (!files.has(targetPath) && !directories.has(targetPath)) {
-                throw new Error(`ENOENT: ${targetPath}`);
+                throw Object.assign(new Error(`ENOENT: ${targetPath}`), { code: 'ENOENT' });
             }
         },
         async readFile(targetPath, encoding) {
@@ -694,7 +694,7 @@ test('theme transition and application happen before persistence while unrelated
     assert.equal(harness.trace.some(([name]) => name === 'theme'), false);
 });
 
-test('malformed JSON falls back to defaults while a null JSON root rejects before save or theme', async () => {
+test('malformed JSON and non-object roots recover valid defaults before applying the theme', async () => {
     const malformedHarness = await createHarness({ initialFile: '{' });
     const malformedHandler = new malformedHarness.SettingHandler(
         malformedHarness.dataDir
@@ -713,21 +713,17 @@ test('malformed JSON falls back to defaults while a null JSON root rejects befor
         ['write', 'theme']
     );
 
-    const nullRootHarness = await createHarness({ initialFile: 'null' });
-    const nullRootHandler = new nullRootHarness.SettingHandler(
-        nullRootHarness.dataDir
-    );
+    for (const initialFile of ['null', '[]', 'true', '1', '"text"']) {
+        const nullRootHarness = await createHarness({ initialFile });
+        const nullRootHandler = new nullRootHarness.SettingHandler(
+            nullRootHarness.dataDir
+        );
 
-    await assert.rejects(
-        nullRootHandler.init(),
-        (error) => error?.name === 'TypeError'
-    );
-    assert.equal(
-        nullRootHarness.trace.some(
-            ([name]) => name === 'write' || name === 'theme'
-        ),
-        false
-    );
+        await nullRootHandler.init();
+        assert.equal(nullRootHarness.errors.length, 1);
+        assert.equal(readPersistedSettings(nullRootHarness).theme, 'dark');
+        assert.equal(nullRootHarness.trace.at(-1)[0], 'theme');
+    }
 });
 
 test('load/save failures preserve logging, rejection, and init theme ordering contracts', async () => {
@@ -738,13 +734,13 @@ test('load/save failures preserve logging, rejection, and init theme ordering co
     });
     const loadHandler = new loadHarness.SettingHandler(loadHarness.dataDir);
 
-    await loadHandler.init();
+    await assert.rejects(loadHandler.init(), (error) => error === readFailure);
     assert.equal(loadHarness.errors.length, 1);
     assert.equal(loadHarness.errors[0][0], '설정 파일 로드 실패:');
     assert.equal(loadHarness.errors[0][1], readFailure);
     assert.deepEqual(
         eventNames(loadHarness.trace.filter(([name]) => name === 'write' || name === 'theme')),
-        ['write', 'theme']
+        []
     );
 
     const writeFailure = new Error('write failed');
@@ -765,25 +761,25 @@ test('load/save failures preserve logging, rejection, and init theme ordering co
     assert.equal(stringifyHarness.errors.at(-1)[1]?.name, 'TypeError');
 });
 
-test('directory access errors collapse into mkdir while mkdir errors keep their log and identity', async () => {
+test('directory access failures prevent writes and missing-directory creation failures propagate', async () => {
     const accessFailure = new Error('access failed');
     const accessHarness = await createHarness({ accessError: accessFailure });
     const accessHandler = new accessHarness.SettingHandler(accessHarness.dataDir);
 
-    await accessHandler.save();
+    await assert.rejects(accessHandler.save(), (error) => error === accessFailure);
     assert.deepEqual(
         eventNames(
             accessHarness.trace.filter(
                 ([name]) => name === 'access' || name === 'mkdir' || name === 'write'
             )
         ),
-        ['access', 'mkdir', 'write']
+        ['access']
     );
     assert.deepEqual(accessHarness.errors, []);
 
     const mkdirFailure = new Error('mkdir failed');
     const mkdirHarness = await createHarness({
-        accessError: new Error('access still fails'),
+        accessError: Object.assign(new Error('missing'), { code: 'ENOENT' }),
         mkdirError: mkdirFailure
     });
     const mkdirHandler = new mkdirHarness.SettingHandler(mkdirHarness.dataDir);
