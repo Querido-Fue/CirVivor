@@ -3,6 +3,7 @@ import test from 'node:test';
 import { loadGameModule } from './support/source_module_loader.mjs';
 
 const { renderDrawText } = await loadGameModule('display/draw_2d_shapes.js');
+const { getCanvasTextVerticalMetricOffset } = await loadGameModule('util/font_util.js');
 
 /**
  * 지정한 font 메트릭을 반환하고 실제 draw 좌표를 기록하는 context stub을 만듭니다.
@@ -103,4 +104,32 @@ test('폰트 박스 메트릭이 없거나 alphabetic 기준선이면 좌표를 
 
     assert.deepEqual(noMetricsContext.fillTextCalls, [['저장', 10, 20]]);
     assert.deepEqual(alphabeticContext.fillTextCalls, [['저장', 10, 20]]);
+});
+
+test('연속 크기 변경의 글꼴 메트릭 캐시는 오래된 항목을 버리고 같은 값으로 재측정한다', () => {
+    let measurements = 0;
+    const context = {
+        font: '12px sans-serif', textBaseline: 'middle',
+        measureText() {
+            measurements++;
+            const size = Number.parseFloat(this.font);
+            return { fontBoundingBoxAscent: size * 0.8, fontBoundingBoxDescent: size * 0.2 };
+        }
+    };
+    const firstOffset = getCanvasTextVerticalMetricOffset(context);
+    assert.equal(getCanvasTextVerticalMetricOffset(context), firstOffset);
+    assert.equal(measurements, 1);
+    for (let size = 13; size <= 2048; size++) {
+        context.font = `${size}px sans-serif`;
+        const expected = (size * 0.8 - size * 0.2) * 0.5;
+        assert.equal(getCanvasTextVerticalMetricOffset(context), expected);
+    }
+    const beforeRepeat = measurements;
+    getCanvasTextVerticalMetricOffset(context);
+    assert.equal(measurements, beforeRepeat, 'recent font should remain cached');
+    context.font = '12px sans-serif';
+    assert.equal(getCanvasTextVerticalMetricOffset(context), firstOffset);
+    assert.equal(measurements, beforeRepeat + 1, 'old font should have been evicted');
+    assert.equal(getCanvasTextVerticalMetricOffset(context), firstOffset);
+    assert.equal(measurements, beforeRepeat + 1);
 });

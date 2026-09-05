@@ -3,6 +3,7 @@ const DEFAULT_FONT_SIZE_PX = 12;
 const VERTICAL_METRIC_BASELINES = Object.freeze(new Set(['top', 'middle']));
 const FONT_SIZE_PATTERN = /(?:^|\s)(\d+(?:\.\d+)?)px(?:\s|\/)/;
 const FONT_METRIC_SAMPLE_TEXT = '가';
+const MAX_VERTICAL_METRIC_OFFSETS_PER_CONTEXT = 256;
 let verticalMetricOffsetCacheByContext = new WeakMap();
 let observedFontSet = null;
 let observedFontSetStatus = '';
@@ -93,6 +94,11 @@ export function getCanvasTextVerticalMetricOffset(context, requestedBaseline) {
         if (!contextCache) {
             contextCache = new Map();
             verticalMetricOffsetCacheByContext.set(context, contextCache);
+        }
+        // Animated sizes and window resizes produce new font strings on a
+        // long-lived canvas. Keep a bounded recent working set per context.
+        if (contextCache.size >= MAX_VERTICAL_METRIC_OFFSETS_PER_CONTEXT) {
+            contextCache.delete(contextCache.keys().next().value);
         }
         contextCache.set(cacheKey, offset);
     }
