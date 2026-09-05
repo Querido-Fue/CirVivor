@@ -7,6 +7,10 @@ const gameObjectSystemUrl = new URL(
     '../project/game/script/module/ingame/object/game_object_system.js',
     import.meta.url
 );
+const terminalEvidenceUrl = new URL(
+    '../project/game/script/module/ingame/object/gpu_world_terminal_evidence.js',
+    import.meta.url
+);
 const lifecycleOwnerUrl = new URL(
     '../project/game/script/module/ingame/object/enemy/enemy_lifecycle_command_owner.js',
     import.meta.url
@@ -38,7 +42,8 @@ const [
     formationShaderSource,
     routeRuntimeShaderSource,
     simulationSource,
-    endpointSource
+    endpointSource,
+    terminalEvidenceSource
 ] = await Promise.all([
     readFile(fileURLToPath(gameObjectSystemUrl), 'utf8'),
     readFile(fileURLToPath(lifecycleOwnerUrl), 'utf8'),
@@ -46,7 +51,8 @@ const [
     readFile(fileURLToPath(formationShaderUrl), 'utf8'),
     readFile(fileURLToPath(routeRuntimeShaderUrl), 'utf8'),
     readFile(fileURLToPath(simulationUrl), 'utf8'),
-    readFile(fileURLToPath(endpointUrl), 'utf8')
+    readFile(fileURLToPath(endpointUrl), 'utf8'),
+    readFile(fileURLToPath(terminalEvidenceUrl), 'utf8')
 ]);
 
 function assertOrdered(source, labels) {
@@ -131,6 +137,13 @@ test('terminal은 Director close 후 endpoint ingress를 닫고 owner/backend/cl
         sealStart
     );
     const sealSource = gameObjectSource.slice(sealStart, sealEnd);
+    assertOrdered(sealSource, [
+        'inspectGpuWorldTerminalEvidence',
+        'corkRouteClosureDirector: this.corkRouteClosureDirector',
+        'if (failure !== null)',
+        '#sealTerminalFailure',
+        'finalizeClosedGameplayIngress'
+    ]);
     for (const marker of [
         'getTerminalRouteAvailabilityProgramCancelStatus',
         'routeAvailabilityTerminal?.owner',
@@ -141,7 +154,7 @@ test('terminal은 Director close 후 endpoint ingress를 닫고 owner/backend/cl
         "'terminal-route-availability-settlement'",
         "'terminal-route-availability-roster-seal'"
     ]) {
-        assert.ok(sealSource.includes(marker), `terminal route evidence 누락: ${marker}`);
+        assert.ok(terminalEvidenceSource.includes(marker), `terminal route evidence 누락: ${marker}`);
     }
 });
 

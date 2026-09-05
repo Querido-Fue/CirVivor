@@ -27,8 +27,8 @@ const {
 const {
     GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION
 } = await loadGameModule('ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js');
-const gameObjectSystemSource = await readFile(
-    new URL('../project/game/script/module/ingame/object/game_object_system.js', import.meta.url),
+const terminalEvidenceSource = await readFile(
+    new URL('../project/game/script/module/ingame/object/gpu_world_terminal_evidence.js', import.meta.url),
     'utf8'
 );
 
@@ -848,15 +848,15 @@ test('Core depletion은 RunFailed 한 번, public ingress 즉시 gate, 마지막
 });
 
 test('Capture terminal success gate는 owner/backend/runtime의 exact final tuple만 허용한다', () => {
-    const gateStart = gameObjectSystemSource.indexOf(
+    const gateStart = terminalEvidenceSource.indexOf(
         'const projectileCaptureSettlementSubmitted'
     );
-    const gateEnd = gameObjectSystemSource.indexOf(
+    const gateEnd = terminalEvidenceSource.indexOf(
         'const projectileCaptureRosterSealed',
         gateStart
     );
     assert.ok(gateStart >= 0 && gateEnd > gateStart);
-    const gateSource = gameObjectSystemSource.slice(gateStart, gateEnd);
+    const gateSource = terminalEvidenceSource.slice(gateStart, gateEnd);
 
     for (const exactGate of [
         /projectileCaptureOwnerEvidence\.abiVersion[\s\S]*?=== GPU_PROJECTILE_CAPTURE_RUNTIME_ABI_VERSION/,
