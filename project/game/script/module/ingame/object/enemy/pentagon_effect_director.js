@@ -1,3 +1,4 @@
+import { pushMinHeap, popMinHeap } from 'util/min_heap.js';
 import {
     ENEMY_CAPABILITY_ID,
     hasEnemyCapability
@@ -91,47 +92,6 @@ function createEmptyStageResult(fixedTick = 0) {
     });
 }
 
-function pushMinHeap(heap, entry, compare) {
-    let index = heap.length;
-    heap.push(entry);
-    while (index > 0) {
-        const parentIndex = (index - 1) >> 1;
-        const parent = heap[parentIndex];
-        if (compare(parent, entry) <= 0) {
-            break;
-        }
-        heap[index] = parent;
-        index = parentIndex;
-    }
-    heap[index] = entry;
-}
-
-function popMinHeap(heap, compare) {
-    if (heap.length === 0) return null;
-    const root = heap[0];
-    const tail = heap.pop();
-    if (heap.length === 0) return root;
-    let index = 0;
-    const halfLength = heap.length >> 1;
-    while (index < halfLength) {
-        let childIndex = (index << 1) + 1;
-        let child = heap[childIndex];
-        const rightIndex = childIndex + 1;
-        if (rightIndex < heap.length
-            && compare(heap[rightIndex], child) < 0) {
-            childIndex = rightIndex;
-            child = heap[rightIndex];
-        }
-        if (compare(tail, child) <= 0) {
-            break;
-        }
-        heap[index] = child;
-        index = childIndex;
-    }
-    heap[index] = tail;
-    return root;
-}
-
 function comparePulseScheduleEntry(left, right) {
     return left.nextPulseTick - right.nextPulseTick
         || left.entityId - right.entityId
@@ -177,6 +137,8 @@ function mergeSortedPulseEntries(leftEntries, rightEntries) {
  * Effect instance/summary/pose는 GPU authority이며 roster는 bounded SoA입니다.
  */
 export class PentagonEffectDirector {
+    #pendingPulseCount = 0;
+
     constructor(options = {}) {
         this.endpoint = assertEndpoint(options.endpoint);
         this.registry = assertRegistry(
@@ -520,7 +482,7 @@ export class PentagonEffectDirector {
                 }
                 this.pulseSequences[plan.index] = plan.nextSequence;
                 this.pendingTicks[plan.index] = 0;
-                this.pendingPhases[plan.index] = PULSE_PENDING_PHASE.NONE;
+                this.#setPendingPhase(plan.index, PULSE_PENDING_PHASE.NONE);
                 this.consecutiveDeferCounts[plan.index]
                     = plan.consecutiveDeferCount;
                 this.#schedulePulseAt(plan.index, plan.nextPulseTick);
@@ -800,7 +762,7 @@ export class PentagonEffectDirector {
                 break;
             }
             this.pendingTicks[index] = tick;
-            this.pendingPhases[index] = PULSE_PENDING_PHASE.QUEUED;
+            this.#setPendingPhase(index, PULSE_PENDING_PHASE.QUEUED);
         }
         this.nextDueCursor = dueCount <= stagedEntries.length
             ? 0
@@ -878,7 +840,7 @@ export class PentagonEffectDirector {
                     throw new RangeError('Effect program command identity가 중복 또는 불일치합니다.');
                 }
                 observedCommandIds.add(program.commandId);
-                this.pendingPhases[index] = PULSE_PENDING_PHASE.SUBMITTED;
+                this.#setPendingPhase(index, PULSE_PENDING_PHASE.SUBMITTED);
             }
             if (observedCommandIds.size !== expectedCount) {
                 throw new RangeError('Effect program commit count가 정확하지 않습니다.');
@@ -920,7 +882,7 @@ export class PentagonEffectDirector {
         this.staleSubmittedCommandById.clear();
         for (let index = 0; index < this.count; index++) {
             this.pendingTicks[index] = 0;
-            this.pendingPhases[index] = PULSE_PENDING_PHASE.NONE;
+            this.#setPendingPhase(index, PULSE_PENDING_PHASE.NONE);
         }
         this.pulseScheduleHeap.length = 0;
         this.duePulseBacklog.length = 0;
@@ -956,17 +918,11 @@ export class PentagonEffectDirector {
     }
 
     getStatus() {
-        let pendingPulseCount = 0;
-        for (let index = 0; index < this.count; index++) {
-            pendingPulseCount += this.pendingPhases[index] === PULSE_PENDING_PHASE.NONE
-                ? 0
-                : 1;
-        }
         return Object.freeze({
             sessionGeneration: this.sessionGeneration,
             capacity: this.capacity,
             activeEmitterCount: this.count,
-            pendingPulseCount,
+            pendingPulseCount: this.#pendingPulseCount,
             pendingBatchCount: this.pendingBatchIdByTick.size,
             pendingStaleCompletionCount: this.staleSubmittedCommandById.size,
             lastCompletedSourceTick: this.lastCompletedSourceTick,
@@ -1139,6 +1095,7 @@ export class PentagonEffectDirector {
         }
         this.indexByExactHandle.delete(removedKey);
         this.indexByEntityId.delete(removedEntityId);
+        this.#setPendingPhase(index, PULSE_PENDING_PHASE.NONE);
         if (index !== lastIndex) {
             this.entityIds[index] = this.entityIds[lastIndex];
             this.incarnations[index] = this.incarnations[lastIndex];
@@ -1287,6 +1244,7 @@ export class PentagonEffectDirector {
         this.pulseSequences.fill(0);
         this.pendingTicks.fill(0);
         this.pendingPhases.fill(PULSE_PENDING_PHASE.NONE);
+        this.#pendingPulseCount = 0;
         this.consecutiveDeferCounts.fill(0);
         this.scheduleVersions.fill(0);
         this.lastLivenessAuditTicks.fill(0);
@@ -1299,6 +1257,13 @@ export class PentagonEffectDirector {
         this.sourceAuditIterator = null;
         this.count = 0;
         this.nextDueCursor = 0;
+    }
+
+    #setPendingPhase(index, phase) {
+        const wasPending = this.pendingPhases[index] !== PULSE_PENDING_PHASE.NONE;
+        const isPending = phase !== PULSE_PENDING_PHASE.NONE;
+        this.#pendingPulseCount += Number(isPending) - Number(wasPending);
+        this.pendingPhases[index] = phase;
     }
 
     #schedulePulseAt(index, nextPulseTick) {

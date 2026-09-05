@@ -145,11 +145,28 @@ test('Pentagon pulse admission은 4-slot 예산을 tick별로 나누고 due sour
     assert.equal(status.telemetry.maximumStagedPulseCount, 2);
     assert.equal(status.telemetry.quotaDeferredPulseCount, 6);
     assert.equal(status.telemetry.capacityRejectedStageCount, 0);
+    assert.equal(status.pendingPulseCount, 6);
     assert.equal(status.recoveryRequired, false);
     assert.ok(
         livenessProbeCount <= 12,
         `bounded liveness audit budget을 초과했습니다: ${livenessProbeCount}`
     );
+    const phases = director.pendingPhases;
+    let phaseReads = 0;
+    director.pendingPhases = new Proxy(phases, {
+        get(target, property) {
+            if (/^[0-9]+$/.test(String(property))) phaseReads++;
+            return Reflect.get(target, property, target);
+        }
+    });
+    for (let sample = 0; sample < 20; sample++) {
+        assert.equal(director.getStatus().pendingPulseCount, 6);
+    }
+    director.pendingPhases = phases;
+    assert.equal(phaseReads, 0, 'status polling must not scan the emitter roster');
+    director.closeForTerminal(124);
+    assert.equal(director.getStatus().pendingPulseCount, 0);
+    director.destroy();
 });
 
 test('Pentagon pulse schedule은 dense swap despawn 뒤 moved exact handle을 유지한다', () => {
@@ -232,7 +249,16 @@ test('Pentagon pulse schedule은 dense swap despawn 뒤 moved exact handle을 �
             .sort((left, right) => left - right)
     );
     assert.equal(director.getStatus().activeEmitterCount, 2);
+    assert.equal(director.getStatus().pendingPulseCount, 2);
+    registry.remove(handles[1]);
+    bodyKeys.delete(`${handles[1].entityId}:${handles[1].incarnation}`);
+    director.observeLifecycle({ despawned: [{ handle: handles[1] }] }, 123);
+    assert.equal(director.getStatus().pendingPulseCount, 1);
+    assert.equal(director.getStatus().activeEmitterCount, 1);
+    director.resetGpuBinding();
+    assert.equal(director.getStatus().pendingPulseCount, 0);
     assert.equal(director.requiresRecovery(), false);
+    director.destroy();
 });
 
 test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후 점진 회복한다', () => {
@@ -293,6 +319,7 @@ test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후
 
     const firstStage = director.stageForFixedTick({ targetFixedTick: 121 });
     assert.equal(firstStage.stagedCount, 4);
+    assert.equal(director.getStatus().pendingPulseCount, 4);
     const firstCommands = requests[0].commands;
     director.observeFixedCommit({
         recoveryRequired: false,
@@ -307,6 +334,7 @@ test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후
             }))
         }
     }, 121);
+    assert.equal(director.getStatus().pendingPulseCount, 4);
     director.observeCompletedEvents({
         fixedTick: 122,
         protocolFailure: null,
@@ -323,9 +351,11 @@ test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후
         }))
     });
     assert.equal(director.getStatus().currentPulseProgramsPerFixedTick, 2);
+    assert.equal(director.getStatus().pendingPulseCount, 0);
 
     const reducedStage = director.stageForFixedTick({ targetFixedTick: 122 });
     assert.equal(reducedStage.stagedCount, 2);
+    assert.equal(director.getStatus().pendingPulseCount, 2);
     const reducedCommands = requests[1].commands;
     assert.deepEqual(
         reducedCommands.map((command) => command.pulseSequence),
@@ -359,6 +389,7 @@ test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후
     });
 
     const status = director.getStatus();
+    assert.equal(status.pendingPulseCount, 0);
     assert.equal(status.currentPulseProgramsPerFixedTick, 3);
     assert.equal(status.telemetry.capacityFeedbackBatchCount, 2);
     assert.equal(status.telemetry.admissionLimitReductionCount, 1);
@@ -367,4 +398,5 @@ test('Pentagon pulse admission은 GPU capacity 완료 피드백으로 감산 후
     assert.equal(status.telemetry.currentPulseAdmissionLimit, 3);
     assert.equal(status.telemetry.capacityRejectedCompletionCount, 2);
     assert.equal(status.recoveryRequired, false);
+    director.destroy();
 });

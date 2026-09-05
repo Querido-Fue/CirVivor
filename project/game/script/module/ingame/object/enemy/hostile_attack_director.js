@@ -1,3 +1,4 @@
+import { pushMinHeap, popMinHeap } from 'util/min_heap.js';
 import {
     INGAME_ENEMY_DEFINITION_BY_ID
 } from 'data/object/enemy/basic_circle_enemy_data.js';
@@ -562,47 +563,6 @@ function createEmptyStageResult(targetFixedTick, overrides = {}) {
         protocolFailure: null,
         ...overrides
     });
-}
-
-function pushMinHeap(heap, entry, compare) {
-    let index = heap.length;
-    heap.push(entry);
-    while (index > 0) {
-        const parentIndex = (index - 1) >> 1;
-        const parent = heap[parentIndex];
-        if (compare(parent, entry) <= 0) {
-            break;
-        }
-        heap[index] = parent;
-        index = parentIndex;
-    }
-    heap[index] = entry;
-}
-
-function popMinHeap(heap, compare) {
-    if (heap.length === 0) return null;
-    const root = heap[0];
-    const tail = heap.pop();
-    if (heap.length === 0) return root;
-    let index = 0;
-    const halfLength = heap.length >> 1;
-    while (index < halfLength) {
-        let childIndex = (index << 1) + 1;
-        let child = heap[childIndex];
-        const rightIndex = childIndex + 1;
-        if (rightIndex < heap.length
-            && compare(heap[rightIndex], child) < 0) {
-            childIndex = rightIndex;
-            child = heap[rightIndex];
-        }
-        if (compare(tail, child) <= 0) {
-            break;
-        }
-        heap[index] = child;
-        index = childIndex;
-    }
-    heap[index] = tail;
-    return root;
 }
 
 function compareShotReadyEntry(left, right) {

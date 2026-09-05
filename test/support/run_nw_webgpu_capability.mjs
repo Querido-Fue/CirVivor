@@ -200,6 +200,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/scene/benchmark/gpu_benchmark_navigation_source.js',
     'module/simulation/simulation_runtime.js',
     'util/math_util.js',
+    'util/min_heap.js',
     'util/number_util.js'
 ]);
 const NW_RUNTIME_ROOT_FILES = Object.freeze([
