@@ -109,6 +109,10 @@ export class TheCoreRenderer {
      * @param {object|null} [tileMap] - visual theme ID만 읽는 TileMap입니다.
      */
     draw(core, projection, tileMap = null) {
+        if (projection.depthView) {
+            projection.depthView.uniform[15] = !core || core.active === false ? 0 : this.#readIntegrityRatio(core);
+            return;
+        }
         const worldProjection = assertWorldViewProjection2D(projection);
         if (!core
             || core.active === false

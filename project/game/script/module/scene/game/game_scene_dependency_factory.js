@@ -4,6 +4,7 @@ import {
     renderGLShapeInstances
 } from 'display/display_system.js';
 import { getObjectSystem } from 'object/object_system.js';
+import { CeramicEnemyBackend } from 'ingame/render/ceramic_enemy_backend.js';
 import {
     copySimulationMousePositionInto,
     copySimulationWheelTotalsInto,
@@ -12,6 +13,7 @@ import {
     getSimulationUIOffsetX,
     getSimulationUIWW,
     getSimulationWW,
+    hasSimulationMouseState,
     isSimulationInputActionPressed,
     isSimulationMousePressing
 } from 'simulation/simulation_runtime.js';
@@ -71,7 +73,9 @@ function clearLegacyObjectWorld() {
  * 플레이 GameScene과 GameSystem 사이의 엔진 adapter 묶음을 생성합니다.
  * @returns {object} GameSystem dependency bundle입니다.
  */
-export function createGameSceneDependencies() {
+export function createGameSceneDependencies({ceramic = false} = {}) {
+    const pointer = { x: 0, y: 0 };
+    const worldPointer = { x: 0, y: 0 };
     const circleRenderOptions = {
         shape: 'circle',
         x: 0,
@@ -90,6 +94,23 @@ export function createGameSceneDependencies() {
     };
 
     return {
+        ...(ceramic ? {
+            enemySimulationBackendFactory: (dependencies,options) => new CeramicEnemyBackend(dependencies,options),
+            configureWorldPresentation(gameSystem) {
+                const objects=gameSystem.getObjectSystem();
+                objects.getWorldViewProjection().enableDepthPresentation();
+            },
+            updateWorldPresentation(gameSystem) {
+                const camera=gameSystem.getObjectSystem().getWorldViewProjection();
+                if (!camera.depthView) return;
+                copySimulationMousePositionInto(pointer);
+                camera.viewportToWorld(pointer.x,pointer.y,worldPointer);
+                const uniform=camera.depthView.uniform;
+                uniform[16]=worldPointer.x;
+                uniform[17]=worldPointer.y;
+                uniform[18]=hasSimulationMouseState('left','inactive') ? 0 : 1;
+            }
+        } : {}),
         inputActionSource: {
             isPressed: isSimulationInputActionPressed,
             getPointerPosition: copySimulationMousePositionInto,

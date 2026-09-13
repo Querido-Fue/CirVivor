@@ -1321,6 +1321,14 @@ export class TowerCreationCoordinator {
             });
         }
         if (completions.length === 0) {
+            if (this.pending.phase === 'actor-action-placement-ready') {
+                // 다른 GPU completion이 같은 fixed boundary를 보류해도 준비된
+                // placement는 유지합니다. 아직 stage하지 않은 creation을 기다리면
+                // 다음 frame에서도 영구 pending이 되어 fixed world가 멈춥니다.
+                return this.transactionEntries.get(
+                    this.pending.request.transactionId
+                ).receipt;
+            }
             return Object.freeze({
                 pending: tick > this.pending.stageReceipt.sourceTick,
                 committed: false,

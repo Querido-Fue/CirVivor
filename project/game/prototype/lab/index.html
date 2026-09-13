@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>CirVivor · 입체 그래픽 실험실</title>
+    <link rel="stylesheet" href="./style.css">
+    <script type="importmap">
+    {"imports":{"display/":"../../script/module/display/","scene/":"../../script/module/scene/","simulation/":"../../script/module/simulation/","ui/":"../../script/module/ui/","util/":"../../script/util/","animation/":"../../script/module/animation/","input/":"../../script/module/input/","sound/":"../../script/module/sound/","save/":"../../script/module/save/","physics/":"../../script/module/physics/","ingame/":"../../script/module/ingame/","data/":"../../script/data/","object/":"../../script/module/object/","debug/":"../../script/module/debug/","game/":"../../script/","overlay/":"../../script/module/overlay/"}}
+    </script>
+</head>
+<body>
+    <canvas id="world" aria-label="입체 프로토타입 전장"></canvas>
+    <header>
+        <div class="brand"><span class="brand-icon">◈</span><div><strong>CIRVIVOR <span>LAB</span></strong><small>입체 그래픽 프로토타입 · 01</small></div></div>
+        <div class="header-right"><span class="live-dot"></span><span id="state">GPU 준비 중</span><button id="pause" disabled>일시정지</button><button id="restart" disabled>다시 시작 ↻</button></div>
+    </header>
+    <aside class="readout"><div class="eyebrow">CERAMIC CIRCUIT</div><h1>작은 전장,<br>새로운 깊이.</h1><p>기존 게임의 이동·충돌·공격을<br>입체 화면에서 확인합니다.</p><div class="legend"><span><i class="cyan"></i>플레이어 타워</span><span><i class="orange"></i>적 · 사각 / 삼각</span><span><i class="violet"></i>적 · 화살표</span></div></aside>
+    <section class="panel" aria-label="프로토타입 제어">
+        <div class="panel-title"><span>VIEW STUDY</span><strong>시점과 부하</strong></div>
+        <label>카메라 회전 <output id="azimuth-value">−35°</output><input id="azimuth" type="range" min="-75" max="75" value="-35"></label>
+        <label>카메라 기울기 <output id="elevation-value">48°</output><input id="elevation" type="range" min="30" max="85" value="48"></label>
+        <label>확대 <output id="zoom-value">100%</output><input id="zoom" type="range" min="70" max="160" value="100"></label>
+        <div class="presets"><button id="isometric">입체 시점</button><button id="top">상공 시점</button></div>
+        <label class="load-label">웨이브 총 생성 수<select id="load"><option value="120">120 · 기본 전투</option><option value="1000">1,000 · 연속 생성</option><option value="10000">10,000 · 장시간 생성</option></select></label>
+        <p class="note">선택 후 다시 시작합니다.<br>총 생성 수와 동시 생존 수는 다릅니다.</p>
+        <button id="report" class="report">측정 결과 저장 ↓</button>
+    </section>
+    <footer><div class="controls"><kbd>W A S D</kbd> 월드 축 이동 <span>·</span> <kbd>마우스 누르기</kbd> 조준·발사 <span>·</span> <kbd>P</kbd> 일시정지</div><div class="metrics"><div><b id="fps">—</b><small>FPS</small></div><div><b id="ticks">—</b><small>FIXED / S</small></div><div><b id="bodies">—</b><small>활성 BODY</small></div><div><b id="p95">—</b><small>FRAME P95</small></div></div></footer>
+    <div id="error" role="alert" hidden></div>
+    <details id="diagnostics"><summary>진단 데이터</summary><pre id="diagnostic-data">준비 중</pre></details>
+    <script src="./qa_bootstrap.js"></script>
+    <script type="module" src="./main.js"></script>
+</body>
+</html>

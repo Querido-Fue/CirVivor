@@ -171,6 +171,7 @@ export class TileMapRenderer {
     }
 
     draw(tileMap, projection) {
+        if (projection.depthView) return; // Terrain shares the GPU world's depth pass.
         const worldProjection = assertWorldViewProjection2D(projection);
         const theme = resolveMapVisualTheme(tileMap?.getVisualThemeId?.());
         if (!this.advancedPortAvailable

@@ -1,4 +1,5 @@
 import { CAMERA_ZOOM_LIMITS } from '../contract/camera_control_contract.js';
+import { CERAMIC_WORLD_VISUAL } from 'data/theme/ceramic_world_visual_data.js';
 
 /**
  * 유한한 0 이상 크기를 반환합니다.
@@ -72,6 +73,7 @@ export class WorldCamera2D {
         this.viewCenterViewport = { x: 0, y: 0 };
         this.viewCenterWorld = { x: 0, y: 0 };
         this.centerScratch = { x: 0, y: 0 };
+        this.depthView = null;
     }
 
     /**
@@ -88,6 +90,19 @@ export class WorldCamera2D {
         this.viewCenterWorld.x = this.worldWidth * 0.5;
         this.viewCenterWorld.y = this.worldHeight * 0.5;
         this.resize(viewport);
+    }
+
+    /** Opt-in for the production depth renderer; the benchmark keeps its flat projection. */
+    enableDepthPresentation() {
+        if (this.depthView) return;
+        const center = { ...this.viewCenterWorld };
+        this.depthView = { uniform: new Float32Array(20), width: 0, height: 0, scale: 0 };
+        this.depthView.uniform[15]=1;
+        const a = CERAMIC_WORLD_VISUAL.azimuthDegrees * Math.PI / 180;
+        const e = CERAMIC_WORLD_VISUAL.elevationDegrees * Math.PI / 180;
+        Object.assign(this.depthView, { c: Math.cos(a), s: Math.sin(a), se: Math.sin(e), ce: Math.cos(e) });
+        this.resize({ww:this.viewportWidth,wh:this.viewportHeight});
+        this.centerOnWorldPoint(center.x, center.y);
     }
 
     /**
@@ -116,6 +131,14 @@ export class WorldCamera2D {
             this.viewportWidth,
             this.viewportHeight
         );
+        if (this.depthView) {
+            const {c,s,se}=this.depthView;
+            this.fitScale=resolveContainScale(
+                Math.abs(c)*this.worldWidth+Math.abs(s)*this.worldHeight,
+                (Math.abs(s)*this.worldWidth+Math.abs(c)*this.worldHeight)*se+3,
+                this.viewportWidth,this.viewportHeight
+            );
+        }
         this.scale = this.fitScale * this._zoom;
         this.viewCenterViewport.x = this.viewportWidth * 0.5;
         this.viewCenterViewport.y = this.viewportHeight * 0.5;
@@ -246,6 +269,12 @@ export class WorldCamera2D {
      * @returns {{x:number,y:number}} 결과 객체입니다.
      */
     worldToViewport(x, y, out = {}) {
+        if (this.depthView) {
+            const {c,s,se}=this.depthView;
+            out.x=this.offsetX+(Number(x)*c-Number(y)*s)*this.scale;
+            out.y=this.offsetY+(Number(x)*s+Number(y)*c)*se*this.scale;
+            return out;
+        }
         out.x = this.offsetX + (Number(x) * this.scale);
         out.y = this.offsetY + (Number(y) * this.scale);
         return out;
@@ -262,6 +291,13 @@ export class WorldCamera2D {
         if (this.scale <= 0) {
             out.x = 0;
             out.y = 0;
+            return out;
+        }
+        if (this.depthView) {
+            const {c,s,se}=this.depthView;
+            const u=(Number(x)-this.offsetX)/this.scale;
+            const v=(Number(y)-this.offsetY)/(this.scale*se);
+            out.x=c*u+s*v;out.y=-s*u+c*v;
             return out;
         }
         out.x = (Number(x) - this.offsetX) / this.scale;
@@ -304,6 +340,31 @@ export class WorldCamera2D {
      * @private
      */
     #rebuildProjection() {
+        if (this.depthView && this.scale>0 && this.viewportWidth>0 && this.viewportHeight>0) {
+            const d=this.depthView;
+            const {c,s,se,ce}=d;
+            const cx=this.viewCenterWorld.x,cy=this.viewCenterWorld.y;
+            this.offsetX=this.viewCenterViewport.x-(cx*c-cy*s)*this.scale;
+            this.offsetY=this.viewCenterViewport.y-(cx*s+cy*c)*se*this.scale;
+            const sx=2*this.scale/this.viewportWidth,sy=-2*this.scale/this.viewportHeight;
+            const dz=1/(this.worldWidth+this.worldHeight+20);
+            d.width=this.viewportWidth;d.height=this.viewportHeight;d.scale=this.scale;
+            d.uniform.set([c*sx,-s*sx,0,2*this.offsetX/this.viewportWidth-1,
+                s*se*sy,c*se*sy,-ce*sy,1-2*this.offsetY/this.viewportHeight,
+                -s*ce*dz,-c*ce*dz,-se*dz,0.5+(s*cx+c*cy)*ce*dz,
+                this.viewportWidth,this.viewportHeight,this.scale,d.uniform[15]]);
+            const bounds=this.viewBounds;
+            bounds.left=Infinity;bounds.top=Infinity;bounds.right=-Infinity;bounds.bottom=-Infinity;
+            for(const x of [0,this.viewportWidth])for(const y of [0,this.viewportHeight]) {
+                this.viewportToWorld(x,y,this.centerScratch);
+                bounds.left=Math.min(bounds.left,this.centerScratch.x);
+                bounds.right=Math.max(bounds.right,this.centerScratch.x);
+                bounds.top=Math.min(bounds.top,this.centerScratch.y);
+                bounds.bottom=Math.max(bounds.bottom,this.centerScratch.y);
+            }
+            this.projectionRevision++;
+            return;
+        }
         this.offsetX = this.viewCenterViewport.x
             - (this.viewCenterWorld.x * this.scale);
         this.offsetY = this.viewCenterViewport.y

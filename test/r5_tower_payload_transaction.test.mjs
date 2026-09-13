@@ -554,6 +554,104 @@ test('placement-ready receipt는 terminal이 아니며 취소 시 retained place
         TOWER_CREATION_RESULT.REJECTED_SOURCE_CHANGED);
 });
 
+test('Shift 다음 Space의 placement-ready는 같은 fixed boundary 재시도 뒤에도 생성으로 진행한다', () => {
+    const fixture = createFixture({
+        transactionId: 'transaction.r5.shift-before-space'
+    });
+    runToCreationStage(fixture);
+    fixture.backend.completeCommitted([1]);
+    assert.equal(
+        fixture.coordinator.observeCompletedAtFixedBoundary(13).createdCount,
+        1
+    );
+    fixture.coordinator.drainActorPayloadTerminalReceipts([]);
+    assert.equal(fixture.state.getTowerRecords().length, 2);
+
+    const space = createFixture({
+        enemySources: true,
+        childCount: 3,
+        transactionId: 'transaction.r5.space-after-shift',
+        executionId: 'execution.r5.space-after-shift',
+        executionOrdinal: fixture.command.executionOrdinal + 1,
+        targetFixedTick: 14
+    });
+    fixture.snapshotRuntime.binding = space.snapshotRuntime.binding;
+    fixture.snapshotRuntime.token = space.snapshotRuntime.token;
+    assert.equal(
+        fixture.coordinator.requestTowerCreation(space.request).accepted,
+        true
+    );
+    fixture.coordinator.stageForFixedTick(14);
+    fixture.placementRuntime.complete();
+    const ready = fixture.coordinator.observeCompletedAtFixedBoundary(15);
+    assert.equal(ready.readyForCreationStage, true);
+
+    // 다른 GPU completion이 아직 pending이면 GameObjectSystem은 stage 전에
+    // 반환하고 다음 frame에서 같은 fixed boundary의 observation을 반복합니다.
+    for (let retry = 0; retry < 4; retry++) {
+        const observed = fixture.coordinator.observeCompletedAtFixedBoundary(15);
+        assert.equal(observed.pending, true);
+        assert.equal(observed.phase, 'actor-action-placement-ready');
+        assert.equal(observed.readyForCreationStage, true);
+        assert.equal(observed.terminal, undefined);
+        assert.equal(fixture.coordinator.requiresRecovery(), false);
+    }
+    assert.equal(fixture.backend.staged, null);
+    assert.equal(fixture.backend.preleases.size, 1);
+    assert.equal(fixture.registry.getStatus().reservedCount, 3);
+    assert.equal(fixture.snapshotRuntime.releaseCount, 2);
+    assert.equal(fixture.placementRuntime.releaseCount, 1);
+    assert.equal(fixture.coordinator.drainActorPayloadTerminalReceipts([]).length, 0);
+    assert.equal(fixture.state.getTowerRecords().length, 2);
+
+    // 재시도 중 도착한 damage도 기존 fixed ordering대로 plan refresh에 반영합니다.
+    fixture.state.commitCompletedEvents({
+        events: [{
+            type: 'contact',
+            eventType: 'damage-applied',
+            disposition: 'applied',
+            entityId: 900,
+            incarnation: 1,
+            other: fixture.primaryHandle,
+            ...PROTOCOL,
+            sourceTick: 14,
+            sequence: 0,
+            key: 'r5-space-ready-retry-damage',
+            damageFixedPoint: 100,
+            reason: null
+        }]
+    });
+    const hpBeforeCreation = fixture.state.getTowerRecords().reduce(
+        (total, record) => total + record.currentHpFixedPoint,
+        0
+    );
+    const staged = fixture.coordinator
+        .stageReadyActorActionPlacementAtFixedBoundary(15);
+    assert.equal(staged.phase, 'tower-creation');
+    assert.equal(staged.childCount, 3);
+    fixture.backend.completeCommitted([1, 1, 1]);
+    const committed = fixture.coordinator.observeCompletedAtFixedBoundary(16);
+    assert.equal(committed.createdCount, 3);
+    assert.equal(committed.result, TOWER_CREATION_RESULT.COMMITTED);
+    assert.equal(fixture.state.getTowerRecords().length, 5);
+    assert.equal(fixture.state.getTowerRecords().reduce(
+        (total, record) => total + record.currentHpFixedPoint,
+        0
+    ), hpBeforeCreation);
+    assert.equal(fixture.state.auditInvariants().valid, true);
+    assert.equal(fixture.registry.getStatus().reservedCount, 0);
+    assert.equal(fixture.backend.preleases.size, 0);
+    assert.equal(fixture.snapshotRuntime.releaseCount, 2);
+    assert.equal(fixture.placementRuntime.releaseCount, 2);
+    assert.deepEqual(
+        fixture.coordinator.drainActorPayloadTerminalReceipts([]),
+        [committed]
+    );
+    assert.equal(fixture.coordinator.observeCompletedAtFixedBoundary(17).pending, false);
+    assert.equal(fixture.coordinator.drainActorPayloadTerminalReceipts([]).length, 0);
+    assert.equal(fixture.coordinator.requiresRecovery(), false);
+});
+
 test('production capability가 없으면 R5 ingress는 정상 RUNTIME_UNAVAILABLE 0-mutation이다', () => {
     const fixture = createFixture();
     const coordinator = new TowerCreationCoordinator({

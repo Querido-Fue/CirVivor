@@ -2,6 +2,8 @@
     "name": "cirvivor-workspace",
     "private": true,
     "scripts": {
-        "test": "node --experimental-vm-modules --test test/*.test.mjs"
+        "test": "node --experimental-vm-modules --test test/*.test.mjs",
+        "prototype:lab": "node test/support/run_lab_prototype.mjs",
+        "test:ceramic:nw": "node test/support/run_lab_prototype.mjs --production-qa"
     }
 }

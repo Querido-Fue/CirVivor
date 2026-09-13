@@ -28,7 +28,7 @@ export class GameScene extends BaseScene {
         super(sceneHandler);
         this.mode = GAME_SCENE_MODES.PLAY;
         this.mapId = typeof options.mapId === 'string' ? options.mapId : null;
-        this.dependencies = options.dependencies || createGameSceneDependencies();
+        this.dependencies = options.dependencies || createGameSceneDependencies({ceramic: options.enemyWaveEnabled !== false});
         this.tileNavigationSource = options.tileNavigationSource ?? null;
         this.enemyWaveEnabled = options.enemyWaveEnabled;
         this.gameplayWorldActorsEnabled = options.gameplayWorldActorsEnabled;
@@ -97,6 +97,7 @@ export class GameScene extends BaseScene {
      */
     update() {
         this.gameSystem.update();
+        this.dependencies.updateWorldPresentation?.(this.gameSystem);
     }
 
     /**
@@ -226,6 +227,7 @@ export class GameScene extends BaseScene {
             r9QaRuntimeAuthorized: this.r9QaRuntimeAuthorized
         });
         gameSystem.enter();
+        this.dependencies.configureWorldPresentation?.(gameSystem);
         return gameSystem;
     }
 

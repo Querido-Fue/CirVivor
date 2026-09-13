@@ -532,11 +532,23 @@ fn render_vec2_is_finite(value: vec2f) -> bool {
         && all(abs(value) <= vec2f(3.402823466e+38));
 }
 
+// Shared presentation result: alternate renderers consume the same liveness,
+// interpolation, facing and effect decisions without reading poses on the CPU.
+struct BodyRenderVertex {
+    vertex: VertexOutput,
+    world_center: vec2f,
+    world_radius: f32,
+}
+
 @vertex
 fn vertex_main(
     @builtin(vertex_index) vertex_index: u32,
     @builtin(instance_index) instance_index: u32
 ) -> VertexOutput {
+    return resolve_body_render_vertex(vertex_index, instance_index).vertex;
+}
+
+fn resolve_body_render_vertex(vertex_index: u32, instance_index: u32) -> BodyRenderVertex {
     var output: VertexOutput;
     if (counts.abi_version != BODY_ABI_VERSION) {
         output.position = vec4f(2.0, 2.0, 0.0, 1.0);
@@ -555,7 +567,7 @@ fn vertex_main(
         output.glow_rim_width = 0.0;
         output.glow_halo_width = 0.0;
         output.glow_quad_extent = 1.0;
-        return output;
+        return BodyRenderVertex(output, vec2f(0.0), 0.0);
     }
     let simulation_flags = simulations.values[instance_index].flags;
     if ((simulation_flags & 1u) == 0u
@@ -576,7 +588,7 @@ fn vertex_main(
         output.glow_rim_width = 0.0;
         output.glow_halo_width = 0.0;
         output.glow_quad_extent = 1.0;
-        return output;
+        return BodyRenderVertex(output, vec2f(0.0), 0.0);
     }
     let body = physics.values[instance_index];
     let temporary = temporaries.values[instance_index];
@@ -751,7 +763,7 @@ fn vertex_main(
     output.glow_rim_width = glow_rim_width;
     output.glow_halo_width = glow_halo_width;
     output.glow_quad_extent = glow_quad_extent;
-    return output;
+    return BodyRenderVertex(output, body_position, body.radius * presentation_radius_scale);
 }
 
 struct EffectPresentation {

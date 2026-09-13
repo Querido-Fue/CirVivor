@@ -1072,9 +1072,10 @@ assert.equal((markDeadBlock.match(/append_death_event\(body_id, reason_flags\);/
 assert.match(render, /@group\(0\) @binding\(4\) var<storage, read> simulations: SimulationBuffer;/);
 assert.match(render, /@group\(0\) @binding\(5\) var<storage, read> enemy_behavior_states: EnemyBehaviorStateBuffer;/);
 assert.match(render, /counts\.abi_version != BODY_ABI_VERSION/);
+assert.match(render, /return resolve_body_render_vertex\(vertex_index, instance_index\)\.vertex;/);
 assert.match(
     render,
-    /if \(\(simulation_flags & 1u\) == 0u[\s\S]*?BODY_FLAG_PROJECTILE_CAPTURED[\s\S]*?output\.color = vec4f\(0\.0\);[\s\S]*?return output;/
+    /if \(\(simulation_flags & 1u\) == 0u[\s\S]*?BODY_FLAG_PROJECTILE_CAPTURED[\s\S]*?output\.color = vec4f\(0\.0\);[\s\S]*?return BodyRenderVertex\(output, vec2f\(0\.0\), 0\.0\);/
 );
 assert.match(indirect, /counts\.abi_version != BODY_ABI_VERSION[\s\S]*?draw_args\.instance_count = 0u/);
 
