@@ -189,6 +189,25 @@ export const TITLE_WEBGPU_ENEMY_SIMULATION_SHADER = `
         }
     }
 
+    // Match getShieldSweepContact: a fast body cannot skip the entire contact band.
+    fn shield_sweep_contact(start: vec2<f32>, end: vec2<f32>, innerRadius: f32, outerRadius: f32) -> f32 {
+        let startSquared = dot(start, start);
+        let inner = max(0.0, innerRadius);
+        let outer = max(inner, outerRadius);
+        if (startSquared >= inner * inner && startSquared <= outer * outer) { return 0.0; }
+        let movement = end - start;
+        let lengthSquared = dot(movement, movement);
+        if (lengthSquared <= 0.00000001) { return -1.0; }
+        let inside = startSquared < inner * inner;
+        let radius = select(outer, inner, inside);
+        let projection = dot(start, movement);
+        let discriminant = projection * projection - lengthSquared * (startSquared - radius * radius);
+        if (discriminant < 0.0) { return -1.0; }
+        let root = sqrt(discriminant);
+        let progress = (-projection + select(-root, root, inside)) / lengthSquared;
+        return select(-1.0, progress, progress >= 0.0 && progress <= 1.0);
+    }
+
     fn update_fixed_shield_state(
         inputBody: BodyState,
         bodyIndex: u32,
@@ -212,15 +231,15 @@ export const TITLE_WEBGPU_ENEMY_SIMULATION_SHADER = `
         }
         let offset = position - fixedParameters.points.zw;
         let distanceSquared = dot(offset, offset);
-        if (distanceSquared <= 0.00000001) {
-            release_title_shield_slot(bodyIndex, slotCode);
-            body.response = vec4<f32>(body.response.xy, 0.0, 0.0);
-            body.shield = vec4<f32>(0.0);
-            return body;
-        }
         let enemyRadius = max(body.visual.x, body.visual.y) * 0.5;
+        let wasContacting = body.shield.x > 0.5;
+        let contactRange = 28.0 + select(0.0, 8.0, wasContacting);
+        let previousOffset = body.positionPrevious.zw - fixedParameters.points.zw;
+        let sweep = shield_sweep_contact(previousOffset, offset,
+            radius + enemyRadius - contactRange, radius + enemyRadius + contactRange);
         let maxRelevantDistance = radius + enemyRadius + 64.8;
         if (distanceSquared > (maxRelevantDistance * maxRelevantDistance)
+            && sweep < 0.0
             && body.response.z <= 0.001
             && body.response.w <= 0.001
             && body.shield.x <= 0.5
@@ -233,8 +252,6 @@ export const TITLE_WEBGPU_ENEMY_SIMULATION_SHADER = `
         if (abs(boundary) <= 4.0) {
             boundary = 0.0;
         }
-        let wasContacting = body.shield.x > 0.5;
-        let contactRange = 28.0 + select(0.0, 8.0, wasContacting);
         let contacting = abs(boundary) <= contactRange;
         let targetPressure = clamp((54.0 - boundary) / max(1.0, 54.0 + enemyRadius), 0.0, 1.0);
         let targetVisual = clamp((64.8 - boundary) / max(1.0, 64.8 + enemyRadius), 0.0, 1.0);
@@ -248,7 +265,14 @@ export const TITLE_WEBGPU_ENEMY_SIMULATION_SHADER = `
             shieldAngle += wrap_angle(angle - shieldAngle)
                 * fast_smoothing_factor(visualDelta * 14.0);
         }
-        let impactPending = body.shield.z < -0.5 || (contacting && !wasContacting);
+        let newImpact = (contacting || sweep >= 0.0) && !wasContacting;
+        if (body.shield.z < -0.5) {
+            shieldAngle = body.shield.y;
+        } else if (newImpact && sweep >= 0.0) {
+            let contactOffset = mix(previousOffset, offset, sweep);
+            shieldAngle = fast_atan2(contactOffset.y, contactOffset.x);
+        }
+        let impactPending = body.shield.z < -0.5 || newImpact;
         let encodedAngleState = select(1.0, -1.0, impactPending);
 
         let needsPersistentSlot = contacting || targetVisual > 0.0 || body.response.w > 0.001;

@@ -2,11 +2,13 @@ import { renderGL } from 'display/display_system.js';
 import { getDelta } from 'game/time_handler.js';
 import { clamp01, easeOutExpo, lerpNumber } from 'util/number_util.js';
 import { TitleShieldConfig } from './_title_shield_config.js';
+import { getTitleShaderSetting } from 'display/_title_shader_settings.js';
 import { buildTitleShieldRenderCommand } from './_title_shield_render_command.js';
 import {
     calculateShieldPressure,
     getEnemyScreenRadius,
     getShieldAngularDelta,
+    getShieldSweepContact,
     isShieldReactiveEnemy,
     lerpShieldAngle,
     stabilizeShieldBoundaryDistance
@@ -260,7 +262,7 @@ export class TitleShieldEffect {
         const dx = screenX - this.centerX;
         const dy = screenY - this.centerY;
         const distance = Math.sqrt((dx * dx) + (dy * dy));
-        if (!Number.isFinite(distance) || distance <= 0.0001) {
+        if (!Number.isFinite(distance)) {
             return;
         }
 
@@ -278,6 +280,16 @@ export class TitleShieldEffect {
                 : 0
         );
         const contacting = Math.abs(shieldBoundaryDistance) <= contactRange;
+        const sweep = state.previousOffsetX === null ? -1 : getShieldSweepContact(
+            state.previousOffsetX, state.previousOffsetY, dx, dy,
+            this.radius + radius - contactRange, this.radius + radius + contactRange
+        );
+        const impactAngle = sweep >= 0 ? Math.atan2(
+            state.previousOffsetY + (dy - state.previousOffsetY) * sweep,
+            state.previousOffsetX + (dx - state.previousOffsetX) * sweep
+        ) : angle;
+        state.previousOffsetX = dx;
+        state.previousOffsetY = dy;
 
         const influenceRange = this.config.getPressureInfluencePx();
         const targetPressure = calculateShieldPressure(
@@ -302,8 +314,8 @@ export class TitleShieldEffect {
         );
         state.angleInitialized = true;
 
-        if (contacting && !state.contacting) {
-            this.#pushImpact(enemy, state.displayAngle, state.pressure, radius);
+        if ((contacting || sweep >= 0) && !state.contacting) {
+            this.#pushImpact(enemy, impactAngle, state.pressure, radius);
         }
         state.contacting = contacting;
 
@@ -420,7 +432,7 @@ export class TitleShieldEffect {
         impact.targetWidth = Math.max(impact.targetWidth, width);
         impact.intensity = Math.max(impact.intensity, intensity * this.config.getImpactImmediateBoostRatio());
         impact.width = Math.max(impact.width, width * this.config.getImpactImmediateBoostRatio());
-        impact.age = 0;
+        // Coalesce only the rising phase; never restart its visible animation.
         impact.duration = Math.max(impact.duration, duration);
     }
 
@@ -436,7 +448,7 @@ export class TitleShieldEffect {
 
         for (let index = 0; index < this.impacts.length; index++) {
             const impact = this.impacts[index];
-            if (!impact || impact.age >= impact.duration) {
+            if (!impact || impact.age >= impact.duration * getTitleShaderSetting('rayAttack')) {
                 continue;
             }
 
@@ -514,6 +526,8 @@ export class TitleShieldEffect {
             visualPressure: 0,
             displayAngle: 0,
             angleInitialized: false,
+            previousOffsetX: null,
+            previousOffsetY: null,
             dentCandidate: null
         };
         state.dentCandidate = {

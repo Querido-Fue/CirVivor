@@ -802,8 +802,8 @@ async function runImpossiblePlacementFixture(device, format) {
             && cast.afterNextEligibleFixedTick === beforeCooldown
             && reason?.code === 'NO_VALID_GLOBAL_PLACEMENT'
             && reason.firstFailingRank === 0
-            && reason.attemptedCandidateCount === 142
-            && reason.candidateRound === 8
+            && reason.attemptedCandidateCount === 254
+            && reason.candidateRound === 15
             && typeof reason.failureClass === 'string'
             && reason.failureClass !== 'NONE',
         `impossible placement reject 불일치: ${JSON.stringify({ cast, beforeCount, afterCount, reason })}`);

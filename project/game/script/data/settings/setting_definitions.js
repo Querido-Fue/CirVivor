@@ -74,5 +74,8 @@ export const SETTING_DEFINITIONS = Object.freeze({
     }),
     debugMode: Object.freeze({
         type: 'bool', defaultValue: false, min: -1, max: -1, hidden: true
+    }),
+    titleShaderSettings: Object.freeze({
+        type: 'object', defaultValue: Object.freeze({}), min: -1, max: -1, hidden: true
     })
 });

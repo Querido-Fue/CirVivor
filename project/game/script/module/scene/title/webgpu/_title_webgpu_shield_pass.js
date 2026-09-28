@@ -1,3 +1,4 @@
+import { tuningWgsl, TITLE_TUNING_VEC4_COUNT, getTitleShaderUniforms } from 'display/_title_shader_settings.js';
 import {
     TITLE_SHIELD_PRESENTATION_MAX_DENTS,
     TITLE_SHIELD_PRESENTATION_MAX_IMPACTS
@@ -7,7 +8,7 @@ import { TITLE_WEBGPU_SHIELD_INTERACTION_ABI } from './_title_webgpu_shield_inte
 const BUFFER_USAGE_COPY_DST = 0x08;
 const BUFFER_USAGE_UNIFORM = 0x40;
 const COLOR_WRITE_ALL = 0x0F;
-const UNIFORM_FLOAT_COUNT = 140;
+const UNIFORM_FLOAT_COUNT = 140 + TITLE_TUNING_VEC4_COUNT * 4;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
 const IMPACT_FLOAT_OFFSET = 28;
 const DENT_FLOAT_OFFSET = IMPACT_FLOAT_OFFSET + (TITLE_SHIELD_PRESENTATION_MAX_IMPACTS * 4);
@@ -51,6 +52,7 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
         highlightColor: vec4<f32>,
         impacts: array<vec4<f32>, ${TITLE_SHIELD_PRESENTATION_MAX_IMPACTS}>,
         dents: array<vec4<f32>, ${TITLE_SHIELD_PRESENTATION_MAX_DENTS}>,
+        tuning: array<vec4<f32>, ${TITLE_TUNING_VEC4_COUNT}>,
     };
 
     struct FullscreenVertexOutput {
@@ -74,6 +76,12 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
         return delta - (round(delta / TWO_PI) * TWO_PI);
     }
 
+    fn crisp_ray(delta: f32, width: f32) -> f32 {
+        let normalized = abs(delta) / max(0.0001, width * ${tuningWgsl("rayForegroundWidth")});
+        let softness = ${tuningWgsl("rayForegroundSoftness")};
+        return 1.0 - smoothstep(1.0 - softness, 1.0 + softness, normalized);
+    }
+
     @vertex
     fn fullscreen_vertex(@builtin(vertex_index) vertexIndex: u32) -> FullscreenVertexOutput {
         let positions = array<vec2<f32>, 3>(
@@ -95,6 +103,8 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
 
         var dentOffset = 0.0;
         var dentField = 0.0;
+        var rayActivity = 0.0;
+        var foregroundRayActivity = 0.0;
         for (var index: u32 = 0u; index < ${TITLE_SHIELD_PRESENTATION_MAX_DENTS}u; index += 1u) {
             if (index >= parameters.dentCount) {
                 break;
@@ -104,14 +114,18 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
             let dentMask = gaussian(angular_delta(angle, dent.x), dent.z) * dent.w;
             dentOffset += dent.y * dentMask;
             dentField = max(dentField, dentMask);
+            rayActivity = max(rayActivity,
+                gaussian(angular_delta(angle, dent.x), dent.z * ${tuningWgsl("dentRayWidth")}) * dent.w);
+            foregroundRayActivity = max(foregroundRayActivity,
+                crisp_ray(angular_delta(angle, dent.x), dent.z * ${tuningWgsl("dentRayWidth")}) * dent.w);
         }
 
         let shellWave = sin(
-            (angle * 7.5)
-            - (parameters.time * 2.4)
-            + (sin((angle * 3.4) + (parameters.time * 1.45)) * 0.7)
+            (angle * ${tuningWgsl("shellCount")})
+            - (parameters.time * ${tuningWgsl("shellSpeed")})
+            + (sin((angle * ${tuningWgsl("shellWarpCount")}) + (parameters.time * ${tuningWgsl("shellWarpSpeed")})) * ${tuningWgsl("shellWarp")})
         );
-        let shellRipple = shellWave * (1.0 + (dentField * 1.35)) * 1.4;
+        let shellRipple = shellWave * (1.0 + (dentField * ${tuningWgsl("shellDent")})) * ${tuningWgsl("shellAmplitude")};
         let shieldRadius = max(1.0, parameters.radius - dentOffset + shellRipple);
         let fieldRadius = max(shieldRadius, parameters.fieldRadius);
         let fieldRange = max(1.0, fieldRadius - shieldRadius);
@@ -122,15 +136,15 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
             2.0
         ));
         let innerGlow = exp(-pow(
-            max(shieldRadius - distanceFromCenter, 0.0) / max(1.0, parameters.glowWidth * 0.42),
+            max(shieldRadius - distanceFromCenter, 0.0) / max(1.0, parameters.glowWidth * ${tuningWgsl("innerWidth")}),
             2.0
-        )) * 0.16;
+        )) * ${tuningWgsl("innerStrength")};
 
-        let angleLight = 0.5 + (0.5 * cos(angle + 0.85));
+        let angleLight = 0.5 + (0.5 * cos(angle + ${tuningWgsl("angleLight")}));
         let ringNoise = 0.5 + (0.5 * sin(
-            (angle * 5.0)
-            - (parameters.time * 1.7)
-            + (sin((angle * 3.0) + (parameters.time * 0.9)) * 0.4)
+            (angle * ${tuningWgsl("ringNoiseCount")})
+            - (parameters.time * ${tuningWgsl("ringNoiseSpeed")})
+            + (sin((angle * ${tuningWgsl("ringWarpCount")}) + (parameters.time * ${tuningWgsl("ringWarpSpeed")})) * ${tuningWgsl("ringWarp")})
         ));
         let shimmer = mix(0.92, 1.08, angleLight) * mix(0.96, 1.04, ringNoise);
 
@@ -139,33 +153,33 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
         let highColor = parameters.highColor.xyz;
         let highlightColor = parameters.highlightColor.xyz;
         var baseColor = mix(lowColor, highColor, angleLight);
-        baseColor = mix(baseColor, highlightColor, pow(angleLight, 6.0) * 0.55);
-        let ringColor = mix(shadowColor, baseColor, saturate(ringCore + (outerGlow * 0.7)));
+        baseColor = mix(baseColor, highlightColor, pow(angleLight, ${tuningWgsl("ringHighlightPower")}) * ${tuningWgsl("ringHighlight")});
+        let ringColor = mix(shadowColor, baseColor, saturate(ringCore + (outerGlow * ${tuningWgsl("ringColorMix")})));
         let fieldSignedDistance = distanceFromCenter - shieldRadius;
         let fieldDistance = max(fieldSignedDistance, 0.0);
         let fieldFade = 1.0 - smoothstep(0.0, fieldRange, fieldDistance);
-        let fieldTransition = max(1.0, parameters.ringThickness * 2.4);
+        let fieldTransition = max(1.0, parameters.ringThickness * ${tuningWgsl("fieldTransition")});
         let fieldMask = smoothstep(
-            -fieldTransition * 0.35,
+            -fieldTransition * ${tuningWgsl("fieldInner")},
             fieldTransition,
             fieldSignedDistance
         );
         let fieldNoise = 0.55 + (0.45 * sin(
-            (angle * 2.2)
-            - (parameters.time * 0.65)
-            + (ringNoise * 1.8)
+            (angle * ${tuningWgsl("fieldNoiseCount")})
+            - (parameters.time * ${tuningWgsl("fieldNoiseSpeed")})
+            + (ringNoise * ${tuningWgsl("fieldNoiseWarp")})
         ));
-        let fieldVeil = pow(fieldFade, 1.18);
+        let fieldVeil = pow(fieldFade, ${tuningWgsl("fieldVeilFalloff")});
         let fieldBloom = exp(-pow(
-            fieldDistance / max(1.0, fieldRange * 0.34),
-            1.28
+            fieldDistance / max(1.0, fieldRange * ${tuningWgsl("fieldBloomWidth")}),
+            ${tuningWgsl("fieldBloomFalloff")}
         ));
-        var fieldAlpha = ((fieldVeil * 0.32) + (fieldBloom * 0.06))
+        var fieldAlpha = ((fieldVeil * ${tuningWgsl("fieldVeil")}) + (fieldBloom * ${tuningWgsl("fieldBloom")}))
             * fieldMask
             * mix(0.82, 1.12, fieldNoise);
-        var fieldColor = mix(shadowColor, baseColor, 0.88);
-        fieldColor = mix(fieldColor, highColor, fieldBloom * 0.065);
-        fieldColor = mix(fieldColor, highlightColor, pow(fieldFade, 2.2) * 0.18);
+        var fieldColor = mix(shadowColor, baseColor, ${tuningWgsl("fieldBaseColor")});
+        fieldColor = mix(fieldColor, highColor, fieldBloom * ${tuningWgsl("fieldHighColor")});
+        fieldColor = mix(fieldColor, highlightColor, pow(fieldFade, ${tuningWgsl("fieldHighlightFalloff")}) * ${tuningWgsl("fieldHighlight")});
 
         var impactAlpha = 0.0;
         var impactColor = vec3<f32>(0.0);
@@ -177,32 +191,53 @@ export const TITLE_WEBGPU_SHIELD_SHADER = `
 
             let impact = parameters.impacts[index];
             let progress = saturate(impact.w);
-            let fade = pow(1.0 - progress, 1.4);
+            let fade = pow(1.0 - progress, ${tuningWgsl("impactFade")});
+            let rayAttack = ${tuningWgsl("rayAttack")};
+            let rayRise = 0.5 - 0.5 * cos(saturate(progress / rayAttack) * 3.141592653589793);
+            let rayRelease = 0.5 + 0.5 * cos(saturate((progress - rayAttack) / (1.0 - rayAttack)) * 3.141592653589793);
+            let rayEnvelope = rayRise * pow(rayRelease, ${tuningWgsl("impactFade")});
             let angularMask = gaussian(angular_delta(angle, impact.x), impact.z);
-            let radialCenter = shieldRadius + mix(-1.0, 8.0, progress);
+            let radialCenter = shieldRadius + mix(${tuningWgsl("impactStart")}, ${tuningWgsl("impactEnd")}, progress);
             let radialMask = gaussian(
                 distanceFromCenter - radialCenter,
-                (parameters.ringThickness * 2.2) + 5.0
+                (parameters.ringThickness * ${tuningWgsl("impactWidth")}) + ${tuningWgsl("impactBlur")}
             );
-            let flare = angularMask * radialMask * impact.y * fade * 0.72;
+            let flare = angularMask * radialMask * impact.y * fade * ${tuningWgsl("impactIntensity")};
             impactAlpha += flare;
             impactActivity = max(impactActivity, angularMask * impact.y * fade);
-            impactColor += mix(highColor, highlightColor, 0.58) * flare;
+            rayActivity = max(rayActivity,
+                gaussian(angular_delta(angle, impact.x), impact.z * ${tuningWgsl("impactRayWidth")}) * impact.y * rayEnvelope);
+            foregroundRayActivity = max(foregroundRayActivity,
+                crisp_ray(angular_delta(angle, impact.x), impact.z * ${tuningWgsl("impactRayWidth")}) * impact.y * rayEnvelope);
+            impactColor += mix(highColor, highlightColor, ${tuningWgsl("impactColor")}) * flare;
         }
 
-        let approachActivity = saturate(dentField * 1.2);
-        let localActivity = saturate(max(approachActivity, impactActivity * 0.92));
+        let approachActivity = saturate(dentField * ${tuningWgsl("approachGain")});
+        let localActivity = saturate(max(approachActivity, impactActivity * ${tuningWgsl("impactGain")}));
         let activityNoise = 0.88 + (0.12 * sin(
-            (angle * 4.0)
-            + (parameters.time * 3.1)
-            + (shellWave * 0.7)
+            (angle * ${tuningWgsl("activityCount")})
+            + (parameters.time * ${tuningWgsl("activitySpeed")})
+            + (shellWave * ${tuningWgsl("activityWarp")})
         ));
-        var baseAlpha = ((ringCore * 0.82) + (outerGlow * 0.18) + (innerGlow * 0.05)) * shimmer;
+        var baseAlpha = ((ringCore * ${tuningWgsl("ringIntensity")}) + (outerGlow * ${tuningWgsl("outerIntensity")}) + (innerGlow * ${tuningWgsl("innerIntensity")})) * shimmer;
         baseAlpha *= localActivity * activityNoise;
-        baseAlpha += approachActivity * outerGlow * 0.08;
-        fieldAlpha *= max(approachActivity, impactActivity * 0.55);
-        let color = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor;
-        let alpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * 0.85)) * parameters.alpha;
+        baseAlpha += approachActivity * outerGlow * ${tuningWgsl("approachGlow")};
+        fieldAlpha *= max(approachActivity, impactActivity * ${tuningWgsl("fieldImpactGain")});
+        fieldAlpha *= ${tuningWgsl("fieldIntensity")};
+        // Keep the broad veil behind a separate, sharply bounded collision ray.
+        let rayDistance = max(distanceFromCenter - parameters.radius * ${tuningWgsl("rayStart")}, 0.0);
+        let rayFalloff = gaussian(rayDistance, fieldRange * ${tuningWgsl("rayLength")});
+        let rayMask = smoothstep(parameters.radius * ${tuningWgsl("rayMaskStart")}, parameters.radius * ${tuningWgsl("rayMaskEnd")}, distanceFromCenter);
+        let rayAlpha = saturate(rayActivity) * rayFalloff * rayMask * fieldFade * ${tuningWgsl("rayIntensity")} * ${tuningWgsl("rayBackgroundIntensity")};
+        let rayColor = mix(parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 2}].xyz, parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 1}].xyz, rayFalloff);
+        let foregroundFalloff = gaussian(rayDistance, fieldRange * ${tuningWgsl("rayLength")} * ${tuningWgsl("rayForegroundLength")});
+        let foregroundAlpha = saturate(saturate(foregroundRayActivity) * foregroundFalloff * rayMask * fieldFade
+            * ${tuningWgsl("rayIntensity")} * ${tuningWgsl("rayForegroundIntensity")});
+        let foregroundColor = mix(rayColor, vec3<f32>(1.0), ${tuningWgsl("rayForegroundHighlight")});
+        let backgroundColor = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor + rayColor * rayAlpha;
+        let backgroundAlpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * ${tuningWgsl("impactAlpha")}) + rayAlpha);
+        let color = foregroundColor * foregroundAlpha + min(backgroundColor, vec3<f32>(backgroundAlpha)) * (1.0 - foregroundAlpha);
+        let alpha = (foregroundAlpha + backgroundAlpha * (1.0 - foregroundAlpha)) * parameters.alpha;
         let premultipliedColor = min(color * parameters.alpha, vec3<f32>(alpha));
         return vec4<f32>(premultipliedColor, alpha);
     }
@@ -522,6 +557,7 @@ export class TitleWebGpuShieldPass {
     }) {
         const floats = this.uniformFloats;
         floats.fill(0);
+        floats.set(getTitleShaderUniforms(), 140);
         floats[0] = targetWidth;
         floats[1] = targetHeight;
         floats[2] = centerX;

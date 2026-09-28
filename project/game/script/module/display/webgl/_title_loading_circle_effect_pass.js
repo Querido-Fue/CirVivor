@@ -1,3 +1,4 @@
+import { getTitleShaderUniforms } from '../_title_shader_settings.js';
 import { createFullscreenBuffer, buildCircleScissorRect, applyScissorRect } from './_fullscreen_pass.js';
 import { TITLE_LOADING_CONSTANTS } from 'scene/title/_title_runtime_constants.js';
 import { clamp01 } from 'util/number_util.js';
@@ -102,6 +103,7 @@ export class TitleLoadingCircleEffectPass {
         gl.disable(gl.DEPTH_TEST);
         gl.disable(gl.CULL_FACE);
         gl.useProgram(this.programInfo.program);
+        gl.uniform4fv(this.programInfo.uniforms.u_tuning, getTitleShaderUniforms());
         gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
         gl.enableVertexAttribArray(this.programInfo.attributes.a_position);
         gl.vertexAttribPointer(this.programInfo.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
@@ -212,6 +214,7 @@ export class TitleLoadingCircleEffectPass {
         return {
             program,
             uniforms: {
+                u_tuning: gl.getUniformLocation(program, 'u_tuning[0]'),
                 u_resolution: gl.getUniformLocation(program, 'u_resolution'),
                 u_center: gl.getUniformLocation(program, 'u_center'),
                 u_radius: gl.getUniformLocation(program, 'u_radius'),

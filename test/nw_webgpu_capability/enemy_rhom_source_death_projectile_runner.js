@@ -39,6 +39,12 @@ import {
     GPU_EFFECT_RUNTIME_ABI,
     GPU_EFFECT_SUMMARY_FLAG
 } from './production/script/module/ingame/physics/gpu/gpu_effect_runtime_abi.js';
+import { HostileAttackDirector } from 'ingame/object/enemy/hostile_attack_director.js';
+import { TowerGroupState } from 'ingame/object/tower/tower_group_state.js';
+import { TowerCreationCoordinator } from 'ingame/object/tower/tower_creation_coordinator.js';
+import { TowerMergeCoordinator } from 'ingame/object/tower/tower_merge_coordinator.js';
+import { SentenceCompiler } from 'ingame/word/sentence_compiler.js';
+import { R6_TOWERS_MERGE_SENTENCE } from 'data/word/r3_word_catalog_data.js';
 
 const resultPath = process.env.CIRVIVOR_WEBGPU_RESULT_PATH;
 const REQUIRED_STORAGE_BUFFER_LIMIT = 9;
@@ -1270,6 +1276,153 @@ async function runRhomSourceDeathProjectileFixture(device) {
     }
 }
 
+async function runHostileTowerSplitMergeFixture(device) {
+    const navigation = createOpenNavigationSource();
+    const endpoint = createGpuSimulationEndpoint({
+        webGpuPlatformPort: createPlatformPort(device)
+    }, { capacity: 16, eventCapacity: 32 });
+    const state = new TowerGroupState();
+    let creation;
+    let merge;
+    let director;
+    let tick = 1;
+    const rounds = [];
+    try {
+        endpoint.init(navigation);
+        endpoint.requestSpawn(createGpuCoreProxySpawnIntent({
+            position: { x: 14, y: 14 }
+        }), tick, 'roster:core');
+        endpoint.requestSpawn(createGpuTowerSpawnIntent({
+            position: { x: 11, y: 2 }
+        }), tick, 'roster:primary');
+        endpoint.requestSpawn(createRhomIntent(navigation, { x: 3, y: 2 }),
+            tick, 'roster:rhom');
+        const initial = endpoint.commitAtFixedBoundary(tick);
+        assert(initial.spawned.length === 3 && !initial.recoveryRequired,
+            `roster initial commit: ${JSON.stringify(initial)}`);
+        const handles = new Map(initial.spawned.map(({ commandId, handle }) =>
+            [commandId, handle]));
+        const primary = handles.get('roster:primary');
+        const core = handles.get('roster:core');
+        const backend = endpoint.getBackend();
+        const registry = endpoint.getRegistry();
+        state.bindGpuBody(state.getPrimaryTowerRecord().logicalTowerId, primary,
+            backend.getEventProtocolState());
+        const roster = backend.synchronizeTowerGroupRoster({
+            records: state.getTowerRecords(), groupRevision: state.getStatus().groupRevision
+        });
+        assert(roster.accepted, `roster initialization: ${JSON.stringify(roster)}`);
+        creation = new TowerCreationCoordinator({ towerGroupState: state, registry, backend });
+        merge = new TowerMergeCoordinator({ towerGroupState: state, registry, backend });
+        director = new HostileAttackDirector({ endpoint });
+        assert(!director.observeFixedCommit(initial, tick).recoveryRequired,
+            'roster director initialization failed');
+
+        const advance = async ({ creationPending = false } = {}) => {
+            assert(endpoint.fixedUpdate(FIXED_DELTA, tick), `roster submit T${tick}`);
+            await settleEndpoint(endpoint, `roster T${tick}`, { spawnProgram: true });
+            tick++;
+            // Production publishes newly created identities before their damage events.
+            const created = creationPending ? await settleTransaction(creation) : null;
+            const publication = await commitCompletedEndpointEventsAtFixedBoundary(
+                endpoint, tick, `roster T${tick}`);
+            state.commitCompletedEvents(publication.events, registry);
+            director.observeCompletedEvents(publication.events);
+            return created;
+        };
+        const settleTransaction = async (coordinator) => {
+            const deadline = performance.now() + 5_000;
+            let receipt;
+            do {
+                receipt = coordinator.observeCompletedAtFixedBoundary(tick);
+                if (!receipt.pending) return receipt;
+                await new Promise((resolve) => setTimeout(resolve, 4));
+            } while (performance.now() < deadline);
+            throw new Error(`roster transaction timeout: ${JSON.stringify(receipt)}`);
+        };
+        await advance();
+        for (let round = 0; round < 2; round++) {
+            const requested = creation.requestTowerCreation({
+                transactionId: `roster:split:${round}`, childCount: 1,
+                requestedFixedTick: tick,
+                childSpawnDescriptors: [{ position: { x: 5, y: 2 } }]
+            });
+            assert(requested.accepted, `roster split request: ${JSON.stringify(requested)}`);
+            const staged = creation.stageForFixedTick(tick);
+            assert(staged.staged, `roster split stage: ${JSON.stringify(staged)}`);
+            endpoint.commitAtFixedBoundary(tick);
+            const created = await advance({ creationPending: true });
+            assert(created.committed && state.getLivingTowerCount() === 2,
+                `roster split commit: ${JSON.stringify(created)}`);
+            const child = created.handles[0];
+            while (tick < director.getStatus().sources[0].nextEligibleFixedTick) {
+                const commit = endpoint.commitAtFixedBoundary(tick);
+                assert(!director.observeFixedCommit(commit, tick).recoveryRequired,
+                    'roster idle director failed');
+                await advance();
+            }
+            const shotTick = tick;
+            const shotStage = director.stageForFixedTick({
+                targetFixedTick: tick, coreTargetHandle: core, towerTargetHandle: primary
+            });
+            assert(shotStage.acceptedCount === 1 && !shotStage.recoveryRequired,
+                `roster shot stage: ${JSON.stringify(shotStage)}`);
+            const shotCommit = endpoint.commitAtFixedBoundary(tick);
+            assert(!director.observeFixedCommit(shotCommit, tick).recoveryRequired,
+                'roster shot acceptance failed');
+            await advance();
+            // Hold the authentic completion until after the selected child is merged.
+            const proof = merge.captureExecutionStartIdentityProof({ fingerprint: 123 + round });
+            const requestedMerge = merge.requestTowerMerge({
+                transactionId: `roster:merge:${round}`, requestedFixedTick: tick,
+                compiledOperation: new SentenceCompiler().compile(R6_TOWERS_MERGE_SENTENCE),
+                executionStartIdentityProof: proof.proof
+            });
+            assert(requestedMerge.pending, `roster merge request: ${JSON.stringify(requestedMerge)}`);
+            const mergeStage = merge.stageForFixedTick(tick);
+            assert(mergeStage.staged, `roster merge stage: ${JSON.stringify(mergeStage)}`);
+            const held = endpoint.commitAtFixedBoundary(tick);
+            const selected = held.fixedCommands.priorityTargetControlResults[0];
+            const shot = held.fixedCommands.completed[0];
+            assert(selected?.outcome === 'tower'
+                && exactHandle(selected.selectedTargetHandle, child)
+                && exactHandle(shot?.targetHandle, child),
+            `GPU must select split child instead of primary: ${JSON.stringify(held)}`);
+            await advance();
+            const merged = await settleTransaction(merge);
+            assert(merged.committed && state.getLivingTowerCount() === 1
+                && !registry.has(child) && !backend.hasBody(child)
+                && exactHandle(state.getPrimaryTowerRecord().exactGpuBinding, primary),
+            `roster merge commit: ${JSON.stringify(merged)}`);
+            const observed = director.observeFixedCommit({ ...held, fixedTick: tick }, tick);
+            const status = director.getStatus();
+            assert(!observed.recoveryRequired && !endpoint.requiresRecovery()
+                && status.pendingShotCount === 0 && status.pendingControlCount === 0
+                && status.shotResolvedCount === round + 1
+                && state.getStatus().lostShareUnits === 0,
+            `post-merge historical selection failed: ${JSON.stringify(status)}`);
+            rounds.push({ shotTick, child: copyHandle(child),
+                selectedTarget: copyHandle(selected.selectedTargetHandle),
+                primary: copyHandle(primary), mergedBeforeObservation: true,
+                resolvedCount: status.shotResolvedCount, recoveryRequired: false });
+        }
+        return { rounds, splitCount: creation.getStatus().committedCount,
+            mergeCount: merge.getStatus().committedCount,
+            livingShareUnits: state.getStatus().livingShareUnits,
+            lostShareUnits: state.getStatus().lostShareUnits,
+            pendingShotCount: director.getStatus().pendingShotCount,
+            pendingControlCount: director.getStatus().pendingControlCount,
+            recoveryRequired: director.requiresRecovery() || endpoint.requiresRecovery() };
+    } finally {
+        director?.destroy();
+        merge?.destroy();
+        creation?.destroy();
+        state.destroy();
+        endpoint.destroy();
+        await device.queue.onSubmittedWorkDone();
+    }
+}
+
 async function run() {
     const result = {
         status: 'fail',
@@ -1306,6 +1459,7 @@ async function run() {
         result.productionEnemyRhomSourceDeathProjectile = await (
             runRhomSourceDeathProjectileFixture(device)
         );
+        result.hostileTowerSplitMerge = await runHostileTowerSplitMergeFixture(device);
         await device.queue.onSubmittedWorkDone();
         result.uncapturedErrorCount = uncapturedErrors.length;
         assert(uncapturedErrors.length === 0,

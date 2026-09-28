@@ -117,6 +117,7 @@ const PRODUCTION_SCRIPT_MODULE_FILES = Object.freeze([
     'module/ingame/object/tower/gpu_tower_group_facade.js',
     'module/ingame/object/tower/gpu_tower_spawn_adapter.js',
     'module/ingame/object/tower/tower_creation_coordinator.js',
+    'module/ingame/object/tower/tower_merge_coordinator.js',
     'module/ingame/object/tower/tower_combat_roster.js',
     'module/ingame/object/tower/tower_group_contract.js',
     'module/ingame/object/tower/tower_group_state.js',

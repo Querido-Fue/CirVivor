@@ -6,6 +6,7 @@ import { consumeMouseState, getMouseInput, hasMouseState } from 'input/input_sys
 import { getSetting } from 'save/save_system.js';
 import { getLangString, requestTooltip } from 'ui/ui_system.js';
 import { TitleMenuCard } from './menu/_title_menu_card.js';
+import { TitleShaderEditor } from './menu/_title_shader_editor.js';
 import { TitleMenuCardRegistry } from './menu/_title_menu_card_registry.js';
 import {
     TITLE_MENU_CARD_REVEAL_ORDER,
@@ -110,6 +111,7 @@ export class TitleMenu {
         this.utilityTileStateMap = new Map();
         this.utilityTileRenderMap = new Map();
         this.pointerEnabled = false;
+        this.presentationReady = false;
         this.cardRevealElapsed = 0;
         this.cardRevealStarted = false;
         this.#revealProgressResolver = this.#getRevealProgress.bind(this);
@@ -123,6 +125,7 @@ export class TitleMenu {
         this.utilityPaneInteractionState = createTitleMenuPaneRuntimeState();
         this.secondaryMenuEntries = TITLE_MENU_SECONDARY_ENTRIES;
         this.session = this.#createSession();
+        this.shaderEditor = new TitleShaderEditor(this);
         this.textureRenderer = new TitleMenuTextureRenderer({
             svgDrawer: this.svgDrawer,
             titleCardMenu: TITLE_CARD_MENU,
@@ -156,9 +159,13 @@ export class TitleMenu {
         this.pointerEnabled = transitionProgress >= 0.98
             && revealFinished
             && !this.#hasBlockingOverlay();
+        this.presentationReady = this.pointerEnabled;
 
         this.#updateRenderStates(transitionProgress);
         const paneLayout = this.currentPaneLayout || this.#getRightPaneLayout();
+        if (this.shaderEditor.update(paneLayout, this.pointerEnabled)) {
+            this.pointerEnabled = false;
+        }
         this.#updateCardInteractions(delta);
         this.#updateOuterPaneInteractions(delta, paneLayout);
         this.#updateVersionHistoryLinkButton(paneLayout);
@@ -173,6 +180,11 @@ export class TitleMenu {
      */
     draw() {
         if (!this.session) {
+            return;
+        }
+
+        if (this.shaderEditor.active) {
+            this.shaderEditor.draw(this.session);
             return;
         }
 
@@ -301,6 +313,7 @@ export class TitleMenu {
      * @returns {void}
      */
     applyRuntimeSettings(changedSettings = {}) {
+        this.shaderEditor.invalidate();
         if (changedSettings.theme !== undefined) {
             this.#refreshMenuIcons();
             this.#syncThemeEffectOptions();
@@ -320,6 +333,7 @@ export class TitleMenu {
      * @returns {void}
      */
     destroy() {
+        this.shaderEditor.release();
         this.sceneStartRequested = false;
         if (this.session) {
             this.session.release();

@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import { loadGameModule } from './support/source_module_loader.mjs';
+const geometry = await loadGameModule('scene/title/shield/_title_shield_geometry.js');
 
 const [effectSource, configSource, shaderUtilsSource] = await Promise.all([
     readFile(new URL('../project/game/script/module/scene/title/shield/_title_shield_effect.js', import.meta.url), 'utf8'),
@@ -58,6 +60,13 @@ class StubTitleShieldConfig {
     getDentTransitionDuration() { return 0.3; }
     getDentCrossfadeAngleThreshold() { return 10 * (Math.PI / 180); }
     buildAngularWidth() { return 0.2; }
+    getImpactSpeedReferencePx() { return 120; }
+    getImpactIntensityMin() { return 0.2; }
+    getImpactIntensityMax() { return 0.52; }
+    getImpactDuration() { return 3; }
+    getImpactMergeAngleThreshold() { return 0.22; }
+    getImpactMaxCount() { return 12; }
+    getImpactImmediateBoostRatio() { return 0.55; }
 }
 
 function createSyntheticModule(context, exports) {
@@ -74,6 +83,9 @@ const effectModule = new vm.SourceTextModule(effectSource, {
     identifier: '_title_shield_effect.js'
 });
 const dependencies = new Map([
+    ['display/_title_shader_settings.js', createSyntheticModule(context, {
+        getTitleShaderSetting: () => 0.1
+    })],
     ['display/display_system.js', createSyntheticModule(context, {
         renderGL(layer, command) {
             lastRenderCommand = {
@@ -103,6 +115,7 @@ const dependencies = new Map([
         calculateShieldPressure: () => 1,
         getEnemyScreenRadius: (enemy) => enemy.radius,
         getShieldAngularDelta,
+        getShieldSweepContact: geometry.getShieldSweepContact,
         isShieldReactiveEnemy: () => true,
         lerpShieldAngle,
         stabilizeShieldBoundaryDistance: (distance) => distance
@@ -211,5 +224,37 @@ assert.match(configSource, /DENT_RENDER_MAX_COUNT:\s*16/);
 assert.match(configSource, /getDentTransitionDuration\(\)[\s\S]*?DENT_TRANSITION_DURATION_SECONDS/);
 assert.match(configSource, /getDentCrossfadeAngleThreshold\(\)[\s\S]*?DENT_CROSSFADE_ANGLE_DEGREES/);
 assert.match(shaderUtilsSource, /MAGNETIC_SHIELD_MAX_DENTS\s*=\s*16/);
+
+// A complete crossing between rendered frames must retain an independently aged ray.
+const fastEffect = new TitleShieldEffect();
+fastEffect.syncLayout({ centerX: 0, centerY: 0, radius: 100 });
+const fastEnemy = createEnemy(20, 0);
+frameDelta = 1 / 60;
+fastEffect.update([fastEnemy], 0);
+fastEnemy.renderPosition.x = -200;
+fastEffect.update([fastEnemy], 0);
+assert.equal(fastEffect.impacts.length, 1, '한 프레임에 원을 통과해도 충돌이 남아야 한다');
+const fastImpact = fastEffect.impacts[0];
+assert.ok(Math.abs(fastImpact.angle) < 1e-10, '통과 후 위치가 아닌 최초 접촉 방향');
+assert.equal(fastImpact.age, 0);
+fastEffect.update([], 0);
+assert.equal(fastEffect.impacts[0], fastImpact, '물체가 떠나도 레이 수명이 유지된다');
+assert.ok(fastImpact.age > 0);
+fastEnemy.renderPosition.x = 200;
+fastEffect.update([fastEnemy], 0);
+fastEnemy.renderPosition.x = -200;
+fastEffect.update([fastEnemy], 0);
+assert.ok(fastImpact.age >= 3 / 60, '반복 충돌이 점등 애니메이션을 0으로 되감지 않는다');
+frameDelta = 3;
+fastEffect.update([], 0);
+assert.equal(fastEffect.impacts.length, 0);
+
+const sweep = geometry.getShieldSweepContact;
+assert.ok(Math.abs(sweep(200, 0, -200, 0, 90, 110) - 0.225) < 1e-10);
+assert.equal(sweep(200, 120, -200, 120, 90, 110), -1, '바깥을 스치는 이동은 오검출하지 않는다');
+assert.equal(sweep(0, 0, 20, 0, 90, 110), -1, '내부 이동은 충돌하지 않는다');
+assert.equal(sweep(0, 0, 200, 0, 90, 110), 0.45, '내측에서 나가는 경계도 검출한다');
+assert.equal(sweep(200, 0, 200, 0, 90, 110), -1, '정지한 물체');
+assert.equal(sweep(100, 0, 100, 0, 90, 110), 0, '이미 밴드에 있는 물체');
 
 console.log('title shield dent transition: ok');

@@ -2012,15 +2012,20 @@ export class HostileAttackDirector {
             expectedKind = GPU_BODY_CONTROL_SELECTED_TARGET_KIND.TOWER;
             expectedStateFlags = GPU_BODY_CONTROL_STATE_FLAGS.STOP
                 | GPU_BODY_CONTROL_STATE_FLAGS.TOWER_SELECTED;
-            expectedSelectedTargetHandle = pending.towerTargetHandle;
         } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.SOURCE_INVALID) {
             expectedOutcome = 'source-invalid';
         } else if (result === GPU_BODY_CONTROL_PROGRAM_RESULT.CORE_INVALID) {
             expectedOutcome = 'core-invalid';
         }
-        const selectedMatches = expectedSelectedTargetHandle === null
-            ? selectedTargetHandle === null
-            : sameHandle(selectedTargetHandle, expectedSelectedTargetHandle);
+        // FixedCommandOwner authenticates the GPU roster selection at its source
+        // tick. The ingress Tower is only a compatibility hint; a split child may
+        // be selected, then die/merge before this completion is observed. Do not
+        // compare against the hint or re-query current registry/backend liveness.
+        const selectedMatches = expectedOutcome === 'tower'
+            ? selectedTargetHandle !== null
+            : expectedSelectedTargetHandle === null
+                ? selectedTargetHandle === null
+                : sameHandle(selectedTargetHandle, expectedSelectedTargetHandle);
         if (expectedOutcome === null
             || entry.outcome !== expectedOutcome
             || selectedTargetKind !== expectedKind
@@ -2326,19 +2331,16 @@ export class HostileAttackDirector {
                 );
                 return false;
             }
+            // As with priority control, this is the FixedCommandOwner's
+            // authenticated historical selection, not the current primary Tower.
             const selectedMatches = entry.selectedTargetKind === 'core'
                 ? sameHandle(selectedTargetHandle, pending.coreTargetHandle)
-                : entry.selectedTargetKind === 'tower'
-                    && pending.towerTargetHandle !== null
-                    && sameHandle(
-                        selectedTargetHandle,
-                        pending.towerTargetHandle
-                    );
+                : entry.selectedTargetKind === 'tower';
             if (!selectedMatches) {
                 this.#fail(
                     'fixed-completion',
                     'selected-target-provenance-contract',
-                    `M resolved target provenance가 pending candidate와 다릅니다: ${entry.commandId}`
+                    `M resolved target이 Core exact/Tower roster 계약과 다릅니다: ${entry.commandId}`
                 );
                 return false;
             }

@@ -564,10 +564,10 @@ fn validate_sources(@builtin(global_invocation_id) global_id: vec3u) {
         && (simulations.values[record.slot].gameplay_meta & 0xffu)
             == PLAYER_TEAM_ID
         && (physical.interaction_meta & 0xffffu) == PLAYER_DAMAGEABLE_LAYER;
+    // Metadata owner identifies ability provenance, not this body's identity.
+    // The simulation and authoritative roster validate identity above.
     let metadata_matches = metadata.abi_version == 0u
         || (metadata.abi_version == ABILITY_METADATA_ABI_VERSION
-            && metadata.owner_entity_id == record.entity_id
-            && metadata.owner_incarnation == record.incarnation
             && metadata.power_fixed_point == record.source_power_fixed_point);
     if (!member_matches || !body_matches || !metadata_matches) {
         atomicOr(&program.error_flags, ERROR_SOURCE_CHANGED);

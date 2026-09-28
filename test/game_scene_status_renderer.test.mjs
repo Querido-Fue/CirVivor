@@ -462,11 +462,11 @@ test('resize는 layout을 재컴파일·반납하고 destroy는 session presenta
         harness.positioningCalls.filter(({ type }) => type === 'construct').length,
         2
     );
-    assert.equal(harness.releasedItems.length, 4);
+    assert.equal(harness.releasedItems.length, 5);
 
     renderer.destroy();
     renderer.destroy();
-    assert.equal(harness.releasedItems.length, 8);
+    assert.equal(harness.releasedItems.length, 10);
     const previousCallCount = harness.calls.length;
     assert.equal(renderer.draw(status, {
         ww: 1600,
@@ -476,6 +476,68 @@ test('resize는 layout을 재컴파일·반납하고 destroy는 session presenta
         uiScale: 1.25
     }), false);
     assert.equal(harness.calls.length, previousCallCount);
+});
+
+test('E 배치 거절은 게임 상태 변경 없이 HUD에 원인을 표시하고 재시도 성공 시 지운다', async () => {
+    const harness = await createRendererHarness();
+    const renderer = harness.createRenderer();
+    const viewport = { ww: 1920, wh: 1080 };
+    const outcome = Object.freeze({
+        slotId: 'E', abilityRequestId: 'request-1',
+        code: 'PLACEMENT_REJECTED', completedFixedTick: 61,
+        subjectCount: 400, generatedCount: 0, cooldownConsumed: false
+    });
+    const words = Object.freeze({ lastExecutionOutcome: outcome });
+    renderer.draw(createStatus({ words }), viewport);
+    assert.equal(harness.calls.length, 3);
+    assert.match(harness.calls.at(-1).options.text, /^E · .*공간이 부족/);
+    assert.strictEqual(words.lastExecutionOutcome, outcome);
+    assert.equal(outcome.cooldownConsumed, false);
+
+    const activation = Object.freeze({
+        slotId: 'E', abilityRequestId: 'request-2',
+        code: 'REQUESTED', targetFixedTick: 62
+    });
+    harness.calls.length = 0;
+    renderer.draw(createStatus({ words: {
+        ...words, lastActivationResult: activation
+    } }), viewport);
+    assert.equal(harness.calls.at(-1).options.text, 'E · 실행 중…');
+
+    harness.calls.length = 0;
+    renderer.draw(createStatus({ words: {
+        lastActivationResult: activation,
+        lastExecutionOutcome: {
+            ...outcome, abilityRequestId: activation.abilityRequestId,
+            code: 'COMPLETED', completedFixedTick: 63, generatedCount: 400
+        }
+    } }), viewport);
+    assert.equal(harness.calls.length, 2);
+    renderer.destroy();
+});
+
+test('스킬 생성 한도와 입력 단계 거절을 HUD에서 구분한다', async () => {
+    const harness = await createRendererHarness();
+    const renderer = harness.createRenderer();
+    const viewport = { ww: 1920, wh: 1080 };
+    const outcome = {
+        slotId: 'E', abilityRequestId: 'request-1',
+        code: 'DESTINATION_CAPACITY_REJECTED', completedFixedTick: 61
+    };
+    renderer.draw(createStatus({ words: {
+        lastExecutionOutcome: outcome
+    } }), viewport);
+    assert.equal(harness.calls.at(-1).options.text, 'E · 생성 한도를 초과했습니다.');
+    harness.calls.length = 0;
+    renderer.draw(createStatus({ words: {
+        lastExecutionOutcome: outcome,
+        lastActivationResult: {
+            slotId: 'Q', abilityRequestId: null,
+            code: 'COOLDOWN', targetFixedTick: 62
+        }
+    } }), viewport);
+    assert.equal(harness.calls.at(-1).options.text, 'Q · 아직 재사용 대기 중입니다.');
+    renderer.destroy();
 });
 
 test('유효한 viewport가 없으면 canonical layout과 render command를 생성하지 않는다', async () => {

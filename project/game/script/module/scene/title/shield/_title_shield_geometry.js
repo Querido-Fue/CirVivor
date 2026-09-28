@@ -1,5 +1,25 @@
 import { clamp01 } from 'util/number_util.js';
 
+/** First contact with a circular band along a movement segment, or -1 for a miss. */
+export function getShieldSweepContact(startX, startY, endX, endY, innerRadius, outerRadius) {
+    const startSquared = startX * startX + startY * startY;
+    const inner = Math.max(0, innerRadius);
+    const outer = Math.max(inner, outerRadius);
+    if (startSquared >= inner * inner && startSquared <= outer * outer) return 0;
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const lengthSquared = dx * dx + dy * dy;
+    if (lengthSquared <= 1e-8) return -1;
+    const inside = startSquared < inner * inner;
+    const radius = inside ? inner : outer;
+    const projection = startX * dx + startY * dy;
+    const discriminant = projection * projection - lengthSquared * (startSquared - radius * radius);
+    if (discriminant < 0) return -1;
+    const root = Math.sqrt(discriminant);
+    const progress = (-projection + (inside ? root : -root)) / lengthSquared;
+    return progress >= 0 && progress <= 1 ? progress : -1;
+}
+
 /**
  * 각도를 최단 경로로 보간합니다.
  * @param {number} currentAngle - 현재 각도입니다.

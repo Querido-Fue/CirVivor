@@ -1,3 +1,4 @@
+import { getTitleShaderUniforms } from '../_title_shader_settings.js';
 import { createFullscreenBuffer, buildCircleScissorRect, applyScissorRect } from './_fullscreen_pass.js';
 import { clamp01 } from 'util/number_util.js';
 import {
@@ -68,6 +69,7 @@ export class MagneticShieldEffectPass {
         const dentCount = this.#writeDents(dents);
 
         gl.useProgram(this.programInfo.program);
+        gl.uniform4fv(this.programInfo.uniforms.u_tuning, getTitleShaderUniforms());
         gl.bindBuffer(gl.ARRAY_BUFFER, this.fullscreenBuffer);
         gl.enableVertexAttribArray(this.programInfo.attributes.a_position);
         gl.vertexAttribPointer(this.programInfo.attributes.a_position, 2, gl.FLOAT, false, 0, 0);
@@ -124,6 +126,7 @@ export class MagneticShieldEffectPass {
         return {
             program,
             uniforms: {
+                u_tuning: gl.getUniformLocation(program, 'u_tuning[0]'),
                 u_resolution: gl.getUniformLocation(program, 'u_resolution'),
                 u_center: gl.getUniformLocation(program, 'u_center'),
                 u_radius: gl.getUniformLocation(program, 'u_radius'),

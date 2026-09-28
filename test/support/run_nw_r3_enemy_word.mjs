@@ -52,6 +52,11 @@ function assertResult(result) {
         && fixture?.zeroSubject?.subjectCount === 0
         && fixture.zeroSubject.generatedCount === 0
         && fixture.zeroSubject.cooldownConsumed === false
+        && fixture?.stress?.dense400?.subjectCount === 400
+        && fixture.stress.dense400.generatedCount === 400
+        && fixture.stress.dense400.activeEnemyCount === 800
+        && fixture.stress.dense400.protocolFailureCount === 0
+        && fixture.stress.dense400.recoveryRequired === false
         && fixture?.stress?.fanout256?.subjectCount === 256
         && fixture.stress.fanout256.generatedCount === 256
         && fixture.stress.fanout256.activeEnemyCount === 512

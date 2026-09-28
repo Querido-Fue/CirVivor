@@ -19,6 +19,14 @@ const [passSource, effectSource] = await Promise.all([
 const passNamespace = await loadGameModule('scene/title/webgpu/_title_webgpu_shield_pass.js');
 const commandNamespace = await loadGameModule('scene/title/shield/_title_shield_render_command.js');
 
+const tuning = await loadGameModule('display/_title_shader_settings.js');
+function defaultShader(source) {
+    return source.replace(/parameters\.tuning\[(\d+)\]\.([xyzw])(?![xyzw])/g, (_, vector, channel) => {
+        const value = tuning.TITLE_SHADER_SETTINGS[Number(vector) * 4 + 'xyzw'.indexOf(channel)].defaultValue;
+        return Number.isInteger(value) ? value.toFixed(1) : String(value);
+    });
+}
+
 function cloneRecord(value) {
     return JSON.parse(JSON.stringify(value));
 }
@@ -295,8 +303,8 @@ test('presentation command는 legacy 값/순서/최대치를 보존하고 comman
 test('WGSL은 legacy 최대치와 magnetic shield 수식 및 premultiplied alpha 출력을 보존한다', () => {
     assert.equal(passNamespace.TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.MAX_IMPACTS, 12);
     assert.equal(passNamespace.TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.MAX_DENTS, 16);
-    assert.equal(passNamespace.TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 560);
-    const shader = passNamespace.TITLE_WEBGPU_SHIELD_SHADER;
+    assert.equal(passNamespace.TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 560 + tuning.TITLE_TUNING_VEC4_COUNT * 16);
+    const shader = defaultShader(passNamespace.TITLE_WEBGPU_SHIELD_SHADER);
     assert.match(shader, /impacts: array<vec4<f32>, 12>/u);
     assert.match(shader, /dents: array<vec4<f32>, 16>/u);
     assert.match(shader, /index < 12u/u);

@@ -92,7 +92,7 @@ test('Rhom source-death dedicated NW runner preserves launch authority after onl
     assert.equal(
         (source.match(/commitCompletedEndpointEventsAtFixedBoundary\(/g) ?? [])
             .length,
-        8,
+        9,
         'each submitted source tick and terminal cleanup must use the publication wrapper'
     );
     assertOrdered(source, [

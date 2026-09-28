@@ -1754,6 +1754,135 @@ test('exact terminal 증거가 있어도 core-invalid와 forged source provenanc
     );
 });
 
+function stageTowerSelectionFixture(towerHint = TOWER_HANDLE) {
+    const fixture = createDirectorFixture();
+    registerRhom(fixture);
+    addExact(fixture, CORE_HANDLE, {
+        kindId: 'core-proxy', definitionId: 'the-core-interaction-proxy'
+    });
+    addExact(fixture, TOWER_HANDLE, {
+        kindId: 'tower', definitionId: 'the-tower'
+    });
+    const tick = fixture.director.getStatus().sources[0].nextEligibleFixedTick;
+    const staged = fixture.director.stageForFixedTick({
+        targetFixedTick: tick,
+        coreTargetHandle: CORE_HANDLE,
+        towerTargetHandle: towerHint
+    });
+    assert.equal(staged.recoveryRequired, false);
+    const shot = fixture.adapter.calls.at(-1);
+    const control = fixture.priorityControlPort.calls.at(-1);
+    const accepted = fixture.director.observeFixedCommit({
+        fixedTick: tick,
+        fixedCommands: emptyFixedCommands({
+            selectedTargetSpawns: [{
+                commandId: shot.commandId,
+                handle: PROJECTILE_HANDLE,
+                state: 'gpu-resolve-pending'
+            }]
+        })
+    }, tick);
+    assert.equal(accepted.recoveryRequired, false);
+    return { ...fixture, tick, shot, control };
+}
+
+test('분리된 비대표 Tower의 GPU control/shot 결과는 hint 유무와 응답 순서에 무관하게 완료된다', () => {
+    const child = Object.freeze({ entityId: 199, incarnation: 30 });
+    for (const hint of [TOWER_HANDLE, null]) {
+        for (const order of ['together', 'control-first', 'shot-first']) {
+            const f = stageTowerSelectionFixture(hint);
+            addExact(f, child, { kindId: 'tower', definitionId: 'the-tower' });
+            const controlResult = priorityControlResult(f.control, 'tower', {
+                selectedTargetHandle: child
+            });
+            const shotResult = {
+                commandId: f.shot.commandId,
+                handle: PROJECTILE_HANDLE,
+                outcome: 'resolved',
+                selectedTargetKind: 'tower',
+                targetHandle: child
+            };
+            // Selection is historical GPU evidence: merge/death and ABA reuse may
+            // have removed both Towers before the normalized completion arrives.
+            f.registry.remove(TOWER_HANDLE);
+            f.backend.remove(TOWER_HANDLE);
+            f.registry.remove(child);
+            f.backend.remove(child);
+            addExact(f, { entityId: child.entityId, incarnation: 31 }, {
+                kindId: 'enemy', definitionId: 'basic_circle_01'
+            });
+            const controls = { priorityTargetControlResults: [controlResult] };
+            const shots = { completed: [shotResult] };
+            const batches = order === 'together' ? [{ ...controls, ...shots }]
+                : order === 'control-first' ? [controls, shots] : [shots, controls];
+            for (const [index, batch] of batches.entries()) {
+                const tick = f.tick + index + 1;
+                const result = f.director.observeFixedCommit({
+                    fixedTick: tick, fixedCommands: emptyFixedCommands(batch)
+                }, tick);
+                assert.equal(result.recoveryRequired, false,
+                    `${order}: ${JSON.stringify(result.protocolFailure)}`);
+            }
+            const status = f.director.getStatus();
+            assert.equal(status.pendingControlCount, 0);
+            assert.equal(status.pendingShotCount, 0);
+            assert.equal(status.telemetry.controlCompletedTower, 1);
+            assert.equal(status.shotResolvedCount, 1);
+            assert.equal(status.sources[0].shotSequence, 1);
+            assert.equal(status.sources[0].nextEligibleFixedTick,
+                f.tick + BASIC_RHOM_ATTACK_DATA.intervalTicks);
+            assert.equal(f.registry.has(child), false);
+        }
+    }
+});
+
+test('비대표 Tower 허용 후에도 control의 identity/provenance/result-state 손상은 recovery이다', () => {
+    for (const overrides of [
+        { selectedTargetHandle: null },
+        { selectedTargetHandle: { entityId: 199, incarnation: 0 } },
+        { stateFlags: GPU_BODY_CONTROL_STATE_FLAGS.ROUTE_FLOW },
+        { selectedTargetKind: GPU_BODY_CONTROL_SELECTED_TARGET_KIND.CORE },
+        { sourceTick: 1 },
+        { attackFingerprint: 124 },
+        { towerTargetHandle: { entityId: 199, incarnation: 30 } }
+    ]) {
+        const f = stageTowerSelectionFixture();
+        const result = f.director.observeFixedCommit({
+            fixedTick: f.tick + 1,
+            fixedCommands: emptyFixedCommands({
+                priorityTargetControlResults: [priorityControlResult(f.control,
+                    'tower', { selectedTargetHandle: { entityId: 199, incarnation: 30 },
+                        ...overrides })]
+            })
+        }, f.tick + 1);
+        assert.equal(result.recoveryRequired, true, JSON.stringify(overrides));
+        assert.equal(f.director.getStatus().shotResolvedCount, 0);
+    }
+});
+
+test('비대표 Tower 허용은 Core exact identity와 shot destination 검증을 완화하지 않는다', () => {
+    for (const overrides of [
+        { selectedTargetKind: 'core', targetHandle: TOWER_HANDLE },
+        { selectedTargetKind: 'enemy' },
+        { targetHandle: null },
+        { targetHandle: { entityId: 199, incarnation: 0 } },
+        { handle: { entityId: PROJECTILE_HANDLE.entityId, incarnation: 2 } }
+    ]) {
+        const f = stageTowerSelectionFixture();
+        const result = f.director.observeFixedCommit({
+            fixedTick: f.tick + 1,
+            fixedCommands: emptyFixedCommands({
+                completed: [{ commandId: f.shot.commandId,
+                    handle: PROJECTILE_HANDLE, outcome: 'resolved',
+                    selectedTargetKind: 'tower',
+                    targetHandle: { entityId: 199, incarnation: 30 }, ...overrides }]
+            })
+        }, f.tick + 1);
+        assert.equal(result.recoveryRequired, true, JSON.stringify(overrides));
+        assert.equal(f.director.getStatus().sources[0].shotSequence, 0);
+    }
+});
+
 test('normal request rejection도 attempt ordinal을 전진시켜 다음 M source를 선택한다', () => {
     const adapter = new RejectingProjectileAdapterFixture();
     const fixture = createDirectorFixture({

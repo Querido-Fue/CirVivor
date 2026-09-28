@@ -288,7 +288,7 @@ function timestampForFile(value) {
 }
 
 /**
- * 성공한 GPU world reset 진단을 project/logs에 동기 기록합니다.
+ * GPU world 오류 또는 명시적 reset 진단을 project/logs에 동기 기록합니다.
  * 기록 실패는 게임 loop로 전파하지 않습니다.
  * @param {object} diagnostic - captureGpuWorldRecoveryDiagnostic 결과입니다.
  * @param {{rootDirectory?:string,fs?:object,path?:object,process?:object,require?:Function}} [options]
@@ -320,9 +320,10 @@ export function writeGpuWorldRecoveryLog(diagnostic, options = {}) {
         const capturedAt = typeof diagnostic?.capturedAt === 'string'
             ? diagnostic.capturedAt
             : new Date().toISOString();
-        const stem = `reset_${timestampForFile(capturedAt)}`;
+        const paused = diagnostic?.event === 'gpu-world-error-paused';
+        const stem = `${paused ? 'error' : 'reset'}_${timestampForFile(capturedAt)}`;
         const body = [
-            'CirVivor GPU world reset diagnostic',
+            paused ? 'CirVivor GPU world error diagnostic' : 'CirVivor GPU world reset diagnostic',
             `capturedAt=${capturedAt}`,
             `cause=${diagnostic?.cause?.domain ?? 'unknown'}`,
             '',
@@ -363,7 +364,26 @@ export function writeGpuWorldRecoveryLog(diagnostic, options = {}) {
     }
 }
 
+/** GPU renderer가 unavailable이어도 표시할 수 있는 native 오류 대화상자입니다. */
+export function showGpuWorldErrorPopup({ diagnostic, logResult }, alert = globalThis.alert?.bind(globalThis)) {
+    const cause = diagnostic?.cause;
+    const failure = cause?.detail?.failure ?? cause?.detail;
+    const detail = failure?.message ?? failure?.reason ?? failure?.stage;
+    const message = [
+        '오류가 발생해 게임을 중지했습니다.',
+        '현재 세션은 초기화되지 않았으며, 확인을 눌러도 중지 상태가 유지됩니다.',
+        '',
+        `오류: ${cause?.domain ?? 'unknown'}${detail ? ` — ${detail}` : ''}`,
+        logResult?.written === true
+            ? `로그: ${logResult.path}`
+            : `로그 저장 실패: ${logResult?.error ?? 'unknown'}`
+    ].join('\n');
+    if (typeof alert === 'function') alert(message);
+    else console.error(message);
+}
+
 export const GPU_WORLD_RECOVERY_LOG_PORT = Object.freeze({
     capture: captureGpuWorldRecoveryDiagnostic,
-    write: writeGpuWorldRecoveryLog
+    write: writeGpuWorldRecoveryLog,
+    notify: showGpuWorldErrorPopup
 });

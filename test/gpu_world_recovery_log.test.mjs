@@ -12,7 +12,8 @@ import { loadGameModule } from './support/source_module_loader.mjs';
 const {
     captureGpuWorldRecoveryDiagnostic,
     findGpuWorldRecoveryCause,
-    writeGpuWorldRecoveryLog
+    writeGpuWorldRecoveryLog,
+    showGpuWorldErrorPopup
 } = await loadGameModule('scene/game/gpu_world_recovery_log.js');
 const { GPU_PROJECTILE_CAPTURE_TICK_STATUS } = await loadGameModule(
     'ingame/physics/gpu/gpu_projectile_capture_runtime_abi.js'
@@ -202,7 +203,7 @@ test('GPU world reset 파일은 project/logs에 충돌 없이 기록된다', asy
     }
 });
 
-test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출한다', async () => {
+test('GameScene 기본 오류는 한 번 알리고 정지하며 명시적 진단 옵션만 reset한다', async () => {
     const source = await readTextFile(
         new URL('../project/game/script/module/scene/game/_game_scene.js', import.meta.url),
         'utf8'
@@ -217,12 +218,16 @@ test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출�
         constructor(dependencies) {
             this.dependencies = dependencies;
             this.fixedTick = 9;
+            this.fixedCalls = 0;
             this.recoveryRequired = true;
             instances.push(this);
         }
 
         enter() { return true; }
-        fixedUpdate() { return false; }
+        fixedUpdate() { this.fixedCalls++; return false; }
+        getFixedStepDisposition() { return 'COMPLETED'; }
+        update() { this.dependencies.trace.push('update'); }
+        handleCommands() { this.dependencies.trace.push('commands'); }
         isEnemySimulationRecoveryRequired() { return this.recoveryRequired; }
         getFixedTick() { return this.fixedTick; }
         getObjectSystem() { return {}; }
@@ -297,7 +302,8 @@ test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출�
     };
     const scene = new GameScene({}, {
         mapId: 'performance_serpentine_02',
-        dependencies
+        dependencies,
+        enemyRecoveryEnabled: true
     });
     assert.equal(scene.fixedUpdate(), false);
     assert.deepEqual(trace, ['capture', 'restart', 'write']);
@@ -305,6 +311,7 @@ test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출�
 
     const failedTrace = [];
     const failedScene = new GameScene({}, {
+        enemyRecoveryEnabled: true,
         dependencies: {
             trace: failedTrace,
             restartSucceeds: false,
@@ -324,4 +331,97 @@ test('GameScene은 실제 reset 성공 뒤에만 진단 파일 포트를 호출�
     assert.deepEqual(failedTrace, ['capture', 'restart']);
     assert.equal(failedScene.getEnemyRecoveryStatus().restartCount, 0);
     assert.equal(instances.length, 2);
+
+    for (const failure of ['normal', 'device-lost', 'capture-throws', 'write-throws']) {
+        const calls = [];
+        let ready = failure !== 'device-lost';
+        const pausedScene = new GameScene({}, {
+            dependencies: {
+                trace: calls,
+                webGpuPlatformPort: {
+                    getState: () => ({ ready, deviceGeneration: ready ? 7 : 6 })
+                },
+                recoveryLogPort: {
+                    capture() {
+                        calls.push('capture');
+                        if (failure === 'capture-throws') throw new Error('capture failure');
+                        return { cause: { domain: 'hostileAttack' } };
+                    },
+                    write(record) {
+                        calls.push('write');
+                        assert.equal(record.event, 'gpu-world-error-paused');
+                        assert.equal(record.reset.attempted, false);
+                        if (failure === 'write-throws') throw new Error('disk failure');
+                        return { written: true, path: 'project/logs/error_test.txt' };
+                    },
+                    notify({ logResult }) {
+                        calls.push('popup');
+                        assert.equal(pausedScene.getFixedStepDisposition(), 'INTENTIONAL_PAUSE');
+                        assert.equal(logResult.written, !failure.endsWith('throws'));
+                    }
+                }
+            }
+        });
+        const system = pausedScene.getGameSystem();
+        assert.equal(pausedScene.fixedUpdate(), 'INTENTIONAL_PAUSE');
+        assert.deepEqual(calls, failure === 'capture-throws'
+            ? ['capture', 'popup'] : ['capture', 'write', 'popup']);
+        ready = true;
+        system.recoveryRequired = false;
+        for (let index = 0; index < 3; index++) {
+            assert.equal(pausedScene.fixedUpdate(), 'INTENTIONAL_PAUSE');
+            pausedScene.update();
+            pausedScene.applySimulationCommands([{}]);
+        }
+        assert.equal(system.fixedCalls, 1);
+        assert.equal(system.fixedTick, 9);
+        assert.strictEqual(pausedScene.getGameSystem(), system);
+        assert.equal(pausedScene.getEnemyRecoveryStatus().restartCount, 0);
+        assert.equal(calls.filter((call) => call === 'popup').length, 1);
+        assert.equal(calls.some((call) => ['restart', 'update', 'commands'].includes(call)), false);
+        pausedScene.destroy();
+    }
+
+    const backpressure = new GameScene({}, { dependencies: {
+        trace: [], recoveryLogPort: { notify() { assert.fail('backpressure is retryable'); } }
+    } });
+    backpressure.getGameSystem().recoveryRequired = false;
+    assert.equal(backpressure.fixedUpdate(), false);
+    assert.equal(backpressure.getFixedStepDisposition(), 'COMPLETED');
+    backpressure.destroy();
+});
+
+test('오류 팝업은 원인과 로그 경로 또는 저장 실패를 표시한다', () => {
+    const messages = [];
+    for (const logResult of [
+        { written: true, path: 'C:/CirVivor/project/logs/error_test.txt' },
+        { written: false, error: 'disk-full' }
+    ]) {
+        showGpuWorldErrorPopup({
+            diagnostic: { cause: { domain: 'hostileAttack', detail: {
+                stage: 'control-result-state-contract', message: 'invalid result'
+            } } }, logResult
+        }, (message) => messages.push(message));
+    }
+    assert.match(messages[0], /hostileAttack.*invalid result/);
+    assert.match(messages[0], /로그: C:\/CirVivor\/project\/logs\/error_test.txt/);
+    assert.match(messages[0], /중지 상태가 유지/);
+    assert.match(messages[1], /로그 저장 실패: disk-full/);
+});
+
+test('초기화 없는 오류도 error 파일로 저장한다', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'cirvivor-error-log-'));
+    try {
+        await mkdir(path.join(root, 'game'));
+        const result = writeGpuWorldRecoveryLog({
+            event: 'gpu-world-error-paused',
+            capturedAt: '2026-09-14T01:02:03.004Z',
+            reset: { attempted: false, succeeded: false }
+        }, { rootDirectory: root, fs, path, process });
+        assert.equal(result.written, true);
+        assert.equal(path.basename(result.path), 'error_2026-09-14_01-02-03-004.txt');
+        assert.match(await readFile(result.path, 'utf8'), /"attempted": false/);
+    } finally {
+        await rm(root, { recursive: true, force: true });
+    }
 });

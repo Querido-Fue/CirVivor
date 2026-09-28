@@ -21,6 +21,36 @@ const TOWER_STATUS_COMPONENT_ID = 'game_scene_tower_status';
 const CORE_STATUS_COMPONENT_ID = 'game_scene_core_status';
 const WAVE_PRIMARY_COMPONENT_ID = 'game_scene_wave_primary_status';
 const WAVE_SECONDARY_COMPONENT_ID = 'game_scene_wave_secondary_status';
+const SKILL_FEEDBACK_COMPONENT_ID = 'game_scene_skill_feedback';
+const SKILL_FEEDBACK_MESSAGES = Object.freeze({
+    REQUESTED: '실행 중…',
+    PLACEMENT_REJECTED: '생성할 공간이 부족합니다. 적이 흩어진 뒤 다시 시도하세요.',
+    DESTINATION_CAPACITY_REJECTED: '생성 한도를 초과했습니다.',
+    SUBJECT_CAPACITY_REJECTED: '대상 수가 스킬 한도를 초과했습니다.',
+    ZERO_SUBJECT: '스킬 대상이 없습니다.',
+    INSUFFICIENT_SUBJECTS: '스킬 대상이 부족합니다.',
+    SOURCE_CHANGED: '대상이 변경되어 취소됐습니다. 다시 시도하세요.',
+    COOLDOWN: '아직 재사용 대기 중입니다.',
+    QUEUE_CAPACITY: '다른 스킬을 처리 중입니다. 잠시 후 다시 시도하세요.',
+    EMPTY_SLOT: '장착된 스킬이 없습니다.',
+    INVALID_SENTENCE: '사용할 수 없는 스킬 문장입니다.',
+    WRONG_PHASE: '지금은 스킬을 사용할 수 없습니다.',
+    RUNTIME_UNAVAILABLE: '현재 스킬을 실행할 수 없습니다.',
+    CANCELLED: '스킬 실행이 취소됐습니다.',
+    PROTOCOL_REJECTED: '스킬 실행 중 오류가 발생했습니다.'
+});
+
+function createSkillFeedbackText(words) {
+    const activation = words?.lastActivationResult;
+    const outcome = words?.lastExecutionOutcome;
+    // A later request replaces the previous failure while GPU work is pending.
+    const newerActivation = activation
+        && activation.abilityRequestId !== outcome?.abilityRequestId
+        && activation.targetFixedTick >= (outcome?.completedFixedTick ?? 0);
+    const result = newerActivation ? activation : outcome;
+    const message = SKILL_FEEDBACK_MESSAGES[result?.code];
+    return message && result?.slotId ? `${result.slotId} · ${message}` : '';
+}
 
 function normalizePositiveNumber(value, fallback = 0) {
     const number = Number(value);
@@ -98,6 +128,7 @@ export class GameSceneStatusRenderer {
         this.coreCommand = null;
         this.wavePrimaryCommand = null;
         this.waveSecondaryCommand = null;
+        this.skillFeedbackCommand = null;
         this.waveFlowPresentationStatus = null;
         this.shopOverlayRenderer = createShopOverlayRenderer({
             inputSource: options.inputSource,
@@ -147,6 +178,8 @@ export class GameSceneStatusRenderer {
         this.wavePrimaryCommand.fill = waveFill;
         this.waveSecondaryCommand.text = wavePresentation.secondaryText;
         this.waveSecondaryCommand.fill = waveFill;
+        this.skillFeedbackCommand.text = createSkillFeedbackText(status?.words);
+        this.skillFeedbackCommand.fill = fill;
 
         for (let index = 0; index < 2; index++) {
             render(STATUS_LAYER, this.staticItems[index].item);
@@ -155,6 +188,9 @@ export class GameSceneStatusRenderer {
         if (wavePresentation.visible) {
             render(STATUS_LAYER, this.wavePrimaryCommand);
             render(STATUS_LAYER, this.waveSecondaryCommand);
+        }
+        if (this.skillFeedbackCommand.text) {
+            render(STATUS_LAYER, this.skillFeedbackCommand);
         }
         return true;
     }
@@ -263,6 +299,10 @@ export class GameSceneStatusRenderer {
             .textStyle(TYPOGRAPHY.CONTROL)
             .text('')
             .fill(ColorSchemes.Game?.Font ?? null)
+            .item('text', SKILL_FEEDBACK_COMPONENT_ID)
+            .textStyle(TYPOGRAPHY.CONTROL)
+            .text('')
+            .fill(ColorSchemes.Game?.Font ?? null)
             .build();
 
         this.staticItems = buildResult.staticItems;
@@ -273,6 +313,8 @@ export class GameSceneStatusRenderer {
             = buildResult.components[WAVE_PRIMARY_COMPONENT_ID];
         this.waveSecondaryCommand
             = buildResult.components[WAVE_SECONDARY_COMPONENT_ID];
+        this.skillFeedbackCommand
+            = buildResult.components[SKILL_FEEDBACK_COMPONENT_ID];
     }
 
     #releaseLayout() {
@@ -288,6 +330,7 @@ export class GameSceneStatusRenderer {
         this.coreCommand = null;
         this.wavePrimaryCommand = null;
         this.waveSecondaryCommand = null;
+        this.skillFeedbackCommand = null;
     }
 }
 

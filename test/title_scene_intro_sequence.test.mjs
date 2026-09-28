@@ -100,6 +100,7 @@ const titleLogo = {
 };
 const titleMenu = {
     pointerEnabled: false,
+    presentationReady: false,
     update: () => menuTrace.push('update'),
     draw: () => menuTrace.push('draw'),
     resize: () => menuTrace.push('resize'),
@@ -132,7 +133,9 @@ assert.deepEqual(menuTrace, ['update']);
 assert.equal(sequence.releaseCompletedContent(), null);
 
 sequence.sceneTransitionProgress = 1;
-titleMenu.pointerEnabled = true;
+// The shader editor can own input while the normal card menu is disabled.
+titleMenu.presentationReady = true;
+assert.equal(titleMenu.pointerEnabled, false);
 const completedContent = sequence.releaseCompletedContent();
 assert.ok(completedContent instanceof TitleSceneContentStub);
 assert.strictEqual(completedContent.assets.centerCircle, centerCircle);

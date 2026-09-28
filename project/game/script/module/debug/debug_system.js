@@ -9,7 +9,8 @@ const DEBUG_CONTROL_OPTION_KEYS = new Set([
     'frameTime',
     'poolInfo',
     'hitboxes',
-    'animationDebug'
+    'animationDebug',
+    'titleShaderSettings'
 ]);
 
 let debugSystemInstance = null;
@@ -26,7 +27,8 @@ export class DebugSystem {
             frameTime: true,
             poolInfo: true,
             hitboxes: true,
-            animationDebug: false
+            animationDebug: false,
+            titleShaderSettings: false
         };
         this.debugModeEnabled = getSetting('debugMode') === true;
         this._syncHitboxesActive();

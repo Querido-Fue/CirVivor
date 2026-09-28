@@ -1,7 +1,8 @@
+import { tuningWgsl, TITLE_TUNING_VEC4_COUNT, getTitleShaderUniforms } from 'display/_title_shader_settings.js';
 const BUFFER_USAGE_COPY_DST = 0x08;
 const BUFFER_USAGE_UNIFORM = 0x40;
 const COLOR_WRITE_ALL = 0x0F;
-const UNIFORM_FLOAT_COUNT = 36;
+const UNIFORM_FLOAT_COUNT = 36 + TITLE_TUNING_VEC4_COUNT * 4;
 const UNIFORM_BYTE_SIZE = UNIFORM_FLOAT_COUNT * Float32Array.BYTES_PER_ELEMENT;
 const TRANSPARENT_CLEAR_VALUE = Object.freeze({ r: 0, g: 0, b: 0, a: 0 });
 const DEFAULT_BASE_COLOR = Object.freeze([0.086, 0.435, 0.984]);
@@ -40,6 +41,7 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         deepColor: vec4<f32>,
         rimColor: vec4<f32>,
         highlightColor: vec4<f32>,
+        tuning: array<vec4<f32>, ${TITLE_TUNING_VEC4_COUNT}>,
     };
 
     struct FullscreenVertexOutput {
@@ -62,7 +64,7 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
             (offset.x * cosine) - (offset.y * sine),
             (offset.x * sine) + (offset.y * cosine)
         ) / max(radius, vec2<f32>(0.0001));
-        return exp(-dot(rotated, rotated) * 2.25);
+        return exp(-dot(rotated, rotated) * ${tuningWgsl("highlightFalloff")});
     }
 
     @vertex
@@ -90,7 +92,7 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         let local = fragCoord - parameters.center;
         let normalized = local / bodyRadius;
         let distanceFromCenter = length(local);
-        let edgeSoftness = 1.35;
+        let edgeSoftness = ${tuningWgsl("edgeSoftness")};
         let circleMask = 1.0 - smoothstep(
             bodyRadius - edgeSoftness,
             bodyRadius + edgeSoftness,
@@ -98,39 +100,77 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         );
         let outsideDistance = max(distanceFromCenter - radius, 0.0);
         let fillMask = circleMask;
+        let angle = atan2(normalized.y, normalized.x);
+
+        // Radius-relative glare fades inside the configured ROI. Integer phase
+        // harmonics keep the animation continuous when the glow clock wraps.
+        // One configurable cycle: easeInOutSine rise, then easeInOutSine fall.
+        // The caller advances time from 0 to 2 PI over the complete cycle.
+        let pulseBeat = 0.5 - 0.5 * cos(parameters.time);
+        let pulseSpread = ${tuningWgsl("pulseSize")} + pulseBeat * ${tuningWgsl("pulseSizeAmount")};
+        let auraDistance = outsideDistance / (radius * pulseSpread);
+        let auraFlow = 0.5 + 0.5 * sin(
+            angle * ${tuningWgsl("auraFlowCount")} + parameters.time + sin(angle * ${tuningWgsl("auraWarpCount")} - parameters.time) * ${tuningWgsl("auraWarp")}
+        );
+        let auraWidth = ${tuningWgsl("auraWidth")} + auraFlow * ${tuningWgsl("auraWidthFlow")};
+        let auraHalo = exp(-pow(auraDistance / auraWidth, 2.0));
+        let auraCore = exp(-pow(auraDistance / ${tuningWgsl("auraCoreWidth")}, 2.0));
+        let auraFade = 1.0 - smoothstep(${tuningWgsl("auraFadeStart")}, ${tuningWgsl("auraFadeEnd")}, auraDistance);
+        let solarHalo = exp(-pow(auraDistance / ${tuningWgsl("solarWidth")}, 2.0));
+        let solarSpokes = pow(0.5 + 0.5 * sin(
+            angle * ${tuningWgsl("solarCount")} + sin(parameters.time) * ${tuningWgsl("solarRotation")}
+        ), ${tuningWgsl("solarSharpness")});
+        let solarGlare = solarHalo * ${tuningWgsl("solarIntensity")} + solarSpokes
+            * exp(-pow(auraDistance / ${tuningWgsl("solarLength")}, 2.0)) * ${tuningWgsl("solarRayIntensity")};
+        let glowPulse = ${tuningWgsl("pulseBase")} + pulseBeat * ${tuningWgsl("pulseAmount")};
+        let glowAlpha = (auraHalo * ${tuningWgsl("auraIntensity")} + auraCore * ${tuningWgsl("auraCoreIntensity")} + solarGlare)
+            * auraFade * (1.0 - circleMask) * parameters.glowStrength * glowPulse;
+        let glowColor = mix(
+            parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
+            parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz,
+            solarHalo * ${tuningWgsl("solarColorMix")} + auraCore * ${tuningWgsl("coreColorMix")}
+        );
+
+        // Outside the glass rim only the glare contributes.
+        if (distanceFromCenter > bodyRadius + max(parameters.outlineWidth, edgeSoftness) * 4.0) {
+            let glareAlpha = saturate(glowAlpha * parameters.alpha);
+            if (glareAlpha <= 0.001) { discard; }
+            return vec4<f32>(min(glowColor * glowAlpha * parameters.alpha, vec3<f32>(glareAlpha)), glareAlpha);
+        }
+
 
         let normal = vec3<f32>(
             normalized,
             sqrt(max(0.0, 1.0 - dot(normalized, normalized)))
         );
-        let lightDirection = normalize(vec3<f32>(-0.45, -0.68, 0.58));
+        let lightDirection = normalize(vec3<f32>(${tuningWgsl("lightX")}, ${tuningWgsl("lightY")}, ${tuningWgsl("lightZ")}));
         let light = saturate(dot(normal, lightDirection));
         let upperLight = saturate(-normalized.y);
-        let lowerDepth = saturate((normalized.y + 0.15) * 0.82);
-        let sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / bodyRadius);
-        var bodyColor = parameters.baseColor.xyz * (0.76 + (normal.z * 0.22) + (light * 0.16));
+        let lowerDepth = saturate((normalized.y + ${tuningWgsl("lowerOffset")}) * ${tuningWgsl("lowerScale")});
+        let sphericalDepth = smoothstep(${tuningWgsl("depthStart")}, 1.0, distanceFromCenter / bodyRadius);
+        var bodyColor = parameters.baseColor.xyz * (${tuningWgsl("bodyAmbient")} + (normal.z * ${tuningWgsl("bodyNormal")}) + (light * ${tuningWgsl("bodyLight")}));
         bodyColor = mix(
             bodyColor,
             parameters.deepColor.xyz,
-            (lowerDepth * 0.26) + (sphericalDepth * 0.08)
+            (lowerDepth * ${tuningWgsl("lowerDepth")}) + (sphericalDepth * ${tuningWgsl("sphereDepth")})
         );
 
-        let broadTopSheen = pow(upperLight, 3.0) * 0.09 * parameters.glassStrength;
+        let broadTopSheen = pow(upperLight, ${tuningWgsl("sheenPower")}) * ${tuningWgsl("sheenIntensity")} * parameters.glassStrength;
         let compactHighlight = ellipse_mask(
             normalized,
-            vec2<f32>(-0.25, -0.56),
-            vec2<f32>(0.42, 0.095),
-            -0.34
-        ) * 0.19 * parameters.glassStrength;
+            vec2<f32>(${tuningWgsl("highlightX")}, ${tuningWgsl("highlightY")}),
+            vec2<f32>(${tuningWgsl("highlightWidth")}, ${tuningWgsl("highlightHeight")}),
+            ${tuningWgsl("highlightRotation")}
+        ) * ${tuningWgsl("highlightIntensity")} * parameters.glassStrength;
         let edgeGlint = pow(saturate(
-            1.0 - abs(distanceFromCenter - (radius * 0.86)) / max(1.0, radius * 0.16)
-        ), 2.4) * pow(upperLight, 4.5) * 0.12 * parameters.glassStrength;
+            1.0 - abs(distanceFromCenter - (radius * ${tuningWgsl("glintPosition")})) / max(1.0, radius * ${tuningWgsl("glintWidth")})
+        ), ${tuningWgsl("glintSharpness")}) * pow(upperLight, ${tuningWgsl("glintTop")}) * ${tuningWgsl("glintIntensity")} * parameters.glassStrength;
         var fillColor = bodyColor
             + (parameters.highlightColor.xyz * (broadTopSheen + compactHighlight + edgeGlint));
         fillColor = min(
             vec3<f32>(1.0),
             (fillColor * (1.0 + saturate(parameters.brightnessBoost)))
-                + (parameters.highlightColor.xyz * saturate(parameters.brightnessBoost) * 0.18)
+                + (parameters.highlightColor.xyz * saturate(parameters.brightnessBoost) * ${tuningWgsl("brightnessHighlight")})
         );
 
         let backdropLocal = fragCoord + parameters.targetToBackdropOffset;
@@ -144,39 +184,45 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
             halfBackdropTexel,
             vec2<f32>(1.0) - halfBackdropTexel
         );
-        let backdropBlurColor = textureSample(
+        let backdropBlurColor = textureSampleLevel(
             backdropTexture,
             backdropSampler,
-            backdropUv
+            backdropUv,
+            0.0
         ).rgb;
         let backdropBlend = saturate(parameters.backdropBlurStrength)
             * fillMask
-            * (0.72 + (upperLight * 0.18));
+            * (${tuningWgsl("backdropBase")} + (upperLight * ${tuningWgsl("backdropTop")}));
         fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
 
+        // Reflected aura stays on the sphere: no extra exterior bloom or blur.
+        let backlightGradient = pow(smoothstep(
+            1.0 - ${tuningWgsl("backlightWidth")}, 1.0,
+            saturate(distanceFromCenter / bodyRadius)
+        ), ${tuningWgsl("backlightFalloff")});
+        let backlightColor = mix(
+            parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
+            backdropBlurColor, ${tuningWgsl("backlightBackdropMix")}
+        );
+        fillColor = mix(fillColor, backlightColor,
+            backlightGradient * ${tuningWgsl("backlightIntensity")});
+
         let outlineDistance = abs(distanceFromCenter - radius);
-        let outlineSoftness = max(0.42, edgeSoftness * 0.38);
+        let outlineSoftness = max(0.42, edgeSoftness * ${tuningWgsl("outlineSoftness")});
         let outlineCore = 1.0 - smoothstep(
-            max(0.24, parameters.outlineWidth * 0.22),
-            max(0.42, parameters.outlineWidth * 0.22) + outlineSoftness,
+            max(0.24, parameters.outlineWidth * ${tuningWgsl("outlineWidth")}),
+            max(0.42, parameters.outlineWidth * ${tuningWgsl("outlineWidth")}) + outlineSoftness,
             outlineDistance
         );
         let innerRim = exp(-pow(
-            max(radius - distanceFromCenter, 0.0) / max(1.0, parameters.outlineWidth * 4.0),
+            max(radius - distanceFromCenter, 0.0) / max(1.0, parameters.outlineWidth * ${tuningWgsl("innerRimWidth")}),
             2.0
-        )) * circleMask * 0.04;
-        let angle = atan2(normalized.y, normalized.x);
-        let rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
-        let rimBaseColor = mix(parameters.deepColor.xyz, parameters.baseColor.xyz, 0.58);
-        let rimColor = mix(rimBaseColor, parameters.highlightColor.xyz, rimLight * 0.16);
-        let outlineAlpha = outlineCore * 0.36;
+        )) * circleMask * ${tuningWgsl("innerRimIntensity")};
+        let rimLight = pow(saturate(cos(angle + ${tuningWgsl("rimAngle")}) * 0.5 + 0.5), ${tuningWgsl("rimSharpness")});
+        let rimBaseColor = mix(parameters.deepColor.xyz, parameters.baseColor.xyz, ${tuningWgsl("rimBaseMix")});
+        let rimColor = mix(rimBaseColor, parameters.highlightColor.xyz, rimLight * ${tuningWgsl("rimLight")});
+        let outlineAlpha = outlineCore * ${tuningWgsl("outlineAlpha")};
 
-        let glowPulse = 0.94 + (sin(parameters.time) * 0.06);
-        let glowAlpha = exp(-pow(
-            outsideDistance / max(1.0, radius * 0.42),
-            2.0
-        )) * (1.0 - circleMask) * parameters.glowStrength * glowPulse;
-        let glowColor = mix(parameters.deepColor.xyz, parameters.baseColor.xyz, 0.48);
 
         let fillAlpha = fillMask;
         var premultipliedColor = (fillColor * fillAlpha)
@@ -562,6 +608,7 @@ export class TitleWebGpuCenterCirclePass {
     }) {
         const floats = this.uniformFloats;
         floats.fill(0);
+        floats.set(getTitleShaderUniforms(), 36);
         floats[0] = targetWidth;
         floats[1] = targetHeight;
         floats[2] = centerX;

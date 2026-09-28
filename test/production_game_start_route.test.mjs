@@ -85,7 +85,7 @@ test('첫 production map 선택은 preview ID를 유지하고 R2 showcase Wave 1
     assert.strictEqual(options.waveDefinition, R2_ENEMY_SHOWCASE_WAVE_01_DATA);
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
-    assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(options.enemyRecoveryEnabled, false);
     assert.strictEqual(
         options.r9WaveRunPlan,
         R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN
@@ -171,7 +171,7 @@ test('두 번째 production map 선택은 폭 10 ㄹ자 10,000-body 성능 세�
         PERFORMANCE_SERPENTINE_WAVE_01_DATA);
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
-    assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(options.enemyRecoveryEnabled, false);
     assert.strictEqual(
         options.r9WaveRunPlan,
         R9_PERFORMANCE_PRODUCTION_WAVE_RUN_PLAN
@@ -348,7 +348,7 @@ test('실제 SceneSystem gameStart 조합은 Stage 1 runtime 옵션을 GameScene
     assert.strictEqual(options.waveDefinition, R2_ENEMY_SHOWCASE_WAVE_01_DATA);
     assert.equal(options.enemyWaveEnabled, true);
     assert.equal(options.gameplayWorldActorsEnabled, true);
-    assert.equal(options.enemyRecoveryEnabled, true);
+    assert.equal(options.enemyRecoveryEnabled, false);
     assert.strictEqual(
         options.r9WaveRunPlan,
         R9_R2_SHOWCASE_PRODUCTION_WAVE_RUN_PLAN

@@ -99,7 +99,7 @@ function createPlayableSessionOptions(
         tileNavigationSource: new TileMap(mapData),
         enemyWaveEnabled: true,
         gameplayWorldActorsEnabled: true,
-        enemyRecoveryEnabled: true,
+        enemyRecoveryEnabled: false,
         towerMaxHp: session.towerMaxHp,
         coreMaxIntegrity: session.coreMaxIntegrity,
         waveDefinition,

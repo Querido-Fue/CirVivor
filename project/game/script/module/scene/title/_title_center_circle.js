@@ -1,8 +1,10 @@
 import { getCanvas, getUIOffsetX, getUIWW, getWH, renderGL } from 'display/display_system.js';
+import { getTitleShaderSetting } from 'display/_title_shader_settings.js';
 import { getDelta } from 'game/time_handler.js';
 import { clamp01 } from 'util/number_util.js';
 import { buildTitleCenterCircleRenderCommand } from './center_circle/_title_center_circle_render_command.js';
 import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from './_title_runtime_constants.js';
+
 
 /**
  * @class TitleCenterCircle
@@ -54,7 +56,8 @@ export class TitleCenterCircle {
             return;
         }
 
-        this.glowPhase = (this.glowPhase + (delta * 1.4)) % (Math.PI * 2);
+        this.glowPhase = (this.glowPhase + (delta * Math.PI * 2 / getTitleShaderSetting('pulsePeriod')))
+            % (Math.PI * 2);
     }
 
     /**

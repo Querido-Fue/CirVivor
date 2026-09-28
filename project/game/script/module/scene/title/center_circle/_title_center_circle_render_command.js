@@ -1,4 +1,5 @@
 import { EFFECT_TYPES } from 'display/webgl/_webgl_constants.js';
+import { getTitleShaderSetting as tuning, tuneTitleShaderColor } from 'display/_title_shader_settings.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 import { TITLE_LOADING_CONSTANTS as TITLE_LOADING } from '../_title_runtime_constants.js';
 import { getLoadingCircleShaderColors } from './_title_center_circle_theme.js';
@@ -26,7 +27,7 @@ export function buildTitleCenterCircleRenderCommand({
 }) {
     const shaderConfig = TITLE_LOADING.CIRCLE_SHADER || {};
     const safeGlowCompensationScale = clampFiniteNumber(glowCompensationScale, 1, Infinity, 1);
-    const glowStrength = resolveFiniteNumber(shaderConfig.GLOW_STRENGTH, 0.24)
+    const glowStrength = tuning('glowStrength')
         * (1 + ((safeGlowCompensationScale - 1) * resolveFiniteNumber(shaderConfig.GLOW_COMPENSATION_STRENGTH_SCALE, 0.08)));
 
     return {
@@ -34,19 +35,29 @@ export function buildTitleCenterCircleRenderCommand({
         x: centerX,
         y: centerY,
         radius,
-        outlineWidth,
+        outlineWidth: outlineWidth * tuning('outlineScale'),
         time: glowPhase,
-        alpha: resolveFiniteNumber(shaderConfig.ALPHA, 1),
+        alpha: tuning('alpha'),
         glowStrength,
-        glassStrength: resolveFiniteNumber(shaderConfig.GLASS_STRENGTH, 0.72),
-        brightnessBoost: resolveFiniteNumber(shaderConfig.BRIGHTNESS_BOOST, 0.08),
-        bodyRadiusExpandOutlineRatio: resolveFiniteNumber(shaderConfig.BODY_RADIUS_EXPAND_OUTLINE_RATIO, 0.38),
-        backdropBlur: resolveFiniteNumber(shaderConfig.BACKDROP_BLUR, 0.1),
-        backdropBlurStrength: resolveFiniteNumber(shaderConfig.BACKDROP_BLUR_STRENGTH, 0.16),
-        backdropRefractionStrength: resolveFiniteNumber(shaderConfig.BACKDROP_REFRACTION_STRENGTH, 4.5),
-        scissorPaddingRatio: resolveFiniteNumber(shaderConfig.SCISSOR_PADDING_RADIUS_RATIO, 0.86),
+        glassStrength: tuning('glassStrength'),
+        brightnessBoost: tuning('brightnessBoost'),
+        bodyRadiusExpandOutlineRatio: tuning('bodyExpand'),
+        backdropBlur: tuning('backdropBlur'),
+        backdropBlurStrength: tuning('backdropBlend'),
+        backdropRefractionStrength: tuning('refraction'),
+        scissorPaddingRatio: Math.max(shaderConfig.SCISSOR_PADDING_RADIUS_RATIO,
+            tuning('auraFadeEnd') * (tuning('pulseSize') + tuning('pulseSizeAmount'))),
         scissorPaddingMin: resolveFiniteNumber(shaderConfig.SCISSOR_PADDING_MIN_PX, 28),
         blurSourceCanvases: Array.isArray(blurSourceCanvases) ? blurSourceCanvases : [],
-        colors: getLoadingCircleShaderColors()
+        colors: tuneCircleColors(getLoadingCircleShaderColors())
+    };
+}
+
+function tuneCircleColors(colors) {
+    return {
+        base: tuneTitleShaderColor(colors.base, 'circle'),
+        deep: tuneTitleShaderColor(colors.deep, 'circle'),
+        rim: tuneTitleShaderColor(colors.rim, 'circle'),
+        highlight: tuneTitleShaderColor(colors.highlight, 'circle')
     };
 }

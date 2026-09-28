@@ -1,5 +1,30 @@
 let colorUtilInstance = null;
 
+/** Normalized RGB → HSL (hue in degrees, saturation/lightness in 0..1). */
+export function rgbToHsl([r, g, b]) {
+    const high = Math.max(r, g, b);
+    const low = Math.min(r, g, b);
+    const delta = high - low;
+    const lightness = (high + low) / 2;
+    if (delta === 0) return [0, 0, lightness];
+    const hue = high === r ? ((g - b) / delta + 6) % 6
+        : high === g ? (b - r) / delta + 2 : (r - g) / delta + 4;
+    return [hue * 60, delta / (1 - Math.abs(2 * lightness - 1)), lightness];
+}
+
+/** HSL → normalized RGB. Hue wraps; saturation/lightness are clamped. */
+export function hslToRgb(hue, saturation, lightness) {
+    const h = ((hue % 360) + 360) % 360 / 60;
+    const s = Math.max(0, Math.min(1, saturation));
+    const l = Math.max(0, Math.min(1, lightness));
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs(h % 2 - 1));
+    const m = l - c / 2;
+    const rgb = h < 1 ? [c, x, 0] : h < 2 ? [x, c, 0] : h < 3 ? [0, c, x]
+        : h < 4 ? [0, x, c] : h < 5 ? [x, 0, c] : [c, 0, x];
+    return rgb.map(channel => channel + m);
+}
+
 /**
  * RGB(A) 값을 CSS rgba 문자열로 포맷합니다.
  * @param {number} r - Red

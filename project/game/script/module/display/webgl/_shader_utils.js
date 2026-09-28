@@ -1,3 +1,4 @@
+import { tuningGlsl, TITLE_TUNING_VEC4_COUNT } from '../_title_shader_settings.js';
 /**
  * 셰이더를 컴파일합니다.
  * @param {WebGLRenderingContext} gl - 대상 WebGL 컨텍스트입니다.
@@ -82,6 +83,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
     precision highp float;
 
     varying vec2 v_uv;
+    uniform vec4 u_tuning[${TITLE_TUNING_VEC4_COUNT}];
 
     uniform vec2 u_resolution;
     uniform vec2 u_center;
@@ -114,7 +116,7 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             (offset.x * cosine) - (offset.y * sine),
             (offset.x * sine) + (offset.y * cosine)
         ) / max(radius, vec2(0.0001));
-        return exp(-dot(rotated, rotated) * 2.25);
+        return exp(-dot(rotated, rotated) * ${tuningGlsl("highlightFalloff")});
     }
 
     void main() {
@@ -124,32 +126,70 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         vec2 local = fragCoord - u_center;
         vec2 normalized = local / bodyRadius;
         float distanceFromCenter = length(local);
-        float edgeSoftness = 1.35;
+        float edgeSoftness = ${tuningGlsl("edgeSoftness")};
         float circleMask = 1.0 - smoothstep(bodyRadius - edgeSoftness, bodyRadius + edgeSoftness, distanceFromCenter);
         float outsideDistance = max(distanceFromCenter - radius, 0.0);
         float fillMask = circleMask;
+        float angle = atan(normalized.y, normalized.x);
+
+        // Match the WebGPU aura, including its ROI fade and wrapped phase.
+        // One configurable cycle: easeInOutSine rise, then easeInOutSine fall.
+        // The caller advances time from 0 to 2 PI over the complete cycle.
+        float pulseBeat = 0.5 - 0.5 * cos(u_time);
+        float pulseSpread = ${tuningGlsl("pulseSize")} + pulseBeat * ${tuningGlsl("pulseSizeAmount")};
+        float auraDistance = outsideDistance / (radius * pulseSpread);
+        float auraFlow = 0.5 + 0.5 * sin(
+            angle * ${tuningGlsl("auraFlowCount")} + u_time + sin(angle * ${tuningGlsl("auraWarpCount")} - u_time) * ${tuningGlsl("auraWarp")}
+        );
+        float auraWidth = ${tuningGlsl("auraWidth")} + auraFlow * ${tuningGlsl("auraWidthFlow")};
+        float auraHalo = exp(-pow(auraDistance / auraWidth, 2.0));
+        float auraCore = exp(-pow(auraDistance / ${tuningGlsl("auraCoreWidth")}, 2.0));
+        float auraFade = 1.0 - smoothstep(${tuningGlsl("auraFadeStart")}, ${tuningGlsl("auraFadeEnd")}, auraDistance);
+        float solarHalo = exp(-pow(auraDistance / ${tuningGlsl("solarWidth")}, 2.0));
+        float solarSpokes = pow(0.5 + 0.5 * sin(
+            angle * ${tuningGlsl("solarCount")} + sin(u_time) * ${tuningGlsl("solarRotation")}
+        ), ${tuningGlsl("solarSharpness")});
+        float solarGlare = solarHalo * ${tuningGlsl("solarIntensity")} + solarSpokes
+            * exp(-pow(auraDistance / ${tuningGlsl("solarLength")}, 2.0)) * ${tuningGlsl("solarRayIntensity")};
+        float glowPulse = ${tuningGlsl("pulseBase")} + pulseBeat * ${tuningGlsl("pulseAmount")};
+        float glowAlpha = (auraHalo * ${tuningGlsl("auraIntensity")} + auraCore * ${tuningGlsl("auraCoreIntensity")} + solarGlare)
+            * auraFade * (1.0 - circleMask) * u_glowStrength * glowPulse;
+        vec3 glowColor = mix(
+            u_tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
+            u_tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz,
+            solarHalo * ${tuningGlsl("solarColorMix")} + auraCore * ${tuningGlsl("coreColorMix")}
+        );
+
+        // Outside the glass rim only the glare contributes.
+        if (distanceFromCenter > bodyRadius + max(u_outlineWidth, edgeSoftness) * 4.0) {
+            float glareAlpha = saturate(glowAlpha * u_alpha);
+            if (glareAlpha <= 0.001) { discard; }
+            gl_FragColor = vec4(min(glowColor * glowAlpha * u_alpha, vec3(glareAlpha)), glareAlpha);
+            return;
+        }
+
 
         vec3 normal = vec3(normalized, sqrt(max(0.0, 1.0 - dot(normalized, normalized))));
-        vec3 lightDirection = normalize(vec3(-0.45, -0.68, 0.58));
+        vec3 lightDirection = normalize(vec3(${tuningGlsl("lightX")}, ${tuningGlsl("lightY")}, ${tuningGlsl("lightZ")}));
         float light = saturate(dot(normal, lightDirection));
         float upperLight = saturate(-normalized.y);
-        float lowerDepth = saturate((normalized.y + 0.15) * 0.82);
-        float sphericalDepth = smoothstep(0.18, 1.0, distanceFromCenter / bodyRadius);
-        vec3 bodyColor = u_baseColor * (0.76 + (normal.z * 0.22) + (light * 0.16));
-        bodyColor = mix(bodyColor, u_deepColor, (lowerDepth * 0.26) + (sphericalDepth * 0.08));
+        float lowerDepth = saturate((normalized.y + ${tuningGlsl("lowerOffset")}) * ${tuningGlsl("lowerScale")});
+        float sphericalDepth = smoothstep(${tuningGlsl("depthStart")}, 1.0, distanceFromCenter / bodyRadius);
+        vec3 bodyColor = u_baseColor * (${tuningGlsl("bodyAmbient")} + (normal.z * ${tuningGlsl("bodyNormal")}) + (light * ${tuningGlsl("bodyLight")}));
+        bodyColor = mix(bodyColor, u_deepColor, (lowerDepth * ${tuningGlsl("lowerDepth")}) + (sphericalDepth * ${tuningGlsl("sphereDepth")}));
 
-        float broadTopSheen = pow(upperLight, 3.0) * 0.09 * u_glassStrength;
-        float compactHighlight = ellipseMask(normalized, vec2(-0.25, -0.56), vec2(0.42, 0.095), -0.34)
-            * 0.19
+        float broadTopSheen = pow(upperLight, ${tuningGlsl("sheenPower")}) * ${tuningGlsl("sheenIntensity")} * u_glassStrength;
+        float compactHighlight = ellipseMask(normalized, vec2(${tuningGlsl("highlightX")}, ${tuningGlsl("highlightY")}), vec2(${tuningGlsl("highlightWidth")}, ${tuningGlsl("highlightHeight")}), ${tuningGlsl("highlightRotation")})
+            * ${tuningGlsl("highlightIntensity")}
             * u_glassStrength;
-        float edgeGlint = pow(saturate(1.0 - abs(distanceFromCenter - (radius * 0.86)) / max(1.0, radius * 0.16)), 2.4)
-            * pow(upperLight, 4.5)
-            * 0.12
+        float edgeGlint = pow(saturate(1.0 - abs(distanceFromCenter - (radius * ${tuningGlsl("glintPosition")})) / max(1.0, radius * ${tuningGlsl("glintWidth")})), ${tuningGlsl("glintSharpness")})
+            * pow(upperLight, ${tuningGlsl("glintTop")})
+            * ${tuningGlsl("glintIntensity")}
             * u_glassStrength;
         vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
         fillColor = min(
             vec3(1.0),
-            (fillColor * (1.0 + saturate(u_brightnessBoost))) + (u_highlightColor * saturate(u_brightnessBoost) * 0.18)
+            (fillColor * (1.0 + saturate(u_brightnessBoost))) + (u_highlightColor * saturate(u_brightnessBoost) * ${tuningGlsl("brightnessHighlight")})
         );
         vec2 screenUv = gl_FragCoord.xy / max(u_resolution, vec2(1.0));
         vec2 refractionOffset = normalized * (vec2(u_backdropRefractionStrength) / max(u_resolution, vec2(1.0)));
@@ -157,31 +197,36 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         float backdropBlend = u_hasBackdropBlurTexture
             * saturate(u_backdropBlurStrength)
             * fillMask
-            * (0.72 + (upperLight * 0.18));
+            * (${tuningGlsl("backdropBase")} + (upperLight * ${tuningGlsl("backdropTop")}));
         fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
 
+        // Match the sphere-local reflected aura without widening the outer glow.
+        float backlightGradient = pow(smoothstep(
+            1.0 - ${tuningGlsl("backlightWidth")}, 1.0,
+            saturate(distanceFromCenter / bodyRadius)
+        ), ${tuningGlsl("backlightFalloff")});
+        vec3 backlightColor = mix(
+            u_tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
+            backdropBlurColor, ${tuningGlsl("backlightBackdropMix")} * u_hasBackdropBlurTexture
+        );
+        fillColor = mix(fillColor, backlightColor,
+            backlightGradient * ${tuningGlsl("backlightIntensity")});
+
         float outlineDistance = abs(distanceFromCenter - radius);
-        float outlineSoftness = max(0.42, edgeSoftness * 0.38);
+        float outlineSoftness = max(0.42, edgeSoftness * ${tuningGlsl("outlineSoftness")});
         float outlineCore = 1.0 - smoothstep(
-            max(0.24, u_outlineWidth * 0.22),
-            max(0.42, u_outlineWidth * 0.22) + outlineSoftness,
+            max(0.24, u_outlineWidth * ${tuningGlsl("outlineWidth")}),
+            max(0.42, u_outlineWidth * ${tuningGlsl("outlineWidth")}) + outlineSoftness,
             outlineDistance
         );
-        float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * 4.0), 2.0))
+        float innerRim = exp(-pow(max(radius - distanceFromCenter, 0.0) / max(1.0, u_outlineWidth * ${tuningGlsl("innerRimWidth")}), 2.0))
             * circleMask
-            * 0.04;
-        float angle = atan(normalized.y, normalized.x);
-        float rimLight = pow(saturate(cos(angle + 2.18) * 0.5 + 0.5), 3.0);
-        vec3 rimBaseColor = mix(u_deepColor, u_baseColor, 0.58);
-        vec3 rimColor = mix(rimBaseColor, u_highlightColor, rimLight * 0.16);
-        float outlineAlpha = outlineCore * 0.36;
+            * ${tuningGlsl("innerRimIntensity")};
+        float rimLight = pow(saturate(cos(angle + ${tuningGlsl("rimAngle")}) * 0.5 + 0.5), ${tuningGlsl("rimSharpness")});
+        vec3 rimBaseColor = mix(u_deepColor, u_baseColor, ${tuningGlsl("rimBaseMix")});
+        vec3 rimColor = mix(rimBaseColor, u_highlightColor, rimLight * ${tuningGlsl("rimLight")});
+        float outlineAlpha = outlineCore * ${tuningGlsl("outlineAlpha")};
 
-        float glowPulse = 0.94 + (sin(u_time) * 0.06);
-        float glowAlpha = exp(-pow(outsideDistance / max(1.0, radius * 0.42), 2.0))
-            * (1.0 - circleMask)
-            * u_glowStrength
-            * glowPulse;
-        vec3 glowColor = mix(u_deepColor, u_baseColor, 0.48);
 
         float fillAlpha = fillMask;
         vec3 premultipliedColor = (fillColor * fillAlpha)
@@ -512,6 +557,7 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
     precision highp float;
 
     varying vec2 v_uv;
+    uniform vec4 u_tuning[${TITLE_TUNING_VEC4_COUNT}];
 
     uniform vec2 u_resolution;
     uniform vec2 u_center;
@@ -544,6 +590,12 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         return atan(sin(angleA - angleB), cos(angleA - angleB));
     }
 
+    float crispRay(float delta, float width) {
+        float normalized = abs(delta) / max(0.0001, width * ${tuningGlsl("rayForegroundWidth")});
+        float softness = ${tuningGlsl("rayForegroundSoftness")};
+        return 1.0 - smoothstep(1.0 - softness, 1.0 + softness, normalized);
+    }
+
     void main() {
         vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
         vec2 toPixel = fragCoord - u_center;
@@ -552,6 +604,8 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
 
         float dentOffset = 0.0;
         float dentField = 0.0;
+        float rayActivity = 0.0;
+        float foregroundRayActivity = 0.0;
 
         for (int index = 0; index < ${MAGNETIC_SHIELD_MAX_DENTS}; index++) {
             if (index >= u_dentCount) {
@@ -562,20 +616,24 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
             float dentMask = gaussian(angularDelta(angle, dent.x), dent.z) * dent.w;
             dentOffset += dent.y * dentMask;
             dentField = max(dentField, dentMask);
+            rayActivity = max(rayActivity,
+                gaussian(angularDelta(angle, dent.x), dent.z * ${tuningGlsl("dentRayWidth")}) * dent.w);
+            foregroundRayActivity = max(foregroundRayActivity,
+                crispRay(angularDelta(angle, dent.x), dent.z * ${tuningGlsl("dentRayWidth")}) * dent.w);
         }
 
-        float shellWave = sin((angle * 7.5) - (u_time * 2.4) + (sin((angle * 3.4) + (u_time * 1.45)) * 0.7));
-        float shellRipple = shellWave * (1.0 + (dentField * 1.35)) * 1.4;
+        float shellWave = sin((angle * ${tuningGlsl("shellCount")}) - (u_time * ${tuningGlsl("shellSpeed")}) + (sin((angle * ${tuningGlsl("shellWarpCount")}) + (u_time * ${tuningGlsl("shellWarpSpeed")})) * ${tuningGlsl("shellWarp")}));
+        float shellRipple = shellWave * (1.0 + (dentField * ${tuningGlsl("shellDent")})) * ${tuningGlsl("shellAmplitude")};
         float shieldRadius = max(1.0, u_radius - dentOffset + shellRipple);
         float fieldRadius = max(shieldRadius, u_fieldRadius);
         float fieldRange = max(1.0, fieldRadius - shieldRadius);
         float ringDistance = abs(distanceFromCenter - shieldRadius);
         float ringCore = exp(-pow(ringDistance / max(1.0, u_ringThickness), 2.0));
         float outerGlow = exp(-pow(max(distanceFromCenter - shieldRadius, 0.0) / max(1.0, u_glowWidth), 2.0));
-        float innerGlow = exp(-pow(max(shieldRadius - distanceFromCenter, 0.0) / max(1.0, u_glowWidth * 0.42), 2.0)) * 0.16;
+        float innerGlow = exp(-pow(max(shieldRadius - distanceFromCenter, 0.0) / max(1.0, u_glowWidth * ${tuningGlsl("innerWidth")}), 2.0)) * ${tuningGlsl("innerStrength")};
 
-        float angleLight = 0.5 + (0.5 * cos(angle + 0.85));
-        float ringNoise = 0.5 + (0.5 * sin((angle * 5.0) - (u_time * 1.7) + (sin((angle * 3.0) + (u_time * 0.9)) * 0.4)));
+        float angleLight = 0.5 + (0.5 * cos(angle + ${tuningGlsl("angleLight")}));
+        float ringNoise = 0.5 + (0.5 * sin((angle * ${tuningGlsl("ringNoiseCount")}) - (u_time * ${tuningGlsl("ringNoiseSpeed")}) + (sin((angle * ${tuningGlsl("ringWarpCount")}) + (u_time * ${tuningGlsl("ringWarpSpeed")})) * ${tuningGlsl("ringWarp")})));
         float shimmer = mix(0.92, 1.08, angleLight) * mix(0.96, 1.04, ringNoise);
 
         vec3 shadowColor = u_shadowColor;
@@ -584,20 +642,20 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
         vec3 highlightColor = u_highlightColor;
 
         vec3 baseColor = mix(lowColor, highColor, angleLight);
-        baseColor = mix(baseColor, highlightColor, pow(angleLight, 6.0) * 0.55);
-        vec3 ringColor = mix(shadowColor, baseColor, saturate(ringCore + (outerGlow * 0.7)));
+        baseColor = mix(baseColor, highlightColor, pow(angleLight, ${tuningGlsl("ringHighlightPower")}) * ${tuningGlsl("ringHighlight")});
+        vec3 ringColor = mix(shadowColor, baseColor, saturate(ringCore + (outerGlow * ${tuningGlsl("ringColorMix")})));
         float fieldSignedDistance = distanceFromCenter - shieldRadius;
         float fieldDistance = max(fieldSignedDistance, 0.0);
         float fieldFade = 1.0 - smoothstep(0.0, fieldRange, fieldDistance);
-        float fieldTransition = max(1.0, u_ringThickness * 2.4);
-        float fieldMask = smoothstep(-fieldTransition * 0.35, fieldTransition, fieldSignedDistance);
-        float fieldNoise = 0.55 + (0.45 * sin((angle * 2.2) - (u_time * 0.65) + (ringNoise * 1.8)));
-        float fieldVeil = pow(fieldFade, 1.18);
-        float fieldBloom = exp(-pow(fieldDistance / max(1.0, fieldRange * 0.34), 1.28));
-        float fieldAlpha = ((fieldVeil * 0.32) + (fieldBloom * 0.06)) * fieldMask * mix(0.82, 1.12, fieldNoise);
-        vec3 fieldColor = mix(shadowColor, baseColor, 0.88);
-        fieldColor = mix(fieldColor, highColor, fieldBloom * 0.065);
-        fieldColor = mix(fieldColor, highlightColor, pow(fieldFade, 2.2) * 0.18);
+        float fieldTransition = max(1.0, u_ringThickness * ${tuningGlsl("fieldTransition")});
+        float fieldMask = smoothstep(-fieldTransition * ${tuningGlsl("fieldInner")}, fieldTransition, fieldSignedDistance);
+        float fieldNoise = 0.55 + (0.45 * sin((angle * ${tuningGlsl("fieldNoiseCount")}) - (u_time * ${tuningGlsl("fieldNoiseSpeed")}) + (ringNoise * ${tuningGlsl("fieldNoiseWarp")})));
+        float fieldVeil = pow(fieldFade, ${tuningGlsl("fieldVeilFalloff")});
+        float fieldBloom = exp(-pow(fieldDistance / max(1.0, fieldRange * ${tuningGlsl("fieldBloomWidth")}), ${tuningGlsl("fieldBloomFalloff")}));
+        float fieldAlpha = ((fieldVeil * ${tuningGlsl("fieldVeil")}) + (fieldBloom * ${tuningGlsl("fieldBloom")})) * fieldMask * mix(0.82, 1.12, fieldNoise);
+        vec3 fieldColor = mix(shadowColor, baseColor, ${tuningGlsl("fieldBaseColor")});
+        fieldColor = mix(fieldColor, highColor, fieldBloom * ${tuningGlsl("fieldHighColor")});
+        fieldColor = mix(fieldColor, highlightColor, pow(fieldFade, ${tuningGlsl("fieldHighlightFalloff")}) * ${tuningGlsl("fieldHighlight")});
 
         float impactAlpha = 0.0;
         vec3 impactColor = vec3(0.0);
@@ -610,25 +668,46 @@ export const MAGNETIC_SHIELD_FRAGMENT_SHADER = `
 
             vec4 impact = u_impacts[index];
             float progress = saturate(impact.w);
-            float fade = pow(1.0 - progress, 1.4);
+            float fade = pow(1.0 - progress, ${tuningGlsl("impactFade")});
+            float rayAttack = ${tuningGlsl("rayAttack")};
+            float rayRise = 0.5 - 0.5 * cos(saturate(progress / rayAttack) * 3.141592653589793);
+            float rayRelease = 0.5 + 0.5 * cos(saturate((progress - rayAttack) / (1.0 - rayAttack)) * 3.141592653589793);
+            float rayEnvelope = rayRise * pow(rayRelease, ${tuningGlsl("impactFade")});
             float angularMask = gaussian(angularDelta(angle, impact.x), impact.z);
-            float radialCenter = shieldRadius + mix(-1.0, 8.0, progress);
-            float radialMask = gaussian(distanceFromCenter - radialCenter, (u_ringThickness * 2.2) + 5.0);
-            float flare = angularMask * radialMask * impact.y * fade * 0.72;
+            float radialCenter = shieldRadius + mix(${tuningGlsl("impactStart")}, ${tuningGlsl("impactEnd")}, progress);
+            float radialMask = gaussian(distanceFromCenter - radialCenter, (u_ringThickness * ${tuningGlsl("impactWidth")}) + ${tuningGlsl("impactBlur")});
+            float flare = angularMask * radialMask * impact.y * fade * ${tuningGlsl("impactIntensity")};
             impactAlpha += flare;
             impactActivity = max(impactActivity, angularMask * impact.y * fade);
-            impactColor += mix(highColor, highlightColor, 0.58) * flare;
+            rayActivity = max(rayActivity,
+                gaussian(angularDelta(angle, impact.x), impact.z * ${tuningGlsl("impactRayWidth")}) * impact.y * rayEnvelope);
+            foregroundRayActivity = max(foregroundRayActivity,
+                crispRay(angularDelta(angle, impact.x), impact.z * ${tuningGlsl("impactRayWidth")}) * impact.y * rayEnvelope);
+            impactColor += mix(highColor, highlightColor, ${tuningGlsl("impactColor")}) * flare;
         }
 
-        float approachActivity = saturate(dentField * 1.2);
-        float localActivity = saturate(max(approachActivity, impactActivity * 0.92));
-        float activityNoise = 0.88 + (0.12 * sin((angle * 4.0) + (u_time * 3.1) + (shellWave * 0.7)));
-        float baseAlpha = ((ringCore * 0.82) + (outerGlow * 0.18) + (innerGlow * 0.05)) * shimmer;
+        float approachActivity = saturate(dentField * ${tuningGlsl("approachGain")});
+        float localActivity = saturate(max(approachActivity, impactActivity * ${tuningGlsl("impactGain")}));
+        float activityNoise = 0.88 + (0.12 * sin((angle * ${tuningGlsl("activityCount")}) + (u_time * ${tuningGlsl("activitySpeed")}) + (shellWave * ${tuningGlsl("activityWarp")})));
+        float baseAlpha = ((ringCore * ${tuningGlsl("ringIntensity")}) + (outerGlow * ${tuningGlsl("outerIntensity")}) + (innerGlow * ${tuningGlsl("innerIntensity")})) * shimmer;
         baseAlpha *= localActivity * activityNoise;
-        baseAlpha += approachActivity * outerGlow * 0.08;
-        fieldAlpha *= max(approachActivity, impactActivity * 0.55);
-        vec3 color = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor;
-        float alpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * 0.85)) * u_alpha;
+        baseAlpha += approachActivity * outerGlow * ${tuningGlsl("approachGlow")};
+        fieldAlpha *= max(approachActivity, impactActivity * ${tuningGlsl("fieldImpactGain")});
+        fieldAlpha *= ${tuningGlsl("fieldIntensity")};
+        // Match the WebGPU sharp foreground ray over the soft background veil.
+        float rayDistance = max(distanceFromCenter - u_radius * ${tuningGlsl("rayStart")}, 0.0);
+        float rayFalloff = gaussian(rayDistance, fieldRange * ${tuningGlsl("rayLength")});
+        float rayMask = smoothstep(u_radius * ${tuningGlsl("rayMaskStart")}, u_radius * ${tuningGlsl("rayMaskEnd")}, distanceFromCenter);
+        float rayAlpha = saturate(rayActivity) * rayFalloff * rayMask * fieldFade * ${tuningGlsl("rayIntensity")} * ${tuningGlsl("rayBackgroundIntensity")};
+        vec3 rayColor = mix(u_tuning[${TITLE_TUNING_VEC4_COUNT - 2}].xyz, u_tuning[${TITLE_TUNING_VEC4_COUNT - 1}].xyz, rayFalloff);
+        float foregroundFalloff = gaussian(rayDistance, fieldRange * ${tuningGlsl("rayLength")} * ${tuningGlsl("rayForegroundLength")});
+        float foregroundAlpha = saturate(saturate(foregroundRayActivity) * foregroundFalloff * rayMask * fieldFade
+            * ${tuningGlsl("rayIntensity")} * ${tuningGlsl("rayForegroundIntensity")});
+        vec3 foregroundColor = mix(rayColor, vec3(1.0), ${tuningGlsl("rayForegroundHighlight")});
+        vec3 backgroundColor = (fieldColor * fieldAlpha) + (ringColor * baseAlpha) + impactColor + rayColor * rayAlpha;
+        float backgroundAlpha = saturate(fieldAlpha + baseAlpha + (impactAlpha * ${tuningGlsl("impactAlpha")}) + rayAlpha);
+        vec3 color = foregroundColor * foregroundAlpha + min(backgroundColor, vec3(backgroundAlpha)) * (1.0 - foregroundAlpha);
+        float alpha = (foregroundAlpha + backgroundAlpha * (1.0 - foregroundAlpha)) * u_alpha;
         vec3 premultipliedColor = min(color * u_alpha, vec3(alpha));
 
         gl_FragColor = vec4(premultipliedColor, alpha);

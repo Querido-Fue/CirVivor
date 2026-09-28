@@ -11,6 +11,14 @@ const PASS_PATH = fileURLToPath(new URL(
 const passSource = await readFile(PASS_PATH, 'utf8');
 const namespace = await loadGameModule('scene/title/webgpu/_title_webgpu_center_circle_pass.js');
 
+const tuning = await loadGameModule('display/_title_shader_settings.js');
+function defaultShader(source) {
+    return source.replace(/parameters\.tuning\[(\d+)\]\.([xyzw])(?![xyzw])/g, (_, vector, channel) => {
+        const value = tuning.TITLE_SHADER_SETTINGS[Number(vector) * 4 + 'xyzw'.indexOf(channel)].defaultValue;
+        return Number.isInteger(value) ? value.toFixed(1) : String(value);
+    });
+}
+
 function cloneRecord(value) {
     return JSON.parse(JSON.stringify(value));
 }
@@ -255,20 +263,21 @@ function assertClose(actual, expected, epsilon = 1e-6) {
 }
 
 test('WGSL은 legacy glass/glow 상수와 screen-to-ROI backdrop sample transform을 보존한다', () => {
-    const shader = namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER;
-    assert.equal(namespace.TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 144);
+    const shader = defaultShader(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER);
+    assert.equal(namespace.TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 144 + tuning.TITLE_TUNING_VEC4_COUNT * 16);
     assert.match(shader, /let local = fragCoord - parameters\.center/);
-    assert.match(shader, /let edgeSoftness = 1\.35/);
-    assert.match(shader, /vec3<f32>\(-0\.45, -0\.68, 0\.58\)/);
+    assert.match(shader, /let edgeSoftness = 1\.2/);
+    assert.match(shader, /vec3<f32>\(0\.15, -0\.71, 0\.58\)/);
     assert.match(shader, /vec2<f32>\(-0\.25, -0\.56\)/);
     assert.match(shader, /vec2<f32>\(0\.42, 0\.095\)/);
     assert.match(shader, /let backdropLocal = fragCoord \+ parameters\.targetToBackdropOffset/);
     assert.match(shader, /parameters\.backdropLogicalSize/);
     assert.match(shader, /let halfBackdropTexel = vec2<f32>\(0\.5\)[\s\S]*parameters\.backdropResolution/);
     assert.match(shader, /backdropLocal \+ refractionOffset/);
-    assert.match(shader, /textureSample\([\s\S]*backdropUv/);
+    assert.match(shader, /textureSampleLevel\([\s\S]*backdropUv,\s*0\.0/);
     assert.match(shader, /let outlineAlpha = outlineCore \* 0\.36/);
-    assert.match(shader, /let glowPulse = 0\.94 \+ \(sin\(parameters\.time\) \* 0\.06\)/);
+    assert.match(shader, /let pulseBeat = 0\.5 - 0\.5 \* cos\(parameters\.time\)/);
+    assert.match(shader, /let glowPulse = 0\.36 \+ pulseBeat \* 0\.6/);
     assert.match(shader, /premultipliedColor = min\(premultipliedColor, vec3<f32>\(alpha\)\)/);
     assert.doesNotMatch(shader, /targetResolution\.y - input\.position\.y/);
 });

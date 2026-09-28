@@ -8,6 +8,11 @@ import {
     setPanelBlurSigma,
     snapshotOverlayStack
 } from './title_harness_adapter.js';
+import { getDebugSystem } from 'debug/debug_system.js';
+import { getCanvasOffsetX, getCanvasOffsetY, getScaleRatio } from 'display/display_system.js';
+import { getTitleShaderSetting, resetTitleShaderSettings, TITLE_SHADER_SETTINGS, setTitleShaderSetting, saveTitleShaderSettings } from 'display/_title_shader_settings.js';
+import { SettingHandler } from 'save/_setting_handler.js';
+import { fsPromises, nw, path } from 'util/nw_bridge.js';
 
 export const TITLE_SCENARIO_IDS = Object.freeze(['T0', 'T1', 'T2', 'T3', 'T4', 'T5']);
 const PRESENTATION_EPSILON = 0.002;
@@ -135,11 +140,126 @@ async function runT0(context) {
 
 async function runT1(context) {
     await ensureTitleReady(context);
+    const shaderEditor = context.config.profile === 'qa' ? await probeShaderEditor(context) : null;
     await collectSteadyFrames(context, 'title-steady');
     const titleState = getTitleRuntimeState(context.game);
     return {
-        titleMenuLayers: titleState.titleMenu?.session?.getLayerIds?.() || null
+        titleMenuLayers: titleState.titleMenu?.session?.getLayerIds?.() || null,
+        shaderEditor
     };
+}
+
+/** QA-only production input probe; never changes timed performance scenarios. */
+async function probeShaderEditor(context) {
+    const debug = getDebugSystem();
+    const previousMode = debug.debugModeEnabled;
+    const previousControls = debug.getControlState();
+    const menu = getTitleRuntimeState(context.game).titleMenu;
+    const session = menu.session;
+    const cards = menu.cards;
+    const next = () => context.nextFrame({ collect: false, phase: 'shader-editor-probe' });
+    const check = (condition, label) => { if (!condition) throw new Error('Shader editor: ' + label); };
+    const point = (x, y) => ({
+        clientX: x / getScaleRatio() + getCanvasOffsetX(),
+        clientY: y / getScaleRatio() + getCanvasOffsetY()
+    });
+    const mouse = (type, p) => window.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, button: 0, buttons: type === 'mousedown' ? 1 : 0, ...p
+    }));
+    const click = async (x, y) => {
+        const p = point(x, y);
+        mouse('mousemove', p); await next();
+        mouse('mousedown', p); await next();
+        mouse('mouseup', p); await next(); await next();
+    };
+    const capture = async name => {
+        if (!context.config.capture) return;
+        context.game.stop();
+        try {
+            const buffer = await new Promise(resolve => nw.Window.get().capturePage(resolve, { format: 'png', datatype: 'buffer' }));
+            const directory = process.env.CIRVIVOR_TITLE_GPU_ARTIFACT_DIR;
+            await fsPromises.mkdir(directory, { recursive: true });
+            await fsPromises.writeFile(path.join(directory, name + '.png'), buffer);
+        } finally { context.game.start(); }
+    };
+    let first, last;
+    try {
+        debug.applyRuntimeSettings({ debugMode: true });
+        for (const key of ['frameTime', 'poolInfo', 'hitboxes']) debug.setControlOption(key, false);
+        const manager = context.game.systemHandler.overlayManager;
+        const id = manager.openDebugOverlay(debug);
+        const entry = manager.entries.get(id);
+        await waitFor(context, () => isOverlayFullyOpen(entry), 'shader-debug-open');
+        const toggle = entry.controller.dynamicItems.find(item => item.id === 'debug_control_titleShaderSettings')?.item;
+        check(toggle, 'debug toggle missing');
+        await click(toggle.x + toggle.width / 2, toggle.y + toggle.height / 2);
+        check(debug.isControlOptionActive('titleShaderSettings'), 'debug toggle did not enable editor');
+        entry.controller.close();
+        await waitFor(context, () => !manager.hasAnyOverlay(), 'shader-debug-close');
+        await next();
+        check(menu.shaderEditor.active && !menu.pointerEnabled, 'menu input was not replaced');
+        const editor = menu.shaderEditor;
+        first = editor.rows[0].setting.id;
+        const slider = editor.rows[0].slider;
+        const previous = getTitleShaderSetting(first);
+        await click(slider.x + slider.width * .75, slider.y + slider.height / 2 - slider.trackHeight / 2);
+        await capture('shader-editor-top');
+        check(getTitleShaderSetting(first) !== previous, 'slider did not update runtime value: ' + JSON.stringify({
+            previous, current: getTitleShaderSetting(first), sliderValue: slider.value,
+            dragging: slider.dragging, clickAble: slider.clickAble, layer: slider.layer
+        }));
+        const save = context.game.systemHandler.saveSystem;
+        check(save.getSetting('titleShaderSettings')?.[first] === getTitleShaderSetting(first), 'slider commit was not autosaved');
+        await saveTitleShaderSettings();
+        const restored = new SettingHandler(save.dataDir);
+        await restored.init();
+        check(restored.get('titleShaderSettings')?.[first] === getTitleShaderSetting(first), 'saved file did not restore shader value');
+        const p = point(editor.bounds.x + editor.bounds.w / 2, editor.bounds.y + editor.bounds.h / 2);
+        mouse('mousemove', p); await next();
+        for (let i = 0; i < TITLE_SHADER_SETTINGS.length; i++) {
+            window.dispatchEvent(new WheelEvent('wheel', { deltaY: 400, deltaMode: 0, ...p }));
+        }
+        await next(); await next();
+        last = editor.rows.at(-1).setting.id;
+        check(last === TITLE_SHADER_SETTINGS.at(-1).id, 'wheel did not reach last setting');
+        await capture('shader-editor-bottom');
+        for (let i = 0; i < TITLE_SHADER_SETTINGS.length; i++) {
+            window.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, deltaMode: 0, ...p }));
+        }
+        await next(); await next();
+        check(editor.first === 0, 'wheel did not return to first setting');
+        const resetButton = editor.entries.find(entry => entry.id === 'reset_shader_settings').item;
+        await click(resetButton.x + resetButton.width / 2, resetButton.y + resetButton.height / 2);
+        check(getTitleShaderSetting(first) === previous, 'reset button did not restore defaults');
+        // Resize must retain the control which currently owns a drag.
+        const retainedSlider = editor.rows[0].slider;
+        const dragPoint = point(retainedSlider.x + retainedSlider.width / 2,
+            retainedSlider.y + retainedSlider.height / 2 - retainedSlider.trackHeight / 2);
+        mouse('mousemove', dragPoint); await next();
+        mouse('mousedown', dragPoint); await next();
+        check(retainedSlider.dragging, 'drag did not start');
+        menu.resize(menu.uiScale * .9); await next();
+        check(editor.rows[0].slider === retainedSlider && retainedSlider.dragging, 'resize lost drag ownership');
+        mouse('mouseup', dragPoint); await next();
+        menu.resize(); await next();
+        // Exercise legal extrema against real shader compilation/execution.
+        for (const setting of TITLE_SHADER_SETTINGS) setTitleShaderSetting(setting.id, setting.max);
+        await next(); await next();
+        for (const setting of TITLE_SHADER_SETTINGS) setTitleShaderSetting(setting.id, setting.min);
+        await next(); await next();
+        resetTitleShaderSettings();
+        debug.setControlOption('titleShaderSettings', false);
+        await next(); await next();
+        check(!editor.active && menu.pointerEnabled, 'menu was not restored');
+        check(menu.cards === cards && menu.session === session, 'menu/session identities changed');
+        check(editor.entries.length === 0, 'editor controls were not released');
+        return { passed: true, count: TITLE_SHADER_SETTINGS.length, first, last,
+            input: 'production DOM', extrema: true, reset: true, resizeDuringDrag: true, persistence: true };
+    } finally {
+        resetTitleShaderSettings();
+        for (const [key, value] of Object.entries(previousControls)) debug.setControlOption(key, value);
+        debug.applyRuntimeSettings({ debugMode: previousMode });
+    }
 }
 
 async function runT2(context) {

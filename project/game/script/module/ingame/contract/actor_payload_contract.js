@@ -95,7 +95,9 @@ export const R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER = Object.freeze({
     abiVersion: ACTOR_PAYLOAD_SAFE_PLACEMENT_RESOLVER_ABI_VERSION,
     id: 'actor-payload.safe-placement.r3-enemy.v2',
     candidates: R3_ENEMY_ACTOR_PAYLOAD_SAFE_PLACEMENT_CANDIDATES,
-    expandingRingCount: 8,
+    // Preserve the first 142 candidates, then search beyond a dense 400-body
+    // crowd. 14 + 15 * 16 = 254 fits the packed 8-bit attempted-count field.
+    expandingRingCount: 15,
     expandingRingSlotCount: 16,
     expandingRingStepRadiusScale: 2.25
 });

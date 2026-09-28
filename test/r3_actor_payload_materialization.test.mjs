@@ -217,7 +217,7 @@ test('safe-placement는 payload-local 후보와 shared exact admission을 분리
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
         /const LOCAL_CANDIDATE_COUNT: u32 = 14u/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
-        /const TOTAL_CANDIDATE_COUNT: u32 =\s*142u/);
+        /const TOTAL_CANDIDATE_COUNT: u32 =\s*254u/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
         /candidate_attempt < TOTAL_CANDIDATE_COUNT/);
     assert.match(GPU_ACTOR_PAYLOAD_SPAWN_ADMISSION_WGSL,
@@ -252,7 +252,7 @@ test('placement reject aggregate는 NO_VALID_PLACEMENT용 bounded rank/count/cla
             | ACTOR_PAYLOAD_MATERIALIZATION_ERROR_FLAG.DYNAMIC_BODY_OVERLAP,
         true);
     const telemetry = 734
-        | (14 << GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY
+        | (254 << GPU_ACTOR_PAYLOAD_PLACEMENT_TELEMETRY
             .ATTEMPTED_CANDIDATE_COUNT_SHIFT)
         | (ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
             .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP
@@ -260,7 +260,7 @@ test('placement reject aggregate는 NO_VALID_PLACEMENT용 bounded rank/count/cla
     view.setUint32(abi.AGGREGATE.PLACEMENT_TELEMETRY, telemetry, true);
     const aggregate = readGpuActorPayloadMaterializationAggregate(buffer);
     assert.equal(aggregate.firstFailingRank, 734);
-    assert.equal(aggregate.attemptedCandidateCount, 14);
+    assert.equal(aggregate.attemptedCandidateCount, 254);
     assert.equal(aggregate.placementFailureClass,
         ACTOR_PAYLOAD_PLACEMENT_FAILURE_CLASS
             .STATIC_SDF_AND_DYNAMIC_BODY_OVERLAP);

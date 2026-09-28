@@ -12,6 +12,7 @@ const shieldPassNamespace = await loadGameModule(
 const shieldInteractionAbiNamespace = await loadGameModule(
     'scene/title/webgpu/_title_webgpu_shield_interaction_abi.js'
 );
+const { TITLE_TUNING_VEC4_COUNT, getTitleShaderUniforms } = await loadGameModule('display/_title_shader_settings.js');
 
 const {
     TitleWebGpuEnemyPass,
@@ -307,7 +308,7 @@ test('enemy GPU source는 CPU record upload 없이 used span만 복사한 뒤 �
     assert.deepEqual(encoded.records.forbiddenCalls, []);
 });
 
-test('compact shield buffer는 비활성 CPU command를 활성화하고 legacy 560B uniform의 세 span에 복사된다', () => {
+test('compact shield buffer는 기존 uniform 세 span에 복사되고 뒤쪽 셰이더 설정과 겹치지 않는다', () => {
     const gpu = createFakeDevice('shield');
     const encoded = createFakeEncoder();
     const sourceBuffer = createGpuBufferIdentity('shield-interactions');
@@ -333,7 +334,7 @@ test('compact shield buffer는 비활성 CPU command를 활성화하고 legacy 5
         uniformBuffer.descriptor.size,
         TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.UNIFORM_BYTE_SIZE
     );
-    assert.equal(TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 560);
+    assert.equal(TITLE_WEBGPU_SHIELD_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 560 + TITLE_TUNING_VEC4_COUNT * 16);
     assert.equal(TITLE_WEBGPU_SHIELD_INTERACTION_ABI.BYTE_SIZE, 464);
     assert.deepEqual(encoded.records.copies, [
         [
@@ -361,6 +362,9 @@ test('compact shield buffer는 비활성 CPU command를 활성화하고 legacy 5
     assert.equal(gpu.records.writes.length, 1);
     assert.strictEqual(gpu.records.writes[0].buffer, uniformBuffer);
     const cpuUniformCounts = new Uint32Array(gpu.records.writes[0].bytes.buffer);
+    assert.deepEqual(Array.from(new Float32Array(gpu.records.writes[0].bytes.buffer).slice(140)),
+        Array.from(getTitleShaderUniforms()));
+    assert.ok(encoded.records.copies.every(([, , , offset, size]) => offset + size <= 560));
     assert.equal(cpuUniformCounts[10], 0);
     assert.equal(cpuUniformCounts[11], 0);
     assert.deepEqual(

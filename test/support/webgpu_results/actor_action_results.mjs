@@ -143,8 +143,8 @@ export function validatePostR5LiveBugfix(result) {
         && fixture.impossiblePlacement.reason?.code
             === 'NO_VALID_GLOBAL_PLACEMENT'
         && fixture.impossiblePlacement.reason.attemptedCandidateCount
-            === 142
-        && fixture.impossiblePlacement.reason.candidateRound === 8
+            === 254
+        && fixture.impossiblePlacement.reason.candidateRound === 15
         && healthy(fixture.impossiblePlacement.health)
         && fixture?.actualR2?.mapId === 'r2_enemy_showcase_01'
         && actualCasts.filter(({ slotId }) => slotId === 'E').length === 4

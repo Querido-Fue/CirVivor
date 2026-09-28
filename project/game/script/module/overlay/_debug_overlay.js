@@ -10,7 +10,7 @@ const DEBUG_OVERLAY = Object.freeze({
     LAYER: 90,
     DIM_ALPHA: 0.16,
     WIDTH_UIWW_RATIO: 0.36,
-    HEIGHT_WH_RATIO: 0.52,
+    HEIGHT_WH_RATIO: 0.58,
     PADDING_X_WW: 1.8,
     TOP_SPACE_WH: 2.2,
     TITLE_DIVIDER_TOP_SPACE_WH: 1,
@@ -27,7 +27,8 @@ const DEBUG_CONTROL_ROWS = Object.freeze([
     Object.freeze({ key: 'frameTime', label: '프레임타임 보이기' }),
     Object.freeze({ key: 'poolInfo', label: '풀 정보 보이기' }),
     Object.freeze({ key: 'hitboxes', label: '히트박스 보이기' }),
-    Object.freeze({ key: 'animationDebug', label: '애니메이션 디버그' })
+    Object.freeze({ key: 'animationDebug', label: '애니메이션 디버그' }),
+    Object.freeze({ key: 'titleShaderSettings', label: '타이틀 셰이더 설정' })
 ]);
 
 /**

@@ -132,7 +132,7 @@ export class TitleSceneIntroSequence {
     isComplete() {
         return this.sceneTransitionStarted === true
             && this.sceneTransitionProgress >= 1
-            && this.titleMenu?.pointerEnabled === true;
+            && this.titleMenu?.presentationReady === true;
     }
 
     /**

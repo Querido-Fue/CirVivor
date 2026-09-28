@@ -3,6 +3,7 @@ import { ProgressHandler } from './_progress_handler.js';
 import { IngameHandler } from './_ingame_handler.js';
 import { SettingHandler } from './_setting_handler.js';
 import { ensureSaveDirectory } from './_save_file_helper.js';
+import { initializeTitleShaderSettings, saveTitleShaderSettings } from 'display/_title_shader_settings.js';
 
 let saveSystemInstance;
 
@@ -27,6 +28,8 @@ export class SaveSystem {
     async init() {
         await ensureSaveDirectory(this.dataDir, '저장 데이터');
         await this.settingHandler.init();
+        initializeTitleShaderSettings(this.settingHandler.get('titleShaderSettings'),
+            values => this.settingHandler.set('titleShaderSettings', values));
         await this.progressHandler.init();
         await this.ingameHandler.init();
     }
@@ -76,6 +79,7 @@ export class SaveSystem {
      * @returns {Promise<void>} 모든 저장 완료 Promise입니다.
      */
     async saveAll() {
+        await saveTitleShaderSettings();
         await this.settingHandler.save();
         await this.progressHandler.save();
         await this.ingameHandler.save();

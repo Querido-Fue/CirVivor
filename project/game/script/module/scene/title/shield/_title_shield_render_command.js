@@ -1,4 +1,5 @@
 import { EFFECT_TYPES } from 'display/webgl/_webgl_constants.js';
+import { getTitleShaderSetting as tuning, tuneTitleShaderColor } from 'display/_title_shader_settings.js';
 import { clampFiniteNumber, resolveFiniteNumber } from 'util/number_util.js';
 
 /** magnetic shield presentation command가 보존하는 최대 impact 수입니다. */
@@ -42,14 +43,14 @@ export function buildTitleShieldRenderCommand({
     command.y = centerY;
     command.radius = radius;
     command.fieldRadius = config.getFieldRadius(radius);
-    command.time = time;
-    command.alpha = config.getBaseAlpha();
-    command.ringThickness = config.getRingThickness();
-    command.glowWidth = config.getGlowWidth();
-    command.shadowColor = shieldColors.shadow;
-    command.lowColor = shieldColors.low;
-    command.highColor = shieldColors.high;
-    command.highlightColor = shieldColors.highlight;
+    command.time = time * tuning('shieldSpeed');
+    command.alpha = Math.min(1, config.getBaseAlpha() * tuning('shieldAlpha'));
+    command.ringThickness = config.getRingThickness() * tuning('shieldRing');
+    command.glowWidth = config.getGlowWidth() * tuning('shieldGlow');
+    command.shadowColor = tuneTitleShaderColor(shieldColors.shadow, 'shield');
+    command.lowColor = tuneTitleShaderColor(shieldColors.low, 'shield');
+    command.highColor = tuneTitleShaderColor(shieldColors.high, 'shield');
+    command.highlightColor = tuneTitleShaderColor(shieldColors.highlight, 'shield');
     command.impacts = syncTitleShieldImpactRenderData(
         slotCache.impactSlots,
         slotCache.visibleImpacts,

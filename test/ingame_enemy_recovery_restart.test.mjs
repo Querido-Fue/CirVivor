@@ -967,7 +967,7 @@ test('hard GPU failure는 lazy-deferred replacement로 한 번 재시작하고 �
             }
         }
     };
-    const scene = new GameScene({}, { dependencies });
+    const scene = new GameScene({}, { dependencies, enemyRecoveryEnabled: true });
 
     const initialGameSystem = scene.getGameSystem();
     const initialObjectSystem = initialGameSystem.getObjectSystem();
@@ -2323,6 +2323,7 @@ test('선택한 enemy presentation profile을 소유한 같은 GameSystem이 GPU
         });
         const scene = new ProfileGameScene({}, {
             dependencies,
+            enemyRecoveryEnabled: true,
             tileNavigationSource,
             enemyPresentationProfile: profile
         });
@@ -2417,7 +2418,8 @@ test('recovery를 끈 benchmark child는 hard GPU 상태에서도 session과 적
     scene.fixedUpdate();
 
     assert.equal(instances.length, 1);
-    assert.equal(instances[0].fixedUpdateCount, 2);
+    assert.equal(instances[0].fixedUpdateCount, 1);
+    assert.equal(scene.getFixedStepDisposition(), 'INTENTIONAL_PAUSE');
     assert.equal(instances[0].destroyCount, 0);
     assert.strictEqual(
         instances[0].options.tileNavigationSource,

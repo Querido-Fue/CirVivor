@@ -32,7 +32,9 @@ export class GameScene extends BaseScene {
         this.tileNavigationSource = options.tileNavigationSource ?? null;
         this.enemyWaveEnabled = options.enemyWaveEnabled;
         this.gameplayWorldActorsEnabled = options.gameplayWorldActorsEnabled;
-        this.enemyRecoveryEnabled = options.enemyRecoveryEnabled !== false;
+        // World replacement is an explicit diagnostic opt-in, never a play default.
+        this.enemyRecoveryEnabled = options.enemyRecoveryEnabled === true;
+        this.runtimeErrorPaused = false;
         this.waveDefinition = options.waveDefinition;
         this.enemyPresentationProfile = options.enemyPresentationProfile;
         this.initialCameraZoom = options.initialCameraZoom;
@@ -60,6 +62,7 @@ export class GameScene extends BaseScene {
      * @returns {boolean} GameSystem fixed tick이 실제로 전진했는지 여부입니다.
      */
     fixedUpdate() {
+        if (this.runtimeErrorPaused) return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
         const result = this.gameSystem.fixedUpdate();
         if (result === true || result === undefined
             || result === FIXED_STEP_RESULT.COMPLETED) {
@@ -74,15 +77,20 @@ export class GameScene extends BaseScene {
         }
         if ((result === false
             || result === FIXED_STEP_RESULT.DEFERRED_BACKPRESSURE)
-            && this.enemyRecoveryEnabled
             && this.gameSystem.isEnemySimulationRecoveryRequired()) {
-            this.#restartAtSafeWaveBoundary();
+            if (this.enemyRecoveryEnabled) {
+                this.#restartAtSafeWaveBoundary();
+            } else {
+                this.#pauseWithErrorPopup();
+                return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
+            }
         }
         return result;
     }
 
     /** SystemHandler가 Time/Animation/Object fixed pipeline 전에 확인합니다. */
     getFixedStepDisposition() {
+        if (this.runtimeErrorPaused) return FIXED_STEP_RESULT.INTENTIONAL_PAUSE;
         return this.gameSystem.getFixedStepDisposition();
     }
 
@@ -96,6 +104,7 @@ export class GameScene extends BaseScene {
      * @returns {void}
      */
     update() {
+        if (this.runtimeErrorPaused) return;
         this.gameSystem.update();
         this.dependencies.updateWorldPresentation?.(this.gameSystem);
     }
@@ -131,6 +140,7 @@ export class GameScene extends BaseScene {
      * @returns {void}
      */
     applySimulationCommands(commands = []) {
+        if (this.runtimeErrorPaused) return;
         this.gameSystem.handleCommands(commands);
     }
 
@@ -203,6 +213,38 @@ export class GameScene extends BaseScene {
     /** @returns {string|null} enter에서 불변으로 선택된 world authority mode입니다. */
     getSessionMode() {
         return this.gameSystem.getSessionMode();
+    }
+
+    #pauseWithErrorPopup() {
+        // Latch before logging or opening a modal: dismissal/device recovery must
+        // never resume the failed world or produce another popup every frame.
+        this.runtimeErrorPaused = true;
+        let diagnostic = { cause: { domain: 'game-object-system' } };
+        let logResult = { written: false, path: null, error: 'diagnostic-unavailable' };
+        try {
+            diagnostic = this.dependencies.recoveryLogPort?.capture?.({
+                gameSystem: this.gameSystem,
+                mapId: this.mapId,
+                deviceGeneration: this.dependencies.webGpuPlatformPort?.getState?.()
+                    ?.deviceGeneration ?? 0,
+                sceneRecovery: this.getEnemyRecoveryStatus()
+            }) ?? diagnostic;
+            diagnostic = Object.freeze({
+                ...diagnostic,
+                event: 'gpu-world-error-paused',
+                reset: Object.freeze({ succeeded: false, attempted: false })
+            });
+            logResult = this.dependencies.recoveryLogPort?.write?.(diagnostic)
+                ?? logResult;
+        } catch (error) {
+            console.error('GPU world error diagnostic failed:', error);
+            logResult = { written: false, path: null, error: String(error?.message ?? error) };
+        }
+        try {
+            this.dependencies.recoveryLogPort?.notify?.({ diagnostic, logResult });
+        } catch (error) {
+            console.error('GPU world error popup failed:', error);
+        }
     }
 
     #createGameSystem() {

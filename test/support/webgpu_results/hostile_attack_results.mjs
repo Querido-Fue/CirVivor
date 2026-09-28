@@ -89,6 +89,7 @@ export function validateEnemyRhomSourceDeathProjectile(result) {
     const impact = fixture?.impact;
     const cleanup = fixture?.cleanup;
     const runtime = fixture?.runtime;
+    const splitMerge = result?.hostileTowerSplitMerge;
     const snapshotFlag = 1 << 16;
     scenarioValid = fixture?.scenario
             === 'rhom-tower-selected-direct-projectile-survives-source-death'
@@ -222,6 +223,24 @@ export function validateEnemyRhomSourceDeathProjectile(result) {
         && runtime.pendingEventReadbacks === 0
         && runtime.pendingSpawnProgramReadbacks === 0
         && runtime.uncapturedErrorCount === 0
-        && runtime.deviceTeardownExpected === 'destroyed';
+        && runtime.deviceTeardownExpected === 'destroyed'
+        && splitMerge?.splitCount === 2
+        && splitMerge.mergeCount === 2
+        && splitMerge.livingShareUnits === 1_000_000_000
+        && splitMerge.lostShareUnits === 0
+        && splitMerge.pendingShotCount === 0
+        && splitMerge.pendingControlCount === 0
+        && splitMerge.recoveryRequired === false
+        && splitMerge.rounds?.length === 2
+        && splitMerge.rounds.every((round, index) =>
+            Number.isSafeInteger(round.shotTick) && round.shotTick > 0
+            && Number.isSafeInteger(round.child?.entityId) && round.child.entityId > 0
+            && Number.isSafeInteger(round.child?.incarnation) && round.child.incarnation > 0
+            && round.selectedTarget?.entityId === round.child.entityId
+            && round.selectedTarget?.incarnation === round.child.incarnation
+            && round.primary?.entityId !== round.child.entityId
+            && round.mergedBeforeObservation === true
+            && round.resolvedCount === index + 1
+            && round.recoveryRequired === false);
     return { fixture, scenarioValid };
 }

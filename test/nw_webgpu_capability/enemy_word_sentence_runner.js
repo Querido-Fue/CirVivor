@@ -682,7 +682,7 @@ function collectStressReceipt(harness, cast) {
     });
 }
 
-async function runFanoutScenario(device, subjectCount) {
+async function runFanoutScenario(device, subjectCount, { dense = false } = {}) {
     const harness = createHarness(device, subjectCount * 2, {
         columns: 128,
         rows: 128,
@@ -695,12 +695,12 @@ async function runFanoutScenario(device, subjectCount) {
         coreColumn: 120,
         coreRow: 64,
         enemyFixtureLayout: Object.freeze({
-            columnCount: 40,
+            columnCount: dense ? 20 : 40,
             rowCount: 25,
             startX: 0,
             startY: 0,
-            spacingX: 2.4,
-            spacingY: 2.4
+            spacingX: dense ? 0.8 : 2.4,
+            spacingY: dense ? 0.8 : 2.4
         })
     });
     try {
@@ -1418,6 +1418,7 @@ async function run() {
         device.addEventListener('uncapturederror', (event) => {
             uncapturedErrors.push(event.error?.message ?? String(event.error));
         });
+        const dense400 = await runFanoutScenario(device, 400, { dense: true });
         const towerSentence = await runTowerSourceDeathScenario(device);
         const recursion = await runRecursionScenario(device);
         const oneShort = await runOneShortCapacityScenario(device);
@@ -1455,6 +1456,7 @@ async function run() {
                 generatedEnemyCoreImpact
             }),
             stress: Object.freeze({
+                dense400,
                 fanout256,
                 fanout1000,
                 doublingBoundary

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import vm from 'node:vm';
+import { loadGameModule } from './support/source_module_loader.mjs';
+const tuning = await loadGameModule('display/_title_shader_settings.js');
 import { fileURLToPath } from 'node:url';
 
 const CENTER_PATH = fileURLToPath(new URL(
@@ -79,6 +81,10 @@ async function loadCenterHarness() {
         TITLE_LOADING_CONSTANTS: constants
     });
     const modules = new Map([
+        ['display/_title_shader_settings.js', createSyntheticModule(context, 'tuning', {
+            getTitleShaderSetting: tuning.getTitleShaderSetting,
+            tuneTitleShaderColor: tuning.tuneTitleShaderColor
+        })],
         ['display/display_system.js', createSyntheticModule(context, 'display/display_system.js', {
             getCanvas(name) {
                 records.getCanvasNames.push(name);
@@ -180,7 +186,7 @@ test('presentation getter와 legacy draw는 같은 command authority를 사용�
         backdropBlur: 6.5,
         backdropBlurStrength: 0.36,
         backdropRefractionStrength: 5.2,
-        scissorPaddingRatio: 0.86,
+        scissorPaddingRatio: 1.825,
         scissorPaddingMin: 28
     });
     assert.deepEqual({
@@ -188,7 +194,9 @@ test('presentation getter와 legacy draw는 같은 command authority를 사용�
         deep: Array.from(command.colors.deep),
         rim: Array.from(command.colors.rim),
         highlight: Array.from(command.colors.highlight)
-    }, harness.colors);
+    }, Object.fromEntries(Object.entries(harness.colors).map(([key, color]) => [
+        key, Array.from(tuning.tuneTitleShaderColor(color, 'circle'))
+    ])));
 
     const legacyCommand = circle.getPresentationCommand({ includeLegacyBlurSources: true });
     assert.equal(harness.effectCanvas.style.filter, 'sentinel-filter');
