@@ -119,6 +119,50 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         return exp(-dot(rotated, rotated) * ${tuningGlsl("highlightFalloff")});
     }
 
+
+    // Six fixed depth samples inside the analytic sphere. No scene/environment reflection.
+    float orbHash(float n) {
+        float p = fract(n * 0.1031);
+        p *= p + 33.33;
+        return fract(p * (p + p));
+    }
+    float orbNoise(vec3 p) {
+        vec3 cell = floor(p);
+        vec3 f = fract(p);
+        vec3 w = f * f * (vec3(3.0) - 2.0 * f);
+        float n = dot(cell, vec3(1.0, 57.0, 113.0));
+        return mix(
+            mix(mix(orbHash(n), orbHash(n + 1.0), w.x),
+                mix(orbHash(n + 57.0), orbHash(n + 58.0), w.x), w.y),
+            mix(mix(orbHash(n + 113.0), orbHash(n + 114.0), w.x),
+                mix(orbHash(n + 170.0), orbHash(n + 171.0), w.x), w.y), w.z);
+    }
+    vec4 orbVolume(vec2 uv, float depth, float phase) {
+        vec3 drift = vec3(sin(phase), cos(phase), sin(phase + 1.2)) * ${tuningGlsl("volumeMotion")};
+        vec3 emitted = vec3(0.0);
+        float transmission = 1.0;
+        float stepLength = depth / 3.0;
+        vec3 blue = vec3(${tuningGlsl("coreRed")}, ${tuningGlsl("coreGreen")}, ${tuningGlsl("coreBlue")});
+        vec3 violet = u_tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz;
+        for (int sampleIndex = 0; sampleIndex < 6; sampleIndex++) {
+            float z = depth * (1.0 - (float(sampleIndex) + 0.5) / 3.0);
+            vec3 p = vec3(uv * (0.88 + 0.12 * z), z);
+            vec3 q = p * ${tuningGlsl("volumeScale")} + drift + vec3(4.3, 1.7, 8.2);
+            float warp = 0.5 + 0.5 * sin(dot(q, vec3(0.7, 0.9, 0.6)) + sin(q.z));
+            float clouds = orbNoise(q + vec3(warp * ${tuningGlsl("volumeWarp")}));
+            float density = mix(0.65, smoothstep(0.24, 0.78, clouds * 0.85 + warp * 0.15), ${tuningGlsl("volumeTexture")});
+            float opacity = 1.0 - exp(-density * ${tuningGlsl("volumeDensity")} * stepLength);
+            vec2 source = (p.xy - vec2(${tuningGlsl("coreX")}, ${tuningGlsl("coreY")})) / vec2(${tuningGlsl("coreWidth")}, ${tuningGlsl("coreHeight")});
+            float blueLight = exp(-dot(source, source) * 2.0 - (z - 0.2) * (z - 0.2) * 1.6);
+            float purpleLight = pow(clamp(0.5 + 0.5 * p.x, 0.0, 1.0), 2.0) * 0.3;
+            vec3 lightColor = blue * blueLight * ${tuningGlsl("coreIntensity")} * ${tuningGlsl("volumeEmission")}
+                + violet * purpleLight;
+            emitted += transmission * opacity * lightColor;
+            transmission *= exp(-density * ${tuningGlsl("volumeAbsorption")} * stepLength);
+        }
+        return vec4(emitted, transmission);
+    }
+
     void main() {
         vec2 fragCoord = vec2(v_uv.x * u_resolution.x, (1.0 - v_uv.y) * u_resolution.y);
         float radius = max(1.0, u_radius);
@@ -131,6 +175,8 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
         float outsideDistance = max(distanceFromCenter - radius, 0.0);
         float fillMask = circleMask;
         float angle = atan(normalized.y, normalized.x);
+        float backlightDirection = mix(${tuningGlsl("backlightAmbient")}, 1.0,
+            pow(saturate(0.5 + 0.5 * cos(angle - ${tuningGlsl("backlightAngle")})), ${tuningGlsl("backlightFocus")}));
 
         // Match the WebGPU aura, including its ROI fade and wrapped phase.
         // One configurable cycle: easeInOutSine rise, then easeInOutSine fall.
@@ -153,7 +199,8 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             * exp(-pow(auraDistance / ${tuningGlsl("solarLength")}, 2.0)) * ${tuningGlsl("solarRayIntensity")};
         float glowPulse = ${tuningGlsl("pulseBase")} + pulseBeat * ${tuningGlsl("pulseAmount")};
         float glowAlpha = (auraHalo * ${tuningGlsl("auraIntensity")} + auraCore * ${tuningGlsl("auraCoreIntensity")} + solarGlare)
-            * auraFade * (1.0 - circleMask) * u_glowStrength * glowPulse;
+            * auraFade * (1.0 - circleMask) * u_glowStrength * glowPulse
+            * mix(1.0, backlightDirection, ${tuningGlsl("glowDirectionality")});
         vec3 glowColor = mix(
             u_tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
             u_tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz,
@@ -186,19 +233,35 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             * pow(upperLight, ${tuningGlsl("glintTop")})
             * ${tuningGlsl("glintIntensity")}
             * u_glassStrength;
-        vec3 fillColor = bodyColor + (u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint));
+        vec3 fillColor = bodyColor;
         fillColor = min(
             vec3(1.0),
             (fillColor * (1.0 + saturate(u_brightnessBoost))) + (u_highlightColor * saturate(u_brightnessBoost) * ${tuningGlsl("brightnessHighlight")})
         );
         vec2 screenUv = gl_FragCoord.xy / max(u_resolution, vec2(1.0));
-        vec2 refractionOffset = normalized * (vec2(u_backdropRefractionStrength) / max(u_resolution, vec2(1.0)));
+        vec2 refractionOffset = vec2(normalized.x, -normalized.y) * u_backdropRefractionStrength / max(u_resolution, vec2(1.0));
         vec3 backdropBlurColor = texture2D(u_backdropBlurTexture, screenUv + refractionOffset).rgb;
         float backdropBlend = u_hasBackdropBlurTexture
             * saturate(u_backdropBlurStrength)
             * fillMask
             * (${tuningGlsl("backdropBase")} + (upperLight * ${tuningGlsl("backdropTop")}));
         fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
+
+        // Local emission is independent of the violet body tint and backdrop opacity.
+        vec4 volume = orbVolume(normalized, normal.z, u_time);
+        fillColor = fillColor * volume.a + volume.rgb;
+        // Front-shell wisps remain visible over the depth-integrated emission.
+        float veil = orbNoise(normal * ${tuningGlsl("volumeScale")} + vec3(2.7, 8.1, 3.4));
+        float veilDetail = orbNoise(normal * ${tuningGlsl("volumeScale")} * 2.1 + vec3(7.0));
+        float veilMask = smoothstep(0.3, 0.72, veil * 0.8 + veilDetail * 0.2)
+            * ${tuningGlsl("volumeTexture")} * normal.z;
+        fillColor *= 1.0 - veilMask * 0.3;
+        fillColor += u_tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz
+            * veilMask * (0.06 + 0.14 * backlightDirection);
+        float coatDepth = max(1.0 - length(normalized), 0.0) / ${tuningGlsl("coatThickness")};
+        float coatOcclusion = exp(-pow(coatDepth - 1.0, 2.0) * 2.0)
+            * (1.0 - backlightDirection) * ${tuningGlsl("coatShadow")};
+        fillColor *= 1.0 - coatOcclusion;
 
         // Match the sphere-local reflected aura without widening the outer glow.
         float backlightGradient = pow(smoothstep(
@@ -210,7 +273,22 @@ export const TITLE_LOADING_CIRCLE_FRAGMENT_SHADER = `
             backdropBlurColor, ${tuningGlsl("backlightBackdropMix")} * u_hasBackdropBlurTexture
         );
         fillColor = mix(fillColor, backlightColor,
-            backlightGradient * ${tuningGlsl("backlightIntensity")});
+            backlightGradient * ${tuningGlsl("backlightIntensity")} * backlightDirection);
+        float backlightRim = exp(-pow(max(1.0 - length(normalized), 0.0)
+            / ${tuningGlsl("backlightRimWidth")}, 2.0)) * backlightDirection;
+        fillColor += mix(backlightColor, u_tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz, backlightDirection)
+            * backlightRim * ${tuningGlsl("backlightEmission")};
+        float fresnel = pow(1.0 - normal.z, ${tuningGlsl("fresnelPower")});
+        float coatTexture = mix(1.0, 0.65 + 0.7 * orbNoise(normal * 5.0 + vec3(4.0)), ${tuningGlsl("volumeTexture")});
+        float caustic = exp(-pow(coatDepth - 0.45, 2.0) * 3.0) * backlightDirection * coatTexture;
+        fillColor += backlightColor * (fresnel * ${tuningGlsl("fresnelIntensity")} * (0.2 + backlightDirection)
+            + caustic * ${tuningGlsl("coatCaustic")});
+        // Surface reflection stays clear even when the glass transmits the backdrop.
+        float surfaceSheen = ellipseMask(normalized,
+            vec2(${tuningGlsl("surfaceSheenX")}, ${tuningGlsl("surfaceSheenY")}),
+            vec2(${tuningGlsl("surfaceSheenWidth")}, ${tuningGlsl("surfaceSheenHeight")}),
+            ${tuningGlsl("surfaceSheenRotation")}) * ${tuningGlsl("surfaceSheenIntensity")} * u_glassStrength;
+        fillColor += u_highlightColor * (broadTopSheen + compactHighlight + edgeGlint + surfaceSheen);
 
         float outlineDistance = abs(distanceFromCenter - radius);
         float outlineSoftness = max(0.42, edgeSoftness * ${tuningGlsl("outlineSoftness")});

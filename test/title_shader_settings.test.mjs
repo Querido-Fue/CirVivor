@@ -71,11 +71,11 @@ test('저장한 전체 설정은 새 런타임에 복원되며 초기화 결과�
     assert.equal(restarted.getTitleShaderSetting('pulsePeriod'), 11);
     assert.equal(restarted.getTitleShaderSetting('auraHue'), -18);
     assert.equal(restarted.getTitleShaderSetting('backlightIntensity'), 0.47);
-    assert.equal(Object.keys(JSON.parse(stored)).length, settings.TITLE_SHADER_SETTINGS.length);
+    assert.equal(Object.keys(JSON.parse(stored)).length, settings.TITLE_SHADER_SETTINGS.length + 1);
     restarted.resetTitleShaderSettings();
     await restarted.saveTitleShaderSettings();
     assert.equal(JSON.parse(stored).pulsePeriod, 8);
-    assert.equal(JSON.parse(stored).backlightIntensity, 0.32);
+    assert.equal(JSON.parse(stored).backlightIntensity, settings.TITLE_SHADER_SETTINGS.find(item => item.id === 'backlightIntensity').defaultValue);
     settings.initializeTitleShaderSettings({}, null);
 });
 
@@ -83,8 +83,8 @@ test('오래되거나 잘못된 저장값은 카탈로그 범위와 기본값으
     settings.initializeTitleShaderSettings({ pulsePeriod: 999, auraHue: null, glowStrength: 'invalid', removed: 4 }, null);
     assert.equal(settings.getTitleShaderSetting('pulsePeriod'), 30);
     assert.equal(settings.getTitleShaderSetting('auraHue'), 0);
-    assert.equal(settings.getTitleShaderSetting('glowStrength'), 0.12);
-    assert.equal(settings.getTitleShaderSetting('backlightWidth'), 0.24);
+    assert.equal(settings.getTitleShaderSetting('glowStrength'), settings.TITLE_SHADER_SETTINGS.find(item => item.id === 'glowStrength').defaultValue);
+    assert.equal(settings.getTitleShaderSetting('backlightWidth'), settings.TITLE_SHADER_SETTINGS.find(item => item.id === 'backlightWidth').defaultValue);
     assert.equal(settings.getTitleShaderSetting('removed'), undefined);
     settings.initializeTitleShaderSettings({}, null);
 });
@@ -102,5 +102,41 @@ test('저장 실패 후에도 최신 스냅샷을 다시 저장할 수 있다', 
     settings.setTitleShaderSetting('pulsePeriod', 12);
     await settings.saveTitleShaderSettings();
     assert.equal(stored.pulsePeriod, 12);
+    settings.initializeTitleShaderSettings({}, null);
+});
+
+test('기존 저장에는 새 유리 프리셋을 한 번 적용하고 이후 수동 조정은 보존한다', async () => {
+    let stored;
+    settings.initializeTitleShaderSettings({ circleHue: 0, backlightIntensity: 0.32, rayAttack: 0.27, pulsePeriod: 8 },
+        async snapshot => { stored = snapshot; });
+    assert.equal(settings.getTitleShaderSetting('circleHue'), 42);
+    assert.equal(settings.getTitleShaderSetting('refraction'), 0);
+    assert.equal(settings.getTitleShaderSetting('rayAttack'), 0.27);
+    assert.equal(settings.getTitleShaderSetting('pulsePeriod'), 8);
+    await settings.saveTitleShaderSettings();
+    assert.equal(stored.__presetVersion, settings.TITLE_SHADER_PRESET_VERSION);
+    settings.setTitleShaderSetting('circleHue', 19);
+    settings.setTitleShaderSetting('coreIntensity', 0.44);
+    await settings.saveTitleShaderSettings();
+    settings.initializeTitleShaderSettings(stored, null);
+    assert.equal(settings.getTitleShaderSetting('circleHue'), 19);
+    assert.equal(settings.getTitleShaderSetting('coreIntensity'), 0.44);
+    assert.equal(settings.getTitleShaderSetting('rayAttack'), 0.27);
+    settings.initializeTitleShaderSettings({}, null);
+});
+
+test('볼륨 프리셋 전환은 기존 아우라와 원 조정값을 보존하며 새 조정도 재실행 후 유지한다', async () => {
+    let stored;
+    settings.initializeTitleShaderSettings({ __presetVersion: 1, coreGreen: 0.75, circleHue: 19, glowStrength: 0.31 },
+        async snapshot => { stored = snapshot; });
+    assert.equal(settings.getTitleShaderSetting('coreGreen'), 0.64);
+    assert.equal(settings.getTitleShaderSetting('circleHue'), 19);
+    assert.equal(settings.getTitleShaderSetting('glowStrength'), 0.31);
+    settings.setTitleShaderSetting('volumeDensity', 2.35);
+    settings.setTitleShaderSetting('coreGreen', 0.57);
+    await settings.saveTitleShaderSettings();
+    settings.initializeTitleShaderSettings(stored, null);
+    assert.equal(settings.getTitleShaderSetting('volumeDensity'), 2.35);
+    assert.equal(settings.getTitleShaderSetting('coreGreen'), 0.57);
     settings.initializeTitleShaderSettings({}, null);
 });

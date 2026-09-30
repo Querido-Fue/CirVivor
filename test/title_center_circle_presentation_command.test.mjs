@@ -179,14 +179,14 @@ test('presentation getter와 legacy draw는 같은 command authority를 사용�
         outlineWidth: 1,
         time: 1.75,
         alpha: 0.92,
-        glowStrength: 0.1296,
-        glassStrength: 0.62,
-        brightnessBoost: 0.08,
+        glowStrength: tuning.getTitleShaderSetting('glowStrength') * 1.08,
+        glassStrength: tuning.getTitleShaderSetting('glassStrength'),
+        brightnessBoost: tuning.getTitleShaderSetting('brightnessBoost'),
         bodyRadiusExpandOutlineRatio: 0.58,
-        backdropBlur: 6.5,
-        backdropBlurStrength: 0.36,
-        backdropRefractionStrength: 5.2,
-        scissorPaddingRatio: 1.825,
+        backdropBlur: tuning.getTitleShaderSetting('backdropBlur'),
+        backdropBlurStrength: tuning.getTitleShaderSetting('backdropBlend'),
+        backdropRefractionStrength: tuning.getTitleShaderSetting('refraction'),
+        scissorPaddingRatio: tuning.getTitleShaderSetting('auraFadeEnd') * (tuning.getTitleShaderSetting('pulseSize') + tuning.getTitleShaderSetting('pulseSizeAmount')),
         scissorPaddingMin: 28
     });
     assert.deepEqual({

@@ -262,22 +262,22 @@ function assertClose(actual, expected, epsilon = 1e-6) {
     );
 }
 
-test('WGSL은 legacy glass/glow 상수와 screen-to-ROI backdrop sample transform을 보존한다', () => {
+test('WGSL은 조정 가능한 유리 조명과 screen-to-ROI backdrop sample transform을 보존한다', () => {
     const shader = defaultShader(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER);
     assert.equal(namespace.TITLE_WEBGPU_CENTER_CIRCLE_PASS_CONSTANTS.UNIFORM_BYTE_SIZE, 144 + tuning.TITLE_TUNING_VEC4_COUNT * 16);
     assert.match(shader, /let local = fragCoord - parameters\.center/);
     assert.match(shader, /let edgeSoftness = 1\.2/);
     assert.match(shader, /vec3<f32>\(0\.15, -0\.71, 0\.58\)/);
-    assert.match(shader, /vec2<f32>\(-0\.25, -0\.56\)/);
-    assert.match(shader, /vec2<f32>\(0\.42, 0\.095\)/);
+    assert.ok(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER.includes(tuning.tuningWgsl('highlightX')));
+    assert.ok(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER.includes(tuning.tuningWgsl('highlightWidth')));
     assert.match(shader, /let backdropLocal = fragCoord \+ parameters\.targetToBackdropOffset/);
     assert.match(shader, /parameters\.backdropLogicalSize/);
     assert.match(shader, /let halfBackdropTexel = vec2<f32>\(0\.5\)[\s\S]*parameters\.backdropResolution/);
     assert.match(shader, /backdropLocal \+ refractionOffset/);
     assert.match(shader, /textureSampleLevel\([\s\S]*backdropUv,\s*0\.0/);
-    assert.match(shader, /let outlineAlpha = outlineCore \* 0\.36/);
+    assert.ok(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER.includes('let outlineAlpha = outlineCore * ' + tuning.tuningWgsl('outlineAlpha')));
     assert.match(shader, /let pulseBeat = 0\.5 - 0\.5 \* cos\(parameters\.time\)/);
-    assert.match(shader, /let glowPulse = 0\.36 \+ pulseBeat \* 0\.6/);
+    assert.ok(namespace.TITLE_WEBGPU_CENTER_CIRCLE_SHADER.includes('let glowPulse = ' + tuning.tuningWgsl('pulseBase') + ' + pulseBeat * ' + tuning.tuningWgsl('pulseAmount')));
     assert.match(shader, /premultipliedColor = min\(premultipliedColor, vec3<f32>\(alpha\)\)/);
     assert.doesNotMatch(shader, /targetResolution\.y - input\.position\.y/);
 });

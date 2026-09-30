@@ -22,26 +22,26 @@ export const TITLE_SHADER_SETTINGS = Object.freeze([
     ["shieldGlow","기본","충돌 블러 폭 배율",1,0.1,3,0.01],
     ["shieldSpeed","기본","충돌 노이즈 속도 배율",1,0,3,0.01],
     ["pulseSize","펄스","기본 광원 크기",0.96,0.5,1.5,0.01],
-    ["pulseSizeAmount","펄스","크기 변화량",0.5,0,0.5,0.01],
-    ["pulseBase","펄스","기본 밝기",0.36,0,2,0.01],
-    ["pulseAmount","펄스","밝기 변화량",0.6,0,2,0.01],
+    ["pulseSizeAmount","펄스","크기 변화량",0.15,0,0.5,0.01],
+    ["pulseBase","펄스","기본 밝기",0.62,0,2,0.01],
+    ["pulseAmount","펄스","밝기 변화량",0.26,0,2,0.01],
     ["auraFlowCount","아우라","물결 수",3,1,12,1],
     ["auraWarpCount","아우라","보조 물결 수",2,1,12,1],
     ["auraWarp","아우라","물결 왜곡",1,0,2,0.01],
-    ["auraWidth","아우라","블러 폭",0.27,0.02,0.8,0.01],
+    ["auraWidth","아우라","블러 폭",0.32,0.02,0.8,0.01],
     ["auraWidthFlow","아우라","폭 변화량",0.06,0,0.3,0.01],
     ["auraCoreWidth","아우라","코어 폭",0.1,0.01,0.5,0.01],
     ["auraFadeStart","아우라","감쇠 시작",0.7,0.05,0.9,0.01],
     ["auraFadeEnd","아우라","감쇠 끝",1.25,1,2,0.01],
-    ["auraIntensity","아우라","아우라 강도",3,0,3,0.01],
+    ["auraIntensity","아우라","아우라 강도",2.2,0,3,0.01],
     ["auraCoreIntensity","아우라","코어 강도",0.15,0,2,0.01],
-    ["solarWidth","태양 글레어","헤일로 폭",0.43,0.02,1,0.01],
+    ["solarWidth","태양 글레어","헤일로 폭",0.5,0.02,1,0.01],
     ["solarCount","태양 글레어","광선 수",5,1,20,1],
     ["solarRotation","태양 글레어","광선 흔들림",0.18,0,1,0.01],
     ["solarSharpness","태양 글레어","광선 선명도",6,1,24,0.1],
-    ["solarIntensity","태양 글레어","헤일로 강도",3.7,0,8,0.01],
+    ["solarIntensity","태양 글레어","헤일로 강도",4.6,0,8,0.01],
     ["solarLength","태양 글레어","광선 길이",0.55,0.03,1.5,0.01],
-    ["solarRayIntensity","태양 글레어","광선 강도",0.69,0,3,0.01],
+    ["solarRayIntensity","태양 글레어","광선 강도",0.35,0,3,0.01],
     ["solarColorMix","태양 글레어","헤일로 하이라이트 혼합",0.65,0,1,0.01],
     ["coreColorMix","태양 글레어","코어 하이라이트 혼합",0.15,0,1,0.01],
     ["edgeSoftness","유리 조명","가장자리 부드러움",1.2,0.1,4,0.01],
@@ -51,19 +51,19 @@ export const TITLE_SHADER_SETTINGS = Object.freeze([
     ["lowerOffset","유리 조명","하단 음영 위치",0.15,-0.5,0.5,0.01],
     ["lowerScale","유리 조명","하단 음영 범위",0.82,0,2,0.01],
     ["depthStart","유리 조명","구면 음영 시작",0.18,0,0.9,0.01],
-    ["bodyAmbient","유리 조명","주변광",0.74,0,2,0.01],
-    ["bodyNormal","유리 조명","구면 밝기",0.68,0,1,0.01],
+    ["bodyAmbient","유리 조명","주변광",0.56,0,2,0.01],
+    ["bodyNormal","유리 조명","구면 밝기",0.22,0,1,0.01],
     ["bodyLight","유리 조명","직접광",0.27,0,1,0.01],
-    ["lowerDepth","유리 조명","하단 음영 강도",0.31,0,1,0.01],
+    ["lowerDepth","유리 조명","하단 음영 강도",0.62,0,1,0.01],
     ["sphereDepth","유리 조명","구면 음영 강도",0.16,0,1,0.01],
     ["sheenPower","유리 반사","상단 반사 선명도",3,0.5,12,0.1],
     ["sheenIntensity","유리 반사","상단 반사 강도",0.09,0,1,0.01],
-    ["highlightX","유리 반사","하이라이트 X",-0.25,-1,1,0.01],
-    ["highlightY","유리 반사","하이라이트 Y",-0.56,-1,1,0.01],
-    ["highlightWidth","유리 반사","하이라이트 가로 폭",0.42,0.02,1,0.01],
-    ["highlightHeight","유리 반사","하이라이트 세로 폭",0.095,0.005,0.5,0.005],
-    ["highlightRotation","유리 반사","하이라이트 회전",-0.34,-3.14,3.14,0.01],
-    ["highlightIntensity","유리 반사","하이라이트 강도",0.19,0,2,0.01],
+    ["highlightX","유리 반사","하이라이트 X",-0.55,-1,1,0.01],
+    ["highlightY","유리 반사","하이라이트 Y",-0.62,-1,1,0.01],
+    ["highlightWidth","유리 반사","하이라이트 가로 폭",0.12,0.02,1,0.01],
+    ["highlightHeight","유리 반사","하이라이트 세로 폭",0.035,0.005,0.5,0.005],
+    ["highlightRotation","유리 반사","하이라이트 회전",0.85,-3.14,3.14,0.01],
+    ["highlightIntensity","유리 반사","하이라이트 강도",1.35,0,2,0.01],
     ["highlightFalloff","유리 반사","하이라이트 감쇠",2.25,0.2,8,0.01],
     ["glintPosition","유리 반사","림 반사 위치",0.81,0.2,1,0.01],
     ["glintWidth","유리 반사","림 반사 폭",0.16,0.01,0.5,0.01],
@@ -81,7 +81,7 @@ export const TITLE_SHADER_SETTINGS = Object.freeze([
     ["rimSharpness","테두리","림 조명 선명도",3,0.5,12,0.1],
     ["rimBaseMix","테두리","림 바탕색 혼합",0.42,0,1,0.01],
     ["rimLight","테두리","림 조명 강도",0.16,0,1,0.01],
-    ["outlineAlpha","테두리","테두리 불투명도",0.36,0,1,0.01],
+    ["outlineAlpha","테두리","테두리 불투명도",0.04,0,1,0.01],
     ["dentRayWidth","충돌 레이","접근 레이 폭",1.1,0.1,4,0.01],
     ["impactRayWidth","충돌 레이","충돌 레이 폭",1.3,0.1,4,0.01],
     ["rayStart","충돌 레이","레이 시작 위치",1.2,0.1,1.2,0.01],
@@ -146,26 +146,70 @@ export const TITLE_SHADER_SETTINGS = Object.freeze([
     ["rayHue","레이 색상","색상 이동 (H)",0,-180,180,1],
     ["raySaturation","레이 색상","채도 배율 (S)",1,0,3,0.01],
     ["rayLightness","레이 색상","명도 이동 (L)",-0.15,-1,1,0.01],
-    ["circleHue","원 색상","색상 이동 (H)",0,-180,180,1],
-    ["circleSaturation","원 색상","채도 배율 (S)",1.32,0,3,0.01],
+    ["circleHue","원 색상","색상 이동 (H)",42,-180,180,1],
+    ["circleSaturation","원 색상","채도 배율 (S)",0.55,0,3,0.01],
     ["circleLightness","원 색상","명도 이동 (L)",-0.15,-1,1,0.01],
     ["shieldHue","충돌 링 색상","색상 이동 (H)",79,-180,180,1],
     ["shieldSaturation","충돌 링 색상","채도 배율 (S)",1,0,3,0.01],
     ["shieldLightness","충돌 링 색상","명도 이동 (L)",0,-1,1,0.01],
-    ["backlightIntensity","보라색 역광","역광 강도",0.32,0,1,0.01],
-    ["backlightWidth","보라색 역광","안쪽 그라데이션 폭",0.24,0.01,1,0.01],
-    ["backlightFalloff","보라색 역광","그라데이션 감쇠",1.4,0.2,6,0.01],
+    ["backlightIntensity","보라색 역광","역광 강도",0.78,0,1,0.01],
+    ["backlightWidth","보라색 역광","안쪽 그라데이션 폭",0.55,0.01,1,0.01],
+    ["backlightFalloff","보라색 역광","그라데이션 감쇠",1.1,0.2,6,0.01],
     ["backlightBackdropMix","보라색 역광","배경색 반영",0.2,0,1,0.01],
-    ["rayBackgroundIntensity","충돌 레이 레이어","뒤쪽 레이 강도",0.3,0,1,0.01],
-    ["rayForegroundIntensity","충돌 레이 레이어","앞쪽 레이 강도",1.25,0,3,0.01],
-    ["rayForegroundWidth","충돌 레이 레이어","앞쪽 레이 폭",0.22,0.05,1,0.01],
-    ["rayForegroundSoftness","충돌 레이 레이어","앞쪽 가장자리 부드러움",0.08,0.02,0.5,0.01],
-    ["rayForegroundLength","충돌 레이 레이어","앞쪽 레이 길이 배율",1.1,0.25,2,0.01],
-    ["rayForegroundHighlight","충돌 레이 레이어","앞쪽 밝은색 혼합",0.65,0,1,0.01],
+    ["rayBackgroundIntensity","충돌 레이 레이어","뒤쪽 레이 강도",0.45,0,1,0.01],
+    ["rayForegroundIntensity","충돌 레이 레이어","앞쪽 레이 강도",0.2,0,3,0.01],
+    ["rayForegroundWidth","충돌 레이 레이어","앞쪽 레이 폭",0.55,0.05,1,0.01],
+    ["rayForegroundSoftness","충돌 레이 레이어","앞쪽 가장자리 부드러움",0.2,0.02,0.5,0.01],
+    ["rayForegroundLength","충돌 레이 레이어","앞쪽 레이 길이 배율",0.7,0.25,2,0.01],
+    ["rayForegroundHighlight","충돌 레이 레이어","앞쪽 밝은색 혼합",0.7,0,1,0.01],
     ["rayAttack","충돌 레이 레이어","점등 시간 비율",0.1,0.02,0.5,0.01],
+    ["coreIntensity","내부 발광","푸른 내부광 강도",0.75,0,2,0.01],
+    ["coreX","내부 발광","광원 위치 X",-0.22,-1,1,0.01],
+    ["coreY","내부 발광","광원 위치 Y",-0.35,-1,1,0.01],
+    ["coreWidth","내부 발광","광원 가로 폭",0.75,0.05,1.5,0.01],
+    ["coreHeight","내부 발광","광원 세로 폭",0.68,0.05,1.5,0.01],
+    ["coreRed","내부 발광","빨강",0.26,0,1,0.01],
+    ["coreGreen","내부 발광","초록",0.64,0,1,0.01],
+    ["coreBlue","내부 발광","파랑",1,0,1,0.01],
+    ["backlightAngle","보라색 역광","역광 방향",0.2,-3.14,3.14,0.01],
+    ["backlightFocus","보라색 역광","방향 집중도",3.2,0.5,8,0.1],
+    ["backlightAmbient","보라색 역광","반대편 빛 비율",0.08,0,1,0.01],
+    ["backlightEmission","보라색 역광","가장자리 발광",1.15,0,2,0.01],
+    ["backlightRimWidth","보라색 역광","발광 림 폭",0.045,0.005,0.3,0.005],
+    ["glowDirectionality","아우라","역광 방향 반영",0.6,0,1,0.01],
+    ["surfaceSheenX","넓은 반사광","위치 X",-0.23,-1,1,0.01],
+    ["surfaceSheenY","넓은 반사광","위치 Y",-0.44,-1,1,0.01],
+    ["surfaceSheenWidth","넓은 반사광","가로 폭",0.62,0.02,1,0.01],
+    ["surfaceSheenHeight","넓은 반사광","세로 폭",0.13,0.01,0.5,0.01],
+    ["surfaceSheenRotation","넓은 반사광","회전",-0.35,-3.14,3.14,0.01],
+    ["surfaceSheenIntensity","넓은 반사광","강도",0.24,0,1,0.01],
+    ["volumeDensity","유리 내부","안개 밀도",2,0,4,0.01],
+    ["volumeTexture","유리 내부","내부 결 대비",0.68,0,1,0.01],
+    ["volumeScale","유리 내부","내부 결 크기",3.9,1,8,0.1],
+    ["volumeWarp","유리 내부","내부 결 왜곡",0.45,0,1,0.01],
+    ["volumeMotion","유리 내부","내부 움직임",0.12,0,0.5,0.01],
+    ["volumeEmission","유리 내부","깊이 발광",1.7,0,4,0.01],
+    ["volumeAbsorption","유리 내부","깊이 흡수",1.1,0,3,0.01],
+    ["fresnelPower","유리 코팅","가장자리 반사 감쇠",2.8,0.5,8,0.1],
+    ["fresnelIntensity","유리 코팅","가장자리 반사 강도",0.38,0,1,0.01],
+    ["coatThickness","유리 코팅","유리 두께",0.13,0.02,0.4,0.01],
+    ["coatShadow","유리 코팅","유리 내부 음영",0.32,0,1,0.01],
+    ["coatCaustic","유리 코팅","가장자리 집광",0.42,0,1,0.01],
 ].map(([id, group, label, defaultValue, min, max, step], index) =>
     Object.freeze({ id, group, label, defaultValue, min, max, step, index })));
 const byId = new Map(TITLE_SHADER_SETTINGS.map(setting => [setting.id, setting]));
+// Apply the approved glass/aura art direction once to pre-preset saves. Later slider edits win.
+export const TITLE_SHADER_PRESET_VERSION = 2;
+const GLASS_PRESET_IDS = Object.freeze([
+    'glowStrength', 'glassStrength', 'brightnessBoost', 'backdropBlur', 'backdropBlend', 'refraction',
+    'pulseSizeAmount', 'pulseBase', 'pulseAmount', 'auraWidth', 'auraIntensity',
+    'solarWidth', 'solarIntensity', 'solarRayIntensity', 'bodyAmbient', 'bodyNormal', 'lowerDepth',
+    'highlightX', 'highlightY', 'highlightWidth', 'highlightHeight', 'highlightRotation', 'highlightIntensity',
+    'outlineAlpha', 'circleHue', 'circleSaturation', 'circleLightness',
+    'backlightIntensity', 'backlightWidth', 'backlightFalloff', 'backlightBackdropMix',
+    'rayBackgroundIntensity', 'rayForegroundIntensity', 'rayForegroundWidth',
+    'rayForegroundSoftness', 'rayForegroundLength', 'rayForegroundHighlight'
+]);
 const values = Object.fromEntries(TITLE_SHADER_SETTINGS.map(s => [s.id, s.defaultValue]));
 const paletteOffset = Math.ceil(TITLE_SHADER_SETTINGS.length / 4) * 4;
 export const TITLE_TUNING_VEC4_COUNT = paletteOffset / 4 + 4;
@@ -181,19 +225,26 @@ let pendingSave = Promise.resolve();
 /** SaveSystem supplies the existing settings repository; rendering never owns file I/O. */
 export function initializeTitleShaderSettings(saved, persist) {
     resetTitleShaderSettings();
+    const savedPreset = Number.isSafeInteger(saved?.__presetVersion) ? saved.__presetVersion : 0;
+    const needsPreset = savedPreset < TITLE_SHADER_PRESET_VERSION;
     if (saved && typeof saved === 'object' && !Array.isArray(saved)) {
         for (const setting of TITLE_SHADER_SETTINGS) {
             if (Object.hasOwn(saved, setting.id)) setTitleShaderSetting(setting.id, saved[setting.id]);
         }
+        if (savedPreset < 1) {
+            for (const id of GLASS_PRESET_IDS) setTitleShaderSetting(id, byId.get(id).defaultValue);
+        }
+        // Volume revision only retints the internal blue; keep all v1 user lighting edits.
+        if (savedPreset < 2) setTitleShaderSetting('coreGreen', byId.get('coreGreen').defaultValue);
     }
     persistSettings = persist;
-    savedRevision = revision;
+    savedRevision = needsPreset ? revision - 1 : revision;
 }
 
 /** Save raw committed slider values, and flush any last preview during app shutdown. */
 export function saveTitleShaderSettings() {
     if (!persistSettings || revision === savedRevision) return pendingSave;
-    const snapshot = { ...values };
+    const snapshot = { ...values, __presetVersion: TITLE_SHADER_PRESET_VERSION };
     const snapshotRevision = revision;
     const persist = persistSettings;
     pendingSave = pendingSave.catch(() => {}).then(() => persist(snapshot)).then(() => {

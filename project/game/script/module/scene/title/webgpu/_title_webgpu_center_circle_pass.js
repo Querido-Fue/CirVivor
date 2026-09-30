@@ -67,6 +67,50 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         return exp(-dot(rotated, rotated) * ${tuningWgsl("highlightFalloff")});
     }
 
+
+    // Six fixed depth samples inside the analytic sphere. No scene/environment reflection.
+    fn orbHash(n: f32) -> f32 {
+        var p = fract(n * 0.1031);
+        p *= p + 33.33;
+        return fract(p * (p + p));
+    }
+    fn orbNoise(p: vec3<f32>) -> f32 {
+        var cell = floor(p);
+        var f = fract(p);
+        var w = f * f * (vec3<f32>(3.0) - 2.0 * f);
+        var n = dot(cell, vec3<f32>(1.0, 57.0, 113.0));
+        return mix(
+            mix(mix(orbHash(n), orbHash(n + 1.0), w.x),
+                mix(orbHash(n + 57.0), orbHash(n + 58.0), w.x), w.y),
+            mix(mix(orbHash(n + 113.0), orbHash(n + 114.0), w.x),
+                mix(orbHash(n + 170.0), orbHash(n + 171.0), w.x), w.y), w.z);
+    }
+    fn orbVolume(uv: vec2<f32>, depth: f32, phase: f32) -> vec4<f32> {
+        var drift = vec3<f32>(sin(phase), cos(phase), sin(phase + 1.2)) * ${tuningWgsl("volumeMotion")};
+        var emitted = vec3<f32>(0.0);
+        var transmission = 1.0;
+        var stepLength = depth / 3.0;
+        var blue = vec3<f32>(${tuningWgsl("coreRed")}, ${tuningWgsl("coreGreen")}, ${tuningWgsl("coreBlue")});
+        var violet = parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz;
+        for (var sampleIndex = 0; sampleIndex < 6; sampleIndex += 1) {
+            var z = depth * (1.0 - (f32(sampleIndex) + 0.5) / 3.0);
+            var p = vec3<f32>(uv * (0.88 + 0.12 * z), z);
+            var q = p * ${tuningWgsl("volumeScale")} + drift + vec3<f32>(4.3, 1.7, 8.2);
+            var warp = 0.5 + 0.5 * sin(dot(q, vec3<f32>(0.7, 0.9, 0.6)) + sin(q.z));
+            var clouds = orbNoise(q + vec3<f32>(warp * ${tuningWgsl("volumeWarp")}));
+            var density = mix(0.65, smoothstep(0.24, 0.78, clouds * 0.85 + warp * 0.15), ${tuningWgsl("volumeTexture")});
+            var opacity = 1.0 - exp(-density * ${tuningWgsl("volumeDensity")} * stepLength);
+            var source = (p.xy - vec2<f32>(${tuningWgsl("coreX")}, ${tuningWgsl("coreY")})) / vec2<f32>(${tuningWgsl("coreWidth")}, ${tuningWgsl("coreHeight")});
+            var blueLight = exp(-dot(source, source) * 2.0 - (z - 0.2) * (z - 0.2) * 1.6);
+            var purpleLight = pow(clamp(0.5 + 0.5 * p.x, 0.0, 1.0), 2.0) * 0.3;
+            var lightColor = blue * blueLight * ${tuningWgsl("coreIntensity")} * ${tuningWgsl("volumeEmission")}
+                + violet * purpleLight;
+            emitted += transmission * opacity * lightColor;
+            transmission *= exp(-density * ${tuningWgsl("volumeAbsorption")} * stepLength);
+        }
+        return vec4<f32>(emitted, transmission);
+    }
+
     @vertex
     fn fullscreen_vertex(@builtin(vertex_index) vertexIndex: u32) -> FullscreenVertexOutput {
         let positions = array<vec2<f32>, 3>(
@@ -101,6 +145,8 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         let outsideDistance = max(distanceFromCenter - radius, 0.0);
         let fillMask = circleMask;
         let angle = atan2(normalized.y, normalized.x);
+        let backlightDirection = mix(${tuningWgsl("backlightAmbient")}, 1.0,
+            pow(saturate(0.5 + 0.5 * cos(angle - ${tuningWgsl("backlightAngle")})), ${tuningWgsl("backlightFocus")}));
 
         // Radius-relative glare fades inside the configured ROI. Integer phase
         // harmonics keep the animation continuous when the glow clock wraps.
@@ -124,7 +170,8 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
             * exp(-pow(auraDistance / ${tuningWgsl("solarLength")}, 2.0)) * ${tuningWgsl("solarRayIntensity")};
         let glowPulse = ${tuningWgsl("pulseBase")} + pulseBeat * ${tuningWgsl("pulseAmount")};
         let glowAlpha = (auraHalo * ${tuningWgsl("auraIntensity")} + auraCore * ${tuningWgsl("auraCoreIntensity")} + solarGlare)
-            * auraFade * (1.0 - circleMask) * parameters.glowStrength * glowPulse;
+            * auraFade * (1.0 - circleMask) * parameters.glowStrength * glowPulse
+            * mix(1.0, backlightDirection, ${tuningWgsl("glowDirectionality")});
         let glowColor = mix(
             parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz,
             parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz,
@@ -165,8 +212,7 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
         let edgeGlint = pow(saturate(
             1.0 - abs(distanceFromCenter - (radius * ${tuningWgsl("glintPosition")})) / max(1.0, radius * ${tuningWgsl("glintWidth")})
         ), ${tuningWgsl("glintSharpness")}) * pow(upperLight, ${tuningWgsl("glintTop")}) * ${tuningWgsl("glintIntensity")} * parameters.glassStrength;
-        var fillColor = bodyColor
-            + (parameters.highlightColor.xyz * (broadTopSheen + compactHighlight + edgeGlint));
+        var fillColor = bodyColor;
         fillColor = min(
             vec3<f32>(1.0),
             (fillColor * (1.0 + saturate(parameters.brightnessBoost)))
@@ -195,6 +241,22 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
             * (${tuningWgsl("backdropBase")} + (upperLight * ${tuningWgsl("backdropTop")}));
         fillColor = mix(fillColor, backdropBlurColor, backdropBlend);
 
+        // Local emission is independent of the violet body tint and backdrop opacity.
+        let volume = orbVolume(normalized, normal.z, parameters.time);
+        fillColor = fillColor * volume.a + volume.rgb;
+        // Front-shell wisps remain visible over the depth-integrated emission.
+        let veil = orbNoise(normal * ${tuningWgsl("volumeScale")} + vec3<f32>(2.7, 8.1, 3.4));
+        let veilDetail = orbNoise(normal * ${tuningWgsl("volumeScale")} * 2.1 + vec3<f32>(7.0));
+        let veilMask = smoothstep(0.3, 0.72, veil * 0.8 + veilDetail * 0.2)
+            * ${tuningWgsl("volumeTexture")} * normal.z;
+        fillColor *= 1.0 - veilMask * 0.3;
+        fillColor += parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 4}].xyz
+            * veilMask * (0.06 + 0.14 * backlightDirection);
+        let coatDepth = max(1.0 - length(normalized), 0.0) / ${tuningWgsl("coatThickness")};
+        let coatOcclusion = exp(-pow(coatDepth - 1.0, 2.0) * 2.0)
+            * (1.0 - backlightDirection) * ${tuningWgsl("coatShadow")};
+        fillColor *= 1.0 - coatOcclusion;
+
         // Reflected aura stays on the sphere: no extra exterior bloom or blur.
         let backlightGradient = pow(smoothstep(
             1.0 - ${tuningWgsl("backlightWidth")}, 1.0,
@@ -205,7 +267,22 @@ export const TITLE_WEBGPU_CENTER_CIRCLE_SHADER = `
             backdropBlurColor, ${tuningWgsl("backlightBackdropMix")}
         );
         fillColor = mix(fillColor, backlightColor,
-            backlightGradient * ${tuningWgsl("backlightIntensity")});
+            backlightGradient * ${tuningWgsl("backlightIntensity")} * backlightDirection);
+        let backlightRim = exp(-pow(max(1.0 - length(normalized), 0.0)
+            / ${tuningWgsl("backlightRimWidth")}, 2.0)) * backlightDirection;
+        fillColor += mix(backlightColor, parameters.tuning[${TITLE_TUNING_VEC4_COUNT - 3}].xyz, backlightDirection)
+            * backlightRim * ${tuningWgsl("backlightEmission")};
+        let fresnel = pow(1.0 - normal.z, ${tuningWgsl("fresnelPower")});
+        let coatTexture = mix(1.0, 0.65 + 0.7 * orbNoise(normal * 5.0 + vec3<f32>(4.0)), ${tuningWgsl("volumeTexture")});
+        let caustic = exp(-pow(coatDepth - 0.45, 2.0) * 3.0) * backlightDirection * coatTexture;
+        fillColor += backlightColor * (fresnel * ${tuningWgsl("fresnelIntensity")} * (0.2 + backlightDirection)
+            + caustic * ${tuningWgsl("coatCaustic")});
+        // Surface reflection stays clear even when the glass transmits the backdrop.
+        let surfaceSheen = ellipse_mask(normalized,
+            vec2<f32>(${tuningWgsl("surfaceSheenX")}, ${tuningWgsl("surfaceSheenY")}),
+            vec2<f32>(${tuningWgsl("surfaceSheenWidth")}, ${tuningWgsl("surfaceSheenHeight")}),
+            ${tuningWgsl("surfaceSheenRotation")}) * ${tuningWgsl("surfaceSheenIntensity")} * parameters.glassStrength;
+        fillColor += parameters.highlightColor.xyz * (broadTopSheen + compactHighlight + edgeGlint + surfaceSheen);
 
         let outlineDistance = abs(distanceFromCenter - radius);
         let outlineSoftness = max(0.42, edgeSoftness * ${tuningWgsl("outlineSoftness")});
